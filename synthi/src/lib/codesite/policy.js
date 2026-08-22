@@ -110,6 +110,10 @@ export const CODE_SITE_EVENT_TYPES = [
   'policy_delta_promoted',
   'policy_delta_rejected',
   'black_box_closed',
+  'agent_attached',
+  'agent_resumed',
+  'agent_heartbeat',
+  'agent_detached',
 ];
 
 const CODE_SITE_EVENT_TYPE_SET = new Set(CODE_SITE_EVENT_TYPES);

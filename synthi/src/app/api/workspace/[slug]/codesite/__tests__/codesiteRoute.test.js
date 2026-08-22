@@ -14,11 +14,13 @@ const {
   controlPlane: {
     abortTransaction: vi.fn(),
     acknowledgeInboxItem: vi.fn(),
+    attachAgentSession: vi.fn(),
     commitTransaction: vi.fn(),
     listProjects: vi.fn(),
     createDocument: vi.fn(),
     createProject: vi.fn(),
     dryRunTransactionWrites: vi.fn(),
+    detachAgentSession: vi.fn(),
     eventCursor: vi.fn(),
     getEvents: vi.fn(),
     getControlState: vi.fn(),
@@ -27,6 +29,7 @@ const {
     recordPolicyDecision: vi.fn(),
     recordTransactionWrite: vi.fn(),
     getLineProvenance: vi.fn(),
+    heartbeatAgentSession: vi.fn(),
     getProject: vi.fn(),
     getSourceStateSince: vi.fn(),
     listActiveTransactions: vi.fn(),
@@ -64,6 +67,7 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
   const names = [
     'abortTransaction',
     'acknowledgeInboxItem',
+    'attachAgentSession',
     'collisionPredict',
     'commitTransaction',
     'completeInspectionRun',
@@ -76,6 +80,7 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
     'createPolicyDelta',
     'createProject',
     'dryRunTransactionWrites',
+    'detachAgentSession',
     'eventCursor',
     'exportArtifacts',
     'getAgentInbox',
@@ -85,6 +90,7 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
     'getEvents',
     'getIncidentReplay',
     'getLineProvenance',
+    'heartbeatAgentSession',
     'getProofBundle',
     'getProject',
     'getSchemas',
@@ -303,6 +309,103 @@ describe('CodeSite catch-all route', () => {
       expect.objectContaining({ userId: 'user-1' }),
       { title: 'Signup' },
     );
+  });
+
+  it('allows only the internal collaboration service to attach a verified agent lifecycle', async () => {
+    process.env.SYNTHI_CODESITE_TOKEN = 'agent-lifecycle-secret';
+    controlPlane.attachAgentSession.mockResolvedValue({
+      resumed: false,
+      session: { id: 'agent-1', status: 'attached' },
+      event: { eventType: 'agent_attached' },
+    });
+    const body = {
+      ownerUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      collaborationMembershipVerified: true,
+      terminalSessionId: 'terminal-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'codex-session-1',
+    };
+
+    const response = await POST(new Request(
+      'http://test/api/workspace/acme/codesite/projects/project-1/agent-sessions/attach',
+      {
+        method: 'POST',
+        headers: { authorization: 'Bearer agent-lifecycle-secret' },
+        body: JSON.stringify(body),
+      },
+    ), params(['projects', 'project-1', 'agent-sessions', 'attach']));
+
+    expect(response.status).toBe(201);
+    expect(await json(response)).toMatchObject({ session: { id: 'agent-1', status: 'attached' } });
+    expect(controlPlane.attachAgentSession).toHaveBeenCalledWith('acme', 'project-1', body, {
+      internalService: true,
+      collaborationMembershipVerified: true,
+      actorUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      runtimeScope: 'shared-workspace',
+    });
+
+    const denied = await POST(new Request(
+      'http://test/api/workspace/acme/codesite/projects/project-1/agent-sessions/attach',
+      { method: 'POST', body: JSON.stringify(body) },
+    ), params(['projects', 'project-1', 'agent-sessions', 'attach']));
+    expect(denied.status).toBe(403);
+    expect(await json(denied)).toEqual({ error: 'agent_lifecycle_internal_auth_required' });
+  });
+
+  it('routes exact-bound heartbeat and detach calls for the internal collaboration service', async () => {
+    process.env.SYNTHI_CODESITE_TOKEN = 'agent-lifecycle-secret';
+    const body = {
+      ownerUserId: 'user-1',
+      collaborationUserId: 'member-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      collaborationMembershipVerified: true,
+      terminalSessionId: 'terminal-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'codex-session-1',
+    };
+    const authority = {
+      internalService: true,
+      collaborationMembershipVerified: true,
+      actorUserId: 'user-1',
+      collaborationUserId: 'member-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      runtimeScope: 'shared-workspace',
+    };
+    controlPlane.heartbeatAgentSession.mockResolvedValue({ session: { id: 'agent-1', status: 'attached' } });
+    controlPlane.detachAgentSession.mockResolvedValue({ session: { id: 'agent-1', status: 'detached' } });
+
+    const heartbeat = await POST(new Request(
+      'http://test/api/workspace/acme/codesite/agent-sessions/agent-1/heartbeat',
+      {
+        method: 'POST',
+        headers: { authorization: 'Bearer agent-lifecycle-secret' },
+        body: JSON.stringify(body),
+      },
+    ), params(['agent-sessions', 'agent-1', 'heartbeat']));
+    expect(heartbeat.status).toBe(200);
+    expect(controlPlane.heartbeatAgentSession).toHaveBeenCalledWith('acme', 'agent-1', body, authority);
+
+    const detachBody = { ...body, reason: 'terminal_exit', ended: true };
+    const detach = await POST(new Request(
+      'http://test/api/workspace/acme/codesite/agent-sessions/agent-1/detach',
+      {
+        method: 'POST',
+        headers: { authorization: 'Bearer agent-lifecycle-secret' },
+        body: JSON.stringify(detachBody),
+      },
+    ), params(['agent-sessions', 'agent-1', 'detach']));
+    expect(detach.status).toBe(200);
+    expect(controlPlane.detachAgentSession).toHaveBeenCalledWith('acme', 'agent-1', detachBody, authority);
   });
 
   it('notifies collab when a CodeSite transaction opens', async () => {

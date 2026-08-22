@@ -22,6 +22,7 @@ const { prisma } = vi.hoisted(() => ({
       findFirst: vi.fn(),
       findUnique: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
     },
     codeSiteProjectMember: {
       findUnique: vi.fn(),
@@ -46,6 +47,7 @@ const { prisma } = vi.hoisted(() => ({
       create: vi.fn(),
       findFirst: vi.fn(),
       findMany: vi.fn(),
+      update: vi.fn(),
     },
     codeSiteAgentInboxItem: {
       create: vi.fn(),
@@ -135,6 +137,7 @@ vi.mock('@/lib/prisma', () => ({
 
 import {
   abortTransaction,
+  attachAgentSession,
   attachProofBundleCommit,
   commitTransaction,
   acknowledgeInboxItem,
@@ -150,6 +153,7 @@ import {
   createPermit,
   createPolicyDelta,
   dryRunTransactionWrites,
+  detachAgentSession,
   getAgentInbox,
   getAgentManifest,
   getControlState,
@@ -162,6 +166,7 @@ import {
   openTransaction,
   preflightCodeSiteFsWrite,
   getWorkspaceActiveState,
+  heartbeatAgentSession,
   proposeRouteRevision,
   promotePolicyDelta,
   recordTransactionRead,
@@ -530,12 +535,14 @@ describe('CodeSite control plane transaction validation', () => {
       createdAt: new Date('2026-06-29T23:00:00.000Z'),
       updatedAt: new Date('2026-06-29T23:00:00.000Z'),
     }));
+    prisma.codeSiteProject.updateMany.mockResolvedValue({ count: 1 });
     prisma.codeSiteProject.findFirst.mockResolvedValue({
       id: 'project-1',
       workspaceSlug: 'acme',
       title: 'Signup',
       request: 'Build signup',
       status: 'active',
+      collaborationSessionId: null,
       zonePolicyJson: JSON.stringify({ zones: [] }),
       controlPlanJson: JSON.stringify({}),
       createdByUserId: 'user-1',
@@ -665,6 +672,40 @@ describe('CodeSite control plane transaction validation', () => {
     prisma.codeSiteAgentSession.create.mockImplementation(async ({ data }) => ({
       id: `agent-${data.displayCallsign}`,
       createdAt: new Date('2026-06-29T23:01:00.000Z'),
+      endedAt: null,
+      ...data,
+    }));
+    prisma.codeSiteAgentSession.update.mockImplementation(async ({ where, data }) => ({
+      id: where.id,
+      projectId: 'project-1',
+      workspaceSlug: 'acme',
+      ownerUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeSessionId: 'runtime-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      agentRuntime: 'terminal',
+      providerSessionRef: 'codex-session-1',
+      displayCallsign: 'CODEX-01',
+      status: 'attached',
+      permissionsJson: JSON.stringify(['workspace.read']),
+      redactionPolicyJson: JSON.stringify({ redactSecrets: true }),
+      capabilitiesJson: JSON.stringify(['workspace.read']),
+      executionHostJson: JSON.stringify({ type: 'workspace_terminal', hostId: null, platform: null }),
+      subscriptionsJson: JSON.stringify(['project.events']),
+      deliveryChannelJson: JSON.stringify({ type: 'mcp_poll', channelId: null }),
+      attachSource: 'collab_terminal_adapter',
+      bindingVersion: 1,
+      activeMutationLeaseId: null,
+      activeTransactionId: null,
+      attachedAt: new Date('2026-08-22T00:00:00.000Z'),
+      lastHeartbeatAt: new Date('2026-08-22T00:00:00.000Z'),
+      detachedAt: null,
+      createdAt: new Date('2026-08-22T00:00:00.000Z'),
+      updatedAt: new Date('2026-08-22T00:00:00.000Z'),
       endedAt: null,
       ...data,
     }));
@@ -1790,6 +1831,464 @@ describe('CodeSite control plane transaction validation', () => {
       dojoEvidenceRefs: ['dojo:evidence:pilot-session'],
       dojoDecisionDigest: 'sha256:pilotdecision',
       pilotLicenseSnapshot: { licenseClass: 'runtime', level: 2 },
+    });
+  });
+
+  it('automatically attaches a verified collaboration agent with durable identity bindings', async () => {
+    prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([]);
+    const authority = {
+      internalService: true,
+      collaborationMembershipVerified: true,
+      actorUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      runtimeScope: 'shared-workspace',
+    };
+
+    const result = await attachAgentSession('acme', 'project-1', {
+      ownerUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeSessionId: 'runtime-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'codex-session-1',
+      displayCallsign: 'CODEX-01',
+      capabilities: ['workspace.read', 'workspace.read'],
+      subscriptions: ['project.events'],
+      deliveryChannel: { type: 'mcp_poll' },
+      executionHost: { type: 'workspace_terminal', hostId: 'host-1', platform: 'linux' },
+    }, authority);
+
+    expect(result).toMatchObject({
+      resumed: false,
+      session: {
+        ownerUserId: 'user-1',
+        collaborationUserId: 'user-1',
+        effectiveWorkspaceUserId: 'shared-owner',
+        collaborationSessionId: 'collab-session-1',
+        terminalSessionId: 'terminal-1',
+        runtimeSessionId: 'runtime-1',
+        runtimeScope: 'shared-workspace',
+        agentProvider: 'codex',
+        providerSessionRef: 'codex-session-1',
+        displayCallsign: 'CODEX-01',
+        capabilities: ['workspace.read'],
+        subscriptions: ['project.events'],
+        deliveryChannel: { type: 'mcp_poll', channelId: null },
+        executionHost: { type: 'workspace_terminal', hostId: 'host-1', platform: 'linux' },
+      },
+      event: { eventType: 'agent_attached' },
+    });
+    expect(prisma.codeSiteProjectMember.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ userId: 'user-1', source: 'collab_agent_attach' }),
+    }));
+  });
+
+  it('resumes only the same owner, collaboration, terminal, runtime, provider, and work identity', async () => {
+    const existing = {
+      id: 'agent-attached-1',
+      projectId: 'project-1',
+      workspaceSlug: 'acme',
+      ownerUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeSessionId: 'runtime-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      agentRuntime: 'terminal',
+      providerSessionRef: 'codex-session-1',
+      displayCallsign: 'CODEX-01',
+      status: 'detached',
+      permissionsJson: JSON.stringify(['workspace.read']),
+      redactionPolicyJson: JSON.stringify({ redactSecrets: true }),
+      capabilitiesJson: JSON.stringify(['workspace.read']),
+      executionHostJson: JSON.stringify({ type: 'workspace_terminal', hostId: null, platform: null }),
+      subscriptionsJson: JSON.stringify(['project.events']),
+      deliveryChannelJson: JSON.stringify({ type: 'mcp_poll', channelId: null }),
+      attachSource: 'collab_terminal_adapter',
+      bindingVersion: 1,
+      activeMutationLeaseId: 'lease-1',
+      activeTransactionId: 'txn-1',
+      attachedAt: new Date('2026-08-22T00:00:00.000Z'),
+      lastHeartbeatAt: new Date('2026-08-22T00:00:00.000Z'),
+      detachedAt: new Date('2026-08-22T00:01:00.000Z'),
+      createdAt: new Date('2026-08-22T00:00:00.000Z'),
+      updatedAt: new Date('2026-08-22T00:01:00.000Z'),
+      endedAt: null,
+    };
+    prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([existing]);
+    prisma.codeSiteAgentSession.update.mockImplementationOnce(async ({ data }) => ({ ...existing, ...data }));
+    prisma.codeSiteMutationLease.findFirst.mockResolvedValueOnce({
+      id: 'lease-1',
+      projectId: 'project-1',
+      agentSessionId: existing.id,
+      status: 'active',
+    });
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValueOnce({
+      id: 'txn-1',
+      projectId: 'project-1',
+      mutationLeaseId: 'lease-1',
+      agentSessionId: existing.id,
+      status: 'open',
+    });
+    const authority = {
+      internalService: true,
+      collaborationMembershipVerified: true,
+      actorUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      runtimeScope: 'shared-workspace',
+    };
+    const body = {
+      ownerUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeSessionId: 'runtime-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'codex-session-1',
+      activeMutationLeaseId: 'lease-1',
+      activeTransactionId: 'txn-1',
+      capabilities: ['workspace.read'],
+      subscriptions: ['project.events'],
+      deliveryChannel: { type: 'mcp_poll' },
+    };
+
+    await expect(attachAgentSession('acme', 'project-1', body, authority)).resolves.toMatchObject({
+      resumed: true,
+      session: { id: 'agent-attached-1', displayCallsign: 'CODEX-01', status: 'attached' },
+      event: { eventType: 'agent_resumed' },
+    });
+
+    prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([existing]);
+    await expect(attachAgentSession('acme', 'project-1', {
+      ...body,
+      activeTransactionId: 'txn-forged',
+    }, authority)).rejects.toMatchObject({
+      status: 403,
+      code: 'agent_session_resume_identity_mismatch',
+      detail: expect.objectContaining({ mismatches: ['activeTransactionId'] }),
+    });
+  });
+
+  it('requires verified collaboration authority and forbids external delivery endpoints', async () => {
+    const body = {
+      ownerUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'codex-session-1',
+    };
+    await expect(attachAgentSession('acme', 'project-1', body, {
+      internalService: true,
+      collaborationMembershipVerified: false,
+      actorUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      runtimeScope: 'shared-workspace',
+    })).rejects.toMatchObject({ status: 403, code: 'agent_attach_authority_forbidden' });
+
+    await expect(attachAgentSession('acme', 'project-1', {
+      ...body,
+      deliveryChannel: { type: 'mcp_poll', url: 'https://attacker.test/callback' },
+    }, {
+      internalService: true,
+      collaborationMembershipVerified: true,
+      actorUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      runtimeScope: 'shared-workspace',
+    })).rejects.toMatchObject({ status: 400, code: 'agent_delivery_external_endpoint_forbidden' });
+  });
+
+  it('fails closed for every mismatched resume identity before membership or event writes', async () => {
+    const existing = {
+      id: 'agent-attached-1',
+      projectId: 'project-1',
+      workspaceSlug: 'acme',
+      ownerUserId: 'user-1',
+      collaborationUserId: 'member-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeSessionId: 'runtime-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'codex-session-1',
+      activeMutationLeaseId: null,
+      activeTransactionId: null,
+      endedAt: null,
+    };
+    const base = {
+      ownerUserId: 'user-1',
+      collaborationUserId: 'member-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeSessionId: 'runtime-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'codex-session-1',
+    };
+    const mismatches = [
+      ['ownerUserId', 'user-forged'],
+      ['collaborationUserId', 'member-forged'],
+      ['effectiveWorkspaceUserId', 'effective-forged'],
+      ['terminalSessionId', 'terminal-forged'],
+      ['runtimeSessionId', 'runtime-forged'],
+      ['runtimeScope', 'scope-forged'],
+      ['agentProvider', 'claude'],
+      ['providerSessionRef', 'provider-forged'],
+      ['activeMutationLeaseId', 'lease-forged'],
+      ['activeTransactionId', 'txn-forged'],
+    ];
+    prisma.codeSiteProject.findFirst.mockResolvedValue({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      status: 'active',
+      createdByUserId: 'user-1',
+      collaborationSessionId: 'collab-session-1',
+      members: [],
+    });
+
+    for (const [field, value] of mismatches) {
+      const body = { ...base, [field]: value };
+      const authority = {
+        internalService: true,
+        collaborationMembershipVerified: true,
+        actorUserId: body.ownerUserId,
+        collaborationUserId: body.collaborationUserId,
+        effectiveWorkspaceUserId: body.effectiveWorkspaceUserId,
+        collaborationSessionId: body.collaborationSessionId,
+        runtimeScope: body.runtimeScope,
+      };
+      prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([existing]);
+      await expect(attachAgentSession('acme', 'project-1', body, authority)).rejects.toMatchObject({
+        status: 403,
+        code: 'agent_session_resume_identity_mismatch',
+        detail: expect.objectContaining({ mismatches: expect.arrayContaining([field]) }),
+      });
+    }
+    expect(prisma.codeSiteProjectMember.upsert).not.toHaveBeenCalled();
+    expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects project collaboration mismatches and revoked members before agent registration', async () => {
+    const body = {
+      ownerUserId: 'user-1',
+      collaborationUserId: 'member-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'codex-session-1',
+    };
+    const authority = {
+      internalService: true,
+      collaborationMembershipVerified: true,
+      actorUserId: 'user-1',
+      collaborationUserId: 'member-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      runtimeScope: 'shared-workspace',
+    };
+    const project = {
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      status: 'active',
+      createdByUserId: 'user-1',
+      collaborationSessionId: 'another-collaboration',
+      members: [],
+    };
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce(project);
+    await expect(attachAgentSession('acme', 'project-1', body, authority)).rejects.toMatchObject({
+      status: 403,
+      code: 'agent_project_collaboration_mismatch',
+    });
+
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      ...project,
+      collaborationSessionId: 'collab-session-1',
+      members: [{
+        userId: 'user-1',
+        role: 'agent',
+        permissionsJson: JSON.stringify(['project:read']),
+        participationStatus: 'disabled',
+        revokedAt: new Date('2026-08-22T00:00:00.000Z'),
+      }],
+    });
+    await expect(attachAgentSession('acme', 'project-1', body, authority)).rejects.toMatchObject({
+      status: 403,
+      code: 'agent_project_membership_revoked',
+    });
+    expect(prisma.codeSiteAgentSession.create).not.toHaveBeenCalled();
+    expect(prisma.codeSiteProjectMember.upsert).not.toHaveBeenCalled();
+  });
+
+  it('recovers a concurrent attach race by resuming the exact database winner', async () => {
+    const existing = {
+      id: 'agent-race-winner',
+      projectId: 'project-1',
+      workspaceSlug: 'acme',
+      ownerUserId: 'user-1',
+      collaborationUserId: 'member-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeSessionId: null,
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      agentRuntime: 'terminal',
+      providerSessionRef: 'codex-session-1',
+      displayCallsign: 'CODEX-01',
+      status: 'attached',
+      permissionsJson: JSON.stringify([]),
+      redactionPolicyJson: JSON.stringify({}),
+      capabilitiesJson: JSON.stringify([]),
+      executionHostJson: JSON.stringify({}),
+      subscriptionsJson: JSON.stringify([]),
+      deliveryChannelJson: JSON.stringify({ type: 'mcp_poll', channelId: null }),
+      activeMutationLeaseId: null,
+      activeTransactionId: null,
+      attachedAt: new Date('2026-08-22T00:00:00.000Z'),
+      endedAt: null,
+    };
+    prisma.codeSiteAgentSession.findMany.mockReset()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([existing]);
+    prisma.codeSiteAgentSession.create.mockRejectedValueOnce(Object.assign(new Error('unique'), { code: 'P2002' }));
+    prisma.codeSiteAgentSession.update.mockImplementationOnce(async ({ data }) => ({ ...existing, ...data }));
+    const body = {
+      ownerUserId: 'user-1',
+      collaborationUserId: 'member-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'codex-session-1',
+    };
+    const result = await attachAgentSession('acme', 'project-1', body, {
+      internalService: true,
+      collaborationMembershipVerified: true,
+      actorUserId: 'user-1',
+      collaborationUserId: 'member-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      runtimeScope: 'shared-workspace',
+    });
+    expect(result).toMatchObject({
+      resumed: true,
+      session: { id: 'agent-race-winner' },
+      event: { eventType: 'agent_resumed' },
+    });
+  });
+
+  it('does not accept mutation authority while creating a coordination-only attachment', async () => {
+    prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([]);
+    const body = {
+      ownerUserId: 'user-1',
+      collaborationUserId: 'member-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'codex-session-1',
+      activeMutationLeaseId: 'lease-forged',
+    };
+    await expect(attachAgentSession('acme', 'project-1', body, {
+      internalService: true,
+      collaborationMembershipVerified: true,
+      actorUserId: 'user-1',
+      collaborationUserId: 'member-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      runtimeScope: 'shared-workspace',
+    })).rejects.toMatchObject({ status: 403, code: 'agent_attach_mutation_context_forbidden' });
+    expect(prisma.codeSiteAgentSession.create).not.toHaveBeenCalled();
+  });
+
+  it('heartbeats and detaches only an exactly bound agent session', async () => {
+    const existing = {
+      id: 'agent-attached-1',
+      projectId: 'project-1',
+      workspaceSlug: 'acme',
+      ownerUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeSessionId: null,
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'codex-session-1',
+      displayCallsign: 'CODEX-01',
+      status: 'attached',
+      permissionsJson: JSON.stringify([]),
+      redactionPolicyJson: JSON.stringify({}),
+      capabilitiesJson: JSON.stringify([]),
+      executionHostJson: JSON.stringify({ type: 'workspace_terminal', hostId: null, platform: null }),
+      subscriptionsJson: JSON.stringify([]),
+      deliveryChannelJson: JSON.stringify({ type: 'mcp_poll', channelId: null }),
+      activeMutationLeaseId: null,
+      activeTransactionId: null,
+      createdAt: new Date('2026-08-22T00:00:00.000Z'),
+      updatedAt: new Date('2026-08-22T00:00:00.000Z'),
+      endedAt: null,
+    };
+    prisma.codeSiteAgentSession.findFirst.mockResolvedValueOnce(existing).mockResolvedValueOnce(existing);
+    prisma.codeSiteAgentSession.update.mockImplementation(async ({ data }) => ({ ...existing, ...data }));
+    const body = {
+      ownerUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'codex-session-1',
+    };
+    const authority = {
+      internalService: true,
+      collaborationMembershipVerified: true,
+      actorUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      runtimeScope: 'shared-workspace',
+    };
+
+    await expect(heartbeatAgentSession('acme', existing.id, body, authority)).resolves.toMatchObject({
+      session: { status: 'attached' },
+      event: { eventType: 'agent_heartbeat' },
+    });
+    await expect(detachAgentSession('acme', existing.id, { ...body, reason: 'websocket_closed' }, authority)).resolves.toMatchObject({
+      session: { status: 'detached' },
+      event: { eventType: 'agent_detached' },
+    });
+
+    prisma.codeSiteAgentSession.findFirst.mockResolvedValueOnce(existing);
+    const { runtimeScope: omittedRuntimeScope, ...incompleteBody } = body;
+    expect(omittedRuntimeScope).toBe('shared-workspace');
+    await expect(heartbeatAgentSession('acme', existing.id, incompleteBody, authority)).rejects.toMatchObject({
+      status: 400,
+      code: 'agent_runtime_scope_required',
     });
   });
 

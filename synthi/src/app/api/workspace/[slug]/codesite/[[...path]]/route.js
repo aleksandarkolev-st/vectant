@@ -1,6 +1,7 @@
 import {
   abortTransaction,
   acknowledgeInboxItem,
+  attachAgentSession,
   attachProofBundleCommit,
   collisionPredict,
   commitTransaction,
@@ -16,6 +17,7 @@ import {
   createProject,
   applyRouteRevision,
   dryRunTransactionWrites,
+  detachAgentSession,
   eventCursor,
   exportArtifacts,
   getAgentInbox,
@@ -31,6 +33,7 @@ import {
   getSourceStateSince,
   getTransaction,
   getWorkspaceActiveState,
+  heartbeatAgentSession,
   listActiveTransactions,
   listPermits,
   listProjectMembers,
@@ -274,7 +277,25 @@ export async function POST(request, { params }) {
       return okJson({ project: await updateControlPlan(slug, route[1], body, access.actor) });
     }
 
-    if (route[0] === 'projects' && route[2] === 'agent-sessions') {
+    if (route[0] === 'projects' && route[2] === 'agent-sessions' && route[3] === 'attach') {
+      const authority = internalAgentLifecycleAuthority(access.actor, body);
+      if (!authority) return errorJson(403, 'agent_lifecycle_internal_auth_required');
+      return okJson(await attachAgentSession(slug, route[1], body, authority), { status: 201 });
+    }
+
+    if (route[0] === 'agent-sessions' && route[2] === 'heartbeat') {
+      const authority = internalAgentLifecycleAuthority(access.actor, body);
+      if (!authority) return errorJson(403, 'agent_lifecycle_internal_auth_required');
+      return okJson(await heartbeatAgentSession(slug, route[1], body, authority));
+    }
+
+    if (route[0] === 'agent-sessions' && route[2] === 'detach') {
+      const authority = internalAgentLifecycleAuthority(access.actor, body);
+      if (!authority) return errorJson(403, 'agent_lifecycle_internal_auth_required');
+      return okJson(await detachAgentSession(slug, route[1], body, authority));
+    }
+
+    if (route[0] === 'projects' && route[2] === 'agent-sessions' && route.length === 3) {
       return okJson({ agentSession: await createAgentSession(slug, route[1], access.actor, body) }, { status: 201 });
     }
 
@@ -475,6 +496,20 @@ export async function POST(request, { params }) {
   } catch (error) {
     return handleCodesiteError(error);
   }
+}
+
+function internalAgentLifecycleAuthority(actor, body = {}) {
+  if (!actor?.internalService) return null;
+  return {
+    internalService: true,
+    collaborationMembershipVerified: body.collaborationMembershipVerified === true
+      || body.collaboration_membership_verified === true,
+    actorUserId: body.ownerUserId || body.owner_user_id || null,
+    collaborationUserId: body.collaborationUserId || body.collaboration_user_id || body.workspaceUserId || body.workspace_user_id || null,
+    effectiveWorkspaceUserId: body.effectiveWorkspaceUserId || body.effective_workspace_user_id || body.filesystemUserId || body.filesystem_user_id || null,
+    collaborationSessionId: body.collaborationSessionId || body.collaboration_session_id || null,
+    runtimeScope: body.runtimeScope || body.runtime_scope || null,
+  };
 }
 
 function postAccessMode(route) {

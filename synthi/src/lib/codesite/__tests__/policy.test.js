@@ -14,6 +14,12 @@ describe('CodeSite airspace policy', () => {
     expect(validateCodeSiteEventType('write_denied')).toBe('write_denied');
     expect(validateCodeSiteEventType(' black_box_closed ')).toBe('black_box_closed');
     expect(CODE_SITE_EVENT_TYPES).toContain('arbiter_verdict');
+    expect(CODE_SITE_EVENT_TYPES).toEqual(expect.arrayContaining([
+      'agent_attached',
+      'agent_resumed',
+      'agent_heartbeat',
+      'agent_detached',
+    ]));
     expect(() => validateCodeSiteEventType('agent_chat_message')).toThrow(/codesite_event_type_invalid:agent_chat_message/);
   });
 

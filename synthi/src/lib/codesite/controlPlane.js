@@ -1425,6 +1425,441 @@ export async function createAgentSession(workspaceSlug, projectId, actor, body =
   return sessionProjection(session);
 }
 
+const AGENT_DELIVERY_CHANNEL_TYPES = new Set([
+  'managed_sse',
+  'mcp_poll',
+  'repo_projection',
+]);
+
+function requiredAgentBinding(value, code, maxLength = 256) {
+  const normalized = String(value || '').trim();
+  if (!normalized) throw badRequest(code);
+  if (normalized.length > maxLength) throw badRequest(`${code}_too_long`);
+  return normalized;
+}
+
+function optionalAgentBinding(value, code, maxLength = 256) {
+  if (value == null || value === '') return null;
+  return requiredAgentBinding(value, code, maxLength);
+}
+
+function normalizedAgentProvider(value) {
+  const provider = requiredAgentBinding(value, 'agent_provider_required', 64).toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_.-]*$/.test(provider)) throw badRequest('agent_provider_invalid');
+  return provider;
+}
+
+function normalizedAgentStringList(value, code) {
+  const list = unique(asArray(value).map((entry) => String(entry || '').trim()).filter(Boolean));
+  if (list.length > 128 || list.some((entry) => entry.length > 256)) throw badRequest(code);
+  return list;
+}
+
+function normalizedAgentDeliveryChannel(value = {}) {
+  const channel = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const type = String(channel.type || 'mcp_poll').trim().toLowerCase();
+  if (!AGENT_DELIVERY_CHANNEL_TYPES.has(type)) throw badRequest('agent_delivery_channel_invalid');
+  if (channel.url || channel.endpoint || channel.callbackUrl || channel.callback_url) {
+    throw badRequest('agent_delivery_external_endpoint_forbidden');
+  }
+  return {
+    type,
+    channelId: optionalAgentBinding(channel.channelId || channel.channel_id, 'agent_delivery_channel_id_invalid', 256),
+  };
+}
+
+function normalizedAgentExecutionHost(value = {}) {
+  const host = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return {
+    type: optionalAgentBinding(host.type, 'agent_execution_host_type_invalid', 64) || 'workspace_terminal',
+    hostId: optionalAgentBinding(host.hostId || host.host_id, 'agent_execution_host_id_invalid', 256),
+    platform: optionalAgentBinding(host.platform, 'agent_execution_host_platform_invalid', 64),
+  };
+}
+
+function automaticAgentCallsign(provider, identity) {
+  const prefix = String(provider || 'agent').replace(/[^a-z0-9]/gi, '').slice(0, 8).toUpperCase() || 'AGENT';
+  const suffix = digest(identity).replace(/^sha256:/, '').slice(0, 6).toUpperCase();
+  return `${prefix}-${suffix}`;
+}
+
+function agentAttachmentIdentity(body = {}) {
+  const ownerUserId = requiredAgentBinding(body.ownerUserId || body.owner_user_id, 'agent_owner_required');
+  const collaborationUserId = requiredAgentBinding(
+    body.collaborationUserId || body.collaboration_user_id || body.workspaceUserId || body.workspace_user_id,
+    'agent_collaboration_user_required',
+  );
+  const effectiveWorkspaceUserId = requiredAgentBinding(
+    body.effectiveWorkspaceUserId || body.effective_workspace_user_id || body.filesystemUserId || body.filesystem_user_id,
+    'agent_effective_workspace_user_required',
+  );
+  const collaborationSessionId = requiredAgentBinding(
+    body.collaborationSessionId || body.collaboration_session_id,
+    'agent_collaboration_session_required',
+  );
+  const terminalSessionId = optionalAgentBinding(
+    body.terminalSessionId || body.terminal_session_id,
+    'agent_terminal_session_invalid',
+  );
+  const runtimeSessionId = optionalAgentBinding(
+    body.runtimeSessionId || body.runtime_session_id,
+    'agent_runtime_session_invalid',
+  );
+  if (!terminalSessionId && !runtimeSessionId) throw badRequest('agent_terminal_or_runtime_session_required');
+  const agentProvider = normalizedAgentProvider(body.agentProvider || body.agent_provider || body.provider);
+  return {
+    ownerUserId,
+    collaborationUserId,
+    effectiveWorkspaceUserId,
+    collaborationSessionId,
+    terminalSessionId,
+    runtimeSessionId,
+    runtimeScope: requiredAgentBinding(body.runtimeScope || body.runtime_scope, 'agent_runtime_scope_required'),
+    agentProvider,
+    providerSessionRef: requiredAgentBinding(
+      body.providerSessionRef || body.provider_session_ref,
+      'agent_provider_session_required',
+    ),
+    activeMutationLeaseId: optionalAgentBinding(
+      body.activeMutationLeaseId || body.active_mutation_lease_id || body.mutationLeaseId || body.mutation_lease_id,
+      'agent_mutation_lease_invalid',
+    ),
+    activeTransactionId: optionalAgentBinding(
+      body.activeTransactionId || body.active_transaction_id || body.transactionId || body.transaction_id,
+      'agent_transaction_invalid',
+    ),
+  };
+}
+
+function requireAgentAttachAuthority(authority, identity) {
+  if (
+    !authority?.internalService
+    || authority.collaborationMembershipVerified !== true
+    || authority.actorUserId !== identity.ownerUserId
+    || authority.collaborationUserId !== identity.collaborationUserId
+    || authority.effectiveWorkspaceUserId !== identity.effectiveWorkspaceUserId
+    || authority.collaborationSessionId !== identity.collaborationSessionId
+    || authority.runtimeScope !== identity.runtimeScope
+  ) {
+    throw forbidden('agent_attach_authority_forbidden');
+  }
+}
+
+function assertAgentAttachmentMatch(session, identity) {
+  const exact = [
+    ['projectId', identity.projectId],
+    ['workspaceSlug', identity.workspaceSlug],
+    ['ownerUserId', identity.ownerUserId],
+    ['collaborationUserId', identity.collaborationUserId],
+    ['effectiveWorkspaceUserId', identity.effectiveWorkspaceUserId],
+    ['collaborationSessionId', identity.collaborationSessionId],
+    ['terminalSessionId', identity.terminalSessionId],
+    ['runtimeSessionId', identity.runtimeSessionId],
+    ['runtimeScope', identity.runtimeScope],
+    ['agentProvider', identity.agentProvider],
+    ['providerSessionRef', identity.providerSessionRef],
+    ['activeMutationLeaseId', identity.activeMutationLeaseId],
+    ['activeTransactionId', identity.activeTransactionId],
+  ];
+  const mismatches = exact
+    .filter(([field, expected]) => (session?.[field] || null) !== (expected || null))
+    .map(([field]) => field);
+  if (mismatches.length) {
+    throw forbidden('agent_session_resume_identity_mismatch', {
+      agentSessionId: session?.id || null,
+      mismatches,
+    });
+  }
+}
+
+function projectAgentMember(project, userId) {
+  return asArray(project?.members).find((member) => member?.userId === userId) || null;
+}
+
+async function bindProjectCollaborationSession(project, identity) {
+  if (project.collaborationSessionId && project.collaborationSessionId !== identity.collaborationSessionId) {
+    throw forbidden('agent_project_collaboration_mismatch');
+  }
+  const existingMember = projectAgentMember(project, identity.ownerUserId);
+  if (existingMember && !projectPermissionAllows(existingMember, 'read')) {
+    throw forbidden('agent_project_membership_revoked');
+  }
+  if (project.collaborationSessionId) return project;
+
+  const mayEstablishBinding = project.createdByUserId === identity.ownerUserId
+    || Boolean(existingMember && ['owner', 'admin'].includes(String(existingMember.role || '').toLowerCase()));
+  if (!mayEstablishBinding) throw forbidden('agent_project_collaboration_binding_forbidden');
+
+  const result = await prisma.codeSiteProject.updateMany({
+    where: { id: project.id, collaborationSessionId: null },
+    data: { collaborationSessionId: identity.collaborationSessionId },
+  });
+  if (result.count === 1) return { ...project, collaborationSessionId: identity.collaborationSessionId };
+  const winner = await prisma.codeSiteProject.findFirst({
+    where: { id: project.id, workspaceSlug: identity.workspaceSlug },
+    include: { members: true },
+  });
+  if (winner?.collaborationSessionId !== identity.collaborationSessionId) {
+    throw forbidden('agent_project_collaboration_mismatch');
+  }
+  return winner;
+}
+
+function agentAttachmentCandidateWhere(identity) {
+  return {
+    OR: [
+      ...(identity.terminalSessionId ? [{
+        collaborationSessionId: identity.collaborationSessionId,
+        terminalSessionId: identity.terminalSessionId,
+        endedAt: null,
+      }] : []),
+      ...(identity.runtimeSessionId ? [{
+        collaborationSessionId: identity.collaborationSessionId,
+        runtimeSessionId: identity.runtimeSessionId,
+        endedAt: null,
+      }] : []),
+      {
+        projectId: identity.projectId,
+        ownerUserId: identity.ownerUserId,
+        agentProvider: identity.agentProvider,
+        providerSessionRef: identity.providerSessionRef,
+        endedAt: null,
+      },
+    ],
+  };
+}
+
+async function findAgentAttachmentCandidates(identity) {
+  return prisma.codeSiteAgentSession.findMany({
+    where: agentAttachmentCandidateWhere(identity),
+  });
+}
+
+function singleAgentAttachmentCandidate(candidates) {
+  const candidateIds = unique(candidates.map((candidate) => candidate.id));
+  if (candidateIds.length > 1) {
+    throw forbidden('agent_session_binding_collision', { agentSessionIds: candidateIds });
+  }
+  return candidates[0] || null;
+}
+
+async function verifyAgentMutationBindings(identity, sessionId) {
+  if (!identity.activeMutationLeaseId && !identity.activeTransactionId) return;
+  if (!sessionId) throw forbidden('agent_attach_mutation_context_forbidden');
+  if (identity.activeMutationLeaseId) {
+    const lease = await prisma.codeSiteMutationLease.findFirst({
+      where: {
+        id: identity.activeMutationLeaseId,
+        projectId: identity.projectId,
+        agentSessionId: sessionId,
+        status: { in: ['active', 'holding'] },
+      },
+    });
+    if (!lease) throw forbidden('agent_mutation_lease_binding_mismatch');
+  }
+  if (identity.activeTransactionId) {
+    const transaction = await prisma.codeSiteMutationTransaction.findFirst({
+      where: {
+        id: identity.activeTransactionId,
+        projectId: identity.projectId,
+        agentSessionId: sessionId,
+        mutationLeaseId: identity.activeMutationLeaseId || undefined,
+        status: { in: ['open', 'prepared'] },
+      },
+    });
+    if (!transaction) throw forbidden('agent_transaction_binding_mismatch');
+  }
+}
+
+function isAgentBindingUniqueConflict(error) {
+  return error?.code === 'P2002';
+}
+
+export async function attachAgentSession(workspaceSlug, projectId, body = {}, authority = null) {
+  const identity = {
+    ...agentAttachmentIdentity(body),
+    workspaceSlug: requiredAgentBinding(workspaceSlug, 'workspace_required'),
+    projectId: requiredAgentBinding(projectId, 'project_required'),
+  };
+  requireAgentAttachAuthority(authority, identity);
+  let project = await prisma.codeSiteProject.findFirst({
+    where: { id: identity.projectId, workspaceSlug: identity.workspaceSlug },
+    include: { members: true },
+  });
+  if (!project) throw notFound('codesite_project_not_found');
+  if (project.status !== 'active') throw forbidden('codesite_project_inactive');
+  project = await bindProjectCollaborationSession(project, identity);
+
+  const capabilities = normalizedAgentStringList(body.capabilities || body.tools || [], 'agent_capabilities_invalid');
+  const subscriptions = normalizedAgentStringList(body.subscriptions || [], 'agent_subscriptions_invalid');
+  const deliveryChannel = normalizedAgentDeliveryChannel(body.deliveryChannel || body.delivery_channel || {});
+  const executionHost = normalizedAgentExecutionHost(body.executionHost || body.execution_host || {});
+
+  const candidates = await findAgentAttachmentCandidates(identity);
+  let existing = singleAgentAttachmentCandidate(candidates);
+  if (existing) assertAgentAttachmentMatch(existing, identity);
+  await verifyAgentMutationBindings(identity, existing?.id || null);
+
+  const member = await upsertProjectMemberRecord({
+    projectId: project.id,
+    workspaceSlug: identity.workspaceSlug,
+    userId: identity.ownerUserId,
+    role: 'agent',
+    source: 'collab_agent_attach',
+    createdByUserId: identity.ownerUserId,
+  });
+  if (!member) throw serviceUnavailable('agent_project_membership_persistence_failed');
+
+  const now = new Date();
+  let session;
+  let eventType;
+  const resumeExisting = async (candidate) => {
+    assertAgentAttachmentMatch(candidate, identity);
+    await verifyAgentMutationBindings(identity, candidate.id);
+    return prisma.codeSiteAgentSession.update({
+      where: { id: candidate.id },
+      data: {
+        agentRuntime: body.agentRuntime || body.agent_runtime || candidate.agentRuntime || null,
+        status: 'attached',
+        permissionsJson: stringifyJson(capabilities),
+        capabilitiesJson: stringifyJson(capabilities),
+        executionHostJson: stringifyJson(executionHost),
+        subscriptionsJson: stringifyJson(subscriptions),
+        deliveryChannelJson: stringifyJson(deliveryChannel),
+        attachedAt: candidate.attachedAt || now,
+        lastHeartbeatAt: now,
+        detachedAt: null,
+        endedAt: null,
+      },
+    });
+  };
+  if (existing) {
+    session = await resumeExisting(existing);
+    eventType = 'agent_resumed';
+  } else {
+    const callsign = String(
+      body.displayCallsign
+      || body.display_callsign
+      || body.callsign
+      || automaticAgentCallsign(identity.agentProvider, identity),
+    ).trim().toUpperCase();
+    if (!/^[A-Z0-9][A-Z0-9-]{1,31}$/.test(callsign)) throw badRequest('agent_callsign_invalid');
+    const createData = {
+      projectId: project.id,
+      workspaceSlug: identity.workspaceSlug,
+      ownerUserId: identity.ownerUserId,
+      collaborationUserId: identity.collaborationUserId,
+      effectiveWorkspaceUserId: identity.effectiveWorkspaceUserId,
+      collaborationSessionId: identity.collaborationSessionId,
+      terminalSessionId: identity.terminalSessionId,
+      runtimeSessionId: identity.runtimeSessionId,
+      runtimeScope: identity.runtimeScope,
+      agentProvider: identity.agentProvider,
+      agentRuntime: body.agentRuntime || body.agent_runtime || 'terminal',
+      providerSessionRef: identity.providerSessionRef,
+      displayCallsign: callsign,
+      status: 'attached',
+      permissionsJson: stringifyJson(capabilities),
+      redactionPolicyJson: stringifyJson(body.redactionPolicy || body.redaction_policy || defaultRedactionPolicy()),
+      capabilitiesJson: stringifyJson(capabilities),
+      executionHostJson: stringifyJson(executionHost),
+      subscriptionsJson: stringifyJson(subscriptions),
+      deliveryChannelJson: stringifyJson(deliveryChannel),
+      attachSource: 'collab_terminal_adapter',
+      bindingVersion: 1,
+      activeMutationLeaseId: identity.activeMutationLeaseId,
+      activeTransactionId: identity.activeTransactionId,
+      attachedAt: now,
+      lastHeartbeatAt: now,
+    };
+    try {
+      session = await prisma.codeSiteAgentSession.create({ data: createData });
+      eventType = 'agent_attached';
+    } catch (error) {
+      if (!isAgentBindingUniqueConflict(error)) throw error;
+      existing = singleAgentAttachmentCandidate(await findAgentAttachmentCandidates(identity));
+      if (!existing) throw error;
+      session = await resumeExisting(existing);
+      eventType = 'agent_resumed';
+    }
+  }
+  const event = await recordEvent(project.id, {
+    eventType,
+    displayCallsign: session.displayCallsign,
+    actorType: 'agent_session',
+    actorId: session.id,
+    details: {
+      ownerUserId: identity.ownerUserId,
+      collaborationUserId: identity.collaborationUserId,
+      effectiveWorkspaceUserId: identity.effectiveWorkspaceUserId,
+      collaborationSessionId: identity.collaborationSessionId,
+      terminalSessionId: identity.terminalSessionId,
+      runtimeSessionId: identity.runtimeSessionId,
+      runtimeScope: identity.runtimeScope,
+      provider: identity.agentProvider,
+      status: session.status,
+      subscriptions,
+      deliveryChannel: deliveryChannel.type,
+    },
+  });
+  return { session: sessionProjection(session), event: eventProjection(event), resumed: eventType === 'agent_resumed' };
+}
+
+async function requireAttachedAgentSession(workspaceSlug, sessionId, body, authority) {
+  const session = await prisma.codeSiteAgentSession.findFirst({
+    where: { id: sessionId, project: { workspaceSlug } },
+  });
+  if (!session) throw notFound('agent_session_not_found');
+  if (session.endedAt) throw forbidden('agent_session_ended');
+  const identity = {
+    ...agentAttachmentIdentity(body),
+    workspaceSlug,
+    projectId: session.projectId,
+  };
+  requireAgentAttachAuthority(authority, identity);
+  assertAgentAttachmentMatch(session, identity);
+  await verifyAgentMutationBindings(identity, session.id);
+  return session;
+}
+
+export async function heartbeatAgentSession(workspaceSlug, sessionId, body = {}, authority = null) {
+  const session = await requireAttachedAgentSession(workspaceSlug, sessionId, body, authority);
+  const now = new Date();
+  const updated = await prisma.codeSiteAgentSession.update({
+    where: { id: session.id },
+    data: { status: 'attached', lastHeartbeatAt: now, detachedAt: null, endedAt: null },
+  });
+  const event = await recordEvent(session.projectId, {
+    eventType: 'agent_heartbeat',
+    displayCallsign: session.displayCallsign,
+    actorType: 'agent_session',
+    actorId: session.id,
+    details: { status: 'attached', terminalSessionId: session.terminalSessionId },
+  });
+  return { session: sessionProjection(updated), event: eventProjection(event) };
+}
+
+export async function detachAgentSession(workspaceSlug, sessionId, body = {}, authority = null) {
+  const session = await requireAttachedAgentSession(workspaceSlug, sessionId, body, authority);
+  const now = new Date();
+  const updated = await prisma.codeSiteAgentSession.update({
+    where: { id: session.id },
+    data: { status: 'detached', detachedAt: now, endedAt: body.ended === true ? now : null },
+  });
+  const event = await recordEvent(session.projectId, {
+    eventType: 'agent_detached',
+    displayCallsign: session.displayCallsign,
+    actorType: 'agent_session',
+    actorId: session.id,
+    details: {
+      status: 'detached',
+      terminalSessionId: session.terminalSessionId,
+      reason: String(body.reason || 'terminal_detached').slice(0, 120),
+    },
+  });
+  return { session: sessionProjection(updated), event: eventProjection(event) };
+}
+
 function nextCallsign(provider) {
   const prefix = String(provider || 'AGENT').replace(/[^a-z0-9]/gi, '').slice(0, 6) || 'AGENT';
   return `${prefix}-${Math.floor(10 + Math.random() * 89)}`;
@@ -10324,6 +10759,14 @@ function forbidden(code, detail) {
   return error;
 }
 
+function serviceUnavailable(code, detail) {
+  const error = new Error(code);
+  error.status = 503;
+  error.code = code;
+  error.detail = detail;
+  return error;
+}
+
 function appendUnique(values, value) {
   return unique([...asArray(values), value].filter(Boolean));
 }
@@ -10346,6 +10789,7 @@ function projectSummary(project) {
   return {
     id: project.id,
     workspaceSlug: project.workspaceSlug,
+    collaborationSessionId: project.collaborationSessionId || null,
     title: project.title,
     request: project.request,
     status: project.status,
@@ -10435,6 +10879,13 @@ function sessionProjection(session) {
     id: session.id,
     projectId: session.projectId,
     ownerUserId: session.ownerUserId,
+    workspaceSlug: session.workspaceSlug || null,
+    collaborationUserId: session.collaborationUserId || null,
+    effectiveWorkspaceUserId: session.effectiveWorkspaceUserId || null,
+    collaborationSessionId: session.collaborationSessionId || null,
+    terminalSessionId: session.terminalSessionId || null,
+    runtimeSessionId: session.runtimeSessionId || null,
+    runtimeScope: session.runtimeScope || null,
     agentProvider: session.agentProvider,
     agentRuntime: session.agentRuntime,
     providerSessionRef: session.providerSessionRef,
@@ -10442,12 +10893,24 @@ function sessionProjection(session) {
     status: session.status,
     permissions: parseJson(session.permissionsJson, []),
     redactionPolicy: parseJson(session.redactionPolicyJson, {}),
+    capabilities: parseJson(session.capabilitiesJson, parseJson(session.permissionsJson, [])),
+    executionHost: parseJson(session.executionHostJson, {}),
+    subscriptions: parseJson(session.subscriptionsJson, []),
+    deliveryChannel: parseJson(session.deliveryChannelJson, {}),
+    attachSource: session.attachSource || null,
+    bindingVersion: session.bindingVersion || null,
+    activeMutationLeaseId: session.activeMutationLeaseId || null,
+    activeTransactionId: session.activeTransactionId || null,
     dojoPilotLicenseRef: session.dojoPilotLicenseRef || null,
     dojoProofRef: session.dojoProofRef || null,
     dojoEvidenceRefs: parseJson(session.dojoEvidenceRefsJson, []),
     dojoDecisionDigest: session.dojoDecisionDigest || null,
     pilotLicenseSnapshot: parseJson(session.pilotLicenseSnapshotJson, null),
+    attachedAt: session.attachedAt || null,
+    lastHeartbeatAt: session.lastHeartbeatAt || null,
+    detachedAt: session.detachedAt || null,
     createdAt: session.createdAt,
+    updatedAt: session.updatedAt || session.createdAt,
     endedAt: session.endedAt,
   };
 }
