@@ -386,6 +386,11 @@ services:
       # accepted; ContainerExecutor also invokes Docker with --pull=never.
       VECTANT_FAILURE_DISTILLER_ALLOWED_IMAGES: "${VECTANT_FAILURE_DISTILLER_ALLOWED_IMAGES:-python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a}"
       VECTANT_FAILURE_DISTILLER_WORKSPACE_VOLUME: "vectant-ade_collab-data"
+    depends_on:
+      # The image-builder exits successfully only after the pinned agent
+      # harness image is available to the Docker daemon.
+      agent-runner-image:
+        condition: service_completed_successfully
 
   agent-runner-image:
     build:
