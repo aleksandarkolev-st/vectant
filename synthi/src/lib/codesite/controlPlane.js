@@ -2074,7 +2074,7 @@ export async function getRelevantAgentContext(workspaceSlug, sessionId, agentAcc
     }),
     prisma.codeSiteInspectionRun.findMany({
       where: { projectId: session.projectId, status: { in: ['required', 'queued', 'running', 'failed'] } },
-      orderBy: { startedAt: 'desc' },
+      orderBy: { requestedAt: 'desc' },
       take: 24,
     }),
     prisma.codeSiteKnowledgeItem.findMany({
