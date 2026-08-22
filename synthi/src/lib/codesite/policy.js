@@ -125,6 +125,9 @@ export const CODE_SITE_EVENT_TYPES = [
   'impact_notice_responded',
   'handoff_ready',
   'handoff_acknowledged',
+  'source_changed_observed',
+  'runtime_observed',
+  'inspection_failed',
 ];
 
 const CODE_SITE_EVENT_TYPE_SET = new Set(CODE_SITE_EVENT_TYPES);

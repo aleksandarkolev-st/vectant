@@ -501,3 +501,62 @@ export function normalizeInspectionFailedObservation(input) {
   return normalizeTypedObservation(input, 'inspection_failed');
 }
 
+const OBSERVATION_EVENT_TYPES = Object.freeze({
+  source_changed: 'source_changed_observed',
+  runtime_observed: 'runtime_observed',
+  inspection_failed: 'inspection_failed',
+});
+
+const OBSERVATION_FACT_KEYS = Object.freeze({
+  source_changed: ['changeKind', 'proofBundleId', 'proofBundleDigest', 'repoStateDigest', 'reasonCodes'],
+  runtime_observed: ['observationKind', 'runtimeState', 'exitCode', 'signal', 'healthState', 'ports', 'reasonCodes'],
+  inspection_failed: ['inspectionKind', 'status', 'exitCode', 'timedOut', 'failingSignalKeys', 'reasonCodes'],
+});
+
+export function observationEventType(eventType) {
+  const canonical = String(eventType || '').trim();
+  return OBSERVATION_EVENT_TYPES[canonical] || null;
+}
+
+export function observationFactPayload(observation, eventType = null) {
+  if (!observation || typeof observation !== 'object' || Array.isArray(observation)) return null;
+  const canonical = String(eventType || observation.eventType || '').trim();
+  if (eventType && canonical !== String(observation.eventType || '').trim()) return null;
+  const keys = OBSERVATION_FACT_KEYS[canonical];
+  if (!keys || !observation.payload || typeof observation.payload !== 'object') return null;
+  const fact = observation.payload.fact;
+  if (!fact || typeof fact !== 'object') return null;
+  const payload = {};
+  for (const key of keys) {
+    if (fact[key] != null) payload[key] = fact[key];
+  }
+  return payload;
+}
+
+export function buildObservationCoordinationInput(observation, { actorId = null } = {}) {
+  if (!observation || typeof observation !== 'object' || Array.isArray(observation)) return null;
+  const eventType = observationEventType(observation.eventType);
+  if (!eventType) return null;
+  const references = observation.payload?.references || {};
+  const fact = observationFactPayload(observation);
+  if (!fact) return null;
+  return {
+    eventType,
+    displayCallsign: null,
+    actorType: 'adapter',
+    actorId,
+    mutationLeaseId: references.mutationLeaseIds?.[0] || null,
+    details: {
+      observationId: observation.id,
+      schemaVersion: observation.schemaVersion,
+      producer: observation.producer || null,
+      occurredAt: observation.occurredAt,
+      causalParentIds: observation.causalParentIds || [],
+      providerSessionBound: observation.payload?.providerSessionBound === true,
+      references,
+      fact,
+    },
+    evidenceRefs: observation.payload?.evidenceRefs || [],
+  };
+}
+

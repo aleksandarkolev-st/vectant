@@ -7,9 +7,93 @@ import {
   normalizeProjectObservation,
   normalizeRuntimeObservedObservation,
   normalizeSourceChangedObservation,
+  buildObservationCoordinationInput,
+  observationEventType,
+  observationFactPayload,
 } from '../projectObservation.js';
 
 const occurredAt = '2026-08-22T12:34:56.000Z';
+
+describe('observation coordination bridge', () => {
+  it('maps every observation type onto a whitelisted coordination event type', () => {
+    expect(observationEventType('source_changed')).toBe('source_changed_observed');
+    expect(observationEventType('runtime_observed')).toBe('runtime_observed');
+    expect(observationEventType('inspection_failed')).toBe('inspection_failed');
+    expect(observationEventType('discovery_recorded')).toBeNull();
+    expect(observationEventType('')).toBeNull();
+    expect(observationEventType(null)).toBeNull();
+  });
+
+  it('builds a coordination input carrying identity, references, fact, and evidence', () => {
+    const observation = normalizeSourceChangedObservation(sourceInput());
+    const input = buildObservationCoordinationInput(observation, { actorId: 'terminal-adapter-1' });
+    expect(input.eventType).toBe('source_changed_observed');
+    expect(input.actorType).toBe('adapter');
+    expect(input.actorId).toBe('terminal-adapter-1');
+    expect(input.mutationLeaseId).toBe('lease-1');
+    expect(input.details.observationId).toBe(observation.id);
+    expect(input.details.schemaVersion).toBe(PROJECT_OBSERVATION_SCHEMA_VERSION);
+    expect(input.details.producer).toEqual({ kind: 'codesite_landing', eventId: 'transaction-1:proof-abc' });
+    expect(input.details.references.paths).toContain('src/CharacterController.cpp');
+    expect(input.details.fact.changeKind).toBe('landed');
+    expect(input.details.fact.proofBundleDigest).toBe('sha256:proof-abc');
+    expect(input.details.providerSessionBound).toBe(true);
+    expect(input.evidenceRefs).toEqual(['artifact:proof-abc']);
+  });
+
+  it.each(['source_changed', 'runtime_observed', 'inspection_failed'])('extracts only declared fact keys for %s', (eventType) => {
+    const builders = {
+      source_changed: sourceInput,
+      runtime_observed: runtimeInput,
+      inspection_failed: inspectionInput,
+    };
+    const observation = builders[eventType] ? (
+      eventType === 'source_changed' ? normalizeSourceChangedObservation(builders[eventType]())
+        : eventType === 'runtime_observed' ? normalizeRuntimeObservedObservation(builders[eventType]())
+          : normalizeInspectionFailedObservation(builders[eventType]())
+    ) : null;
+    const fact = observationFactPayload(observation);
+    expect(fact).toBeTruthy();
+    for (const [key, value] of Object.entries(fact)) {
+      expect(value).toBeDefined();
+      expect(JSON.stringify(value)).not.toContain('undefined');
+    }
+    expect(Object.keys(fact).sort()).toEqual(
+      Object.keys(observation.payload.fact).sort(),
+    );
+  });
+
+  it('returns null instead of throwing for malformed observations', () => {
+    expect(buildObservationCoordinationInput(null)).toBeNull();
+    expect(buildObservationCoordinationInput('nope')).toBeNull();
+    expect(buildObservationCoordinationInput({ eventType: 'runtime_observed' })).toBeNull();
+    expect(observationFactPayload(normalizeSourceChangedObservation(sourceInput()), 'runtime_observed')).toBeNull();
+    expect(observationFactPayload({ eventType: 'source_changed' })).toBeNull();
+  });
+
+  it('keeps private material out of the coordination details via the real bus redaction boundary', async () => {
+    const observation = normalizeRuntimeObservedObservation(runtimeInput());
+    const input = buildObservationCoordinationInput(observation, { actorId: 'program-runtime' });
+    const { createProjectCoordinationBus } = await import('../projectCoordinationBus.js');
+    const bus = createProjectCoordinationBus({
+      normalize: async (event) => event,
+      redact: async (event) => event,
+      classify: async (event) => event,
+      correlate: async (event) => event,
+      authorize: async () => ({ allowed: true, recipients: [] }),
+      persist: async (event) => event,
+      route: async (event) => ({ eventId: event.id, delivered: true }),
+    });
+    await expect(bus.publish({
+      id: input.details.observationId,
+      projectId: 'project-1',
+      eventType: input.eventType,
+      payload: { details: input.details, evidenceRefs: input.evidenceRefs },
+    })).resolves.toMatchObject({ delivery: { delivered: true } });
+    expect(JSON.stringify(input)).not.toMatch(/prompt|transcript|credential|token/i);
+  });
+});
+
 
 function sourceInput(overrides = {}) {
   return {
