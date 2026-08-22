@@ -1,0 +1,101 @@
+name: Codesite tests
+
+# Dedicated source/test CI for the CodeSite control plane, collab-server, and
+# MCP tools. Runs the source test suites from a clean checkout (the "test
+# image" separation from Workstream G: production frontend images never carry
+# tests; CI runs them here against source). Linux runners exercise the POSIX
+# symlink/permission paths that Windows hosts cannot.
+
+on:
+  push:
+    paths:
+      - 'synthi/src/lib/codesite/**'
+      - 'synthi/src/app/api/workspace/**'
+      - 'synthi/prisma/**'
+      - 'backend/collab-server/**'
+      - 'mcp/synthi-mcp/**'
+      - '.github/workflows/codesite-tests.yml'
+  pull_request:
+    paths:
+      - 'synthi/src/lib/codesite/**'
+      - 'synthi/src/app/api/workspace/**'
+      - 'synthi/prisma/**'
+      - 'backend/collab-server/**'
+      - 'mcp/synthi-mcp/**'
+      - '.github/workflows/codesite-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  control-plane:
+    name: CodeSite control-plane (vitest, linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Full workspace install: control-plane tests import across workspaces.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Generate Prisma client
+        working-directory: synthi
+        run: npx prisma generate
+
+      - name: Validate Prisma schema
+        working-directory: synthi
+        run: npx prisma validate
+
+      - name: Unit tests (codesite lib + routes)
+        run: node scripts/run-codesite-tests.mjs
+
+  collab-server:
+    name: collab-server boundary + lifecycle (node:test, linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # No install needed: the collab-server suites are dependency-free ESM/CJS
+      # and this is where POSIX symlink/permission cases genuinely execute.
+      - name: Boundary suites (POSIX enforcement path)
+        working-directory: backend/collab-server
+        run: |
+          node --test __tests__/codesiteFs.test.js \
+               __tests__/codesiteActivityRegistry.test.js \
+               __tests__/agentSessionAttachService.test.js \
+               __tests__/terminalServiceAgentLifecycle.test.js \
+               __tests__/runtimeObservationPublisher.test.js \
+               __tests__/programRuntimeManager.test.js
+
+  mcp-tools:
+    name: synthi-mcp codesite tools
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install deps
+        working-directory: mcp/synthi-mcp
+        run: npm install --no-audit --no-fund
+
+      - name: Build
+        working-directory: mcp/synthi-mcp
+        run: npm run build --if-present
+
+      - name: Unit tests
+        working-directory: mcp/synthi-mcp
+        run: npm test
