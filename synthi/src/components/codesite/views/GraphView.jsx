@@ -1,7 +1,7 @@
 import { CodeSiteIcons } from "../icons";
 import { compact, productCopy, riskTone, toneLabel } from "../lib/format";
 import { displayZoneName, zonePaths, zoneTierLabel } from "../lib/graph";
-import { EmptyLine, OperatorPane, PathList, Pill, Row, Section } from "../ui";
+import { EmptyLine, OperatorPane, PathList, Pill, Row, Section, TagList } from "../ui";
 import ScopeTopology from "./graph/ScopeTopology";
 
 export default function GraphView({
@@ -11,12 +11,15 @@ export default function GraphView({
   zones,
   noFlyZones,
   activeFlights,
+  agentRegistry = [],
   events,
   inspectionRuns,
   permits,
   documents,
   routeRevisions,
 }) {
+  const onlineAgentCount = agentRegistry.filter((session) => session.presence === "online").length;
+
   return (
     <>
       <div className="grid min-w-0 content-start gap-3 p-3 @min-[28rem]/panel:p-4">
@@ -82,6 +85,54 @@ export default function GraphView({
                 </div>
               </div>
             ))}
+          </div>
+        )}
+      </Section>
+
+      <Section
+        title="Agent Sessions"
+        icon={CodeSiteIcons.agents}
+        count={agentRegistry.length}
+        right={<Pill tone={onlineAgentCount ? "active" : "idle"}>{onlineAgentCount} online / {agentRegistry.length}</Pill>}
+      >
+        {agentRegistry.length === 0 ? (
+          <EmptyLine>No attached agent sessions</EmptyLine>
+        ) : (
+          <div>
+            {agentRegistry.map((session, index) => {
+              const sessionId = session.id || `session-${index}`;
+              const executionBinding = session.terminalSessionId
+                ? `terminal ${session.terminalSessionId}`
+                : session.runtimeSessionId
+                  ? `runtime ${session.runtimeSessionId}`
+                  : "no active process";
+              return (
+                <Row key={sessionId} testId={`codesite-agent-session-${sessionId}`}>
+                  <div className="min-w-0">
+                    <div className="truncate font-medium">
+                      {compact(session.displayCallsign, "agent")}
+                    </div>
+                    <div className="truncate text-[10px]" style={{ color: "var(--text-muted)" }}>
+                      owner {compact(session.ownerUserId, "unknown")}
+                    </div>
+                  </div>
+                  <div className="min-w-0">
+                    <div className="truncate">
+                      {compact(session.provider, "custom agent")} · {executionBinding}
+                    </div>
+                    <TagList items={session.subscriptions} empty="no subscriptions" maxVisible={3} />
+                  </div>
+                  <div className="justify-self-start @min-[26rem]/panel:justify-self-end">
+                    <Pill
+                      tone={session.presence === "online" ? "active" : "idle"}
+                      testId={`codesite-agent-presence-${sessionId}`}
+                    >
+                      {session.presence === "online" ? "online" : "offline"}
+                    </Pill>
+                  </div>
+                </Row>
+              );
+            })}
           </div>
         )}
       </Section>

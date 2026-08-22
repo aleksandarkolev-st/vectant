@@ -622,6 +622,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
     controlState?.filesystemBoundaryProofs,
   );
   const mutationTransactions = asArray(currentProject?.mutationTxns);
+  const agentRegistry = asArray(currentProject?.agentRegistry);
   const assumptions = asArray(currentProject?.assumptions);
   const proofBundles = asArray(currentProject?.proofBundles);
   const inspectionRuns = asArray(currentProject?.inspectionRuns);
@@ -1062,6 +1063,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
     zones,
     noFlyZones,
     activeFlights,
+    agentRegistry,
     activeLeases,
     activeTransactions,
     mutationTransactions,

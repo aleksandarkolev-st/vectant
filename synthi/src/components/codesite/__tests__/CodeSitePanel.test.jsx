@@ -1366,6 +1366,52 @@ describe('CodeSitePanel', () => {
     expect(container.querySelector('[data-testid="codesite-scope-topology"]').textContent).not.toContain('holding pattern');
   });
 
+  it('shows a redacted live multi-owner agent registry in the workspace graph', async () => {
+    const state = radarState();
+    state.project.agentRegistry = [
+      {
+        id: 'agent-1',
+        displayCallsign: 'RESEARCH-01',
+        provider: 'gemini-cli',
+        ownerUserId: 'alice',
+        terminalSessionId: 'terminal-alice',
+        subscriptions: ['project.events', 'agent.inbox'],
+        presence: 'online',
+        providerSessionRef: 'provider-private-secret',
+      },
+      {
+        id: 'agent-2',
+        displayCallsign: 'REVIEW-02',
+        provider: 'aider',
+        ownerUserId: 'ben',
+        runtimeSessionId: 'runtime-ben',
+        subscriptions: ['project.events'],
+        presence: 'offline',
+      },
+    ];
+    h.fetchCodeSiteRadarState.mockResolvedValue(state);
+
+    renderPanel();
+    await flush();
+    await selectSection('radar');
+
+    expect(container.querySelector('[data-testid="codesite-agent-session-agent-1"]').textContent)
+      .toContain('alice');
+    expect(container.querySelector('[data-testid="codesite-agent-session-agent-1"]').textContent)
+      .toContain('terminal-alice');
+    expect(container.querySelector('[data-testid="codesite-agent-session-agent-1"]').textContent)
+      .toContain('agent.inbox');
+    expect(container.querySelector('[data-testid="codesite-agent-session-agent-2"]').textContent)
+      .toContain('ben');
+    expect(container.querySelector('[data-testid="codesite-agent-session-agent-2"]').textContent)
+      .toContain('runtime-ben');
+    expect(container.querySelector('[data-testid="codesite-agent-presence-agent-1"]').textContent)
+      .toContain('online');
+    expect(container.querySelector('[data-testid="codesite-agent-presence-agent-2"]').textContent)
+      .toContain('offline');
+    expect(container.textContent).not.toContain('provider-private-secret');
+  });
+
   it('summarizes the latest activity tail in the graph evidence guardrail', async () => {
     const state = radarState();
     state.project.inspectionRuns = [];
