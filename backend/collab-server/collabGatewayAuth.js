@@ -282,7 +282,7 @@ function identityMismatch(req, parsed, payload) {
   if (requestAgentBinding === false) {
     return { field: 'agentBinding', requested: null };
   }
-  if (requestAgentBinding && !claimedAgentBinding) {
+  if (Boolean(requestAgentBinding) !== Boolean(claimedAgentBinding)) {
     return { field: 'agentBinding', requested: requestAgentBinding };
   }
   if (requestAgentBinding && claimedAgentBinding && (

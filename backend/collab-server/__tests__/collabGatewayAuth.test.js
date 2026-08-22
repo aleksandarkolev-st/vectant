@@ -199,6 +199,10 @@ test('terminal authorization rejects partial, unsigned, and mismatched agent bin
   };
   const cases = [
     {
+      url: '/terminal?workspace=team',
+      agentBinding: signedBinding,
+    },
+    {
       url: '/terminal?workspace=team&codeSiteProjectId=project-1',
       agentBinding: signedBinding,
     },
