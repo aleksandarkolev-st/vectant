@@ -57,6 +57,7 @@ import {
   buildObservationCoordinationInput,
   normalizeProjectObservation,
   normalizeRuntimeObservedObservation,
+  normalizeSourceChangedObservation,
 } from './projectObservation';
 
 const EVENT_ORDER_BY = [{ logicalTime: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }];
@@ -2596,6 +2597,178 @@ function runtimeObservationInboxTargets(projectId, observation, { sessions, exec
     executionPlans,
     transactions,
   });
+}
+
+const MAX_ROUTE_TARGETS = 32;
+
+/**
+ * Shared relevance-routed impact delivery for coordination facts (runtime
+ * observations, landed source changes). Persists one causal event and durable
+ * inbox notices for every eligible agent whose routes/subscriptions intersect
+ * the referenced paths. Never notifies the producing agent itself unless that
+ * agent is also an explicit reference target.
+ */
+async function deliverCoordinationImpacts(projectId, { eventType, normalized, actorId = null }) {
+  const coordinationInput = buildObservationCoordinationInput(normalized, { actorId });
+  if (!coordinationInput) return { event: null, notifiedAgentSessionIds: [] };
+
+  let storedEvent = null;
+  const storedInboxItems = [];
+  const bus = createProjectCoordinationBus({
+    normalize: async () => ({
+      id: normalized.id,
+      projectId,
+      eventType: coordinationInput.eventType,
+      payload: {
+        displayCallsign: null,
+        actorType: 'adapter',
+        actorId: coordinationInput.actorId,
+        details: coordinationInput.details,
+        evidenceRefs: coordinationInput.evidenceRefs,
+      },
+    }),
+    redact: async (event) => event,
+    classify: async (event) => ({
+      ...event,
+      classification: { class: event.eventType, redactionClass: 'project_fact' },
+    }),
+    correlate: async (event) => ({
+      ...event,
+      correlation: {
+        observationId: normalized.id,
+        producer: normalized.producer,
+        references: normalized.payload.references,
+        targetTransactionIds: normalized.payload.references.transactionIds,
+      },
+    }),
+    authorize: async (event) => ({ allowed: event.projectId === projectId, recipients: [] }),
+    persist: async (event) => {
+      storedEvent = await recordEventWithClient(prisma, projectId, {
+        id: event.id,
+        mutationLeaseId: coordinationInput.mutationLeaseId,
+        eventType: event.eventType,
+        displayCallsign: event.payload.displayCallsign,
+        actorType: event.payload.actorType,
+        actorId: event.payload.actorId,
+        details: event.payload.details,
+        evidenceRefs: event.payload.evidenceRefs,
+      }, { syncArtifacts: false });
+      return {
+        ...event,
+        persisted: {
+          id: storedEvent.id,
+          logicalTime: storedEvent.logicalTime ?? null,
+          createdAt: storedEvent.createdAt instanceof Date
+            ? storedEvent.createdAt.toISOString()
+            : String(storedEvent.createdAt || ''),
+        },
+      };
+    },
+    route: async (event) => {
+      const [sessions, executionPlans, transactions] = await Promise.all([
+        prisma.codeSiteAgentSession.findMany({
+          where: { projectId, endedAt: null, status: { in: ['attached', 'detached'] } },
+        }),
+        prisma.codeSiteExecutionPlan.findMany({
+          where: { projectId, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
+        }),
+        prisma.codeSiteMutationTransaction.findMany({
+          where: { projectId, status: { in: ['open', 'prepared', 'blocked', 'validated'] } },
+        }),
+      ]);
+      const projected = {
+        id: `obs:${normalized.id}`,
+        kind: eventType === 'source_changed_observed' ? 'source_change' : 'runtime_observation',
+        createdByAgentSessionId: normalized.payload.references.agentSessionIds[0] || null,
+        references: normalized.payload.references,
+      };
+      const targets = buildKnowledgeDeliveryPlan({
+        item: projected,
+        sessions,
+        executionPlans,
+        transactions,
+      }).slice(0, MAX_ROUTE_TARGETS);
+      for (const target of targets) {
+        const inboxItem = await prisma.codeSiteAgentInboxItem.create({
+          data: {
+            projectId,
+            agentSessionId: target.agentSessionId,
+            recipientUserId: target.recipientUserId,
+            eventId: storedEvent?.id || event.id,
+            kind: eventType === 'source_changed_observed' ? 'source_changed' : 'runtime_observed',
+            requiresResponse: false,
+            status: 'unread',
+            redactedPayloadJson: stringifyJson({
+              observationId: normalized.id,
+              title: eventType === 'source_changed_observed'
+                ? `Source changed: ${normalized.producer.kind}`
+                : `Runtime: ${normalized.producer.kind}`,
+              references: normalized.payload.references,
+              fact: normalized.payload.fact,
+              occurredAt: normalized.occurredAt,
+              reasons: target.reasons,
+              evidenceRefs: normalized.payload.evidenceRefs,
+            }),
+          },
+        });
+        storedInboxItems.push(inboxProjection(inboxItem));
+      }
+      return {
+        eventId: event.id,
+        mode: 'durable_relevance_router',
+        recipientAgentSessionIds: unique(targets.map((target) => target.agentSessionId)),
+      };
+    },
+  });
+  await bus.publish({
+    id: normalized.id,
+    projectId,
+    eventType: coordinationInput.eventType,
+    payload: {
+      displayCallsign: null,
+      actorType: 'adapter',
+      actorId: coordinationInput.actorId,
+      details: coordinationInput.details,
+      evidenceRefs: coordinationInput.evidenceRefs,
+    },
+  });
+  if (!storedEvent) throw new Error('coordination_event_not_persisted');
+  return {
+    event: eventProjection(storedEvent),
+    notifiedAgentSessionIds: storedInboxItems.map((item) => item.agentSessionId),
+    inboxItems: storedInboxItems,
+  };
+}
+
+async function notifySourceChangeImpacts(projectId, input) {
+  try {
+    const normalized = normalizeSourceChangedObservation({
+      eventType: 'source_changed',
+      producer: { kind: input.producerKind, eventId: input.producerEventId },
+      occurredAt: input.occurredAt,
+      refs: {
+        transactionIds: [input.transactionId].filter(Boolean),
+        mutationLeaseIds: [input.mutationLeaseId].filter(Boolean),
+        agentSessionIds: [input.agentSessionId].filter(Boolean),
+        paths: input.paths || [],
+      },
+      evidenceRefs: input.evidenceRefs || [],
+      fact: input.fact,
+    });
+    await deliverCoordinationImpacts(projectId, {
+      eventType: 'source_changed_observed',
+      normalized,
+      actorId: input.transactionId,
+    });
+  } catch (error) {
+    // Landing must never fail because impact routing failed; the commit event
+    // above is already durable and the failure is observable in server logs.
+    console.error('[CodeSite] source-change impact routing failed', {
+      projectId,
+      transactionId: input.transactionId,
+      error: error?.message || String(error),
+    });
+  }
 }
 
 export async function recordRuntimeProjectObservation(workspaceSlug, projectId, body = {}) {
@@ -5286,6 +5459,23 @@ async function landTransactionWithClient(db, workspaceSlug, transactionId, body 
       inspectionEvidenceRefs: inspectionDecision.evidenceRefs,
     },
   }, { syncArtifacts: false });
+  await notifySourceChangeImpacts(transaction.projectId, {
+    producerKind: 'codesite_landing',
+    producerEventId: `${transaction.id}:${bundle.bundleDigest}`,
+    occurredAt: committedAt.toISOString(),
+    transactionId: transaction.id,
+    mutationLeaseId: transaction.mutationLeaseId,
+    agentSessionId: transaction.agentSessionId,
+    paths: writeSet,
+    fact: {
+      changeKind: 'landed',
+      proofBundleId: bundle.id,
+      proofBundleDigest: bundle.bundleDigest,
+      repoStateDigest: repoStateDecision.repoState?.evidenceDigest || null,
+      reasonCodes: ['serializable_commit_landed'],
+    },
+    evidenceRefs: inspectionDecision.evidenceRefs,
+  });
   return {
     committed: true,
     projectId: transaction.projectId,
