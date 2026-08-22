@@ -86,7 +86,7 @@ export function codesiteSchemas() {
       ownerUserId: { type: 'string' },
       agentProvider: { type: 'string' },
       agentRuntime: { type: ['string', 'null'] },
-      providerSessionRef: { type: ['string', 'null'] },
+      providerSessionBound: { type: 'boolean' },
       displayCallsign: { type: 'string' },
       status: { type: 'string' },
       permissions: { type: 'array' },

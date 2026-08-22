@@ -368,6 +368,11 @@ describe('CodeSite artifact projection', () => {
     expect(codesiteSchemas()['event.schema.json'].properties.eventType.enum).toContain('black_box_closed');
     expect(codesiteSchemas()).toHaveProperty('agent-session.schema.json');
     expect(codesiteSchemas()['agent-session.schema.json'].properties).toHaveProperty('dojoPilotLicenseRef');
+    expect(codesiteSchemas()['agent-session.schema.json'].properties).toHaveProperty(
+      'providerSessionBound',
+      { type: 'boolean' },
+    );
+    expect(codesiteSchemas()['agent-session.schema.json'].properties).not.toHaveProperty('providerSessionRef');
     expect(codesiteSchemas()).toHaveProperty('codesitefs-prewrite.schema.json');
     expect(codesiteSchemas()).toHaveProperty('filesystem-boundary-proof.schema.json');
     expect(codesiteSchemas()['filesystem-boundary-proof.schema.json'].properties).toMatchObject({
