@@ -39,8 +39,19 @@ interface TerminalWorld {
 
 type TerminalHandle = SessionHandle<TerminalWorld>;
 
-/** Binaries allowed to execute through the adapter. */
-const ALLOWLISTED = new Set(["echo", "pwd", "ls", "cat", "node", "npm", "npx", "git"]);
+/**
+ * Execution policy is injected, not hardcoded: what may run is deployment
+ * configuration. The default DENIES everything (safest possible without
+ * knowledge of the environment); callers open up explicitly.
+ */
+export interface TerminalExecutionPolicy {
+  isAllowed(leadBinary: string): boolean;
+}
+
+export function allowlistPolicy(binaries: readonly string[]): TerminalExecutionPolicy {
+  const set = new Set(binaries);
+  return { isAllowed: (lead) => set.has(lead) };
+}
 
 function parseLeadBinary(command: string): string {
   const lead = command.trim().split(/\s+/)[0] ?? "";
@@ -62,7 +73,9 @@ function safeListDir(root: string): Record<string, string> {
   return listing;
 }
 
-export function createTerminalBundle(): SubstrateAdapterBundle<
+export function createTerminalBundle(
+  policy: TerminalExecutionPolicy = { isAllowed: () => false },
+): SubstrateAdapterBundle<
   unknown,
   TerminalCommandAction,
   TerminalHandle
@@ -113,8 +126,8 @@ export function createTerminalBundle(): SubstrateAdapterBundle<
           return { ok: false, refusal_reason: "realm mismatch" };
         }
         const lead = parseLeadBinary(action.run);
-        if (!ALLOWLISTED.has(lead)) {
-          return { ok: false, refusal_reason: `binary not allowlisted: ${lead}` };
+        if (!policy.isAllowed(lead)) {
+          return { ok: false, refusal_reason: `binary not allowed by policy: ${lead}` };
         }
         const timeoutMs = Math.min(30, Math.max(1, action.timeout_s ?? 10)) * 1000;
         let exit = 0;
@@ -163,7 +176,7 @@ export function createTerminalBundle(): SubstrateAdapterBundle<
         const stepResults = fragment.steps.map((step, index) => {
           const action = step.event as TerminalCommandAction;
           const lead = parseLeadBinary(action.run);
-          if (!ALLOWLISTED.has(lead)) {
+          if (!policy.isAllowed(lead)) {
             return {
               step_index: index,
               ok: false,

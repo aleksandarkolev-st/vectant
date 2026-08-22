@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  allowlistPolicy,
   createTerminalBundle,
 } from "../../src/embodied/adapters/terminal/index.js";
 import type { TerminalCommandAction } from "../../src/embodied/adapters/terminal/index.js";
@@ -16,7 +17,7 @@ const LEASE = (realmId: string) => ({
 });
 
 function makeHandle(root: string) {
-  const bundle = createTerminalBundle();
+  const bundle = createTerminalBundle(allowlistPolicy(["node"]));
   return bundle.attach({
     realm: { realm_kind: "workspace", realm_id: root },
     consent_proof: {
@@ -32,7 +33,7 @@ describe("terminal adapter on real processes", () => {
     const root = mkdtempSync(join(tmpdir(), "emb-term-"));
     try {
       writeFileSync(join(root, "seed.txt"), "seed");
-      const bundle = createTerminalBundle();
+      const bundle = createTerminalBundle(allowlistPolicy(["node"]));
       const handle = (await bundle.attach({
         realm: { realm_kind: "workspace", realm_id: root },
         consent_proof: {
@@ -87,7 +88,7 @@ describe("terminal adapter on real processes", () => {
   it("refuses non-allowlisted binaries before execution", async () => {
     const root = mkdtempSync(join(tmpdir(), "emb-term3-"));
     try {
-      const bundle = createTerminalBundle();
+      const bundle = createTerminalBundle(allowlistPolicy(["node"]));
       const handle = (await bundle.attach({
         realm: { realm_kind: "workspace", realm_id: root },
         consent_proof: {
@@ -102,7 +103,7 @@ describe("terminal adapter on real processes", () => {
         LEASE(root),
       );
       expect(result.ok).toBe(false);
-      expect(result.refusal_reason).toContain("not allowlisted");
+      expect(result.refusal_reason).toContain("not allowed by policy");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -111,7 +112,7 @@ describe("terminal adapter on real processes", () => {
   it("observation is scrubbed and reports exit codes", async () => {
     const root = mkdtempSync(join(tmpdir(), "emb-term4-"));
     try {
-      const bundle = createTerminalBundle();
+      const bundle = createTerminalBundle(allowlistPolicy(["node"]));
       const handle = (await bundle.attach({
         realm: { realm_kind: "workspace", realm_id: root },
         consent_proof: {
