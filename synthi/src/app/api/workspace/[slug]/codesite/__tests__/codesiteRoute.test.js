@@ -31,6 +31,7 @@ const {
     getLineProvenance: vi.fn(),
     heartbeatAgentSession: vi.fn(),
     getProject: vi.fn(),
+    getRelevantAgentContext: vi.fn(),
     getSourceStateSince: vi.fn(),
     listActiveTransactions: vi.fn(),
     listProjectMembers: vi.fn(),
@@ -93,6 +94,7 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
     'heartbeatAgentSession',
     'getProofBundle',
     'getProject',
+    'getRelevantAgentContext',
     'getSchemas',
     'getSourceStateSince',
     'getTransaction',
@@ -406,6 +408,21 @@ describe('CodeSite catch-all route', () => {
     ), params(['agent-sessions', 'agent-1', 'detach']));
     expect(detach.status).toBe(200);
     expect(controlPlane.detachAgentSession).toHaveBeenCalledWith('acme', 'agent-1', detachBody, authority);
+  });
+
+  it('authorizes relevant context with only the scoped agent credential', async () => {
+    controlPlane.getRelevantAgentContext.mockResolvedValue({
+      contextVersion: 'synthi.codesite.agentContext.v1',
+      agent: { id: 'agent-1' },
+    });
+    const response = await GET(new Request(
+      'http://test/api/workspace/acme/codesite/agent-sessions/agent-1/relevant-context',
+      { headers: { authorization: 'Bearer csa_agent_scoped_token' } },
+    ), params(['agent-sessions', 'agent-1', 'relevant-context']));
+
+    expect(response.status).toBe(200);
+    expect(controlPlane.getRelevantAgentContext).toHaveBeenCalledWith('acme', 'agent-1', 'csa_agent_scoped_token');
+    expect(resolveActor).not.toHaveBeenCalled();
   });
 
   it('notifies collab when a CodeSite transaction opens', async () => {

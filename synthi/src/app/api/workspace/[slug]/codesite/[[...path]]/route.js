@@ -29,6 +29,7 @@ import {
   getCodeSiteMetrics,
   getProofBundle,
   getProject,
+  getRelevantAgentContext,
   getSchemas,
   getSourceStateSince,
   getTransaction,
@@ -84,6 +85,13 @@ export const dynamic = 'force-dynamic';
 export async function GET(request, { params }) {
   const { slug, path } = await params;
   const route = parsePath(path);
+  if (route[0] === 'agent-sessions' && route[2] === 'relevant-context' && route.length === 3) {
+    try {
+      return okJson(await getRelevantAgentContext(slug, route[1], bearerToken(request)));
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
   const access = await requireCodesiteAccess(slug, 'read', request);
   if (!access.ok) return errorJson(access.status, access.error);
 
@@ -253,6 +261,12 @@ export async function GET(request, { params }) {
   } catch (error) {
     return handleCodesiteError(error);
   }
+}
+
+function bearerToken(request) {
+  const authorization = String(request.headers.get('authorization') || '');
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1].trim() : '';
 }
 
 export async function POST(request, { params }) {

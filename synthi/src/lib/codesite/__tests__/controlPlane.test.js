@@ -162,6 +162,7 @@ import {
   getLineProvenance,
   getProject,
   getProofBundle,
+  getRelevantAgentContext,
   getSourceStateSince,
   openTransaction,
   preflightCodeSiteFsWrite,
@@ -1889,6 +1890,11 @@ describe('CodeSite control plane transaction validation', () => {
     expect(prisma.codeSiteProjectMember.upsert).toHaveBeenCalledWith(expect.objectContaining({
       create: expect.objectContaining({ userId: 'user-1', source: 'collab_agent_attach' }),
     }));
+    expect(result.agentAccessToken).toMatch(/^csa_[A-Za-z0-9_-]+$/);
+    const createData = prisma.codeSiteAgentSession.create.mock.calls[0][0].data;
+    expect(createData.agentAccessTokenHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(createData.agentAccessTokenHash).not.toBe(result.agentAccessToken);
+    expect(JSON.stringify(createData)).not.toContain(result.agentAccessToken);
   });
 
   it('resumes only the same owner, collaboration, terminal, runtime, provider, and work identity', async () => {
@@ -2292,6 +2298,124 @@ describe('CodeSite control plane transaction validation', () => {
     await expect(heartbeatAgentSession('acme', existing.id, incompleteBody, authority)).rejects.toMatchObject({
       status: 400,
       code: 'agent_runtime_scope_required',
+    });
+  });
+
+  it('returns bounded route-relevant context with scoped token and recipient isolation', async () => {
+    const token = `csa_${'a'.repeat(43)}`;
+    const now = Date.now();
+    const session = {
+      id: 'agent-attached-1',
+      projectId: 'project-1',
+      workspaceSlug: 'acme',
+      ownerUserId: 'user-1',
+      collaborationUserId: 'member-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeSessionId: null,
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'provider-private-ref',
+      displayCallsign: 'CODEX-01',
+      status: 'attached',
+      capabilitiesJson: JSON.stringify(['codesite.context.read']),
+      subscriptionsJson: JSON.stringify(['agent.inbox']),
+      activeMutationLeaseId: null,
+      activeTransactionId: null,
+      agentAccessTokenExpiresAt: new Date(now + 60_000),
+      lastHeartbeatAt: new Date(now - 1_000),
+      endedAt: null,
+      project: {
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Shared project',
+        request: 'Coordinate the active route.',
+        status: 'active',
+        controlPlanJson: JSON.stringify({ requiredChecks: ['tests'], secret: 'control-secret' }),
+        zonePolicyJson: JSON.stringify({ noFlyZones: ['secrets/**'] }),
+        members: [{
+          userId: 'user-1',
+          role: 'agent',
+          permissionsJson: JSON.stringify(['project:read']),
+          participationStatus: 'enabled',
+          revokedAt: null,
+        }],
+      },
+    };
+    prisma.codeSiteAgentSession.findFirst.mockResolvedValueOnce(session);
+    prisma.codeSiteExecutionPlan.findMany.mockResolvedValueOnce([{
+      id: 'plan-1',
+      agentSessionId: session.id,
+      displayCallsign: 'CODEX-01',
+      mission: 'Inspect the producer contract',
+      domain: 'contracts',
+      status: 'active',
+      routeJson: JSON.stringify(['contracts/**']),
+      blockedZonesJson: JSON.stringify([]),
+    }]);
+    prisma.codeSiteMutationLease.findMany.mockResolvedValueOnce([]);
+    prisma.codeSiteMutationTransaction.findMany.mockResolvedValueOnce([]);
+    prisma.codeSiteAgentInboxItem.findMany.mockResolvedValueOnce([{
+      id: 'inbox-1',
+      kind: 'impact_notice',
+      status: 'unread',
+      requiresResponse: true,
+      eventId: 'event-1',
+      documentId: null,
+      redactedPayloadJson: JSON.stringify({ summary: 'Contract changed', token: 'payload-token', prompt: 'private-prompt' }),
+      createdAt: new Date(now - 2_000),
+    }]);
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValueOnce([]);
+
+    const context = await getRelevantAgentContext('acme', session.id, token);
+    const serialized = JSON.stringify(context);
+    expect(context).toMatchObject({
+      contextVersion: 'synthi.codesite.agentContext.v1',
+      agent: { id: session.id, ownerUserId: 'user-1', provider: 'codex' },
+      project: { id: 'project-1', workspaceSlug: 'acme' },
+      workstreams: [{ id: 'plan-1', route: ['contracts/**'] }],
+      inbox: [{ id: 'inbox-1', payload: { summary: 'Contract changed' } }],
+    });
+    expect(context.bytes).toBeLessThanOrEqual(64 * 1024);
+    expect(serialized).not.toContain(token);
+    expect(serialized).not.toContain('provider-private-ref');
+    expect(serialized).not.toContain('payload-token');
+    expect(serialized).not.toContain('private-prompt');
+    expect(serialized).not.toContain('control-secret');
+    expect(prisma.codeSiteAgentSession.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        id: session.id,
+        workspaceSlug: 'acme',
+        agentAccessTokenHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+    }));
+    expect(prisma.codeSiteAgentInboxItem.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        OR: [{ agentSessionId: session.id }, { recipientUserId: 'user-1' }],
+      }),
+      take: 32,
+    }));
+  });
+
+  it('rejects invalid, expired, detached, and stale-heartbeat agent context credentials', async () => {
+    await expect(getRelevantAgentContext('acme', 'agent-1', 'invalid')).rejects.toMatchObject({
+      status: 403,
+      code: 'agent_access_token_invalid',
+    });
+    const token = `csa_${'b'.repeat(43)}`;
+    const base = {
+      id: 'agent-1',
+      workspaceSlug: 'acme',
+      status: 'attached',
+      agentAccessTokenExpiresAt: new Date(Date.now() + 60_000),
+      lastHeartbeatAt: new Date(Date.now() - 10 * 60_000),
+      endedAt: null,
+    };
+    prisma.codeSiteAgentSession.findFirst.mockResolvedValueOnce(base);
+    await expect(getRelevantAgentContext('acme', 'agent-1', token)).rejects.toMatchObject({
+      status: 403,
+      code: 'agent_session_heartbeat_stale',
     });
   });
 

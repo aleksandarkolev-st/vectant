@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import { createHash, randomBytes } from 'crypto';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -1430,6 +1431,23 @@ const AGENT_DELIVERY_CHANNEL_TYPES = new Set([
   'mcp_poll',
   'repo_projection',
 ]);
+const AGENT_ACCESS_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+const AGENT_CONTEXT_HEARTBEAT_MAX_AGE_MS = 5 * 60 * 1000;
+const AGENT_CONTEXT_MAX_BYTES = 64 * 1024;
+
+function agentAccessTokenHash(token) {
+  return createHash('sha256').update(String(token || ''), 'utf8').digest('hex');
+}
+
+function mintAgentAccessToken(now = new Date()) {
+  const token = `csa_${randomBytes(32).toString('base64url')}`;
+  return {
+    token,
+    hash: agentAccessTokenHash(token),
+    issuedAt: now,
+    expiresAt: new Date(now.getTime() + AGENT_ACCESS_TOKEN_TTL_MS),
+  };
+}
 
 function requiredAgentBinding(value, code, maxLength = 256) {
   const normalized = String(value || '').trim();
@@ -1711,6 +1729,14 @@ export async function attachAgentSession(workspaceSlug, projectId, body = {}, au
   if (!member) throw serviceUnavailable('agent_project_membership_persistence_failed');
 
   const now = new Date();
+  const credentialFor = (candidate) => {
+    const expired = !candidate?.agentAccessTokenExpiresAt
+      || new Date(candidate.agentAccessTokenExpiresAt).getTime() <= now.getTime();
+    return !candidate || !candidate.agentAccessTokenHash || expired || body.rotateAgentAccessToken === true
+      ? mintAgentAccessToken(now)
+      : null;
+  };
+  let accessCredential = credentialFor(existing);
   let session;
   let eventType;
   const resumeExisting = async (candidate) => {
@@ -1726,6 +1752,11 @@ export async function attachAgentSession(workspaceSlug, projectId, body = {}, au
         executionHostJson: stringifyJson(executionHost),
         subscriptionsJson: stringifyJson(subscriptions),
         deliveryChannelJson: stringifyJson(deliveryChannel),
+        ...(accessCredential ? {
+          agentAccessTokenHash: accessCredential.hash,
+          agentAccessTokenIssuedAt: accessCredential.issuedAt,
+          agentAccessTokenExpiresAt: accessCredential.expiresAt,
+        } : {}),
         attachedAt: candidate.attachedAt || now,
         lastHeartbeatAt: now,
         detachedAt: null,
@@ -1767,6 +1798,9 @@ export async function attachAgentSession(workspaceSlug, projectId, body = {}, au
       deliveryChannelJson: stringifyJson(deliveryChannel),
       attachSource: 'collab_terminal_adapter',
       bindingVersion: 1,
+      agentAccessTokenHash: accessCredential.hash,
+      agentAccessTokenIssuedAt: accessCredential.issuedAt,
+      agentAccessTokenExpiresAt: accessCredential.expiresAt,
       activeMutationLeaseId: identity.activeMutationLeaseId,
       activeTransactionId: identity.activeTransactionId,
       attachedAt: now,
@@ -1779,6 +1813,7 @@ export async function attachAgentSession(workspaceSlug, projectId, body = {}, au
       if (!isAgentBindingUniqueConflict(error)) throw error;
       existing = singleAgentAttachmentCandidate(await findAgentAttachmentCandidates(identity));
       if (!existing) throw error;
+      accessCredential = credentialFor(existing);
       session = await resumeExisting(existing);
       eventType = 'agent_resumed';
     }
@@ -1802,7 +1837,13 @@ export async function attachAgentSession(workspaceSlug, projectId, body = {}, au
       deliveryChannel: deliveryChannel.type,
     },
   });
-  return { session: sessionProjection(session), event: eventProjection(event), resumed: eventType === 'agent_resumed' };
+  return {
+    session: sessionProjection(session),
+    event: eventProjection(event),
+    resumed: eventType === 'agent_resumed',
+    agentAccessToken: accessCredential?.token || null,
+    agentAccessTokenExpiresAt: accessCredential?.expiresAt || session.agentAccessTokenExpiresAt || null,
+  };
 }
 
 async function requireAttachedAgentSession(workspaceSlug, sessionId, body, authority) {
@@ -1858,6 +1899,189 @@ export async function detachAgentSession(workspaceSlug, sessionId, body = {}, au
     },
   });
   return { session: sessionProjection(updated), event: eventProjection(event) };
+}
+
+function boundedAgentContextValue(value, depth = 0) {
+  if (value == null || typeof value === 'boolean' || typeof value === 'number') return value;
+  if (typeof value === 'string') return value.slice(0, 2048);
+  if (value instanceof Date) return value.toISOString();
+  if (depth >= 5) return '[depth-limited]';
+  if (Array.isArray(value)) return value.slice(0, 32).map((entry) => boundedAgentContextValue(entry, depth + 1));
+  if (typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value)
+      .filter(([key]) => !/(token|secret|credential|prompt|transcript|providerSessionRef)/i.test(key))
+      .slice(0, 48)
+      .map(([key, entry]) => [key, boundedAgentContextValue(entry, depth + 1)]));
+  }
+  return String(value).slice(0, 2048);
+}
+
+function trimAgentContextToLimit(context) {
+  const collections = ['inbox', 'inspections', 'transactions', 'leases', 'workstreams'];
+  const contentBudget = AGENT_CONTEXT_MAX_BYTES - 256;
+  let serialized = stableJson(context);
+  while (Buffer.byteLength(serialized, 'utf8') > contentBudget) {
+    const target = collections.find((key) => context[key]?.length > 0);
+    if (!target) break;
+    context[target].pop();
+    context.truncated = true;
+    serialized = stableJson(context);
+  }
+  if (Buffer.byteLength(serialized, 'utf8') > contentBudget) {
+    context.constraints = { truncated: true };
+    context.sourceState = { truncated: true };
+    context.truncated = true;
+  }
+  context.bytes = Buffer.byteLength(stableJson(context), 'utf8');
+  return context;
+}
+
+export async function getRelevantAgentContext(workspaceSlug, sessionId, agentAccessToken) {
+  const token = String(agentAccessToken || '').trim();
+  if (!/^csa_[A-Za-z0-9_-]{32,128}$/.test(token)) throw forbidden('agent_access_token_invalid');
+  const session = await prisma.codeSiteAgentSession.findFirst({
+    where: {
+      id: sessionId,
+      workspaceSlug,
+      agentAccessTokenHash: agentAccessTokenHash(token),
+      endedAt: null,
+    },
+    include: { project: { include: { members: true } } },
+  });
+  if (!session) throw forbidden('agent_access_token_invalid');
+  const now = new Date();
+  if (!session.agentAccessTokenExpiresAt || new Date(session.agentAccessTokenExpiresAt).getTime() <= now.getTime()) {
+    throw forbidden('agent_access_token_expired');
+  }
+  if (session.status !== 'attached') throw forbidden('agent_session_not_attached');
+  if (!session.lastHeartbeatAt || now.getTime() - new Date(session.lastHeartbeatAt).getTime() > AGENT_CONTEXT_HEARTBEAT_MAX_AGE_MS) {
+    throw forbidden('agent_session_heartbeat_stale');
+  }
+  if (!session.project || session.project.status !== 'active') throw forbidden('codesite_project_inactive');
+  const member = projectAgentMember(session.project, session.ownerUserId);
+  if (!member || !projectPermissionAllows(member, 'read')) throw forbidden('agent_project_membership_revoked');
+
+  const [workstreams, leases, transactions, inbox, inspections] = await Promise.all([
+    prisma.codeSiteExecutionPlan.findMany({
+      where: { projectId: session.projectId, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
+      orderBy: { filedAt: 'desc' },
+      take: 24,
+    }),
+    prisma.codeSiteMutationLease.findMany({
+      where: { projectId: session.projectId, agentSessionId: session.id, status: { in: ['active', 'holding'] } },
+      orderBy: { issuedAt: 'desc' },
+      take: 16,
+    }),
+    prisma.codeSiteMutationTransaction.findMany({
+      where: { projectId: session.projectId, agentSessionId: session.id, status: { in: ['open', 'prepared', 'blocked'] } },
+      orderBy: { openedAt: 'desc' },
+      take: 16,
+    }),
+    prisma.codeSiteAgentInboxItem.findMany({
+      where: {
+        projectId: session.projectId,
+        status: { in: ['unread', 'pending'] },
+        OR: [
+          { agentSessionId: session.id },
+          { recipientUserId: session.ownerUserId },
+        ],
+      },
+      orderBy: { createdAt: 'asc' },
+      take: 32,
+    }),
+    prisma.codeSiteInspectionRun.findMany({
+      where: { projectId: session.projectId, status: { in: ['required', 'queued', 'running', 'failed'] } },
+      orderBy: { startedAt: 'desc' },
+      take: 24,
+    }),
+  ]);
+
+  const projectControl = boundedAgentContextValue(parseJson(session.project.controlPlanJson, {}));
+  const zonePolicy = boundedAgentContextValue(parseJson(session.project.zonePolicyJson, {}));
+  const context = {
+    contextVersion: 'synthi.codesite.agentContext.v1',
+    generatedAt: now.toISOString(),
+    maxBytes: AGENT_CONTEXT_MAX_BYTES,
+    truncated: false,
+    agent: {
+      id: session.id,
+      callsign: session.displayCallsign,
+      ownerUserId: session.ownerUserId,
+      collaborationUserId: session.collaborationUserId,
+      effectiveWorkspaceUserId: session.effectiveWorkspaceUserId,
+      collaborationSessionId: session.collaborationSessionId,
+      terminalSessionId: session.terminalSessionId,
+      runtimeSessionId: session.runtimeSessionId,
+      runtimeScope: session.runtimeScope,
+      provider: session.agentProvider,
+      capabilities: parseJson(session.capabilitiesJson, []),
+      subscriptions: parseJson(session.subscriptionsJson, []),
+    },
+    project: {
+      id: session.projectId,
+      workspaceSlug,
+      title: String(session.project.title || '').slice(0, 512),
+      request: String(session.project.request || '').slice(0, 2048),
+    },
+    workstreams: workstreams.map((plan) => boundedAgentContextValue({
+      id: plan.id,
+      ownerAgentSessionId: plan.agentSessionId,
+      callsign: plan.displayCallsign,
+      mission: plan.mission,
+      domain: plan.domain,
+      status: plan.status,
+      route: parseJson(plan.routeJson, []),
+      blockedZones: parseJson(plan.blockedZonesJson, []),
+    })),
+    leases: leases.map((lease) => boundedAgentContextValue({
+      id: lease.id,
+      status: lease.status,
+      executionPlanId: lease.executionPlanId,
+      route: parseJson(lease.leaseJson, {}),
+      expiresAt: lease.expiresAt,
+    })),
+    transactions: transactions.map((transaction) => boundedAgentContextValue({
+      id: transaction.id,
+      status: transaction.status,
+      mutationLeaseId: transaction.mutationLeaseId,
+      baseSnapshot: transaction.baseSnapshot,
+      writeSet: parseJson(transaction.writeSetJson, []),
+      observedWriteSet: parseJson(transaction.observedWriteSetJson, []),
+    })),
+    inbox: inbox.map((item) => boundedAgentContextValue({
+      id: item.id,
+      kind: item.kind,
+      status: item.status,
+      requiresResponse: item.requiresResponse,
+      eventId: item.eventId,
+      documentId: item.documentId,
+      payload: parseJson(item.redactedPayloadJson, {}),
+      createdAt: item.createdAt,
+    })),
+    sourceState: boundedAgentContextValue({
+      activeTransactionId: session.activeTransactionId || null,
+      activeMutationLeaseId: session.activeMutationLeaseId || null,
+      routes: workstreams.filter((plan) => plan.agentSessionId === session.id).map((plan) => parseJson(plan.routeJson, [])),
+    }),
+    constraints: {
+      controlPlan: projectControl,
+      zonePolicy,
+    },
+    inspections: inspections.map((inspection) => boundedAgentContextValue({
+      id: inspection.id,
+      executionPlanId: inspection.executionPlanId,
+      type: inspection.type,
+      status: inspection.status,
+      result: parseJson(inspection.resultJson, null),
+    })),
+    sharedKnowledge: {
+      discoveries: [],
+      leads: [],
+      skills: [],
+      phaseAvailable: false,
+    },
+  };
+  return trimAgentContextToLimit(context);
 }
 
 function nextCallsign(provider) {
@@ -10899,6 +11123,7 @@ function sessionProjection(session) {
     deliveryChannel: parseJson(session.deliveryChannelJson, {}),
     attachSource: session.attachSource || null,
     bindingVersion: session.bindingVersion || null,
+    agentAccessTokenExpiresAt: session.agentAccessTokenExpiresAt || null,
     activeMutationLeaseId: session.activeMutationLeaseId || null,
     activeTransactionId: session.activeTransactionId || null,
     dojoPilotLicenseRef: session.dojoPilotLicenseRef || null,
