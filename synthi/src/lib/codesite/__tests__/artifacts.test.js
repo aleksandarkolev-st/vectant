@@ -2,8 +2,87 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
-import { buildArtifactProjection, CODESITE_MCP_TOOLS, codesiteSchemas, quarantineReviewRecords, writeArtifactProjection } from '../artifacts.js';
+import { buildArtifactProjection, buildSharedKnowledgeRepoProjection, CODESITE_MCP_TOOLS, codesiteSchemas, quarantineReviewRecords, writeArtifactProjection } from '../artifacts.js';
 import { buildProofBundle, formatCommitTrailers, verifyProofBundle } from '../proof.js';
+import { buildKnowledgeRecord, buildKnowledgeReferenceRecords } from '../knowledgeRecords.js';
+
+const KNOWLEDGE_SOURCE = Object.freeze({
+  actorType: 'agent',
+  actorId: 'agent-source',
+  agentSessionId: 'agent-source',
+});
+
+function persistedKnowledge(input, id) {
+  const encoded = buildKnowledgeRecord(input, {
+    projectId: input.projectId,
+    agentSessionId: input.source.agentSessionId,
+    userId: 'user-source',
+  });
+  return {
+    id,
+    ...encoded.data,
+    createdAt: new Date('2026-08-22T04:00:00.000Z'),
+    updatedAt: new Date('2026-08-22T04:01:00.000Z'),
+    references: buildKnowledgeReferenceRecords(input, id),
+  };
+}
+
+function knowledgeInput(kind, overrides = {}) {
+  const common = {
+    kind,
+    projectId: 'site_signup_email_verification',
+    title: `${kind} title`,
+    summary: `${kind} project-shareable summary`,
+    source: { ...KNOWLEDGE_SOURCE },
+    references: {
+      paths: ['src/CharacterController.cpp'],
+      symbols: ['CharacterController::Turn'],
+      contracts: ['rotation.completed@v2'],
+      workstreamIds: ['workstream-producer'],
+      transactionIds: ['txn-1'],
+    },
+    evidenceRefs: ['test:rotation-contract:passed'],
+    visibility: 'project',
+    createdAt: '2026-08-22T04:00:00.000Z',
+  };
+  if (kind === 'discovery') return { ...common, confidence: 0.98, status: 'verified', ...overrides };
+  if (kind === 'lead') return { ...common, confidence: 0.71, status: 'open', priority: 'high', ...overrides };
+  if (kind === 'shared_skill') {
+    return {
+      ...common,
+      status: 'published',
+      skillKey: 'run-rotation-contract-tests',
+      recipe: {
+        commands: ['npm test -- rotation-contract --token "$DEPLOYMENT_ACCOUNT_TOKEN"'],
+        requiredPermissions: [],
+        requiredTools: ['npm'],
+        requiredEnvironmentKeys: ['DEPLOYMENT_ACCOUNT_TOKEN'],
+        usageConditions: ['Run in the project test environment.'],
+        actionClass: 'read_only',
+      },
+      ...overrides,
+    };
+  }
+  if (kind === 'impact_notice') {
+    return {
+      ...common,
+      status: 'pending',
+      sourceKnowledgeId: 'knowledge-discovery',
+      recipientAgentSessionIds: ['agent-recipient'],
+      responseAction: 'Refresh the affected transaction.',
+      ...overrides,
+    };
+  }
+  return {
+    ...common,
+    status: 'ready',
+    fromAgentSessionId: 'agent-source',
+    toAgentSessionId: 'agent-recipient',
+    unresolvedRisks: ['Consumer verification remains.'],
+    requiredActions: ['Run recipient validation.'],
+    ...overrides,
+  };
+}
 
 function projectFixture() {
   return {
@@ -471,6 +550,194 @@ describe('CodeSite artifact projection', () => {
     ]) {
       expect(serialized).not.toContain(sentinel);
     }
+  });
+
+  it('projects only project-shareable knowledge summaries and normalized references', () => {
+    const project = projectFixture();
+    project.knowledgeItems = [
+      persistedKnowledge(knowledgeInput('discovery', {
+        title: 'Producer owns rotation',
+        summary: 'CharacterController owns the rotation event.',
+      }), 'knowledge-discovery'),
+      persistedKnowledge(knowledgeInput('lead', {
+        title: 'Verify half-turn payload',
+        summary: 'Confirm the consumer behavior after a half turn.',
+      }), 'knowledge-lead'),
+      persistedKnowledge(knowledgeInput('shared_skill', {
+        title: 'Rotation contract validation',
+        summary: 'Reusable validation for the shared rotation contract.',
+      }), 'knowledge-skill'),
+      persistedKnowledge(knowledgeInput('handoff', {
+        title: 'Producer contract ready',
+        summary: 'The producer contract is ready for consumer integration.',
+      }), 'knowledge-handoff'),
+    ];
+
+    const files = buildArtifactProjection(project);
+    const manifest = JSON.parse(files.find((file) => file.relativePath === 'manifest.json').content);
+    const index = files.find((file) => file.relativePath === manifest.shared_knowledge);
+    const records = index.content.trim().split('\n').map((line) => JSON.parse(line));
+
+    expect(manifest).toMatchObject({
+      shared_knowledge: 'projects/site_signup_email_verification/knowledge/index.jsonl',
+      shared_knowledge_schema: 'schemas/shared-knowledge-summary.schema.json',
+    });
+    expect(records.map((record) => record.kind)).toEqual(['discovery', 'handoff', 'lead', 'shared_skill']);
+    expect(records).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        schemaVersion: 'synthi.codesite.sharedKnowledgeSummary.v1',
+        kind: 'discovery',
+        title: 'Producer owns rotation',
+        summary: 'CharacterController owns the rotation event.',
+        source: {
+          actorType: 'agent',
+          actorId: 'agent-source',
+          agentSessionId: 'agent-source',
+        },
+        references: expect.objectContaining({
+          paths: ['src/CharacterController.cpp'],
+          symbols: ['CharacterController::Turn'],
+          contracts: ['rotation.completed@v2'],
+          workstreamIds: ['workstream-producer'],
+          transactionIds: ['txn-1'],
+        }),
+      }),
+    ]));
+    for (const record of records) {
+      expect(record).not.toHaveProperty('recipe');
+      expect(record).not.toHaveProperty('payload');
+      expect(record).not.toHaveProperty('evidenceRefs');
+      expect(record).not.toHaveProperty('recipientAgentSessionIds');
+      expect(record.source).not.toHaveProperty('terminalSessionId');
+    }
+  });
+
+  it('fails closed for private, restricted, recipient-specific, malformed, and sensitive knowledge', () => {
+    const project = projectFixture();
+    const safeDiscovery = persistedKnowledge(knowledgeInput('discovery', {
+      title: 'Safe discovery',
+      summary: 'The producer owns the shared contract.',
+    }), 'knowledge-safe');
+    safeDiscovery.payloadJson = JSON.stringify({
+      ...JSON.parse(safeDiscovery.payloadJson),
+      providerSessionRef: 'provider-session-ref-sentinel',
+      privatePrompt: 'provider-prompt-sentinel',
+      terminalTranscript: 'terminal-transcript-sentinel',
+      credential: 'credential-sentinel',
+      token: 'token-sentinel',
+      environmentValues: { DEPLOYMENT_ACCOUNT_TOKEN: 'env-value-sentinel' },
+      accountState: { billing: 'account-state-sentinel' },
+    });
+    safeDiscovery.references[0].metadataJson = JSON.stringify({
+      secret: 'reference-secret-sentinel',
+      token: 'reference-token-sentinel',
+    });
+
+    const ownerPrivate = persistedKnowledge(knowledgeInput('discovery', {
+      title: 'Owner private discovery',
+      summary: 'owner-private-summary-sentinel',
+      visibility: 'owner_private',
+      redactionClass: 'owner_private',
+    }), 'knowledge-owner-private');
+    const restricted = persistedKnowledge(knowledgeInput('lead', {
+      title: 'Restricted lead',
+      summary: 'restricted-summary-sentinel',
+      visibility: 'restricted',
+    }), 'knowledge-restricted');
+    const impactNotice = persistedKnowledge(knowledgeInput('impact_notice', {
+      title: 'Recipient impact',
+      summary: 'impact-recipient-summary-sentinel',
+    }), 'knowledge-impact');
+    const sensitiveSummary = persistedKnowledge(knowledgeInput('discovery', {
+      title: 'Unsafe copied value',
+      summary: 'apiToken=summary-token-value-sentinel',
+    }), 'knowledge-sensitive-summary');
+    const malformed = {
+      id: 'knowledge-malformed',
+      projectId: project.id,
+      kind: 'discovery',
+      status: 'verified',
+      title: 'Malformed',
+      summary: 'malformed-summary-sentinel',
+      payloadJson: '{',
+      scopeJson: '{',
+    };
+    project.knowledgeItems = [safeDiscovery, ownerPrivate, restricted, impactNotice, sensitiveSummary, malformed];
+    project.inboxItems.push({
+      id: 'private-impact-inbox',
+      kind: 'impact_notice',
+      redactedPayload: {
+        prompt: 'inbox-prompt-sentinel',
+        token: 'inbox-token-sentinel',
+        recipientPayload: 'recipient-payload-sentinel',
+      },
+    });
+
+    const files = buildArtifactProjection(project);
+    const knowledgeIndex = files.find((file) => file.relativePath.endsWith('/knowledge/index.jsonl'));
+    const knowledgeRecords = knowledgeIndex.content.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    const serialized = files.map((file) => file.content).join('\n');
+
+    expect(knowledgeRecords).toHaveLength(1);
+    expect(knowledgeRecords[0]).toMatchObject({ id: 'knowledge-safe', title: 'Safe discovery' });
+    for (const sentinel of [
+      'provider-session-ref-sentinel',
+      'provider-prompt-sentinel',
+      'terminal-transcript-sentinel',
+      'credential-sentinel',
+      'token-sentinel',
+      'env-value-sentinel',
+      'account-state-sentinel',
+      'reference-secret-sentinel',
+      'reference-token-sentinel',
+      'owner-private-summary-sentinel',
+      'restricted-summary-sentinel',
+      'impact-recipient-summary-sentinel',
+      'summary-token-value-sentinel',
+      'malformed-summary-sentinel',
+      'inbox-prompt-sentinel',
+      'inbox-token-sentinel',
+      'recipient-payload-sentinel',
+      'DEPLOYMENT_ACCOUNT_TOKEN',
+    ]) {
+      expect(serialized).not.toContain(sentinel);
+    }
+  });
+
+  it('exposes a fail-closed pure knowledge projection and strict summary schema', () => {
+    const safe = knowledgeInput('handoff', {
+      id: 'handoff-safe',
+      title: 'Safe handoff',
+      summary: 'Validated producer state is ready.',
+    });
+    const privateItem = knowledgeInput('discovery', {
+      id: 'discovery-private',
+      visibility: 'owner_private',
+      redactionClass: 'owner_private',
+    });
+    const projected = buildSharedKnowledgeRepoProjection([
+      safe,
+      privateItem,
+      { ...knowledgeInput('impact_notice'), id: 'impact-private' },
+      { ...knowledgeInput('lead'), id: 'lead-malformed', providerPrompt: 'private' },
+    ]);
+    const schema = codesiteSchemas()['shared-knowledge-summary.schema.json'];
+
+    expect(projected).toEqual([
+      expect.objectContaining({ id: 'handoff-safe', kind: 'handoff', title: 'Safe handoff' }),
+    ]);
+    expect(schema).toMatchObject({
+      additionalProperties: false,
+      required: expect.arrayContaining(['projectId', 'kind', 'title', 'summary', 'references']),
+      properties: {
+        kind: { enum: ['discovery', 'lead', 'shared_skill', 'handoff'] },
+        references: { additionalProperties: false },
+      },
+    });
+    expect(schema.properties).not.toHaveProperty('payload');
+    expect(schema.properties).not.toHaveProperty('recipe');
+    expect(schema.properties).not.toHaveProperty('evidenceRefs');
+    expect(schema.properties).not.toHaveProperty('recipientAgentSessionIds');
   });
 
   it('writes the repo-local artifact tree when an artifact root is available', async () => {

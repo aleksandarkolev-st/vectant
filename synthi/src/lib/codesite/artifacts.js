@@ -7,6 +7,8 @@ import { buildProofBundle, formatCommitTrailers } from './proof';
 import { buildCodeSiteMetrics } from './metrics';
 import { buildPilotLicenseHealthRecords, pilotLicenseHealthSummary } from './pilotLicense';
 import { buildFilesystemBoundaryProofRecords } from './filesystemBoundaryProof';
+import { projectKnowledgeRecord } from './knowledgeRecords';
+import { safeKnowledgeProjection } from './knowledgePolicy';
 
 export const CODESITE_ARTIFACT_VERSION = 1;
 const ARTIFACT_FILE_INDEX = '.codesite-projection-files.json';
@@ -351,6 +353,43 @@ export function codesiteSchemas() {
       requiredActions: { type: 'array', items: { type: 'string' } },
       collisionForecast: { type: 'object' },
     }, ['projectId', 'workspaceSlug', 'towerState']),
+    'shared-knowledge-summary.schema.json': {
+      ...schema('SharedKnowledgeSummary', {
+        schemaVersion: { type: 'string', const: 'synthi.codesite.sharedKnowledgeSummary.v1' },
+        id: { type: ['string', 'null'] },
+        projectId: { type: 'string' },
+        kind: { enum: ['discovery', 'lead', 'shared_skill', 'handoff'] },
+        status: { type: 'string' },
+        title: { type: 'string' },
+        summary: { type: 'string' },
+        confidence: { type: ['number', 'null'], minimum: 0, maximum: 1 },
+        source: {
+          type: 'object',
+          properties: {
+            actorType: { type: 'string' },
+            actorId: { type: 'string' },
+            agentSessionId: { type: ['string', 'null'] },
+          },
+          additionalProperties: false,
+        },
+        references: {
+          type: 'object',
+          properties: {
+            paths: { type: 'array', items: { type: 'string' } },
+            symbols: { type: 'array', items: { type: 'string' } },
+            contracts: { type: 'array', items: { type: 'string' } },
+            runtimeSessionIds: { type: 'array', items: { type: 'string' } },
+            agentSessionIds: { type: 'array', items: { type: 'string' } },
+            workstreamIds: { type: 'array', items: { type: 'string' } },
+            transactionIds: { type: 'array', items: { type: 'string' } },
+          },
+          additionalProperties: false,
+        },
+        createdAt: { type: ['string', 'null'] },
+        updatedAt: { type: ['string', 'null'] },
+      }, ['schemaVersion', 'projectId', 'kind', 'status', 'title', 'summary', 'references']),
+      additionalProperties: false,
+    },
     'metrics.schema.json': schema('Metrics', {
       schemaVersion: { type: 'string' },
       projectId: { type: ['string', 'null'] },
@@ -374,6 +413,72 @@ function schema(title, properties, required) {
   };
 }
 
+const REPO_SHARED_KNOWLEDGE_KINDS = new Set(['discovery', 'lead', 'shared_skill', 'handoff']);
+const REPO_SHARED_KNOWLEDGE_REFERENCE_KEYS = [
+  'paths',
+  'symbols',
+  'contracts',
+  'runtimeSessionIds',
+  'agentSessionIds',
+  'workstreamIds',
+  'transactionIds',
+];
+const PRIVATE_KNOWLEDGE_LITERAL = /(?:providerSessionRef|privatePrompt|terminalTranscript|chainOfThought|(?:api[-_ ]?)?token|credential|cookie|privateKey|environmentValue|accountState)\s*[:=]/i;
+const PRIVATE_KEY_MATERIAL = /-----BEGIN [A-Z ]*PRIVATE KEY-----/;
+
+function repoKnowledgeProjection(item) {
+  try {
+    const projected = item?.payloadJson != null || item?.scopeJson != null
+      ? projectKnowledgeRecord(item)
+      : safeKnowledgeProjection(item);
+    if (!projected
+      || projected.visibility !== 'project'
+      || projected.redactionClass === 'owner_private'
+      || !REPO_SHARED_KNOWLEDGE_KINDS.has(projected.kind)) {
+      return null;
+    }
+    if (PRIVATE_KNOWLEDGE_LITERAL.test(projected.title)
+      || PRIVATE_KNOWLEDGE_LITERAL.test(projected.summary)
+      || PRIVATE_KEY_MATERIAL.test(projected.summary)) {
+      return null;
+    }
+    const references = Object.fromEntries(REPO_SHARED_KNOWLEDGE_REFERENCE_KEYS.map((key) => [
+      key,
+      asArray(projected.references?.[key]).map((value) => String(value)),
+    ]));
+    return {
+      schemaVersion: 'synthi.codesite.sharedKnowledgeSummary.v1',
+      id: projected.id || null,
+      projectId: projected.projectId,
+      kind: projected.kind,
+      status: projected.status,
+      title: projected.title,
+      summary: projected.summary,
+      confidence: projected.confidence ?? null,
+      source: {
+        actorType: projected.source.actorType,
+        actorId: projected.source.actorId,
+        agentSessionId: projected.source.agentSessionId || null,
+      },
+      references,
+      createdAt: projected.createdAt || null,
+      updatedAt: projected.updatedAt || null,
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+export function buildSharedKnowledgeRepoProjection(knowledgeItems = []) {
+  return asArray(knowledgeItems)
+    .map(repoKnowledgeProjection)
+    .filter(Boolean)
+    .sort((left, right) => (
+      String(left.createdAt || '').localeCompare(String(right.createdAt || ''))
+      || String(left.id || '').localeCompare(String(right.id || ''))
+    ));
+}
+
 export function buildArtifactProjection(project, controlState = null) {
   const projectDir = `projects/${project.id}`;
   const pilotLicenseHealth = asArray(controlState?.pilotLicenseHealth).length
@@ -382,6 +487,7 @@ export function buildArtifactProjection(project, controlState = null) {
   const metrics = buildCodeSiteMetrics({ project, controlState: controlState || minimalControlState(project), workspaceSlug: project.workspaceSlug });
   const quarantines = quarantineReviewRecords(project);
   const filesystemBoundaryProofs = buildFilesystemBoundaryProofRecords(project);
+  const sharedKnowledge = buildSharedKnowledgeRepoProjection(project.knowledgeItems);
   const files = [
     jsonFile('manifest.json', {
       version: CODESITE_ARTIFACT_VERSION,
@@ -398,6 +504,8 @@ export function buildArtifactProjection(project, controlState = null) {
       filesystem_boundary_proof: `${projectDir}/filesystem-boundary-proof.json`,
       filesystem_boundary_proof_index: `${projectDir}/filesystem-boundary-proofs/index.jsonl`,
       proof_bundle_root: `${projectDir}/proof-bundles/`,
+      shared_knowledge: `${projectDir}/knowledge/index.jsonl`,
+      shared_knowledge_schema: 'schemas/shared-knowledge-summary.schema.json',
       mcp_tools: CODESITE_MCP_TOOLS,
     }),
     jsonFile('airspace/zones.json', project.zonePolicy?.zones || []),
@@ -417,6 +525,11 @@ export function buildArtifactProjection(project, controlState = null) {
     {
       relativePath: `${projectDir}/events.jsonl`,
       content: asArray(project.events).map((event) => stableJson(event)).join('\n') + (project.events?.length ? '\n' : ''),
+    },
+    {
+      relativePath: `${projectDir}/knowledge/index.jsonl`,
+      content: sharedKnowledge.map((item) => stableJson(item)).join('\n')
+        + (sharedKnowledge.length ? '\n' : ''),
     },
     {
       relativePath: `${projectDir}/quarantines/index.jsonl`,
