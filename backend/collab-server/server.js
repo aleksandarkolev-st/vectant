@@ -16,6 +16,9 @@ const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
 const { createTerminalWSS, createHeadlessSession, activeSessions: terminalSessions, broadcastToAll: terminalBroadcast, getAvailableShells, resolveWorkspaceCwd } = require('./terminalService');
 const { createAgentSessionAttachService } = require('./agentSessionAttachService');
+const {
+  createRuntimeObservationPublisher,
+} = require('./runtimeObservationPublisher');
 const { createProgramRuntimeManager } = require('./programRuntimeManager');
 const { createContinuousFlushService } = require('./continuousFlushService');
 const proxyService = require('./proxyService');
@@ -256,6 +259,11 @@ const runtimePortMonitor = isSysboxRuntimeEnabled()
 const managedProgramRuntime = createProgramRuntimeManager({
   activeSessions: terminalSessions,
   logger,
+  onSessionEvent: (event) => {
+    try {
+      runtimeObservationPublisher.handleRuntimeEvent(event);
+    } catch (_) { /* never let telemetry break the runtime */ }
+  },
   getActivePorts: () => proxyService.getActivePorts(),
   launchRuntime: async ({ sessionId, workspaceSlug, userId, env, title, command, runtimeType, metadata, codesiteContext, activeWorkspacePath }) => {
     // Slice 1 (real programs): `container` programs route into the per-workspace
@@ -2499,6 +2507,7 @@ const server = http.createServer(async (req, res) => {
   if (req.url === '/codesite/deployment-status') {
     await handleCodeSiteDeploymentStatusRequest(req, res, {
       probeOverlayCapability: workspaceRuntime?.probeOverlayCapability,
+      probeRuntimeEventAdapter: () => runtimeObservationPublisher.reportHealth(),
     });
     return;
   }
@@ -6801,6 +6810,7 @@ const sessionWss = new WebSocket.Server({ noServer: true, perMessageDeflate: wsP
 // Terminal PTY WebSocket server — spawns shell sessions via node-pty.
 // Clients connect to /terminal?sessionId=<id>&workspace=<slug>&cols=N&rows=N.
 const agentSessionAttachService = createAgentSessionAttachService();
+const runtimeObservationPublisher = createRuntimeObservationPublisher();
 const terminalWss = createTerminalWSS({
   enableContainerRuntime: ENABLE_CONTAINER_RUNTIME,
   enableCodeSiteDockerRuntime: ENABLE_CODESITE_DOCKER_RUNTIME,

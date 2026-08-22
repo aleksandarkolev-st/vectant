@@ -201,6 +201,16 @@ function codeSiteContextFromRequest(req, data = {}, extra = {}) {
     header('x-agent-session-id'),
     header('x-synthi-agent-session-id'),
   );
+  const projectId = value(
+    payload.projectId,
+    payload.project_id,
+    data.projectId,
+    data.project_id,
+    data.codesiteProjectId,
+    data.codesite_project_id,
+    header('x-codesite-project-id'),
+    header('x-project-id'),
+  );
   const agentProvider = value(
     payload.agentProvider,
     payload.agent_provider,
@@ -265,6 +275,7 @@ function codeSiteContextFromRequest(req, data = {}, extra = {}) {
     agentSessionId,
     agentProvider,
     agentRuntime,
+    projectId,
     displayCallsign: value(payload.displayCallsign, payload.callsign, header('x-codesite-callsign')),
     mutationLeaseId: value(payload.mutationLeaseId, payload.leaseId, header('x-codesite-lease-id')),
     transactionId: value(payload.transactionId, header('x-codesite-transaction-id')),
@@ -378,6 +389,7 @@ function codeSiteRuntimeEnv(context = {}, extra = {}) {
   setEnv(env, 'CODESITE_AGENT_SESSION_ID', context.agentSessionId);
   setEnv(env, 'CODESITE_AGENT_PROVIDER', context.agentProvider);
   setEnv(env, 'CODESITE_AGENT_RUNTIME', context.agentRuntime);
+  setEnv(env, 'CODESITE_PROJECT_ID', context.projectId);
   setEnv(env, 'CODESITE_ALLOWED_PATHS', jsonEnv(context.allowedPaths));
   setEnv(env, 'CODESITE_BLOCKED_PATHS', jsonEnv(context.blockedPaths));
   setEnv(env, 'CODESITE_ALLOWED_TOOLS', jsonEnv(context.allowedTools));
