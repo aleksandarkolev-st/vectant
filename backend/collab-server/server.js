@@ -15,6 +15,7 @@ const path = require('path');
 const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
 const { createTerminalWSS, createHeadlessSession, activeSessions: terminalSessions, broadcastToAll: terminalBroadcast, getAvailableShells, resolveWorkspaceCwd } = require('./terminalService');
+const { createAgentSessionAttachService } = require('./agentSessionAttachService');
 const { createProgramRuntimeManager } = require('./programRuntimeManager');
 const { createContinuousFlushService } = require('./continuousFlushService');
 const proxyService = require('./proxyService');
@@ -6799,11 +6800,13 @@ const sessionWss = new WebSocket.Server({ noServer: true, perMessageDeflate: wsP
 
 // Terminal PTY WebSocket server — spawns shell sessions via node-pty.
 // Clients connect to /terminal?sessionId=<id>&workspace=<slug>&cols=N&rows=N.
+const agentSessionAttachService = createAgentSessionAttachService();
 const terminalWss = createTerminalWSS({
   enableContainerRuntime: ENABLE_CONTAINER_RUNTIME,
   enableCodeSiteDockerRuntime: ENABLE_CODESITE_DOCKER_RUNTIME,
   workspaceRuntime,
   flushWorkspaceDocsToDisk,
+  agentSessionAttachService,
 });
 
 // Grace period for guest disconnect → reconnect (prevents phantom kicks)
@@ -6968,15 +6971,9 @@ server.on('upgrade', (request, socket, head) => {
       else if (auth.workspaceUserId) terminalUrl.searchParams.set('filesystemUserId', auth.workspaceUserId);
       if (auth.runtimeScope) terminalUrl.searchParams.set('runtimeScope', auth.runtimeScope);
       if (auth.collabSessionId) terminalUrl.searchParams.set('collabSessionId', auth.collabSessionId);
-      if (auth.agentBinding) {
-        terminalUrl.searchParams.set('codeSiteProjectId', auth.agentBinding.projectId);
-        terminalUrl.searchParams.set('agentProvider', auth.agentBinding.provider);
-        terminalUrl.searchParams.set('providerSessionRef', auth.agentBinding.providerSessionRef);
-      } else {
-        terminalUrl.searchParams.delete('codeSiteProjectId');
-        terminalUrl.searchParams.delete('agentProvider');
-        terminalUrl.searchParams.delete('providerSessionRef');
-      }
+      terminalUrl.searchParams.delete('codeSiteProjectId');
+      terminalUrl.searchParams.delete('agentProvider');
+      terminalUrl.searchParams.delete('providerSessionRef');
       terminalUrl.searchParams.delete('token');
       request.url = `${terminalUrl.pathname}${terminalUrl.search}`;
     }
