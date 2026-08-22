@@ -290,23 +290,37 @@ function browserKindToActor(
 
 /** Convert a legacy browser trace event into the universal model. Total: no
  *  field is dropped. Promoted fields are canonical; everything else rides in
- *  `legacy.browser` verbatim. */
-export function browserEventToEmbodied(event: BrowserTraceEventShape): EmbodiedEvent {
+ *  `legacy.browser` verbatim. Garbage input degrades to a safe minimal
+ *  envelope instead of throwing. */
+export function browserEventToEmbodied(event: BrowserTraceEventShape | null | undefined): EmbodiedEvent {
+  const source: Partial<BrowserTraceEventShape> =
+    typeof event === "object" && event !== null ? (event as Partial<BrowserTraceEventShape>) : {};
+  const safe = (value: unknown, fallback: string): string =>
+    typeof value === "string" ? value : fallback;
+  const safeNum = (value: unknown, fallback: number): number =>
+    typeof value === "number" && Number.isFinite(value) ? value : fallback;
+
   const legacy: BrowserLegacyFields = {
-    tab_id: event.tab_id,
-    ...(event.frame_id !== undefined ? { frame_id: event.frame_id } : {}),
-    url: event.url,
-    kind: event.kind,
-    ...(event.selector !== undefined ? { selector: event.selector } : {}),
-    ...(event.locator_candidates !== undefined
-      ? { locator_candidates: event.locator_candidates }
+    tab_id: safe(source.tab_id, "unknown-tab"),
+    ...(source.frame_id !== undefined ? { frame_id: source.frame_id } : {}),
+    url: safe(source.url, ""),
+    kind:
+      source.kind &&
+      ["human_action", "agent_action", "selection", "navigation", "console", "network"].includes(
+        source.kind,
+      )
+        ? source.kind
+        : "console",
+    ...(source.selector !== undefined ? { selector: source.selector } : {}),
+    ...(source.locator_candidates !== undefined
+      ? { locator_candidates: source.locator_candidates }
       : {}),
-    ...(event.value !== undefined ? { value: event.value } : {}),
-    ...(event.detail !== undefined ? { detail: event.detail } : {}),
-    ...(event.semantic !== undefined ? { semantic: event.semantic } : {}),
+    ...(source.value !== undefined ? { value: source.value } : {}),
+    ...(source.detail !== undefined ? { detail: source.detail } : {}),
+    ...(source.semantic !== undefined ? { semantic: source.semantic } : {}),
   };
 
-  const target_affordances = event.locator_candidates?.map((candidate) => ({
+  const target_affordances = source.locator_candidates?.map((candidate) => ({
     tier: BROWSER_LOCATOR_TIER[candidate.kind],
     ref: candidate.locator,
     confidence: candidate.confidence,
@@ -314,49 +328,51 @@ export function browserEventToEmbodied(event: BrowserTraceEventShape): EmbodiedE
   }));
 
   const action: EmbodiedAction | undefined =
-    event.action !== undefined ? { kind: event.action, primitive_class: "discrete" } : undefined;
+    source.action !== undefined && isBrowserActionKind(source.action)
+      ? { kind: source.action, primitive_class: "discrete" }
+      : undefined;
 
-  const security: EmbodiedSecurityFlags | undefined = event.security
+  const security: EmbodiedSecurityFlags | undefined = source.security
     ? {
-        realm_approved: event.security.exact_origin_approved,
+        realm_approved: source.security.exact_origin_approved,
         recording_approved:
-          event.security.screenshot_approved ||
-          event.security.diagnostics_approved ||
+          source.security.screenshot_approved ||
+          source.security.diagnostics_approved ||
           undefined,
-        exact_origin_approved: event.security.exact_origin_approved,
-        screenshot_approved: event.security.screenshot_approved,
-        diagnostics_approved: event.security.diagnostics_approved,
-        auth_checkpoint_approved: event.security.auth_checkpoint_approved,
-        frame_origin_approved: event.security.frame_origin_approved,
-        frame_screenshot_approved: event.security.frame_screenshot_approved,
-        popup_origin_approved: event.security.popup_origin_approved,
-        popup_screenshot_approved: event.security.popup_screenshot_approved,
+        exact_origin_approved: source.security.exact_origin_approved,
+        screenshot_approved: source.security.screenshot_approved,
+        diagnostics_approved: source.security.diagnostics_approved,
+        auth_checkpoint_approved: source.security.auth_checkpoint_approved,
+        frame_origin_approved: source.security.frame_origin_approved,
+        frame_screenshot_approved: source.security.frame_screenshot_approved,
+        popup_origin_approved: source.security.popup_origin_approved,
+        popup_screenshot_approved: source.security.popup_screenshot_approved,
       }
     : undefined;
 
+  const degraded = typeof event !== "object" || event === null;
+
   return {
     embodied_version: EMBODIED_EVENT_VERSION,
-    event_id: event.event_id,
-    trace_id: event.trace_id,
-    trace_version: event.trace_version,
-    event_seq: event.event_seq,
-    ts: event.ts,
+    event_id: safe(source.event_id, `orphan-${safeNum(source.ts, 0)}`),
+    trace_id: safe(source.trace_id, "unknown-trace"),
+    trace_version: safeNum(source.trace_version, 1),
+    event_seq: safeNum(source.event_seq, -1),
+    ts: safeNum(source.ts, 0),
     substrate: { kind: "browser" },
-    realm: { realm_kind: "origin", realm_id: event.origin },
-    // The hosted-browser session owning the tab is the execution world; the
-    // concrete session id is not present on individual trace events, so the
-    // environment is identified by the tab's owning surface descriptor.
-    environment: { environment_kind: "browser_session", environment_id: event.tab_id },
-    event_class: browserKindToClass(event.kind),
-    actor: browserKindToActor(event.kind),
+    realm: { realm_kind: "origin", realm_id: safe(source.origin, "") },
+    environment: { environment_kind: "browser_session", environment_id: legacy.tab_id },
+    event_class: browserKindToClass(legacy.kind),
+    actor: browserKindToActor(legacy.kind),
     ...(action !== undefined ? { action } : {}),
     ...(target_affordances !== undefined && target_affordances.length > 0
       ? { target_affordances }
       : {}),
-    ...(event.redacted !== undefined ? { redacted: event.redacted } : {}),
+    ...(source.redacted !== undefined ? { redacted: source.redacted } : {}),
     ...(security !== undefined ? { security } : {}),
     legacy: {
       format: "synthi.browser.trace.v1",
+      ...(degraded ? { degraded: true } : {}),
       browser: legacy,
     },
   };
@@ -370,6 +386,9 @@ export function embodiedToBrowserEvent(
   if (event.substrate.kind !== "browser") return null;
   const legacy = event.legacy?.browser;
   if (!legacy || event.legacy?.format !== "synthi.browser.trace.v1") return null;
+  // Degraded envelopes were built from garbage input; they must never
+  // round-trip into a plausible browser event.
+  if ((event.legacy as { degraded?: boolean }).degraded === true) return null;
 
   const security: BrowserTraceEventShape["security"] | undefined = event.security
     ? {
