@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  agentReattachBindingFromGateway,
   attachTerminalAgent,
   finalizeAgentTerminal,
   normalizeTerminalAgentBinding,
@@ -116,6 +117,32 @@ test('resume accepts a null one-time credential while new attachment fails close
     terminalSessionId: 'terminal-1',
     resolveBaseUrl: () => 'http://frontend.test/api/workspace/team/codesite',
   }), { code: 'AGENT_TERMINAL_ACCESS_TOKEN_REQUIRED' });
+});
+
+test('reattach binding comes from the new gateway identity and retained server session only', () => {
+  const existingBinding = normalizeTerminalAgentBinding({
+    result: attachResult(),
+    gatewayAuth: gatewayAuth(),
+    workspaceSlug: 'team',
+    terminalSessionId: 'terminal-1',
+  });
+  const requested = agentReattachBindingFromGateway({
+    gatewayAuth: gatewayAuth({ actorUserId: 'owner-2' }),
+    existingBinding,
+    workspaceSlug: 'team',
+    terminalSessionId: 'terminal-1',
+  });
+
+  assert.equal(requested.ownerUserId, 'owner-2');
+  assert.equal(requested.agentSessionId, 'agent-1');
+  assert.equal(requested.displayCallsign, 'CODEX-01');
+  assert.equal(requested.providerSessionRef, 'provider-session-1');
+  assert.equal(agentReattachBindingFromGateway({
+    gatewayAuth: gatewayAuth({ agentBinding: null }),
+    existingBinding,
+    workspaceSlug: 'team',
+    terminalSessionId: 'terminal-1',
+  }), null);
 });
 
 test('normalization rejects forged service identities instead of trusting response data', () => {

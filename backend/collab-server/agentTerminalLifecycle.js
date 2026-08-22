@@ -84,6 +84,34 @@ function lifecycleInput(state) {
   };
 }
 
+function agentReattachBindingFromGateway({
+  gatewayAuth,
+  existingBinding,
+  workspaceSlug,
+  terminalSessionId,
+  activeMutationLeaseId = null,
+  activeTransactionId = null,
+} = {}) {
+  if (!gatewayAuth?.agentBinding) return null;
+  return Object.freeze({
+    workspaceSlug: requiredString(workspaceSlug, 'AGENT_TERMINAL_WORKSPACE_REQUIRED'),
+    collaborationSessionId: requiredString(gatewayAuth.collabSessionId, 'AGENT_TERMINAL_GATEWAY_SESSION_REQUIRED'),
+    ownerUserId: requiredString(gatewayAuth.actorUserId, 'AGENT_TERMINAL_GATEWAY_OWNER_REQUIRED'),
+    collaborationUserId: requiredString(gatewayAuth.workspaceUserId, 'AGENT_TERMINAL_GATEWAY_USER_REQUIRED'),
+    effectiveWorkspaceUserId: requiredString(gatewayAuth.filesystemUserId, 'AGENT_TERMINAL_GATEWAY_EFFECTIVE_USER_REQUIRED'),
+    projectId: requiredString(gatewayAuth.agentBinding.projectId, 'AGENT_TERMINAL_CLAIM_PROJECT_REQUIRED'),
+    agentSessionId: requiredString(existingBinding?.agentSessionId, 'AGENT_TERMINAL_SESSION_REQUIRED'),
+    displayCallsign: requiredString(existingBinding?.displayCallsign, 'AGENT_TERMINAL_CALLSIGN_REQUIRED'),
+    agentProvider: requiredString(gatewayAuth.agentBinding.provider, 'AGENT_TERMINAL_CLAIM_PROVIDER_REQUIRED'),
+    providerSessionRef: requiredString(gatewayAuth.agentBinding.providerSessionRef, 'AGENT_TERMINAL_CLAIM_PROVIDER_SESSION_REQUIRED'),
+    runtimeScope: requiredString(gatewayAuth.runtimeScope, 'AGENT_TERMINAL_GATEWAY_RUNTIME_SCOPE_REQUIRED'),
+    terminalSessionId: requiredString(terminalSessionId, 'AGENT_TERMINAL_TERMINAL_SESSION_REQUIRED'),
+    runtimeSessionId: existingBinding?.runtimeSessionId ?? null,
+    activeMutationLeaseId: nullableIdentity(activeMutationLeaseId, 'AGENT_TERMINAL_LEASE_INVALID'),
+    activeTransactionId: nullableIdentity(activeTransactionId, 'AGENT_TERMINAL_TRANSACTION_INVALID'),
+  });
+}
+
 async function attachTerminalAgent({
   service,
   gatewayAuth,
@@ -161,6 +189,7 @@ function finalizeAgentTerminal(state, reason = 'terminal_disposed', {
 
 module.exports = {
   DEFAULT_HEARTBEAT_INTERVAL_MS,
+  agentReattachBindingFromGateway,
   attachTerminalAgent,
   finalizeAgentTerminal,
   normalizeTerminalAgentBinding,
