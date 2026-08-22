@@ -46,6 +46,8 @@ const MAX_UNIFIED_PATCH_ARTIFACTS = 64;
 const MAX_UNIFIED_PATCH_BYTES = 5 * 1024 * 1024;
 const MAX_UNIFIED_PATCH_TOTAL_BYTES = 20 * 1024 * 1024;
 const MAX_GIT_CAPTURE_CHARS = 256 * 1024;
+// Workstream E: cap on validation commands executed per git-patch plan.
+const MAX_PATCH_MODE_COMMANDS = 32;
 
 const SECRET_PATTERNS = [
   { name: 'github_token', pattern: /gh[pousr]_[A-Za-z0-9_]{20,}/g },
@@ -174,7 +176,15 @@ function normalizeExecutionPlan(input) {
     }
     if (!patchArtifactInputs.length) throw new Error('shadow_git_patch_artifacts_required');
     const commands = asArray(plan.commands || plan.checks || plan.inspections).map(normalizeCommand).filter(Boolean);
-    if (commands.length) throw new Error('shadow_git_patch_commands_not_supported');
+    // Workstream E: validation commands are allowed in git-patch mode only when
+    // explicitly opted in via env — patches apply in a disposable worktree and
+    // the impacted validation commands then run against that worktree copy.
+    if (commands.length && !inlineRepoCommandsAllowed()) {
+      throw new Error('shadow_git_patch_commands_not_supported');
+    }
+    if (commands.length > MAX_PATCH_MODE_COMMANDS) {
+      throw new Error('shadow_patch_command_limit_exceeded');
+    }
     if (patchArtifactInputs.length > MAX_UNIFIED_PATCH_ARTIFACTS) {
       throw new Error('shadow_patch_artifact_limit_exceeded');
     }
@@ -188,7 +198,7 @@ function normalizeExecutionPlan(input) {
       repoRoot,
       baseCommit: String(baseCommit).toLowerCase(),
       patchArtifacts,
-      commands: [],
+      commands,
       timeoutMs: normalizeTimeout(plan.timeoutMs || plan.timeout_ms),
       keepWorktrees: false,
     };
@@ -915,6 +925,19 @@ async function executeGitPatchUniverse(universe, input, plan) {
       applied = patchEvidence.length === artifacts.length
         && patchEvidence.every((evidence) => evidence.check?.status === 'passed' && evidence.apply?.status === 'passed');
       if (!applied) throw new Error('shadow_patch_apply_incomplete');
+      // Workstream E: run the plan's impacted validation commands against the
+      // patched worktree. Commands use the same allowlist + redaction pipeline
+      // as copy-command mode; failures downgrade the universe to near_miss.
+      const commands = [];
+      if (plan.commands.length) {
+        const allowed = allowedBinaries();
+        for (const command of plan.commands) {
+          const result = await runCommand(command, worktreeRoot, allowed);
+          commands.push(result);
+          if (result.status !== 'passed' && plan.stopOnFailure !== false && plan.stop_on_failure !== false) break;
+        }
+      }
+      const commandsPassed = commands.every((command) => command.status === 'passed');
       const outputDigest = digest({
         strategy,
         baseCommit: plan.baseCommit,
@@ -923,11 +946,13 @@ async function executeGitPatchUniverse(universe, input, plan) {
         patchDigests: artifacts.map((artifact) => artifact.digest),
         stagedDiffDigest: stagedDiff.stdoutDigest,
         changedPaths,
+        commandEvidence: commands.map((command) => command.evidenceDigest || null),
       });
       provisional = {
         strategy,
-        status: 'passed',
-        exitCode: 0,
+        status: commandsPassed ? 'passed' : 'near_miss',
+        exitCode: commandsPassed ? 0
+          : commands.find((command) => command.status !== 'passed')?.exitCode ?? 1,
         command: 'codesite-shadow-runner:git-worktree-patch-execution',
         outputDigest,
         executionMode: 'git_worktree_patch_execution',
@@ -942,6 +967,8 @@ async function executeGitPatchUniverse(universe, input, plan) {
         stagedDiffDigest: stagedDiff.stdoutDigest,
         materializationEvidence,
         patchEvidence,
+        commands,
+        durationMs: commands.reduce((sum, command) => sum + (Number(command.durationMs) || 0), 0),
         reasonCodes: [
           'shadow_universe_executed',
           'shadow_git_worktree_materialized',
@@ -949,6 +976,9 @@ async function executeGitPatchUniverse(universe, input, plan) {
           'shadow_patch_preimage_verified',
           'shadow_patch_applied',
           'shadow_after_tree_captured',
+          ...(commands.length ? [
+            ...(commandsPassed ? ['shadow_universe_repo_commands_passed'] : ['shadow_universe_repo_commands_failed']),
+          ] : []),
         ],
         evidenceRefs: [
           `codesite:shadow-job:${input.shadowJobRef}`,
@@ -961,6 +991,7 @@ async function executeGitPatchUniverse(universe, input, plan) {
             `codesite:shadow-patch-check:${digest(evidence.check)}`,
             `codesite:shadow-patch-apply:${digest(evidence.apply)}`,
           ]),
+          ...commands.map((command) => `codesite:shadow-command:${strategy}:${command.label}:${command.evidenceDigest}`),
         ],
       };
     }
@@ -1003,7 +1034,10 @@ async function executeGitPatchUniverse(universe, input, plan) {
   }
   return {
     ...provisional,
-    executed: provisional.status === 'passed' && provisional.materialized === true && provisional.applied === true,
+    // Workstream E: `executed` means real execution happened (patches applied
+    // in the disposable worktree). Command outcomes downgrade status to
+    // near_miss but do NOT negate executed — that's the forecast distinction.
+    executed: provisional.materialized === true && provisional.applied === true,
     sourceCheckout: {
       unchanged: sourceUnchanged,
       beforeDigest: sourceBefore.digest,

@@ -334,4 +334,154 @@ describe('CodeSite executable shadow runner Git foundation', () => {
     await expect(fs.access(marker)).rejects.toMatchObject({ code: 'ENOENT' });
     await expectSourceCheckoutUntouched(repo.repoRoot);
   });
+
+  it('runs opted-in validation commands inside the patched worktree and aggregates their evidence (Workstream E)', async () => {
+    const repo = await createRepository();
+    const patch = unifiedPatch();
+    // The validation command reads the patched file INSIDE the worktree copy —
+    // proving commands execute against the patched universe, not the source.
+    const checkScript = [
+      "import fs from 'node:fs';",
+      "const content = fs.readFileSync('contract.txt', 'utf8').trim();",
+      "if (content !== 'v2') {",
+      "  console.error(`expected v2, received ${content}`);",
+      '  process.exit(1);',
+      '}',
+      "console.log('contract v2 verified');",
+      '',
+    ].join('\n');
+    const scriptPath = path.join(repo.root, 'check-contract.mjs');
+    await fs.writeFile(scriptPath, checkScript, 'utf8');
+
+    const input = runnerInput({
+      repoRoot: repo.repoRoot,
+      baseCommit: repo.baseCommit,
+      patch,
+      commands: [{
+        label: 'verify-contract-v2',
+        command: process.execPath,
+        args: [scriptPath],
+      }],
+    });
+    // Opt-in required for commands in git-patch mode:
+    const { stdout, stderr, exitCode } = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [runnerPath], {
+        cwd: path.dirname(runnerPath),
+        env: {
+          ...process.env,
+          SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_ROOT: repo.root,
+          SYNTHI_CODESITE_SHADOW_RUNNER_ALLOW_INLINE_COMMANDS: '1',
+          SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_BINARIES_JSON: JSON.stringify([process.execPath]),
+          SYNTHI_CODESITE_SHADOW_RUNNER_KEEP_WORKTREES: '0',
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let out = '';
+      let err = '';
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', (chunk) => { out += chunk; });
+      child.stderr.on('data', (chunk) => { err += chunk; });
+      child.on('error', reject);
+      child.on('close', (code) => resolve({ stdout: out, stderr: err, exitCode: code }));
+      child.stdin.end(`${JSON.stringify(input)}\n`);
+    });
+    expect(exitCode).toBe(0);
+    expect(stderr).toBe('');
+    const result = JSON.parse(stdout);
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      executionMode: 'git_worktree_patch_execution',
+      executed: true,
+    });
+    expect(result.universes[0]).toMatchObject({
+      status: 'passed',
+      executed: true,
+      materialized: true,
+      applied: true,
+      durationMs: expect.any(Number),
+      reasonCodes: expect.arrayContaining([
+        'shadow_universe_executed',
+        'shadow_patch_applied',
+        'shadow_universe_repo_commands_passed',
+      ]),
+    });
+    expect(result.universes[0].commands).toHaveLength(1);
+    expect(result.universes[0].commands[0]).toMatchObject({
+      label: 'verify-contract-v2',
+      status: 'passed',
+      exitCode: 0,
+      stdoutTail: expect.stringContaining('contract v2 verified'),
+      durationMs: expect.any(Number),
+    });
+    expect(result.universes[0].evidenceRefs).toEqual(expect.arrayContaining([
+      `codesite:shadow-command:schema-first:verify-contract-v2:${result.universes[0].commands[0].evidenceDigest}`,
+    ]));
+    await expectSourceCheckoutUntouched(repo.repoRoot);
+  });
+
+  it('downgrades the universe to near_miss when an opted-in validation command fails after a clean patch apply', async () => {
+    const repo = await createRepository();
+    const patch = unifiedPatch({ before: 'v1', after: 'v9' });
+    const checkScript = [
+      "import fs from 'node:fs';",
+      "const content = fs.readFileSync('contract.txt', 'utf8').trim();",
+      "if (content !== 'v2') { console.error('not v2'); process.exit(3); }",
+      '',
+    ].join('\n');
+    const scriptPath = path.join(repo.root, 'expect-v2.mjs');
+    await fs.writeFile(scriptPath, checkScript, 'utf8');
+
+    const input = runnerInput({
+      repoRoot: repo.repoRoot,
+      baseCommit: repo.baseCommit,
+      patch,
+      commands: [{
+        label: 'expect-v2',
+        command: process.execPath,
+        args: [scriptPath],
+      }],
+    });
+    const { stdout } = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [runnerPath], {
+        cwd: path.dirname(runnerPath),
+        env: {
+          ...process.env,
+          SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_ROOT: repo.root,
+          SYNTHI_CODESITE_SHADOW_RUNNER_ALLOW_INLINE_COMMANDS: '1',
+          SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_BINARIES_JSON: JSON.stringify([process.execPath]),
+          SYNTHI_CODESITE_SHADOW_RUNNER_KEEP_WORKTREES: '0',
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let out = '';
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (chunk) => { out += chunk; });
+      child.on('error', reject);
+      child.on('close', () => resolve({ stdout: out }));
+      child.stdin.end(`${JSON.stringify(input)}\n`);
+    });
+    const result = JSON.parse(stdout);
+
+    // Patches applied cleanly but the validation command failed: executed
+    // stays true (real work happened), status becomes near_miss with the
+    // command's exit code surfaced.
+    expect(result).toMatchObject({
+      executionMode: 'git_worktree_patch_execution',
+      universes: [{
+        status: 'near_miss',
+        executed: true,
+        materialized: true,
+        applied: true,
+        exitCode: 3,
+        reasonCodes: expect.arrayContaining([
+          'shadow_universe_executed',
+          'shadow_universe_repo_commands_failed',
+        ]),
+      }],
+    });
+    expect(result.status).toBe('completed');
+    await expectSourceCheckoutUntouched(repo.repoRoot);
+  });
 });
