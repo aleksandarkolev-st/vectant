@@ -29,6 +29,7 @@ from .claude_code_runner import ClaudeCodeRunner
 from .hermes_runner import HermesRunner
 from .agent_execution import AgentContainerPolicy, docker_command
 from .workspace_write_policy import assert_protected_unchanged, protected_snapshot, provision_agent_write_access
+from .live_workspace_lock import live_workspace_lock
 
 router = APIRouter(prefix="/counterfactual", tags=["counterfactual"])
 
@@ -439,24 +440,25 @@ def execute_external_runner(run_id: str, payload: RunnerExecutionRequest, worksp
     adapter = adapters[payload.runner_kind]()
     try:
         if payload.workspace_mode == "live":
-            before_protected = protected_snapshot(repo.repo)
-            container_policy = AgentContainerPolicy.from_environment()
-            provision_agent_write_access(repo.repo, shared_gid=container_policy.shared_workspace_gid)
-            if payload.runner_kind == "codex":
-                runner_command = adapter.live_command_for(invocation=invocation)
-            else:
-                runner_command = adapter.command_for(invocation=invocation)
-            command = docker_command(
-                workspace=repo.repo, run_id=invocation.run_id,
-                runner_command=runner_command, policy=container_policy,
-            )
-            artifact = adapter.run(workspace_path=repo.repo, artifact_root=repo.repo, invocation=invocation, command=command)
-            assert_protected_unchanged(
-                before_protected,
-                repo.repo,
-                allowed_paths=[f".vectant/runner-artifacts/{invocation.run_id}/{adapter.runner_kind}-{invocation.universe_id}.json"],
-            )
-            diff = adapter.collect_diff(repo.repo, invocation.start_state_hash)
+            with live_workspace_lock(repo.repo):
+                before_protected = protected_snapshot(repo.repo)
+                container_policy = AgentContainerPolicy.from_environment()
+                provision_agent_write_access(repo.repo, shared_gid=container_policy.shared_workspace_gid)
+                if payload.runner_kind == "codex":
+                    runner_command = adapter.live_command_for(invocation=invocation)
+                else:
+                    runner_command = adapter.command_for(invocation=invocation)
+                command = docker_command(
+                    workspace=repo.repo, run_id=invocation.run_id,
+                    runner_command=runner_command, policy=container_policy,
+                )
+                artifact = adapter.run(workspace_path=repo.repo, artifact_root=repo.repo, invocation=invocation, command=command)
+                assert_protected_unchanged(
+                    before_protected,
+                    repo.repo,
+                    allowed_paths=[f".vectant/runner-artifacts/{invocation.run_id}/{adapter.runner_kind}-{invocation.universe_id}.json"],
+                )
+                diff = adapter.collect_diff(repo.repo, invocation.start_state_hash)
         else:
             # Isolated execution remains available for counterfactual trials.
             with adapter.isolated_chamber(repo.repo, invocation) as chamber:

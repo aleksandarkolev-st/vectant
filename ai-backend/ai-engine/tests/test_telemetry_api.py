@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import subprocess
+from contextlib import nullcontext
 
 from shadow.telemetry_api import router
 from shadow.runner_base import RunnerArtifact
@@ -175,6 +176,7 @@ def test_live_runner_allows_only_its_controller_artifact(tmp_path, monkeypatch):
     }).json()["counterfactual_run"]["run_id"]
 
     monkeypatch.setattr("shadow.telemetry_api.provision_agent_write_access", lambda *args, **kwargs: None)
+    monkeypatch.setattr("shadow.telemetry_api.live_workspace_lock", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr("shadow.telemetry_api.AgentContainerPolicy.from_environment", lambda: AgentContainerPolicy(image="runner", network="isolated", credentials_volume="credentials"))
 
     def fake_run(self, *, workspace_path, invocation, command, artifact_root=None):
