@@ -33,6 +33,7 @@ import {
   getProject,
   getRelevantAgentContext,
   recordAgentProjectObservation,
+  recordRuntimeProjectObservation,
   getSchemas,
   getSourceStateSince,
   getTransaction,
@@ -495,6 +496,11 @@ export async function POST(request, { params }) {
       return okJson({ member: await revokeProjectMember(slug, route[1], route[3], body, access.actor) });
     }
 
+    if (route[0] === 'projects' && route[2] === 'observations' && route.length === 3) {
+      if (!access.actor?.internalService) return errorJson(403, 'codesite_observations_internal_auth_required');
+      return okJson(await recordRuntimeProjectObservation(slug, route[1], body), { status: 201 });
+    }
+
     if (route[0] === 'projects' && route[2] === 'collision-predict') {
       return okJson(await collisionPredict(slug, route[1], access.actor));
     }
@@ -624,6 +630,7 @@ function postAccessMode(route) {
     'inspection-runs',
     'members',
     'collision-predict',
+    'observations',
   ].includes(route[2])) return 'read';
   if (route[0] === 'documents' && route[2] === 'reviews') return 'read';
   if (route[0] === 'execution-plans' && route[2] === 'route-revisions') return 'read';

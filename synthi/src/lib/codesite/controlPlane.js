@@ -56,6 +56,7 @@ import { canonicalKnowledgeEventType } from './knowledgeEvents';
 import {
   buildObservationCoordinationInput,
   normalizeProjectObservation,
+  normalizeRuntimeObservedObservation,
 } from './projectObservation';
 
 const EVENT_ORDER_BY = [{ logicalTime: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }];
@@ -2580,6 +2581,168 @@ const MAX_OBSERVATION_BODY_BYTES = 256 * 1024;
 
 function coordinationStageError(code, details) {
   return new ProjectCoordinationBusError(code, { stage: 'authorize', status: 403, details });
+}
+
+function runtimeObservationInboxTargets(projectId, observation, { sessions, executionPlans, transactions }) {
+  const projected = {
+    id: `obs:${observation.id}`,
+    kind: 'runtime_observation',
+    createdByAgentSessionId: null,
+    references: observation.payload.references,
+  };
+  return buildKnowledgeDeliveryPlan({
+    item: projected,
+    sessions,
+    executionPlans,
+    transactions,
+  });
+}
+
+export async function recordRuntimeProjectObservation(workspaceSlug, projectId, body = {}) {
+  const project = await prisma.codeSiteProject.findFirst({
+    where: { id: String(projectId || ''), workspaceSlug },
+    include: { members: true },
+  });
+  if (!project) throw notFound('codesite_project_not_found');
+  if (project.status !== 'active') throw forbidden('codesite_project_inactive');
+  const normalized = normalizeRuntimeObservedObservation({
+    ...body,
+    eventType: 'runtime_observed',
+    projectId: project.id,
+  });
+  const coordinationInput = buildObservationCoordinationInput(normalized, {
+    actorId: body.adapterSessionId || null,
+  });
+  if (!coordinationInput) throw badRequest('observation_coordination_unmappable');
+
+  let storedEvent = null;
+  let storedInboxItems = [];
+  const bus = createProjectCoordinationBus({
+    normalize: async () => ({
+      id: normalized.id,
+      projectId: project.id,
+      eventType: coordinationInput.eventType,
+      payload: {
+        displayCallsign: null,
+        actorType: 'adapter',
+        actorId: coordinationInput.actorId,
+        details: coordinationInput.details,
+        evidenceRefs: coordinationInput.evidenceRefs,
+      },
+    }),
+    redact: async (event) => event,
+    classify: async (event) => ({
+      ...event,
+      classification: { class: event.eventType, redactionClass: 'project_fact' },
+    }),
+    correlate: async (event) => ({
+      ...event,
+      correlation: {
+        observationId: normalized.id,
+        producer: normalized.producer,
+        references: normalized.payload.references,
+        targetTransactionIds: normalized.payload.references.transactionIds,
+      },
+    }),
+    authorize: async (event) => ({ allowed: event.projectId === project.id, recipients: [] }),
+    persist: async (event) => {
+      storedEvent = await recordEventWithClient(prisma, project.id, {
+        id: event.id,
+        mutationLeaseId: coordinationInput.mutationLeaseId,
+        eventType: event.eventType,
+        displayCallsign: event.payload.displayCallsign,
+        actorType: event.payload.actorType,
+        actorId: event.payload.actorId,
+        details: event.payload.details,
+        evidenceRefs: event.payload.evidenceRefs,
+      }, { syncArtifacts: false });
+      return {
+        ...event,
+        persisted: {
+          id: storedEvent.id,
+          logicalTime: storedEvent.logicalTime ?? null,
+          createdAt: storedEvent.createdAt instanceof Date
+            ? storedEvent.createdAt.toISOString()
+            : String(storedEvent.createdAt || ''),
+        },
+      };
+    },
+    route: async (event) => {
+      const [sessions, executionPlans, transactions] = await Promise.all([
+        prisma.codeSiteAgentSession.findMany({
+          where: { projectId: project.id, endedAt: null, status: { in: ['attached', 'detached'] } },
+        }),
+        prisma.codeSiteExecutionPlan.findMany({
+          where: { projectId: project.id, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
+        }),
+        prisma.codeSiteMutationTransaction.findMany({
+          where: { projectId: project.id, status: { in: ['open', 'prepared', 'blocked', 'validated'] } },
+        }),
+      ]);
+      const targets = runtimeObservationInboxTargets(project.id, normalized, {
+        sessions,
+        executionPlans,
+        transactions,
+      }).slice(0, 32);
+      storedInboxItems = [];
+      for (const target of targets) {
+        const inboxItem = await prisma.codeSiteAgentInboxItem.create({
+          data: {
+            projectId: project.id,
+            agentSessionId: target.agentSessionId,
+            recipientUserId: target.recipientUserId,
+            eventId: storedEvent?.id || event.id,
+            kind: 'runtime_observed',
+            requiresResponse: false,
+            status: 'unread',
+            redactedPayloadJson: stringifyJson({
+              observationId: normalized.id,
+              title: `Runtime: ${normalized.producer.kind}`,
+              references: normalized.payload.references,
+              fact: normalized.payload.fact,
+              occurredAt: normalized.occurredAt,
+              reasons: target.reasons,
+              evidenceRefs: normalized.payload.evidenceRefs,
+            }),
+          },
+        });
+        storedInboxItems.push(inboxProjection(inboxItem));
+      }
+      return {
+        eventId: event.id,
+        mode: 'durable_relevance_router',
+        recipientAgentSessionIds: unique(targets.map((target) => target.agentSessionId)),
+      };
+    },
+  });
+  await bus.publish({
+    id: normalized.id,
+    projectId: project.id,
+    eventType: coordinationInput.eventType,
+    payload: {
+      displayCallsign: null,
+      actorType: 'adapter',
+      actorId: coordinationInput.actorId,
+      details: coordinationInput.details,
+      evidenceRefs: coordinationInput.evidenceRefs,
+    },
+  });
+  if (!storedEvent) throw new Error('runtime_observation_event_not_persisted');
+  return {
+    observation: {
+      id: normalized.id,
+      schemaVersion: normalized.schemaVersion,
+      eventType: normalized.eventType,
+      producer: normalized.producer,
+      occurredAt: normalized.occurredAt,
+      references: normalized.payload.references,
+      fact: normalized.payload.fact,
+      evidenceRefs: normalized.payload.evidenceRefs,
+    },
+    event: eventProjection(storedEvent),
+    notifiedAgentSessionIds: storedInboxItems.map((item) => item.agentSessionId),
+    inboxItems: storedInboxItems,
+  };
 }
 
 export async function recordAgentProjectObservation(workspaceSlug, sessionId, agentAccessToken, body = {}, options = {}) {

@@ -187,6 +187,7 @@ import {
   promotePolicyDelta,
   requireAgentTokenAuthority,
   recordAgentProjectObservation,
+  recordRuntimeProjectObservation,
   recordTransactionRead,
   recordTransactionQuarantineEvent,
   recordTransactionWrite,
@@ -666,6 +667,90 @@ describe('recordAgentProjectObservation', () => {
       { pad: 'x'.repeat(300 * 1024) },
       { now: OBS_NOW },
     )).rejects.toMatchObject({ status: 400, code: 'observation_payload_too_large' });
+  });
+});
+
+describe('recordRuntimeProjectObservation', () => {
+  function runtimeProject(overrides = {}) {
+    return {
+      id: 'project-runtime-1',
+      workspaceSlug: 'acme',
+      status: 'active',
+      members: [{
+        userId: 'user-alice',
+        role: 'owner',
+        permissionsJson: JSON.stringify(['project:read']),
+        participationStatus: 'enabled',
+        revokedAt: null,
+      }],
+      ...overrides,
+    };
+  }
+  function adapterBody(overrides = {}) {
+    return {
+      producer: { kind: 'program_runtime_adapter', eventId: 'adapter-event-77' },
+      occurredAt: '2026-08-22T12:00:01.000Z',
+      refs: {
+        runtimeSessionIds: ['rt-shared-1'],
+        paths: ['src/DoorState.cpp'],
+      },
+      evidenceRefs: ['runtime-event:77'],
+      fact: {
+        observationKind: 'state_changed',
+        runtimeState: 'ready',
+        healthState: 'ok',
+        ports: [8080],
+      },
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    prisma.codeSiteEvent.count.mockResolvedValue(4);
+    prisma.codeSiteEvent.create.mockImplementation(async ({ data }) => ({ ...data, createdAt: new Date() }));
+    prisma.codeSiteAgentInboxItem.create.mockImplementation(async ({ data }) => ({ id: `inbox-${data.agentSessionId}`, createdAt: new Date(), ...data }));
+    prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([]);
+  });
+
+  it('persists one causal event and notifies only agents whose active routes intersect the observation', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValue(runtimeProject());
+    prisma.codeSiteAgentSession.findMany.mockResolvedValue([
+      { id: 'agent-ben-1', ownerUserId: 'user-ben', status: 'attached', endedAt: null, runtimeSessionId: null, subscriptionsJson: '[]' },
+      { id: 'agent-alice-1', ownerUserId: 'user-alice', status: 'attached', endedAt: null, runtimeSessionId: null, subscriptionsJson: '[]' },
+    ]);
+    prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([
+      { id: 'plan-ben-1', agentSessionId: 'agent-ben-1', routeJson: JSON.stringify(['src/DoorState.cpp']), status: 'active' },
+    ]);
+    prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([]);
+
+    const result = await recordRuntimeProjectObservation('acme', 'project-runtime-1', adapterBody());
+
+    expect(result.event.eventType).toBe('runtime_observed');
+    expect(result.event.projectId).toBe('project-runtime-1');
+    expect(result.notifiedAgentSessionIds).toEqual(['agent-ben-1']);
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledTimes(1);
+    const inboxData = prisma.codeSiteAgentInboxItem.create.mock.calls[0][0].data;
+    expect(inboxData.agentSessionId).toBe('agent-ben-1');
+    expect(inboxData.recipientUserId).toBe('user-ben');
+    expect(JSON.parse(inboxData.redactedPayloadJson).fact.observationKind).toBe('state_changed');
+  });
+
+  it('rejects malformed adapter payloads before persistence', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValue(runtimeProject());
+    await expect(recordRuntimeProjectObservation('acme', 'project-runtime-1', adapterBody({ fact: {} })))
+      .rejects.toMatchObject({ status: 422 });
+    expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+    expect(prisma.codeSiteAgentInboxItem.create).not.toHaveBeenCalled();
+  });
+
+  it('denies unknown or inactive projects', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValue(null);
+    await expect(recordRuntimeProjectObservation('acme', 'missing', adapterBody()))
+      .rejects.toMatchObject({ status: 404, code: 'codesite_project_not_found' });
+    prisma.codeSiteProject.findFirst.mockResolvedValue(runtimeProject({ status: 'paused' }));
+    await expect(recordRuntimeProjectObservation('acme', 'project-runtime-1', adapterBody()))
+      .rejects.toMatchObject({ status: 403, code: 'codesite_project_inactive' });
   });
 });
 
