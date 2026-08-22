@@ -90,6 +90,7 @@ const AGENT_REATTACH_REQUIRED_IDENTITIES = Object.freeze([
   'effectiveWorkspaceUserId',
   'projectId',
   'agentSessionId',
+  'displayCallsign',
   'agentProvider',
   'providerSessionRef',
   'runtimeScope',
