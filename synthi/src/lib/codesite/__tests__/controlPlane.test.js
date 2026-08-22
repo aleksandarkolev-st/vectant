@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -291,9 +292,11 @@ function mockBoundAgentAuthoritySession(session, tokenHash = AGENT_AUTHORITY_TOK
 }
 
 function codesiteScriptPath(scriptName) {
-  const repoRelative = path.join('synthi', 'scripts', scriptName);
-  const packageRelative = path.join('scripts', scriptName);
-  return path.resolve(process.cwd(), path.basename(process.cwd()) === 'synthi' ? packageRelative : repoRelative);
+  // Resolve from this test file's location so it is independent of the vitest
+  // process cwd (repo-local harness runs with cwd=synthi; CI harness does not).
+  const here = path.dirname(fileURLToPath(import.meta.url)); // .../synthi/src/lib/codesite/__tests__
+  const synthiRoot = path.resolve(here, '..', '..', '..', '..');            // .../synthi
+  return path.join(synthiRoot, 'scripts', scriptName);
 }
 
 function transactionFixture() {
