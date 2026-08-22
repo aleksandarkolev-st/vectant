@@ -10637,6 +10637,21 @@ export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}, a
       executionMode: shadowExecution.executionMode || shadowExecution.execution_mode || null,
       evidenceRefs: shadowExecutionEvidenceRefs,
       universeCount: asArray(shadowExecution.universes).length,
+      // Workstream E runtime/cost evidence rollup: aggregate wall time across
+      // universes and their validation commands so reviewers can compare the
+      // measured execution cost of each route without parsing raw evidence.
+      runtimeMs: asArray(shadowExecution.universes).reduce((sum, universe) => {
+        const universeMs = Number(universe?.durationMs) || 0;
+        const commandMs = asArray(universe?.commands)
+          .reduce((inner, command) => inner + (Number(command?.durationMs) || 0), 0);
+        return sum + Math.max(universeMs, commandMs);
+      }, 0),
+      commandCount: asArray(shadowExecution.universes)
+        .reduce((sum, universe) => sum + asArray(universe?.commands).length, 0),
+      passedUniverses: asArray(shadowExecution.universes)
+        .filter((universe) => universe?.status === 'passed').length,
+      failedUniverses: asArray(shadowExecution.universes)
+        .filter((universe) => universe?.status === 'failed').length,
       digest: digest(shadowExecution),
     } : null,
     repoSignals: towerSignals.summary,
