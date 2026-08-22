@@ -51,8 +51,12 @@ import {
 } from './knowledgeRecords';
 import { buildKnowledgeDeliveryPlan } from './knowledgeRouting';
 import { validateKnowledgeResponse } from './knowledgeResponses';
-import { createProjectCoordinationBus } from './projectCoordinationBus';
+import { createProjectCoordinationBus, ProjectCoordinationBusError } from './projectCoordinationBus';
 import { canonicalKnowledgeEventType } from './knowledgeEvents';
+import {
+  buildObservationCoordinationInput,
+  normalizeProjectObservation,
+} from './projectObservation';
 
 const EVENT_ORDER_BY = [{ logicalTime: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }];
 const ACTIVE_FLIGHT_STATUSES = ['filed', 'preflight', 'cleared', 'taxiing', 'airborne', 'holding', 'rerouted', 'landing_requested'];
@@ -2570,6 +2574,153 @@ export async function createAgentKnowledgeItem(workspaceSlug, sessionId, agentAc
   const result = await persistKnowledgeAndImpacts(authority, record, deliveryPlan);
   await syncArtifactsForProject(authority.session.projectId, { reason: 'knowledge_recorded', eventId: result.event?.id });
   return { ...result, duplicate: false };
+}
+
+const MAX_OBSERVATION_BODY_BYTES = 256 * 1024;
+
+function coordinationStageError(code, details) {
+  return new ProjectCoordinationBusError(code, { stage: 'authorize', status: 403, details });
+}
+
+export async function recordAgentProjectObservation(workspaceSlug, sessionId, agentAccessToken, body = {}, options = {}) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.observations.write',
+    now: options.now,
+  });
+  const session = authority.session;
+  if (Buffer.byteLength(JSON.stringify(body ?? {}), 'utf8') > MAX_OBSERVATION_BODY_BYTES) {
+    throw badRequest('observation_payload_too_large', { maxBytes: MAX_OBSERVATION_BODY_BYTES });
+  }
+  const normalized = normalizeProjectObservation({
+    ...body,
+    projectId: session.projectId,
+  });
+  if (normalized.payload.references.agentSessionIds.length
+    && !normalized.payload.references.agentSessionIds.includes(session.id)) {
+    throw forbidden('observation_agent_session_mismatch');
+  }
+  if (normalized.payload.providerSessionBound && !session.providerSessionRef) {
+    throw badRequest('observation_provider_binding_unavailable');
+  }
+  const coordinationInput = buildObservationCoordinationInput(normalized, {
+    actorId: session.terminalSessionId || session.runtimeSessionId || session.id,
+  });
+  if (!coordinationInput) throw badRequest('observation_coordination_unmappable');
+
+  let storedEvent = null;
+  const bus = createProjectCoordinationBus({
+    normalize: async () => ({
+      id: normalized.id,
+      projectId: session.projectId,
+      eventType: coordinationInput.eventType,
+      payload: {
+        displayCallsign: session.displayCallsign || null,
+        actorType: coordinationInput.actorType,
+        actorId: coordinationInput.actorId,
+        details: coordinationInput.details,
+        evidenceRefs: coordinationInput.evidenceRefs,
+      },
+    }),
+    redact: async (event) => event,
+    classify: async (event) => ({
+      ...event,
+      classification: {
+        class: event.eventType,
+        redactionClass: 'project_fact',
+      },
+    }),
+    correlate: async (event) => ({
+      ...event,
+      correlation: {
+        observationId: normalized.id,
+        producer: normalized.producer,
+        references: normalized.payload.references,
+        targetTransactionIds: normalized.payload.references.transactionIds,
+        targetAgentSessionIds: normalized.payload.references.agentSessionIds,
+      },
+    }),
+    authorize: async (event) => {
+      const transactionIds = normalized.payload.references.transactionIds;
+      const ownerSessionIds = new Set();
+      if (transactionIds.length) {
+        const ownedTransactions = await prisma.codeSiteMutationTransaction.findMany({
+          where: {
+            projectId: session.projectId,
+            id: { in: transactionIds },
+            status: { in: ['open', 'prepared', 'blocked', 'validated'] },
+          },
+          select: { id: true, agentSessionId: true },
+        });
+        const knownTransactionIds = new Set(ownedTransactions.map((transaction) => transaction.id));
+        for (const transaction of ownedTransactions) {
+          if (transaction.agentSessionId) ownerSessionIds.add(transaction.agentSessionId);
+        }
+        if (knownTransactionIds.size !== transactionIds.length) {
+          throw coordinationStageError('observation_transaction_outside_project', transactionIds);
+        }
+      }
+      return {
+        allowed: event.projectId === session.projectId,
+        recipients: unique([
+          ...normalized.payload.references.agentSessionIds,
+          ...ownerSessionIds,
+        ]),
+      };
+    },
+    persist: async (event) => {
+      storedEvent = await recordEventWithClient(prisma, session.projectId, {
+        id: event.id,
+        mutationLeaseId: coordinationInput.mutationLeaseId,
+        eventType: event.eventType,
+        displayCallsign: event.payload.displayCallsign,
+        actorType: event.payload.actorType,
+        actorId: event.payload.actorId,
+        details: event.payload.details,
+        evidenceRefs: event.payload.evidenceRefs,
+      }, { syncArtifacts: false });
+      return {
+        ...event,
+        persisted: {
+          id: storedEvent.id,
+          logicalTime: storedEvent.logicalTime ?? null,
+          createdAt: storedEvent.createdAt instanceof Date
+            ? storedEvent.createdAt.toISOString()
+            : String(storedEvent.createdAt || ''),
+        },
+      };
+    },
+    route: async (event, { authorization }) => ({
+      eventId: event.id,
+      mode: 'durable_relevance_router',
+      recipientAgentSessionIds: authorization.recipients,
+    }),
+  });
+  await bus.publish({
+    id: normalized.id,
+    projectId: session.projectId,
+    eventType: coordinationInput.eventType,
+    payload: {
+      displayCallsign: session.displayCallsign || null,
+      actorType: coordinationInput.actorType,
+      actorId: coordinationInput.actorId,
+      details: coordinationInput.details,
+      evidenceRefs: coordinationInput.evidenceRefs,
+    },
+  });
+  if (!storedEvent) throw new Error('observation_event_not_persisted');
+  return {
+    observation: {
+      id: normalized.id,
+      schemaVersion: normalized.schemaVersion,
+      eventType: normalized.eventType,
+      producer: normalized.producer,
+      occurredAt: normalized.occurredAt,
+      references: normalized.payload.references,
+      fact: normalized.payload.fact,
+      evidenceRefs: normalized.payload.evidenceRefs,
+    },
+    event: eventProjection(storedEvent),
+  };
 }
 
 export async function getAgentSharedKnowledge(workspaceSlug, sessionId, agentAccessToken, query = {}) {

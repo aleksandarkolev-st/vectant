@@ -32,6 +32,7 @@ import {
   getProofBundle,
   getProject,
   getRelevantAgentContext,
+  recordAgentProjectObservation,
   getSchemas,
   getSourceStateSince,
   getTransaction,
@@ -319,6 +320,18 @@ export async function POST(request, { params }) {
   if (route[0] === 'agent-sessions' && route[2] === 'knowledge' && route.length === 3) {
     try {
       return okJson(await createAgentKnowledgeItem(
+        slug,
+        route[1],
+        bearerToken(request),
+        await readJson(request),
+      ), { status: 201 });
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
+  if (route[0] === 'agent-sessions' && route[2] === 'observations' && route.length === 3) {
+    try {
+      return okJson(await recordAgentProjectObservation(
         slug,
         route[1],
         bearerToken(request),

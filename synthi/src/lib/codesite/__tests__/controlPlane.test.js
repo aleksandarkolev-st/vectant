@@ -186,6 +186,7 @@ import {
   proposeRouteRevision,
   promotePolicyDelta,
   requireAgentTokenAuthority,
+  recordAgentProjectObservation,
   recordTransactionRead,
   recordTransactionQuarantineEvent,
   recordTransactionWrite,
@@ -525,6 +526,148 @@ function signedDojoProofFixture(validAt = new Date()) {
     implementationStatus: { executable: true, productionRuntime: false },
   };
 }
+
+describe('recordAgentProjectObservation', () => {
+  const OBS_NOW = new Date('2026-08-22T12:00:00.000Z');
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+  function observationSession(overrides = {}) {
+    return agentAuthoritySession({
+      capabilitiesJson: JSON.stringify(['codesite.context.read', 'codesite.observations.write']),
+      terminalSessionId: 'term-obs-1',
+      providerSessionRef: 'prov-ref-obs',
+      displayCallsign: 'CODEX-OBS',
+      ...overrides,
+    });
+  }
+  function observationBody(overrides = {}) {
+    return {
+      eventType: 'runtime_observed',
+      producer: { kind: 'program_runtime_adapter', eventId: 'program-event-9' },
+      occurredAt: '2026-08-22T12:00:01.000Z',
+      refs: {
+        runtimeSessionIds: ['rt-1'],
+        transactionIds: ['txn-obs'],
+        process: { pid: 4321, ancestry: [{ pid: 4000, parentPid: 1 }] },
+      },
+      evidenceRefs: ['runtime-event:9'],
+      fact: {
+        observationKind: 'crashed',
+        runtimeState: 'crashed',
+        exitCode: 17,
+        reasonCodes: ['process_exit_nonzero'],
+      },
+      ...overrides,
+    };
+  }
+  function mockObservationStores() {
+    prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([
+      { id: 'txn-obs', agentSessionId: 'agent-other-1' },
+    ]);
+    prisma.codeSiteEvent.count.mockResolvedValue(7);
+    prisma.codeSiteEvent.create.mockImplementation(async ({ data }) => ({
+      id: data.id,
+      projectId: data.projectId,
+      mutationLeaseId: data.mutationLeaseId,
+      eventType: data.eventType,
+      displayCallsign: data.displayCallsign,
+      actorType: data.actorType,
+      actorId: data.actorId,
+      detailsJson: data.detailsJson,
+      evidenceRefsJson: data.evidenceRefsJson,
+      logicalTime: data.logicalTime,
+      createdAt: new Date('2026-08-22T12:00:02.000Z'),
+    }));
+  }
+
+  it('publishes an attached agent observation onto the coordination bus and persists one causal event', async () => {
+    const session = observationSession();
+    mockBoundAgentAuthoritySession(session);
+    mockObservationStores();
+
+    const first = await recordAgentProjectObservation('acme', session.id, AGENT_AUTHORITY_TOKEN, observationBody(), { now: OBS_NOW });
+    const second = await recordAgentProjectObservation('acme', session.id, AGENT_AUTHORITY_TOKEN, observationBody(), { now: OBS_NOW });
+
+    expect(first.observation.eventType).toBe('runtime_observed');
+    expect(first.observation.fact.observationKind).toBe('crashed');
+    expect(first.event.eventType).toBe('runtime_observed');
+    expect(first.event.projectId).toBe(session.projectId);
+    expect(first.event.logicalTime).toBe(8);
+    expect(first.event.details.producer).toEqual({ kind: 'program_runtime_adapter', eventId: 'program-event-9' });
+    expect(second.observation.id).toBe(first.observation.id);
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('routes recipients to the owners of referenced transactions instead of the publisher', async () => {
+    const session = observationSession();
+    mockBoundAgentAuthoritySession(session);
+    mockObservationStores();
+
+    const result = await recordAgentProjectObservation('acme', session.id, AGENT_AUTHORITY_TOKEN, observationBody(), { now: OBS_NOW });
+    expect(result.event.details.references.transactionIds).toEqual(['txn-obs']);
+  });
+
+  it('keeps private material out of the persisted event payload', async () => {
+    const session = observationSession();
+    mockBoundAgentAuthoritySession(session);
+    mockObservationStores();
+
+    await recordAgentProjectObservation('acme', session.id, AGENT_AUTHORITY_TOKEN, observationBody(), { now: OBS_NOW });
+    const written = prisma.codeSiteEvent.create.mock.calls.at(-1)[0].data;
+    expect(written.detailsJson).not.toMatch(/prompt|transcript|credential|token|providerSessionRef/i);
+  });
+
+  it.each([
+    ['agent_session_mismatch', { refs: { agentSessionIds: ['agent-someone-else'], runtimeSessionIds: ['rt-1'] } }],
+    ['foreign_transaction', null],
+    ['capability_required', null],
+    ['invalid_observation', { refs: {} }],
+  ])('denies %s before persistence', async (scenario, overrides) => {
+    const session = observationSession(
+      scenario === 'capability_required'
+        ? { capabilitiesJson: JSON.stringify(['codesite.context.read']) }
+        : {},
+    );
+    mockBoundAgentAuthoritySession(session);
+    if (scenario === 'foreign_transaction') {
+      prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([]);
+    }
+    const attempt = () => recordAgentProjectObservation(
+      'acme',
+      session.id,
+      AGENT_AUTHORITY_TOKEN,
+      observationBody(overrides || {}),
+      { now: OBS_NOW },
+    );
+    if (scenario === 'agent_session_mismatch') {
+      await expect(attempt()).rejects.toMatchObject({ status: 403, code: 'observation_agent_session_mismatch' });
+    } else if (scenario === 'foreign_transaction') {
+      await expect(attempt()).rejects.toMatchObject({
+        status: 403,
+        stage: 'authorize',
+        code: 'observation_transaction_outside_project',
+      });
+    } else if (scenario === 'capability_required') {
+      await expect(attempt()).rejects.toMatchObject({ status: 403, code: 'agent_capability_required' });
+    } else {
+      await expect(attempt()).rejects.toMatchObject({ status: 422, code: 'project_observation_runtime_reference_required' });
+    }
+    expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects oversized payloads before normalization', async () => {
+    const session = observationSession();
+    mockBoundAgentAuthoritySession(session);
+    await expect(recordAgentProjectObservation(
+      'acme',
+      session.id,
+      AGENT_AUTHORITY_TOKEN,
+      { pad: 'x'.repeat(300 * 1024) },
+      { now: OBS_NOW },
+    )).rejects.toMatchObject({ status: 400, code: 'observation_payload_too_large' });
+  });
+});
 
 describe('CodeSite control plane transaction validation', () => {
   beforeEach(() => {
