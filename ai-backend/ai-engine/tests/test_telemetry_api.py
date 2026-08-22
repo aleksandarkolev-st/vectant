@@ -147,6 +147,7 @@ def test_control_plane_executes_only_server_constructed_runner_contract(tmp_path
     response = client.post(f"/counterfactual/runs/{run_id}/execute", params={"workspace_path": workspace}, json={
         "runner_kind": "codex", "universe_id": "A", "direction_id": "safe", "direction_label": "safe",
         "declared_condition": "conservative repair", "task_summary": "fix the issue", "budget_usd": 0.1,
+        "workspace_mode": "isolated",
     })
 
     assert response.status_code == 201

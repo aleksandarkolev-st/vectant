@@ -27,6 +27,8 @@ from .runner_base import RunnerInvocation
 from .codex_runner import CodexRunner
 from .claude_code_runner import ClaudeCodeRunner
 from .hermes_runner import HermesRunner
+from .agent_execution import AgentContainerPolicy, docker_command
+from .workspace_write_policy import assert_protected_unchanged, protected_snapshot, provision_agent_write_access
 
 router = APIRouter(prefix="/counterfactual", tags=["counterfactual"])
 
@@ -140,6 +142,7 @@ class RunnerExecutionRequest(BaseModel):
     policy_hints: List[str] = Field(default_factory=list, max_length=5)
     timeout_seconds: int = Field(default=300, ge=1, le=3600)
     budget_usd: float = Field(gt=0, le=1000)
+    workspace_mode: Literal["live", "isolated"] = "live"
 
 
 class MutationTrialExecutionRequest(RunnerExecutionRequest):
@@ -363,7 +366,7 @@ def execute_mutation_trial(trial_id: str, payload: MutationTrialExecutionRequest
         raise HTTPException(status_code=409, detail="mutation trial is already running or complete")
     if payload.budget_usd > float(trial.get("budget_cap_usd") or 0):
         raise HTTPException(status_code=422, detail="mutation trial budget exceeds its quarantine cap")
-    execution = RunnerExecutionRequest(**payload.model_dump(exclude={"workspace_path"}))
+    execution = RunnerExecutionRequest(**{**payload.model_dump(exclude={"workspace_path"}), "workspace_mode": "isolated"})
     result = execute_external_runner(str(trial["counterfactual_run_id"]), execution, payload.workspace_path)
     data = repo._read()
     data["mutation_trials"][trial_id].update({
@@ -435,29 +438,46 @@ def execute_external_runner(run_id: str, payload: RunnerExecutionRequest, worksp
     }
     adapter = adapters[payload.runner_kind]()
     try:
-        # Never execute a third-party runner in the user's source workspace.
-        # The chamber is discarded after collecting its bounded trace.
-        with adapter.isolated_chamber(repo.repo, invocation) as chamber:
+        if payload.workspace_mode == "live":
+            before_protected = protected_snapshot(repo.repo)
+            provision_agent_write_access(repo.repo)
             if payload.runner_kind == "codex":
-                # Codex receives only chamber-local schema/output paths. This
-                # keeps workspace-write sandboxing inside the disposable
-                # chamber while the base adapter separately captures a bounded
-                # raw log by reference in the source workspace.
-                schema_path = chamber / ".vectant-branch-summary.schema.json"
-                output_path = chamber / ".vectant-branch-summary.json"
-                schema_path.write_text(json.dumps(_codex_output_schema()), encoding="utf-8")
-                command = adapter.command_for(invocation=invocation, output_schema=schema_path, output_path=output_path)
+                runner_command = adapter.live_command_for(invocation=invocation)
             else:
-                command = adapter.command_for(invocation=invocation)
-            artifact = adapter.run(workspace_path=chamber, artifact_root=repo.repo, invocation=invocation, command=command)
-            # The server-created invocation remains the authoritative budget
-            # record even if an adapter has no provider usage report yet.
-            artifact.cost_estimated_usd = payload.budget_usd
-            diff = adapter.collect_diff(chamber, invocation.start_state_hash)
+                runner_command = adapter.command_for(invocation=invocation)
+            command = docker_command(
+                workspace=repo.repo, run_id=invocation.run_id,
+                runner_command=runner_command, policy=AgentContainerPolicy.from_environment(),
+            )
+            artifact = adapter.run(workspace_path=repo.repo, artifact_root=repo.repo, invocation=invocation, command=command)
+            assert_protected_unchanged(before_protected, repo.repo)
+            diff = adapter.collect_diff(repo.repo, invocation.start_state_hash)
+        else:
+            # Isolated execution remains available for counterfactual trials.
+            with adapter.isolated_chamber(repo.repo, invocation) as chamber:
+                if payload.runner_kind == "codex":
+                    # Codex receives only chamber-local schema/output paths.
+                    # This keeps workspace-write sandboxing inside the
+                    # disposable chamber while the base adapter separately
+                    # captures a bounded raw log by reference in the source
+                    # workspace.
+                    schema_path = chamber / ".vectant-branch-summary.schema.json"
+                    output_path = chamber / ".vectant-branch-summary.json"
+                    schema_path.write_text(json.dumps(_codex_output_schema()), encoding="utf-8")
+                    command = adapter.command_for(invocation=invocation, output_schema=schema_path, output_path=output_path)
+                else:
+                    command = adapter.command_for(invocation=invocation)
+                artifact = adapter.run(workspace_path=chamber, artifact_root=repo.repo, invocation=invocation, command=command)
+                diff = adapter.collect_diff(chamber, invocation.start_state_hash)
+        # The server-created invocation remains the authoritative budget
+        # record even if an adapter has no provider usage report yet.
+        artifact.cost_estimated_usd = payload.budget_usd
     except OSError as error:
         raise HTTPException(status_code=503, detail=f"{payload.runner_kind} runner is unavailable: {error}") from error
     except (RuntimeError, ValueError) as error:
         raise HTTPException(status_code=422, detail=f"runner chamber could not be prepared: {error}") from error
+    except PermissionError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     artifact.end_state_hash = str(diff["end_state_hash"])
     artifact.diff_summary = diff
     trace = adapter.collect_trace(invocation, artifact)
