@@ -11,7 +11,23 @@ Rule that governs every patch: nothing in `src/embodied/` may know about doors, 
 The browser pipeline (capture → trace → causal workflow contract → hardening → replay → classification) is the right shape but browser-typed end to end. Phase 0 proves the shape is separable: same behavior, neutral types. It also builds the two things every later phase stands on:
 
 1. a lossless event model (`EmbodiedEvent`) that embeds today's browser trace unchanged;
-2. an anti-hardcoding conformance harness on a randomized toy substrate, so universality is enforced by tests rather than intentions.
+2. an anti-hardcoding conformance harness on randomized synthetic substrates (spatial, state-machine, neural-network-style — radically different worlds through identical core code), so universality is enforced by tests rather than intentions.
+
+## North star: effortless for the user
+
+Universality means nothing if using it requires understanding it. The end state this phase must preserve — and every later phase must deliver — is:
+
+> A user picks a world, clicks teach, does the thing once, and gets a reliable, tested capability back. Everything between those sentences is invisible.
+
+Concrete rules that follow from this (checked at each phase gate):
+
+1. **Five verbs, any world.** The entire user-facing surface stays: attach, observe, teach (begin/end), run, explain-failure — plus compile where relevant. Substrates are picked from a list of friendly names ("this preview", "terminal", "the game"), never configured.
+2. **Zero-jargon UI.** Realm, adapter, lease, differ, attribution, evidence kind, affordance tier — these exist only in code and logs. User-visible copy uses the browser plan's register: `Start teaching`, `Run workflow`, `Step 3 failed because…`.
+3. **Sane defaults or no move.** Every knob (salience weights, budgets, tolerances, reset profiles) has a working default; the happy path touches none of them. Expert tuning is possible but never required.
+4. **The simplicity test (gate).** A developer who has never seen the codebase can teach one flow on any shipped substrate, compile it, replay it, and read a failure explanation — guided only by product UI. Time-to-first-taught-workflow is tracked as a metric with a target under 2 minutes on a warm workspace.
+5. **Failures speak human.** Classifier output maps to plain-language explanations with a suggested next action; raw trunk/subclass ids appear only in diagnostics views.
+
+Phase 0 honors this by keeping the core headless but *small*: the public core surface is the five-verb shape plus the registry; everything else is internal machinery behind it.
 
 ## Definition of Done (whole phase)
 

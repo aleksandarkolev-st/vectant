@@ -617,6 +617,7 @@ Semantic-quality metrics (replay pass rate alone proves too little — a contrac
 - No host-kernel access, ever, from the kernel adapter.
 - No silent generalization: a competency licensed on one substrate never executes on another without its own checkride.
 - No scenario-specific code paths in the core: no named environments, entity kinds, colors, or domain nouns anywhere in `embodied/` core modules. Semantics enter through schemas, profiles, and human confirmation — enforced by the Phase 0b conformance fuzz and reviewed on every core PR.
+- No expert-only product: universality must arrive as simplicity. The user-facing surface stays five verbs (attach, observe, teach, run, explain) across every substrate, with zero jargon and working defaults for every knob. "It works on everything" is delivered as "you don't have to think about which thing it is." A phase gate fails if teaching a flow requires reading documentation or understanding internals (see the plan's North Star section).
 
 ## Open Questions
 
