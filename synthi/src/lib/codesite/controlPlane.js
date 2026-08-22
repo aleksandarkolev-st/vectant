@@ -44,6 +44,13 @@ import {
   codeSiteEvidenceRefsJson,
   firstCodeSiteRef,
 } from './substrateIdentity';
+import {
+  buildKnowledgeRecord,
+  buildKnowledgeReferenceRecords,
+  projectKnowledgeRecord,
+} from './knowledgeRecords';
+import { buildKnowledgeDeliveryPlan } from './knowledgeRouting';
+import { validateKnowledgeResponse } from './knowledgeResponses';
 
 const EVENT_ORDER_BY = [{ logicalTime: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }];
 const ACTIVE_FLIGHT_STATUSES = ['filed', 'preflight', 'cleared', 'taxiing', 'airborne', 'holding', 'rerouted', 'landing_requested'];
@@ -159,6 +166,7 @@ const PROJECT_INCLUDE = {
   counterfactualRuns: true,
   policyDeltas: true,
   inboxItems: true,
+  knowledgeItems: { include: { references: true } },
 };
 
 const PROJECT_READ_ROLES = new Set(['owner', 'admin', 'operator', 'agent', 'observer', 'viewer', 'read']);
@@ -1917,13 +1925,24 @@ function boundedAgentContextValue(value, depth = 0) {
 }
 
 function trimAgentContextToLimit(context) {
-  const collections = ['inbox', 'inspections', 'transactions', 'leases', 'workstreams'];
+  const collections = [
+    () => context.inbox,
+    () => context.sharedKnowledge?.impactNotices,
+    () => context.sharedKnowledge?.handoffs,
+    () => context.sharedKnowledge?.leads,
+    () => context.sharedKnowledge?.discoveries,
+    () => context.sharedKnowledge?.skills,
+    () => context.inspections,
+    () => context.transactions,
+    () => context.leases,
+    () => context.workstreams,
+  ];
   const contentBudget = AGENT_CONTEXT_MAX_BYTES - 256;
   let serialized = stableJson(context);
   while (Buffer.byteLength(serialized, 'utf8') > contentBudget) {
-    const target = collections.find((key) => context[key]?.length > 0);
+    const target = collections.map((read) => read()).find((value) => value?.length > 0);
     if (!target) break;
-    context[target].pop();
+    target.pop();
     context.truncated = true;
     serialized = stableJson(context);
   }
@@ -2019,7 +2038,7 @@ export async function getRelevantAgentContext(workspaceSlug, sessionId, agentAcc
     { requiredCapability: 'codesite.context.read' },
   );
 
-  const [workstreams, leases, transactions, inbox, inspections] = await Promise.all([
+  const [workstreams, leases, transactions, inbox, inspections, knowledgeRows] = await Promise.all([
     prisma.codeSiteExecutionPlan.findMany({
       where: { projectId: session.projectId, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
       orderBy: { filedAt: 'desc' },
@@ -2052,7 +2071,24 @@ export async function getRelevantAgentContext(workspaceSlug, sessionId, agentAcc
       orderBy: { startedAt: 'desc' },
       take: 24,
     }),
+    prisma.codeSiteKnowledgeItem.findMany({
+      where: {
+        projectId: session.projectId,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+      },
+      include: { references: true },
+      orderBy: { updatedAt: 'desc' },
+      take: 100,
+    }),
   ]);
+
+  const relevantKnowledge = visibleKnowledgeRowsForSession(
+    knowledgeRows,
+    session,
+    workstreams,
+    transactions,
+    inbox,
+  ).map(projectKnowledgeRecord).filter(Boolean);
 
   const projectControl = boundedAgentContextValue(parseJson(session.project.controlPlanJson, {}));
   const zonePolicy = boundedAgentContextValue(parseJson(session.project.zonePolicyJson, {}));
@@ -2113,6 +2149,7 @@ export async function getRelevantAgentContext(workspaceSlug, sessionId, agentAcc
       requiresResponse: item.requiresResponse,
       eventId: item.eventId,
       documentId: item.documentId,
+      knowledgeItemId: item.knowledgeItemId,
       payload: parseJson(item.redactedPayloadJson, {}),
       createdAt: item.createdAt,
     })),
@@ -2133,13 +2170,431 @@ export async function getRelevantAgentContext(workspaceSlug, sessionId, agentAcc
       result: parseJson(inspection.resultJson, null),
     })),
     sharedKnowledge: {
-      discoveries: [],
-      leads: [],
-      skills: [],
-      phaseAvailable: false,
+      discoveries: relevantKnowledge.filter((item) => item.kind === 'discovery').slice(0, 24),
+      leads: relevantKnowledge.filter((item) => item.kind === 'lead').slice(0, 24),
+      skills: relevantKnowledge.filter((item) => item.kind === 'shared_skill').slice(0, 24),
+      handoffs: relevantKnowledge.filter((item) => item.kind === 'handoff').slice(0, 24),
+      impactNotices: relevantKnowledge.filter((item) => item.kind === 'impact_notice').slice(0, 24),
+      phaseAvailable: true,
     },
   };
   return trimAgentContextToLimit(context);
+}
+
+const KNOWLEDGE_CREATE_KINDS = new Set(['discovery', 'lead', 'shared_skill', 'handoff']);
+const KNOWLEDGE_QUERY_KINDS = new Set([...KNOWLEDGE_CREATE_KINDS, 'impact_notice']);
+
+function nextKnowledgeId(prefix = 'knw') {
+  return `${prefix}_${randomBytes(18).toString('base64url')}`;
+}
+
+function knowledgeEventType(item) {
+  if (item.kind === 'discovery') return 'discovery_recorded';
+  if (item.kind === 'lead') return item.status === 'resolved' ? 'lead_resolved' : 'lead_opened';
+  if (item.kind === 'shared_skill') return item.status === 'published' ? 'shared_skill_published' : 'shared_skill_updated';
+  if (item.kind === 'handoff') return 'handoff_ready';
+  return 'impact_notice_created';
+}
+
+function knowledgeResponseEventType(kind, action) {
+  if (kind === 'lead') {
+    if (action === 'claim') return 'lead_claimed';
+    if (action === 'resolve') return 'lead_resolved';
+    if (action === 'dismiss') return 'lead_dismissed';
+  }
+  if (kind === 'handoff' && ['accept', 'acknowledge'].includes(action)) return 'handoff_acknowledged';
+  return 'impact_notice_responded';
+}
+
+function knowledgeScope(row) {
+  return parseJson(row?.scopeJson, {});
+}
+
+function knowledgeVisibility(row) {
+  return String(knowledgeScope(row).visibility || 'project');
+}
+
+function validateKnowledgeQuery(input = {}) {
+  const kind = String(input.kind || '').trim().toLowerCase();
+  if (kind && !KNOWLEDGE_QUERY_KINDS.has(kind)) throw badRequest('knowledge_kind_invalid');
+  const status = String(input.status || '').trim().toLowerCase();
+  if (status && !/^[a-z][a-z0-9_]{0,63}$/.test(status)) throw badRequest('knowledge_status_invalid');
+  const limitValue = Number(input.limit || 50);
+  const limit = Number.isInteger(limitValue) ? Math.min(Math.max(limitValue, 1), 100) : 50;
+  const since = input.since ? new Date(input.since) : null;
+  if (since && !Number.isFinite(since.getTime())) throw badRequest('knowledge_since_invalid');
+  return { kind: kind || null, status: status || null, limit, since };
+}
+
+function knowledgeWhere(projectId, query) {
+  return {
+    projectId,
+    ...(query.kind ? { kind: query.kind } : {}),
+    ...(query.status ? { status: query.status } : {}),
+    ...(query.since ? { updatedAt: { gt: query.since } } : {}),
+    OR: [
+      { expiresAt: null },
+      { expiresAt: { gt: new Date() } },
+    ],
+  };
+}
+
+function knowledgeIdsFromInbox(inbox) {
+  return new Set(asArray(inbox).map((item) => item.knowledgeItemId).filter(Boolean));
+}
+
+function visibleKnowledgeRowsForSession(rows, session, executionPlans, transactions, inbox) {
+  const inboxKnowledgeIds = knowledgeIdsFromInbox(inbox);
+  return rows.filter((row) => {
+    const visibility = knowledgeVisibility(row);
+    const owned = row.createdByAgentSessionId === session.id
+      || row.ownerAgentSessionId === session.id
+      || row.createdByUserId === session.ownerUserId
+      || row.ownerUserId === session.ownerUserId;
+    if (visibility === 'owner_private') return owned;
+    if (visibility === 'restricted' && !owned && !inboxKnowledgeIds.has(row.id)) return false;
+    if (owned || inboxKnowledgeIds.has(row.id)) return true;
+    if (row.kind === 'shared_skill' && row.status === 'published') return true;
+    const projected = projectKnowledgeRecord(row);
+    if (!projected) return false;
+    return buildKnowledgeDeliveryPlan({
+      item: {
+        ...projected,
+        createdByAgentSessionId: row.createdByAgentSessionId,
+      },
+      sessions: [session],
+      executionPlans,
+      transactions,
+    }).length > 0;
+  });
+}
+
+async function loadRelevantKnowledgeForSession(session, queryInput = {}, state = {}) {
+  const query = validateKnowledgeQuery(queryInput);
+  const [rows, executionPlans, transactions, inbox] = await Promise.all([
+    state.rows || prisma.codeSiteKnowledgeItem.findMany({
+      where: knowledgeWhere(session.projectId, query),
+      include: { references: true },
+      orderBy: { updatedAt: 'desc' },
+      take: 200,
+    }),
+    state.executionPlans || prisma.codeSiteExecutionPlan.findMany({
+      where: { projectId: session.projectId, agentSessionId: session.id, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
+      orderBy: { filedAt: 'desc' },
+      take: 32,
+    }),
+    state.transactions || prisma.codeSiteMutationTransaction.findMany({
+      where: { projectId: session.projectId, agentSessionId: session.id, status: { in: ['open', 'prepared', 'blocked', 'validated'] } },
+      orderBy: { openedAt: 'desc' },
+      take: 32,
+    }),
+    state.inbox || prisma.codeSiteAgentInboxItem.findMany({
+      where: { projectId: session.projectId, agentSessionId: session.id, knowledgeItemId: { not: null } },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    }),
+  ]);
+  return visibleKnowledgeRowsForSession(rows, session, executionPlans, transactions, inbox)
+    .slice(0, query.limit)
+    .map(projectKnowledgeRecord)
+    .filter(Boolean);
+}
+
+async function requireKnowledgeReferenceTargets(projectId, item, state) {
+  const refs = item.references;
+  const sessionIds = new Set(state.sessions.map((session) => session.id));
+  const workstreamIds = new Set(state.executionPlans.map((plan) => plan.id));
+  const transactionIds = new Set(state.transactions.map((transaction) => transaction.id));
+  const missing = {
+    agentSessionIds: refs.agentSessionIds.filter((id) => !sessionIds.has(id)),
+    workstreamIds: refs.workstreamIds.filter((id) => !workstreamIds.has(id)),
+    transactionIds: refs.transactionIds.filter((id) => !transactionIds.has(id)),
+  };
+  if (item.kind === 'handoff' && !sessionIds.has(item.toAgentSessionId)) {
+    missing.agentSessionIds.push(item.toAgentSessionId);
+  }
+  if (item.kind === 'lead' && item.ownerAgentSessionId && !sessionIds.has(item.ownerAgentSessionId)) {
+    missing.agentSessionIds.push(item.ownerAgentSessionId);
+  }
+  if (Object.values(missing).some((ids) => ids.length)) {
+    throw badRequest('knowledge_reference_outside_project', { projectId, missing });
+  }
+}
+
+async function createKnowledgeWithClient(db, record, knowledgeId, eventInput) {
+  const created = await db.codeSiteKnowledgeItem.create({
+    data: { id: knowledgeId, ...record.data },
+  });
+  const referenceRows = buildKnowledgeReferenceRecords(record.normalized, knowledgeId);
+  if (referenceRows.length) await db.codeSiteKnowledgeReference.createMany({ data: referenceRows });
+  const event = await recordEventWithClient(db, record.normalized.projectId, eventInput, { syncArtifacts: false });
+  const updated = await db.codeSiteKnowledgeItem.update({
+    where: { id: knowledgeId },
+    data: { sourceEventId: event.id },
+  });
+  return {
+    row: { ...created, ...updated, references: referenceRows },
+    event,
+  };
+}
+
+async function persistKnowledgeAndImpacts(authority, record, deliveryPlan) {
+  const sourceKnowledgeId = nextKnowledgeId('knw');
+  return prisma.$transaction(async (db) => {
+    const source = await createKnowledgeWithClient(db, record, sourceKnowledgeId, {
+      eventType: knowledgeEventType(record.normalized),
+      displayCallsign: authority.session.displayCallsign,
+      actorType: 'agent_session',
+      actorId: authority.session.id,
+      evidenceRefs: record.normalized.evidenceRefs,
+      details: {
+        knowledgeItemId: sourceKnowledgeId,
+        kind: record.normalized.kind,
+        status: record.normalized.status,
+        title: record.normalized.title,
+        references: record.normalized.references,
+        confidence: record.normalized.confidence,
+      },
+    });
+    const impacts = [];
+    for (const target of deliveryPlan) {
+      const impactId = nextKnowledgeId('imp');
+      const impactInput = {
+        kind: 'impact_notice',
+        projectId: authority.session.projectId,
+        title: `Impact: ${record.normalized.title}`.slice(0, 160),
+        summary: record.normalized.summary,
+        status: 'pending',
+        source: { actorType: 'system', actorId: sourceKnowledgeId },
+        references: {
+          ...record.normalized.references,
+          agentSessionIds: unique([...record.normalized.references.agentSessionIds, target.agentSessionId]),
+          transactionIds: unique([...record.normalized.references.transactionIds, ...target.transactionIds]),
+        },
+        evidenceRefs: record.normalized.evidenceRefs,
+        confidence: record.normalized.confidence,
+        sourceKnowledgeId,
+        recipientAgentSessionIds: [target.agentSessionId],
+        requiresResponse: true,
+      };
+      const impactRecord = buildKnowledgeRecord(impactInput, { projectId: authority.session.projectId });
+      impactRecord.data.dedupeKey = target.dedupeKey;
+      impactRecord.data.targetTransactionId = target.transactionIds[0] || null;
+      const impact = await createKnowledgeWithClient(db, impactRecord, impactId, {
+        eventType: 'impact_notice_created',
+        actorType: 'knowledge_router',
+        actorId: sourceKnowledgeId,
+        evidenceRefs: record.normalized.evidenceRefs,
+        details: {
+          knowledgeItemId: impactId,
+          sourceKnowledgeItemId: sourceKnowledgeId,
+          recipientAgentSessionId: target.agentSessionId,
+          targetTransactionIds: target.transactionIds,
+          reasons: target.reasons,
+          deliveryState: target.deliveryState,
+        },
+      });
+      const inboxItem = await db.codeSiteAgentInboxItem.create({
+        data: {
+          projectId: authority.session.projectId,
+          agentSessionId: target.agentSessionId,
+          recipientUserId: target.recipientUserId,
+          eventId: impact.event.id,
+          knowledgeItemId: impactId,
+          kind: 'impact_notice',
+          requiresResponse: true,
+          status: 'pending',
+          redactedPayloadJson: stringifyJson({
+            knowledgeItemId: impactId,
+            sourceKnowledgeItemId: sourceKnowledgeId,
+            title: impactInput.title,
+            summary: impactInput.summary,
+            references: impactInput.references,
+            reasons: target.reasons,
+            targetTransactionIds: target.transactionIds,
+          }),
+        },
+      });
+      impacts.push({ knowledge: projectKnowledgeRecord(impact.row), inboxItem: inboxProjection(inboxItem) });
+    }
+    return {
+      knowledge: projectKnowledgeRecord(source.row),
+      event: eventProjection(source.event),
+      impacts,
+    };
+  });
+}
+
+export async function createAgentKnowledgeItem(workspaceSlug, sessionId, agentAccessToken, body = {}) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.knowledge.write',
+  });
+  const requestedKind = String(body.kind || body.type || '').trim().toLowerCase().replace(/[ -]+/g, '_');
+  if (!KNOWLEDGE_CREATE_KINDS.has(requestedKind)) throw badRequest('agent_knowledge_kind_forbidden');
+  if (body.projectId && body.projectId !== authority.session.projectId) throw forbidden('knowledge_project_mismatch');
+  const input = {
+    ...body,
+    kind: requestedKind,
+    projectId: authority.session.projectId,
+    source: {
+      ...(body.source && typeof body.source === 'object' ? body.source : {}),
+      actorType: 'agent',
+      actorId: authority.session.id,
+      agentSessionId: authority.session.id,
+      terminalSessionId: authority.session.terminalSessionId || null,
+    },
+    ...(requestedKind === 'handoff' ? { fromAgentSessionId: authority.session.id } : {}),
+  };
+  const record = buildKnowledgeRecord(input, {
+    projectId: authority.session.projectId,
+    agentSessionId: authority.session.id,
+    userId: authority.session.ownerUserId,
+  });
+  const [sessions, executionPlans, transactions] = await Promise.all([
+    prisma.codeSiteAgentSession.findMany({
+      where: { projectId: authority.session.projectId, endedAt: null, status: { in: ['attached', 'detached'] } },
+    }),
+    prisma.codeSiteExecutionPlan.findMany({
+      where: { projectId: authority.session.projectId, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
+    }),
+    prisma.codeSiteMutationTransaction.findMany({
+      where: { projectId: authority.session.projectId, status: { in: ['open', 'prepared', 'blocked', 'validated'] } },
+    }),
+  ]);
+  const routingState = { sessions, executionPlans, transactions };
+  await requireKnowledgeReferenceTargets(authority.session.projectId, record.normalized, routingState);
+  const existing = await prisma.codeSiteKnowledgeItem.findFirst({
+    where: { projectId: authority.session.projectId, dedupeKey: record.data.dedupeKey },
+    include: { references: true },
+  });
+  if (existing) return { knowledge: projectKnowledgeRecord(existing), event: null, impacts: [], duplicate: true };
+  const deliveryPlan = buildKnowledgeDeliveryPlan({
+    item: { ...record.normalized, id: 'pending', createdByAgentSessionId: authority.session.id },
+    sessions,
+    executionPlans,
+    transactions,
+  });
+  const result = await persistKnowledgeAndImpacts(authority, record, deliveryPlan);
+  await syncArtifactsForProject(authority.session.projectId, { reason: 'knowledge_recorded', eventId: result.event?.id });
+  return { ...result, duplicate: false };
+}
+
+export async function getAgentSharedKnowledge(workspaceSlug, sessionId, agentAccessToken, query = {}) {
+  const { session } = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.knowledge.read',
+  });
+  return loadRelevantKnowledgeForSession(session, query);
+}
+
+export async function listProjectKnowledge(workspaceSlug, projectId, query = {}, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'read');
+  const normalized = validateKnowledgeQuery(query);
+  const rows = await prisma.codeSiteKnowledgeItem.findMany({
+    where: knowledgeWhere(project.id, normalized),
+    include: { references: true },
+    orderBy: { updatedAt: 'desc' },
+    take: normalized.limit,
+  });
+  const userId = actorUserId(actor);
+  return rows.filter((row) => {
+    const visibility = knowledgeVisibility(row);
+    if (visibility === 'project') return true;
+    return Boolean(userId && (row.createdByUserId === userId || row.ownerUserId === userId));
+  }).map(projectKnowledgeRecord).filter(Boolean);
+}
+
+export async function respondToAgentKnowledgeInbox(
+  workspaceSlug,
+  sessionId,
+  inboxItemId,
+  agentAccessToken,
+  body = {},
+) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.inbox.respond',
+  });
+  const inboxItem = await prisma.codeSiteAgentInboxItem.findFirst({
+    where: {
+      id: inboxItemId,
+      projectId: authority.session.projectId,
+      agentSessionId: authority.session.id,
+    },
+    include: { knowledgeItem: { include: { references: true } } },
+  });
+  if (!inboxItem || !inboxItem.knowledgeItem) throw notFound('knowledge_inbox_item_not_found');
+  const response = validateKnowledgeResponse(inboxItem.knowledgeItem.kind, body);
+  if (inboxItem.respondedAt) {
+    const previous = parseJson(inboxItem.responseJson, {});
+    if (inboxItem.responseAction === response.action && stableJson(previous) === stableJson(response)) {
+      return {
+        inboxItem: inboxProjection(inboxItem),
+        knowledge: projectKnowledgeRecord(inboxItem.knowledgeItem),
+        response,
+        duplicate: true,
+      };
+    }
+    throw conflict('knowledge_inbox_already_responded', { inboxItemId });
+  }
+  const now = new Date();
+  const updated = await prisma.$transaction(async (db) => {
+    const nextInbox = await db.codeSiteAgentInboxItem.update({
+      where: { id: inboxItem.id },
+      data: {
+        status: response.action === 'acknowledge' ? 'acknowledged' : 'responded',
+        responseAction: response.action,
+        responseJson: stringifyJson(response),
+        respondedAt: now,
+        acknowledgedAt: now,
+      },
+    });
+    let nextKnowledge = inboxItem.knowledgeItem;
+    if (response.targetStatus) {
+      nextKnowledge = await db.codeSiteKnowledgeItem.update({
+        where: { id: inboxItem.knowledgeItem.id },
+        data: {
+          status: response.targetStatus,
+          ...(response.targetStatus === 'resolved' ? { resolvedAt: now } : {}),
+          ...(inboxItem.knowledgeItem.kind === 'lead' && response.action === 'claim'
+            ? { ownerAgentSessionId: authority.session.id, ownerUserId: authority.session.ownerUserId }
+            : {}),
+          ...(inboxItem.knowledgeItem.kind === 'handoff' && response.action === 'accept'
+            ? { ownerAgentSessionId: authority.session.id, ownerUserId: authority.session.ownerUserId }
+            : {}),
+        },
+      });
+    }
+    const event = await recordEventWithClient(db, authority.session.projectId, {
+      eventType: knowledgeResponseEventType(inboxItem.knowledgeItem.kind, response.action),
+      displayCallsign: authority.session.displayCallsign,
+      actorType: 'agent_session',
+      actorId: authority.session.id,
+      evidenceRefs: response.evidenceRefs,
+      details: {
+        inboxItemId: inboxItem.id,
+        knowledgeItemId: inboxItem.knowledgeItem.id,
+        kind: inboxItem.knowledgeItem.kind,
+        action: response.action,
+        reason: response.reason,
+        targetStatus: response.targetStatus,
+      },
+    }, { syncArtifacts: false });
+    return { nextInbox, nextKnowledge, event };
+  });
+  await syncArtifactsForProject(authority.session.projectId, {
+    reason: 'knowledge_inbox_responded',
+    eventId: updated.event.id,
+  });
+  return {
+    inboxItem: inboxProjection(updated.nextInbox),
+    knowledge: projectKnowledgeRecord({
+      ...inboxItem.knowledgeItem,
+      ...updated.nextKnowledge,
+      references: inboxItem.knowledgeItem.references,
+    }),
+    response,
+    event: eventProjection(updated.event),
+    duplicate: false,
+  };
 }
 
 function nextCallsign(provider) {
@@ -11032,6 +11487,14 @@ function badRequest(code, detail) {
   return error;
 }
 
+function conflict(code, detail) {
+  const error = new Error(code);
+  error.status = 409;
+  error.code = code;
+  error.detail = detail;
+  return error;
+}
+
 function forbidden(code, detail) {
   const error = new Error(code);
   error.status = 403;
@@ -11682,12 +12145,15 @@ function inboxProjection(item) {
     recipientUserId: item.recipientUserId,
     eventId: item.eventId,
     documentId: item.documentId,
+    knowledgeItemId: item.knowledgeItemId || null,
     kind: item.kind,
     requiresResponse: item.requiresResponse,
     status: item.status,
     redactedPayload: parseJson(item.redactedPayloadJson, {}),
     createdAt: item.createdAt,
     acknowledgedAt: item.acknowledgedAt,
+    responseAction: item.responseAction || null,
+    respondedAt: item.respondedAt || null,
   };
 }
 
@@ -11698,12 +12164,15 @@ function inboxSummaryProjection(item) {
     agentSessionId: item.agentSessionId,
     eventId: item.eventId,
     documentId: item.documentId,
+    knowledgeItemId: item.knowledgeItemId || null,
     kind: item.kind,
     requiresResponse: item.requiresResponse,
     status: item.status,
     payloadAvailable: Boolean(item.redactedPayloadJson),
     createdAt: item.createdAt,
     acknowledgedAt: item.acknowledgedAt,
+    responseAction: item.responseAction || null,
+    respondedAt: item.respondedAt || null,
   };
 }
 

@@ -56,6 +56,16 @@ const { prisma } = vi.hoisted(() => ({
       findFirst: vi.fn(),
       update: vi.fn(),
     },
+    codeSiteKnowledgeItem: {
+      create: vi.fn(),
+      findFirst: vi.fn(),
+      findMany: vi.fn(),
+      update: vi.fn(),
+    },
+    codeSiteKnowledgeReference: {
+      createMany: vi.fn(),
+      findMany: vi.fn(),
+    },
     codeSiteAssumptionLease: {
       create: vi.fn(),
       findMany: vi.fn(),
@@ -129,6 +139,7 @@ const { prisma } = vi.hoisted(() => ({
     workspace: {
       findUnique: vi.fn(),
     },
+    $transaction: vi.fn(),
   },
 }));
 
@@ -145,6 +156,7 @@ import {
   collisionPredict,
   applyRouteRevision,
   createAgentSession,
+  createAgentKnowledgeItem,
   createCounterfactualRun,
   createExecutionPlan,
   createProject,
@@ -164,6 +176,8 @@ import {
   getProject,
   getProofBundle,
   getRelevantAgentContext,
+  getAgentSharedKnowledge,
+  listProjectKnowledge,
   getSourceStateSince,
   openTransaction,
   preflightCodeSiteFsWrite,
@@ -176,6 +190,7 @@ import {
   recordTransactionQuarantineEvent,
   recordTransactionWrite,
   requestMutationLease,
+  respondToAgentKnowledgeInbox,
   resumeMaydayIncident,
   reviewDocument,
   reviewRouteRevision,
@@ -636,6 +651,10 @@ describe('CodeSite control plane transaction validation', () => {
     prisma.codeSiteExecutionPlan.findFirst.mockResolvedValue(executionPlanFixture());
     prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([]);
     prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([]);
+    prisma.codeSiteKnowledgeItem.findFirst.mockResolvedValue(null);
+    prisma.codeSiteKnowledgeItem.findMany.mockResolvedValue([]);
+    prisma.codeSiteKnowledgeReference.createMany.mockResolvedValue({ count: 0 });
+    prisma.$transaction.mockImplementation(async (callback) => callback(prisma));
     prisma.codeSiteExecutionPlan.create.mockImplementation(async ({ data }) => ({
       id: `plan-${data.displayCallsign}`,
       filedAt: new Date('2026-06-29T23:01:00.000Z'),
@@ -2648,6 +2667,352 @@ describe('CodeSite control plane transaction validation', () => {
     await expect(getRelevantAgentContext('acme', 'agent-1', token)).rejects.toMatchObject({
       status: 403,
       code: 'agent_session_heartbeat_stale',
+    });
+  });
+
+  describe('provider-neutral shared knowledge control plane', () => {
+    function bindKnowledgeAuthority(overrides = {}) {
+      const now = Date.now();
+      const session = agentAuthoritySession({
+        capabilitiesJson: JSON.stringify([
+          'codesite.context.read',
+          'codesite.knowledge.read',
+          'codesite.knowledge.write',
+          'codesite.inbox.respond',
+        ]),
+        terminalSessionId: 'terminal-authority-1',
+        agentAccessTokenExpiresAt: new Date(now + 60_000),
+        lastHeartbeatAt: new Date(now - 1_000),
+        ...overrides,
+      });
+      mockBoundAgentAuthoritySession(session);
+      return session;
+    }
+
+    function knowledgeRow(overrides = {}) {
+      return {
+        id: 'knowledge-1',
+        projectId: 'project-authority-1',
+        kind: 'discovery',
+        status: 'verified',
+        title: 'Rotation contract changed',
+        summary: 'The sequence field is now mandatory.',
+        payloadJson: JSON.stringify({
+          source: {
+            actorType: 'agent',
+            actorId: 'agent-authority-1',
+            agentSessionId: 'agent-authority-1',
+            terminalSessionId: 'terminal-authority-1',
+          },
+          tags: ['contract'],
+          verification: 'verified',
+        }),
+        scopeJson: JSON.stringify({
+          visibility: 'project',
+          references: {
+            paths: ['contracts/rotation-event.json'],
+            symbols: [],
+            contracts: ['rotation-event.v2'],
+            runtimeSessionIds: [],
+            agentSessionIds: [],
+            workstreamIds: [],
+            transactionIds: [],
+          },
+          tags: ['contract'],
+        }),
+        redactionClass: 'project_fact',
+        confidence: 0.98,
+        verificationStatus: 'verified',
+        createdByUserId: 'user-agent-owner',
+        createdByAgentSessionId: 'agent-authority-1',
+        ownerUserId: null,
+        ownerAgentSessionId: null,
+        sourceKnowledgeItemId: null,
+        targetTransactionId: null,
+        dedupeKey: 'knowledge:discovery:test',
+        evidenceRefsJson: JSON.stringify(['test:rotation-contract:passed']),
+        expiresAt: null,
+        resolvedAt: null,
+        createdAt: new Date('2026-08-22T04:00:00.000Z'),
+        updatedAt: new Date('2026-08-22T04:01:00.000Z'),
+        references: [],
+        ...overrides,
+      };
+    }
+
+    it('records a discovery and automatically creates an impact notice for an affected different-provider agent', async () => {
+      const producer = bindKnowledgeAuthority({ agentProvider: 'arbitrary-research-agent' });
+      const consumer = {
+        id: 'consumer-agent',
+        projectId: producer.projectId,
+        ownerUserId: 'consumer-user',
+        agentProvider: 'another-vendor-agent',
+        status: 'attached',
+        endedAt: null,
+        subscriptionsJson: '[]',
+      };
+      prisma.codeSiteAgentSession.findMany.mockResolvedValue([producer, consumer]);
+      prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([]);
+      prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([{
+        id: 'consumer-txn',
+        projectId: producer.projectId,
+        agentSessionId: consumer.id,
+        status: 'open',
+        readSetJson: '[]',
+        observedReadSetJson: '[]',
+        writeSetJson: '[]',
+        observedWriteSetJson: '[]',
+        semanticDependencyRefsJson: JSON.stringify(['contract:rotation-event.v2']),
+      }]);
+      prisma.codeSiteKnowledgeItem.create.mockImplementation(async ({ data }) => ({
+        ...data,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }));
+      prisma.codeSiteKnowledgeItem.update.mockImplementation(async ({ where, data }) => ({
+        id: where.id,
+        ...data,
+        updatedAt: new Date(),
+      }));
+
+      const result = await createAgentKnowledgeItem('acme', producer.id, AGENT_AUTHORITY_TOKEN, {
+        kind: 'discovery',
+        title: 'Rotation contract changed',
+        summary: 'The sequence field is now mandatory.',
+        status: 'verified',
+        references: {
+          paths: ['contracts/rotation-event.json'],
+          contracts: ['rotation-event.v2'],
+        },
+        evidenceRefs: ['test:rotation-contract:passed'],
+        confidence: 0.98,
+      });
+
+      expect(result).toMatchObject({
+        knowledge: { kind: 'discovery', projectId: producer.projectId },
+        impacts: [{
+          knowledge: { kind: 'impact_notice', recipientAgentSessionIds: [consumer.id] },
+          inboxItem: { agentSessionId: consumer.id, requiresResponse: true },
+        }],
+        duplicate: false,
+      });
+      expect(prisma.codeSiteAgentInboxItem.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          agentSessionId: consumer.id,
+          recipientUserId: consumer.ownerUserId,
+          kind: 'impact_notice',
+        }),
+      }));
+      const persisted = prisma.codeSiteKnowledgeItem.create.mock.calls.map(([call]) => call.data);
+      expect(persisted).toHaveLength(2);
+      expect(JSON.stringify(persisted)).not.toMatch(/arbitrary-research-agent|another-vendor-agent|providerSessionRef/i);
+      expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ eventType: 'impact_notice_created' }),
+      }));
+    });
+
+    it('derives project and source identity and rejects private prompt material', async () => {
+      const session = bindKnowledgeAuthority();
+      await expect(createAgentKnowledgeItem('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        kind: 'discovery',
+        projectId: 'other-project',
+        title: 'Forged',
+        summary: 'Forged',
+        references: { paths: ['src/a.js'] },
+        evidenceRefs: ['test:1'],
+        confidence: 0.5,
+      })).rejects.toMatchObject({ status: 403, code: 'knowledge_project_mismatch' });
+
+      await expect(createAgentKnowledgeItem('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        kind: 'discovery',
+        title: 'Unsafe',
+        summary: 'Unsafe',
+        source: { rawPrompt: 'private instructions' },
+        references: { paths: ['src/a.js'] },
+        evidenceRefs: ['test:1'],
+        confidence: 0.5,
+      })).rejects.toMatchObject({ code: 'knowledge_private_material_forbidden' });
+      expect(prisma.codeSiteKnowledgeItem.create).not.toHaveBeenCalled();
+    });
+
+    it('returns only relevant project knowledge and keeps owner-private items isolated', async () => {
+      const session = bindKnowledgeAuthority({
+        id: 'consumer-agent',
+        ownerUserId: 'consumer-user',
+        subscriptionsJson: JSON.stringify(['contract:rotation-event.v2']),
+        project: {
+          id: 'project-authority-1',
+          workspaceSlug: 'acme',
+          status: 'active',
+          members: [{
+            userId: 'consumer-user',
+            role: 'agent',
+            permissionsJson: JSON.stringify(['project:read']),
+            participationStatus: 'enabled',
+            revokedAt: null,
+          }],
+        },
+      });
+      const relevant = knowledgeRow({ createdByAgentSessionId: 'producer-agent', createdByUserId: 'producer-user' });
+      const privateRow = knowledgeRow({
+        id: 'private-knowledge',
+        createdByAgentSessionId: 'producer-agent',
+        createdByUserId: 'producer-user',
+        redactionClass: 'owner_private',
+        scopeJson: JSON.stringify({
+          visibility: 'owner_private',
+          references: JSON.parse(relevant.scopeJson).references,
+          tags: [],
+        }),
+      });
+      const unrelated = knowledgeRow({
+        id: 'unrelated',
+        createdByAgentSessionId: 'producer-agent',
+        createdByUserId: 'producer-user',
+        scopeJson: JSON.stringify({
+          visibility: 'project',
+          references: {
+            paths: ['src/unrelated.js'], symbols: [], contracts: [], runtimeSessionIds: [],
+            agentSessionIds: [], workstreamIds: [], transactionIds: [],
+          },
+          tags: [],
+        }),
+      });
+      prisma.codeSiteKnowledgeItem.findMany.mockResolvedValue([privateRow, unrelated, relevant]);
+      prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([]);
+      prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([]);
+      prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([]);
+
+      const items = await getAgentSharedKnowledge('acme', session.id, AGENT_AUTHORITY_TOKEN);
+      expect(items.map((item) => item.id)).toEqual(['knowledge-1']);
+      expect(JSON.stringify(items)).not.toMatch(/private-knowledge|providerSessionRef|rawPrompt/i);
+    });
+
+    it('hydrates relevant discoveries into fresh agent and resume context', async () => {
+      const session = bindKnowledgeAuthority({
+        id: 'consumer-agent',
+        subscriptionsJson: JSON.stringify(['contract:rotation-event.v2']),
+        project: {
+          id: 'project-authority-1',
+          workspaceSlug: 'acme',
+          status: 'active',
+          title: 'Shared rotation project',
+          request: 'Coordinate producer and consumer changes.',
+          controlPlanJson: '{}',
+          zonePolicyJson: '{}',
+          members: [{
+            userId: 'user-agent-owner',
+            role: 'agent',
+            permissionsJson: JSON.stringify(['project:read']),
+            participationStatus: 'enabled',
+            revokedAt: null,
+          }],
+        },
+      });
+      prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([]);
+      prisma.codeSiteMutationLease.findMany.mockResolvedValue([]);
+      prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([]);
+      prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([]);
+      prisma.codeSiteInspectionRun.findMany.mockResolvedValue([]);
+      prisma.codeSiteKnowledgeItem.findMany.mockResolvedValue([
+        knowledgeRow({ createdByAgentSessionId: 'producer-agent', createdByUserId: 'producer-user' }),
+      ]);
+
+      const context = await getRelevantAgentContext('acme', session.id, AGENT_AUTHORITY_TOKEN);
+      expect(context.sharedKnowledge).toMatchObject({
+        phaseAvailable: true,
+        discoveries: [{ id: 'knowledge-1', references: { contracts: ['rotation-event.v2'] } }],
+        leads: [],
+        skills: [],
+        handoffs: [],
+        impactNotices: [],
+      });
+      expect(context.bytes).toBeLessThanOrEqual(64 * 1024);
+    });
+
+    it('records a recipient-bound impact response without mutating transaction state', async () => {
+      const session = bindKnowledgeAuthority({ id: 'consumer-agent' });
+      const impact = knowledgeRow({
+        id: 'impact-1',
+        kind: 'impact_notice',
+        status: 'pending',
+        title: 'Contract impact',
+        summary: 'Refresh the consumer transaction.',
+        redactionClass: 'project_notice',
+        payloadJson: JSON.stringify({
+          source: { actorType: 'system', actorId: 'knowledge-1', agentSessionId: null, terminalSessionId: null },
+          tags: [],
+          sourceKnowledgeId: 'knowledge-1',
+          recipientAgentSessionIds: ['consumer-agent'],
+          requiresResponse: true,
+          responseAction: null,
+        }),
+        scopeJson: JSON.stringify({
+          visibility: 'project',
+          references: {
+            paths: [], symbols: [], contracts: ['rotation-event.v2'], runtimeSessionIds: [],
+            agentSessionIds: ['consumer-agent'], workstreamIds: [], transactionIds: ['consumer-txn'],
+          },
+          tags: [],
+        }),
+        sourceKnowledgeItemId: 'knowledge-1',
+        targetTransactionId: 'consumer-txn',
+      });
+      prisma.codeSiteAgentInboxItem.findFirst.mockResolvedValue({
+        id: 'inbox-impact-1',
+        projectId: session.projectId,
+        agentSessionId: session.id,
+        recipientUserId: session.ownerUserId,
+        eventId: 'event-impact-1',
+        documentId: null,
+        knowledgeItemId: impact.id,
+        kind: 'impact_notice',
+        requiresResponse: true,
+        status: 'pending',
+        redactedPayloadJson: JSON.stringify({ knowledgeItemId: impact.id }),
+        responseAction: null,
+        responseJson: null,
+        respondedAt: null,
+        acknowledgedAt: null,
+        createdAt: new Date(),
+        knowledgeItem: impact,
+      });
+      prisma.codeSiteKnowledgeItem.update.mockImplementation(async ({ data }) => ({ ...impact, ...data }));
+
+      const result = await respondToAgentKnowledgeInbox(
+        'acme',
+        session.id,
+        'inbox-impact-1',
+        AGENT_AUTHORITY_TOKEN,
+        { action: 'rebase_requested', reason: 'Contract advanced', evidenceRefs: ['event:source-change'] },
+      );
+      expect(result).toMatchObject({
+        response: { action: 'rebase_requested', targetStatus: 'rebasing' },
+        knowledge: { id: 'impact-1', status: 'rebasing' },
+        duplicate: false,
+      });
+      expect(prisma.codeSiteMutationTransaction.update).not.toHaveBeenCalled();
+      expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ eventType: 'impact_notice_responded', actorId: session.id }),
+      }));
+    });
+
+    it('lists project-visible knowledge for humans while excluding another owner private record', async () => {
+      prisma.codeSiteKnowledgeItem.findMany.mockResolvedValue([
+        knowledgeRow(),
+        knowledgeRow({
+          id: 'private-other',
+          createdByUserId: 'user-2',
+          redactionClass: 'owner_private',
+          scopeJson: JSON.stringify({
+            visibility: 'owner_private',
+            references: JSON.parse(knowledgeRow().scopeJson).references,
+            tags: [],
+          }),
+        }),
+      ]);
+      const items = await listProjectKnowledge('acme', 'project-1', {}, { userId: 'user-1' });
+      expect(items.map((item) => item.id)).toEqual(['knowledge-1']);
     });
   });
 
