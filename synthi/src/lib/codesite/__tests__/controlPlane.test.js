@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
+import { createHash } from 'crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   canonicalDojoProofPayload,
@@ -170,6 +171,7 @@ import {
   heartbeatAgentSession,
   proposeRouteRevision,
   promotePolicyDelta,
+  requireAgentTokenAuthority,
   recordTransactionRead,
   recordTransactionQuarantineEvent,
   recordTransactionWrite,
@@ -222,6 +224,53 @@ async function withEnv(values, callback) {
       }
     }
   }
+}
+
+const AGENT_AUTHORITY_NOW = new Date('2026-08-22T12:00:00.000Z');
+const AGENT_AUTHORITY_TOKEN = `csa_${'z'.repeat(43)}`;
+const AGENT_AUTHORITY_TOKEN_HASH = createHash('sha256').update(AGENT_AUTHORITY_TOKEN, 'utf8').digest('hex');
+
+function agentAuthoritySession(overrides = {}) {
+  const member = {
+    userId: 'user-agent-owner',
+    role: 'agent',
+    permissionsJson: JSON.stringify(['project:read']),
+    participationStatus: 'enabled',
+    revokedAt: null,
+    ...(overrides.member || {}),
+  };
+  return {
+    id: 'agent-authority-1',
+    projectId: 'project-authority-1',
+    workspaceSlug: 'acme',
+    ownerUserId: 'user-agent-owner',
+    agentProvider: 'custom-provider',
+    status: 'attached',
+    capabilitiesJson: JSON.stringify(['codesite.context.read', 'codesite.knowledge.read']),
+    agentAccessTokenExpiresAt: new Date(AGENT_AUTHORITY_NOW.getTime() + 60_000),
+    lastHeartbeatAt: new Date(AGENT_AUTHORITY_NOW.getTime() - 1_000),
+    endedAt: null,
+    project: {
+      id: 'project-authority-1',
+      workspaceSlug: 'acme',
+      status: 'active',
+      members: [member],
+      ...(overrides.project || {}),
+    },
+    ...Object.fromEntries(Object.entries(overrides).filter(([key]) => !['member', 'project'].includes(key))),
+  };
+}
+
+function mockBoundAgentAuthoritySession(session, tokenHash = AGENT_AUTHORITY_TOKEN_HASH) {
+  prisma.codeSiteAgentSession.findFirst.mockImplementation(async ({ where } = {}) => {
+    if (session.endedAt) return null;
+    return where?.id === session.id
+      && where?.workspaceSlug === session.workspaceSlug
+      && where?.agentAccessTokenHash === tokenHash
+      && where?.endedAt === null
+      ? session
+      : null;
+  });
 }
 
 function codesiteScriptPath(scriptName) {
@@ -2308,6 +2357,179 @@ describe('CodeSite control plane transaction validation', () => {
     await expect(heartbeatAgentSession('acme', existing.id, incompleteBody, authority)).rejects.toMatchObject({
       status: 400,
       code: 'agent_runtime_scope_required',
+    });
+  });
+
+  describe('environment-bound agent token authority', () => {
+    it.each(['codex', 'claude', 'custom-provider', 'local-agent-runtime'])('authorizes provider-neutral %s sessions', async (agentProvider) => {
+      const session = agentAuthoritySession({ agentProvider });
+      mockBoundAgentAuthoritySession(session);
+
+      const authority = await requireAgentTokenAuthority(
+        'acme',
+        session.id,
+        AGENT_AUTHORITY_TOKEN,
+        { requiredCapability: 'codesite.knowledge.read', now: AGENT_AUTHORITY_NOW },
+      );
+
+      expect(authority).toMatchObject({
+        session: { id: session.id, agentProvider },
+        project: { id: session.projectId, status: 'active' },
+        member: { userId: session.ownerUserId },
+        capabilities: ['codesite.context.read', 'codesite.knowledge.read'],
+        authorizedAt: AGENT_AUTHORITY_NOW,
+      });
+      expect(prisma.codeSiteAgentSession.findFirst).toHaveBeenLastCalledWith({
+        where: {
+          id: session.id,
+          workspaceSlug: 'acme',
+          agentAccessTokenHash: AGENT_AUTHORITY_TOKEN_HASH,
+          endedAt: null,
+        },
+        include: { project: { include: { members: true } } },
+      });
+      expect(prisma.codeSiteAgentSession.findFirst.mock.calls.at(-1)[0].where).not.toHaveProperty('agentProvider');
+    });
+
+    it.each([null, '', 'invalid', 'csa_short', `csa_${'!'.repeat(43)}`, `csa_${'a'.repeat(129)}`])('rejects invalid token syntax %j before database access', async (token) => {
+      prisma.codeSiteAgentSession.findFirst.mockClear();
+      await expect(requireAgentTokenAuthority('acme', 'agent-authority-1', token, {
+        now: AGENT_AUTHORITY_NOW,
+      })).rejects.toMatchObject({ status: 403, code: 'agent_access_token_invalid' });
+      expect(prisma.codeSiteAgentSession.findFirst).not.toHaveBeenCalled();
+    });
+
+    it('binds a valid token hash to the exact path session and workspace', async () => {
+      const session = agentAuthoritySession();
+      mockBoundAgentAuthoritySession(session);
+      const otherToken = `csa_${'y'.repeat(43)}`;
+
+      for (const [workspaceSlug, sessionId, token] of [
+        ['acme', session.id, otherToken],
+        ['acme', 'agent-other', AGENT_AUTHORITY_TOKEN],
+        ['other-workspace', session.id, AGENT_AUTHORITY_TOKEN],
+        ['', session.id, AGENT_AUTHORITY_TOKEN],
+        ['acme', '', AGENT_AUTHORITY_TOKEN],
+      ]) {
+        await expect(requireAgentTokenAuthority(workspaceSlug, sessionId, token, {
+          now: AGENT_AUTHORITY_NOW,
+        })).rejects.toMatchObject({ status: 403, code: 'agent_access_token_invalid' });
+      }
+    });
+
+    it.each([
+      [null, 'missing'],
+      [new Date(AGENT_AUTHORITY_NOW.getTime() - 1), 'expired'],
+      [new Date(AGENT_AUTHORITY_NOW.getTime()), 'boundary-expired'],
+      ['not-a-date', 'invalid'],
+    ])('rejects %s token expiry state', async (agentAccessTokenExpiresAt) => {
+      const session = agentAuthoritySession({ agentAccessTokenExpiresAt });
+      mockBoundAgentAuthoritySession(session);
+      await expect(requireAgentTokenAuthority('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        now: AGENT_AUTHORITY_NOW,
+      })).rejects.toMatchObject({ status: 403, code: 'agent_access_token_expired' });
+    });
+
+    it.each(['registered', 'detached', 'ended', 'revoked'])('rejects non-attached session status %s', async (status) => {
+      const session = agentAuthoritySession({ status });
+      mockBoundAgentAuthoritySession(session);
+      await expect(requireAgentTokenAuthority('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        now: AGENT_AUTHORITY_NOW,
+      })).rejects.toMatchObject({ status: 403, code: 'agent_session_not_attached' });
+    });
+
+    it('requires the session to remain unended in the token-bound query', async () => {
+      const session = agentAuthoritySession({ endedAt: new Date(AGENT_AUTHORITY_NOW.getTime() - 1_000) });
+      mockBoundAgentAuthoritySession(session);
+      await expect(requireAgentTokenAuthority('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        now: AGENT_AUTHORITY_NOW,
+      })).rejects.toMatchObject({ status: 403, code: 'agent_access_token_invalid' });
+      expect(prisma.codeSiteAgentSession.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+        where: expect.objectContaining({ endedAt: null }),
+      }));
+    });
+
+    it.each([
+      [null, 'missing'],
+      ['not-a-date', 'invalid'],
+      [new Date(AGENT_AUTHORITY_NOW.getTime() - 5 * 60_000 - 1), 'stale'],
+      [new Date(AGENT_AUTHORITY_NOW.getTime() + 1), 'future'],
+    ])('rejects %s heartbeat freshness state', async (lastHeartbeatAt) => {
+      const session = agentAuthoritySession({ lastHeartbeatAt });
+      mockBoundAgentAuthoritySession(session);
+      await expect(requireAgentTokenAuthority('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        now: AGENT_AUTHORITY_NOW,
+      })).rejects.toMatchObject({ status: 403, code: 'agent_session_heartbeat_stale' });
+    });
+
+    it('accepts heartbeat freshness exactly at the five-minute boundary', async () => {
+      const session = agentAuthoritySession({
+        lastHeartbeatAt: new Date(AGENT_AUTHORITY_NOW.getTime() - 5 * 60_000),
+      });
+      mockBoundAgentAuthoritySession(session);
+      await expect(requireAgentTokenAuthority('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        now: AGENT_AUTHORITY_NOW,
+      })).resolves.toMatchObject({ session: { id: session.id } });
+    });
+
+    it.each([null, 'paused', 'archived'])('rejects inactive project status %j', async (projectStatus) => {
+      const session = agentAuthoritySession();
+      if (projectStatus == null) {
+        session.project = null;
+      } else {
+        session.project.status = projectStatus;
+      }
+      mockBoundAgentAuthoritySession(session);
+      await expect(requireAgentTokenAuthority('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        now: AGENT_AUTHORITY_NOW,
+      })).rejects.toMatchObject({ status: 403, code: 'codesite_project_inactive' });
+    });
+
+    it.each([
+      [{ project: { members: [] } }, 'missing'],
+      [{ member: { revokedAt: new Date(AGENT_AUTHORITY_NOW) } }, 'revoked'],
+      [{ member: { participationStatus: 'disabled' } }, 'disabled'],
+      [{ member: { permissionsJson: JSON.stringify(['agent:attach']) } }, 'without-read-permission'],
+    ])('rejects %s project membership', async (overrides) => {
+      const session = agentAuthoritySession(overrides);
+      mockBoundAgentAuthoritySession(session);
+      await expect(requireAgentTokenAuthority('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        now: AGENT_AUTHORITY_NOW,
+      })).rejects.toMatchObject({ status: 403, code: 'agent_project_membership_revoked' });
+    });
+
+    it('allows an active role-derived read membership when permissions are empty', async () => {
+      const session = agentAuthoritySession({ member: { permissionsJson: JSON.stringify([]) } });
+      mockBoundAgentAuthoritySession(session);
+      await expect(requireAgentTokenAuthority('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        now: AGENT_AUTHORITY_NOW,
+      })).resolves.toMatchObject({ member: { role: 'agent' } });
+    });
+
+    it('enforces an optional exact capability without provider-specific inference', async () => {
+      const session = agentAuthoritySession({ capabilitiesJson: JSON.stringify(['codesite.context.read']) });
+      mockBoundAgentAuthoritySession(session);
+
+      await expect(requireAgentTokenAuthority('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        requiredCapability: 'codesite.knowledge.read',
+        now: AGENT_AUTHORITY_NOW,
+      })).rejects.toMatchObject({
+        status: 403,
+        code: 'agent_capability_required',
+        detail: { requiredCapabilities: ['codesite.knowledge.read'] },
+      });
+      await expect(requireAgentTokenAuthority('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        now: AGENT_AUTHORITY_NOW,
+      })).resolves.toMatchObject({ capabilities: ['codesite.context.read'] });
+    });
+
+    it.each([null, 'not-json', JSON.stringify({ capability: 'codesite.context.read' })])('denies required capability against malformed capability state %j', async (capabilitiesJson) => {
+      const session = agentAuthoritySession({ capabilitiesJson });
+      mockBoundAgentAuthoritySession(session);
+      await expect(requireAgentTokenAuthority('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        requiredCapability: 'codesite.context.read',
+        now: AGENT_AUTHORITY_NOW,
+      })).rejects.toMatchObject({ status: 403, code: 'agent_capability_required' });
     });
   });
 

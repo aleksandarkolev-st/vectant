@@ -1936,30 +1936,88 @@ function trimAgentContextToLimit(context) {
   return context;
 }
 
-export async function getRelevantAgentContext(workspaceSlug, sessionId, agentAccessToken) {
+function requiredAgentCapabilities(value) {
+  if (value == null || value === '') return [];
+  const capabilities = unique(asArray(value).map((entry) => String(entry || '').trim()).filter(Boolean));
+  if (capabilities.length === 0
+    || capabilities.length > 32
+    || capabilities.some((capability) => capability.length > 128 || !/^[a-z0-9][a-z0-9.*:_-]*$/i.test(capability))) {
+    throw forbidden('agent_capability_required');
+  }
+  return capabilities;
+}
+
+export async function requireAgentTokenAuthority(
+  workspaceSlug,
+  sessionId,
+  agentAccessToken,
+  { requiredCapability = null, now = new Date() } = {},
+) {
   const token = String(agentAccessToken || '').trim();
-  if (!/^csa_[A-Za-z0-9_-]{32,128}$/.test(token)) throw forbidden('agent_access_token_invalid');
+  const normalizedWorkspaceSlug = String(workspaceSlug || '').trim();
+  const normalizedSessionId = String(sessionId || '').trim();
+  if (!normalizedWorkspaceSlug
+    || !normalizedSessionId
+    || !/^csa_[A-Za-z0-9_-]{32,128}$/.test(token)) {
+    throw forbidden('agent_access_token_invalid');
+  }
   const session = await prisma.codeSiteAgentSession.findFirst({
     where: {
-      id: sessionId,
-      workspaceSlug,
+      id: normalizedSessionId,
+      workspaceSlug: normalizedWorkspaceSlug,
       agentAccessTokenHash: agentAccessTokenHash(token),
       endedAt: null,
     },
     include: { project: { include: { members: true } } },
   });
   if (!session) throw forbidden('agent_access_token_invalid');
-  const now = new Date();
-  if (!session.agentAccessTokenExpiresAt || new Date(session.agentAccessTokenExpiresAt).getTime() <= now.getTime()) {
+
+  const authorizedAt = now instanceof Date ? new Date(now.getTime()) : new Date(now);
+  const authorizedAtMs = authorizedAt.getTime();
+  if (!Number.isFinite(authorizedAtMs)) throw forbidden('agent_access_token_invalid');
+  const expiresAtMs = session.agentAccessTokenExpiresAt
+    ? new Date(session.agentAccessTokenExpiresAt).getTime()
+    : Number.NaN;
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= authorizedAtMs) {
     throw forbidden('agent_access_token_expired');
   }
   if (session.status !== 'attached') throw forbidden('agent_session_not_attached');
-  if (!session.lastHeartbeatAt || now.getTime() - new Date(session.lastHeartbeatAt).getTime() > AGENT_CONTEXT_HEARTBEAT_MAX_AGE_MS) {
+  const heartbeatAtMs = session.lastHeartbeatAt
+    ? new Date(session.lastHeartbeatAt).getTime()
+    : Number.NaN;
+  const heartbeatAgeMs = authorizedAtMs - heartbeatAtMs;
+  if (!Number.isFinite(heartbeatAtMs)
+    || heartbeatAgeMs < 0
+    || heartbeatAgeMs > AGENT_CONTEXT_HEARTBEAT_MAX_AGE_MS) {
     throw forbidden('agent_session_heartbeat_stale');
   }
   if (!session.project || session.project.status !== 'active') throw forbidden('codesite_project_inactive');
   const member = projectAgentMember(session.project, session.ownerUserId);
   if (!member || !projectPermissionAllows(member, 'read')) throw forbidden('agent_project_membership_revoked');
+
+  const capabilities = unique(asArray(parseJson(session.capabilitiesJson, []))
+    .map((capability) => String(capability || '').trim())
+    .filter(Boolean));
+  const requiredCapabilities = requiredAgentCapabilities(requiredCapability);
+  if (requiredCapabilities.some((capability) => !capabilities.includes(capability))) {
+    throw forbidden('agent_capability_required', { requiredCapabilities });
+  }
+  return {
+    session,
+    project: session.project,
+    member,
+    capabilities,
+    authorizedAt,
+  };
+}
+
+export async function getRelevantAgentContext(workspaceSlug, sessionId, agentAccessToken) {
+  const { session, authorizedAt: now } = await requireAgentTokenAuthority(
+    workspaceSlug,
+    sessionId,
+    agentAccessToken,
+    { requiredCapability: 'codesite.context.read' },
+  );
 
   const [workstreams, leases, transactions, inbox, inspections] = await Promise.all([
     prisma.codeSiteExecutionPlan.findMany({
