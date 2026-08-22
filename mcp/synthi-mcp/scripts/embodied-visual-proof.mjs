@@ -49,6 +49,11 @@ const suites = [
   "tests/unit/embodied_grid_conformance.test.ts",
   "tests/unit/embodied_nn_conformance.test.ts",
   "tests/unit/embodied_kv_conformance.test.ts",
+  "tests/unit/embodied_terminal_conformance.test.ts",
+  "tests/unit/embodied_kernel_conformance.test.ts",
+  "tests/unit/embodied_e2e_teach_everything.test.ts",
+  "tests/unit/embodied_core_gate.test.ts",
+  "tests/unit/embodied_cv.test.ts",
 ].map(runSuite);
 
 const tscOutput = (() => {
