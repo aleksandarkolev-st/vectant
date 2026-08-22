@@ -11046,6 +11046,7 @@ function projectProjection(project) {
     controlPlan: parseJson(project.controlPlanJson, {}),
     members: asArray(project.members).map(projectMembershipProjection),
     agentSessions: asArray(project.agentSessions).map(sessionProjection),
+    agentRegistry: asArray(project.agentSessions).map(agentRegistryProjection),
     executionPlans: asArray(project.executionPlans).map(executionPlanProjection),
     mutationLeases: mutationLeases.map(mutationLeaseProjection),
     mutationTxns: mutationTxns.map(transactionProjection),
@@ -11091,6 +11092,40 @@ function projectProjection(project) {
   };
 }
 
+function agentPresence(session, now = Date.now()) {
+  if (session.endedAt) return { presence: 'ended', reason: 'session_ended' };
+  if (session.status === 'detached' || session.detachedAt) return { presence: 'offline', reason: 'session_detached' };
+  if (session.status !== 'attached') return { presence: 'offline', reason: 'session_not_attached' };
+  const heartbeatAt = session.lastHeartbeatAt ? new Date(session.lastHeartbeatAt).getTime() : Number.NaN;
+  if (!Number.isFinite(heartbeatAt)) return { presence: 'offline', reason: 'heartbeat_missing' };
+  return now - heartbeatAt <= AGENT_CONTEXT_HEARTBEAT_MAX_AGE_MS
+    ? { presence: 'online', reason: 'heartbeat_fresh' }
+    : { presence: 'offline', reason: 'heartbeat_stale' };
+}
+
+function agentRegistryProjection(session) {
+  const presence = agentPresence(session);
+  return {
+    id: session.id,
+    displayCallsign: session.displayCallsign,
+    provider: session.agentProvider,
+    ownerUserId: session.ownerUserId,
+    collaborationUserId: session.collaborationUserId || null,
+    terminalSessionId: session.terminalSessionId || null,
+    runtimeSessionId: session.runtimeSessionId || null,
+    executionHost: parseJson(session.executionHostJson, {}),
+    subscriptions: parseJson(session.subscriptionsJson, []),
+    providerSessionBound: Boolean(session.providerSessionRef),
+    presence: presence.presence,
+    presenceReason: presence.reason,
+    status: session.status,
+    lastHeartbeatAt: session.lastHeartbeatAt || null,
+    attachedAt: session.attachedAt || null,
+    detachedAt: session.detachedAt || null,
+    endedAt: session.endedAt || null,
+  };
+}
+
 function artifactProjectProjection(project) {
   return {
     ...projectProjection(project),
@@ -11112,7 +11147,7 @@ function sessionProjection(session) {
     runtimeScope: session.runtimeScope || null,
     agentProvider: session.agentProvider,
     agentRuntime: session.agentRuntime,
-    providerSessionRef: session.providerSessionRef,
+    providerSessionBound: Boolean(session.providerSessionRef),
     displayCallsign: session.displayCallsign,
     status: session.status,
     permissions: parseJson(session.permissionsJson, []),

@@ -1878,7 +1878,7 @@ describe('CodeSite control plane transaction validation', () => {
         runtimeSessionId: 'runtime-1',
         runtimeScope: 'shared-workspace',
         agentProvider: 'codex',
-        providerSessionRef: 'codex-session-1',
+        providerSessionBound: true,
         displayCallsign: 'CODEX-01',
         capabilities: ['workspace.read'],
         subscriptions: ['project.events'],
@@ -1891,6 +1891,7 @@ describe('CodeSite control plane transaction validation', () => {
       create: expect.objectContaining({ userId: 'user-1', source: 'collab_agent_attach' }),
     }));
     expect(result.agentAccessToken).toMatch(/^csa_[A-Za-z0-9_-]+$/);
+    expect(result.session).not.toHaveProperty('providerSessionRef');
     const createData = prisma.codeSiteAgentSession.create.mock.calls[0][0].data;
     expect(createData.agentAccessTokenHash).toMatch(/^[a-f0-9]{64}$/);
     expect(createData.agentAccessTokenHash).not.toBe(result.agentAccessToken);
@@ -4297,6 +4298,86 @@ describe('CodeSite control plane transaction validation', () => {
     });
     expect(project.inboxItems[0]).not.toHaveProperty('redactedPayload');
     expect(project.inboxItems[0]).not.toHaveProperty('recipientUserId');
+  });
+
+  it('publishes a redacted multi-owner agent registry with heartbeat-derived presence', async () => {
+    const now = Date.now();
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Shared work',
+      request: 'Coordinate agents',
+      status: 'active',
+      zonePolicyJson: '{}',
+      controlPlanJson: '{}',
+      createdAt: new Date(now - 60_000),
+      updatedAt: new Date(now),
+      members: [],
+      agentSessions: [
+        {
+          id: 'agent-1',
+          projectId: 'project-1',
+          ownerUserId: 'owner-1',
+          collaborationUserId: 'member-1',
+          terminalSessionId: 'terminal-1',
+          agentProvider: 'codex',
+          providerSessionRef: 'provider-private-one',
+          displayCallsign: 'CODEX-01',
+          status: 'attached',
+          executionHostJson: JSON.stringify({ type: 'workspace_terminal' }),
+          subscriptionsJson: JSON.stringify(['project.events', 'agent.inbox']),
+          lastHeartbeatAt: new Date(now - 10_000),
+          attachedAt: new Date(now - 20_000),
+          createdAt: new Date(now - 20_000),
+        },
+        {
+          id: 'agent-2',
+          projectId: 'project-1',
+          ownerUserId: 'owner-2',
+          collaborationUserId: 'member-2',
+          terminalSessionId: 'terminal-2',
+          agentProvider: 'claude',
+          providerSessionRef: 'provider-private-two',
+          displayCallsign: 'CLAUDE-02',
+          status: 'attached',
+          executionHostJson: JSON.stringify({ type: 'workspace_terminal' }),
+          subscriptionsJson: JSON.stringify(['project.events']),
+          lastHeartbeatAt: new Date(now - 10 * 60_000),
+          attachedAt: new Date(now - 11 * 60_000),
+          createdAt: new Date(now - 11 * 60_000),
+        },
+      ],
+      executionPlans: [], mutationLeases: [], mutationTxns: [], assumptions: [],
+      policyDecisions: [], events: [], incidents: [], inspectionRuns: [], proofBundles: [],
+      lineProvenance: [], documents: [], permits: [], documentReviews: [], routeRevisions: [],
+      counterfactualRuns: [], policyDeltas: [], inboxItems: [],
+    });
+
+    const project = await getProject('acme', 'project-1');
+
+    expect(project.agentRegistry).toEqual([
+      expect.objectContaining({
+        displayCallsign: 'CODEX-01',
+        provider: 'codex',
+        ownerUserId: 'owner-1',
+        terminalSessionId: 'terminal-1',
+        subscriptions: ['project.events', 'agent.inbox'],
+        providerSessionBound: true,
+        presence: 'online',
+      }),
+      expect.objectContaining({
+        displayCallsign: 'CLAUDE-02',
+        provider: 'claude',
+        ownerUserId: 'owner-2',
+        providerSessionBound: true,
+        presence: 'offline',
+        presenceReason: 'heartbeat_stale',
+      }),
+    ]);
+    expect(project.agentSessions[0]).not.toHaveProperty('providerSessionRef');
+    expect(project.agentSessions[0].providerSessionBound).toBe(true);
+    expect(JSON.stringify(project)).not.toContain('provider-private-one');
+    expect(JSON.stringify(project)).not.toContain('provider-private-two');
   });
 
   it('keeps proof bundle commit trailers complete in project snapshots', async () => {
