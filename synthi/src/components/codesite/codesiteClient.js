@@ -40,8 +40,28 @@ export const CODE_SITE_LIVE_EVENT_TYPES = Object.freeze([
   'arbiter_verdict',
   'black_box_closed',
   'incident_reported',
+  'discovery_recorded',
+  'lead_opened',
+  'lead_claimed',
+  'lead_resolved',
+  'lead_dismissed',
+  'shared_skill_published',
+  'shared_skill_updated',
+  'impact_notice_created',
+  'impact_notice_responded',
+  'handoff_ready',
+  'handoff_acknowledged',
   'codesite_stream_error',
 ]);
+
+const PROJECT_KNOWLEDGE_KINDS = new Set([
+  'discovery',
+  'lead',
+  'shared_skill',
+  'impact_notice',
+  'handoff',
+]);
+const PROJECT_KNOWLEDGE_STATUS_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 
 async function parseJson(response) {
   return response.json().catch(() => ({}));
@@ -189,6 +209,31 @@ export async function fetchCodeSiteEvents(workspaceSlug, projectId) {
   if (!workspaceSlug || !projectId) return [];
   const body = await request(`${projectBase(workspaceSlug, projectId)}/events`);
   return body.events || [];
+}
+
+export async function fetchCodeSiteProjectKnowledge(workspaceSlug, projectId, filters = {}) {
+  if (!workspaceSlug || !projectId) return [];
+  const input = filters && typeof filters === 'object' && !Array.isArray(filters) ? filters : {};
+  const search = new URLSearchParams();
+  const kind = typeof input.kind === 'string' ? input.kind.trim().toLowerCase() : '';
+  const status = typeof input.status === 'string' ? input.status.trim().toLowerCase() : '';
+  if (PROJECT_KNOWLEDGE_KINDS.has(kind)) search.set('kind', kind);
+  if (PROJECT_KNOWLEDGE_STATUS_PATTERN.test(status)) search.set('status', status);
+  if (Number.isInteger(input.limit) && input.limit >= 1 && input.limit <= 100) {
+    search.set('limit', String(input.limit));
+  }
+  const since = safeKnowledgeSince(input.since);
+  if (since) search.set('since', since);
+  const query = search.toString();
+  const suffix = query ? `?${query}` : '';
+  const body = await request(`${projectBase(workspaceSlug, projectId)}/knowledge${suffix}`);
+  return Array.isArray(body.knowledge) ? body.knowledge : [];
+}
+
+function safeKnowledgeSince(value) {
+  if (!(typeof value === 'string' || value instanceof Date)) return '';
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : '';
 }
 
 export async function fetchCodeSiteMetrics(workspaceSlug, projectId) {
