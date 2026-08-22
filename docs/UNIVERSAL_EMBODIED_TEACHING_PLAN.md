@@ -198,9 +198,31 @@ Each attributed change is classified by observing through the settle window and 
 
 Surviving durable actor-caused changes compile into typed predicates over the WorldStateSchema (e.g. `frustum_contains(player.view, door.north)`), with an uncertainty annotation derived from evidence kind, sample count across demonstrations, and truncation status. The compiler refuses to emit high-severity assertions (hard failures, license-gating effects) from low-uncertainty predicates — same refusal discipline as low-confidence locators.
 
+### Perception binds to computer-vision building blocks, not bespoke pixel code
+
+When a world offers no scene graph (browser canvases, native games, desktop apps), perception falls back to pixels — but through proven CV primitives, never hand-rolled per-scenario heuristics:
+
+- **Perceptual hashing (pHash/dHash)** for "same view / same landmark" identity: robust to compression, scaling, minor lighting shifts. The repo already carries an E2b region-phash spike; productionize it as the shared region-identity primitive.
+- **Color-space band predicates (HSV/Lab distance)** for appearance classes like the purple check: declared as schema value types (`hue_band`, `lab_distance`), evaluated by one shared predicate evaluator — never inline RGB comparisons in adapters.
+- **Template/feature matching** (normalized cross-correlation or ORB-class features via `sharp`'s raw buffers) for locating known UI/game elements when structural affordances are gone.
+- **Change detection on downsampled frames** (block-wise delta energy) as a cheap pre-filter so expensive CV runs only where state actually moved.
+
+Rules:
+
+1. All CV primitives live in ONE shared module (`embodied/perception/cv.ts`); adapters declare *which* primitive + parameters in their schema's perception bindings (`preferred: scene_graph | phash_region | hsv_band | template_match`), they never implement pixel math themselves.
+2. Every pixel-derived predicate carries its confidence and is treated like T3/T4 affordances: valid, but flagged below-structural, subject to degradation-rate metrics.
+3. Determinism requirement: identical frames must produce identical verdicts (no time/random-dependent thresholds); seeded-substrate double-replay hash equality extends to perceptual verdicts.
+4. The conformance fuzz must include at least one pixel-only world variant (schema declares no scene graph) to prove the CV path compiles equivalent contracts with correctly-flagged confidence.
+
 ### Anti-hardcoding rule
 
-No adapter may ship per-scenario delta tables, and the core may not special-case known environments ("if door then check color"). The conformance suite (see Implementation Phases, Phase 0b) enforces this structurally: adapters are exercised against randomized synthetic worlds where the interesting values are chosen by the harness at runtime, so any hardcoded assumption fails the fuzz.
+No adapter may ship per-scenario delta tables, and the core may not special-case known environments ("if door then check color"). Domain nouns enter only through schemas, profiles, and human confirmation. The conformance suite enforces this structurally at three levels:
+
+1. **Randomized worlds:** all three conformance fixtures randomize entity counts, positions, families, weights, keyspaces, ambient periods per seed — any memorized scenario fails some seed.
+2. **Import boundary:** `src/embodied/**` may import nothing outside the core directory (grep-tested per commit).
+3. **Noun gate:** core sources are grepped for domain vocabulary every run; fixtures are grepped to ensure even THEY only import the core.
+
+The three shipped ontologies (spatial grid, activation network, key-value store) share zero semantics by construction — anything hardcoded to one fails the other two.
 
 ---
 
