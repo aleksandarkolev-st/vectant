@@ -97,6 +97,26 @@ const TERMINAL_REPLAY_BUFFER_CHARS = Math.max(
   Number(process.env.SYNTHI_TERMINAL_REPLAY_BUFFER_CHARS || 100_000),
 );
 
+const CHILD_SECRET_ENV_ALLOWLIST = new Set([
+  'SYNTHI_CODESITE_AGENT_TOKEN',
+]);
+
+function stripSensitiveServerEnvironment(env) {
+  if (!env || typeof env !== 'object') return env;
+  for (const key of Object.keys(env)) {
+    const upper = key.toUpperCase();
+    if (CHILD_SECRET_ENV_ALLOWLIST.has(upper)) continue;
+    const looksSensitive = /SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|PRIVATE|ACCESS_KEY|API_KEY|AUTH_KEY|ENCRYPTION|COOKIE|SESSION_KEY|JWT|DSN/.test(upper)
+      || /^(DATABASE|REDIS|POSTGRES|MONGO|MONGODB|AMQP).*(URL|URI)$/.test(upper)
+      || upper === 'GOOGLE_APPLICATION_CREDENTIALS'
+      || upper === 'GCP_PRIVATE_KEY'
+      || upper === 'GCS_BUCKET'
+      || upper === 'GCS_BUCKET_NAME';
+    if (looksSensitive) delete env[key];
+  }
+  return env;
+}
+
 function appendTerminalOutput(session, data, maxChars = TERMINAL_REPLAY_BUFFER_CHARS) {
   if (!session || typeof data !== 'string') return;
   if (!Array.isArray(session.outputBuffer)) session.outputBuffer = [];
@@ -1276,10 +1296,7 @@ function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = nul
     }
   }
 
-  // Remove sensitive server-side variables
-  delete ptyEnv.DATABASE_URL;
-  delete ptyEnv.GOOGLE_APPLICATION_CREDENTIALS;
-  delete ptyEnv.GCS_BUCKET;
+  stripSensitiveServerEnvironment(ptyEnv);
 
   const ptyProcess = pty.spawn(shell, shellArgs, {
     name: 'xterm-256color',
@@ -2351,5 +2368,6 @@ module.exports = {
   getAvailableShells,
   resolveShellType,
   resolveWorkspaceCwd,
+  stripSensitiveServerEnvironment,
   SHELL_REGISTRY,
 };
