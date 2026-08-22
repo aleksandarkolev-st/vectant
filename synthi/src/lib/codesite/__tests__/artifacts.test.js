@@ -226,6 +226,15 @@ describe('CodeSite artifact projection', () => {
     expect(manifestTools).toContain('synthi_codesite_get_metrics');
     expect(manifestTools).toContain('synthi_codesite_preflight_write');
     expect(manifestTools).toContain('synthi_codesite_get_inbox');
+    expect(manifestTools).toEqual(expect.arrayContaining([
+      'synthi_codesite_get_relevant_context',
+      'synthi_codesite_record_discovery',
+      'synthi_codesite_record_lead',
+      'synthi_codesite_publish_shared_skill',
+      'synthi_codesite_file_handoff',
+      'synthi_codesite_get_shared_knowledge',
+      'synthi_codesite_respond_impact_notice',
+    ]));
     expect(manifestTools).toContain('synthi_codesite_review_quarantine');
     expect(manifestTools).toContain('synthi_codesite_replay_quarantine');
     expect(manifestTools).toContain('synthi_codesite_apply_quarantine');

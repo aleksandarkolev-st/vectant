@@ -1126,6 +1126,15 @@ describe('CodeSite control plane transaction validation', () => {
 
     expect(manifest.mcpTools).toEqual(CODESITE_MCP_TOOLS);
     expect(manifest.mcpTools).toContain('synthi_codesite_get_inbox');
+    expect(manifest.mcpTools).toEqual(expect.arrayContaining([
+      'synthi_codesite_get_relevant_context',
+      'synthi_codesite_record_discovery',
+      'synthi_codesite_record_lead',
+      'synthi_codesite_publish_shared_skill',
+      'synthi_codesite_file_handoff',
+      'synthi_codesite_get_shared_knowledge',
+      'synthi_codesite_respond_impact_notice',
+    ]));
     expect(manifest.mcpTools).toContain('synthi_codesite_review_quarantine');
     expect(manifest.inboxRoot).toBe('projects/project-1/inbox/');
     expect(manifest.quarantineRoot).toBe('projects/project-1/quarantines/');
