@@ -1,8 +1,10 @@
 # Universal Embodied Teaching Plan
 
-Status: draft design document v2, extends AGENT_BROWSER_MCP_COMPLETION_PLAN.md and agent_dojo_breakthrough_spec.md
+Status: v2 implemented through Phase 0 + Phase 1 core on branch feat/embodied-universal-teaching. Verified substrate-neutral to date: five ontologies (spatial grid, activation network, key-value store, terminal filesystem, kernel unit namespace) pass the same substrate-blind conformance harness (12 randomized seeds each), plus a teach-everything e2e covering attach/observe/teach/compile/license/run/explain across all five and a cross-substrate workflow with per-node licensing. Shared CV primitives (dHash, HSV bands, NCC template match, block delta) are implemented and tested. Anti-hardcoding is enforced by a whole-tree gate test (import boundary + scenario-noun grep + fixture-kind grep). Visual proof: .visual-proof/embodied-core/conformance-report.html (ALL WORLDS CONFORM) generated from live runs and verified in Firefox on the desktop via accessibility-tree capture.
 Scope: generalize Teach Mode from a browser-only recorder into a substrate-neutral embodied teaching system covering browsers, runtimes, terminals, game worlds, kernels, desktops, and APIs.
 Principle: teach everything a human can demonstrate through an interface, not just what a human can click in a tab.
+
+Not yet implemented from this plan: MCP tool surface changes, UI panel work, browser adapter wrapper refactor onto the capability interfaces, production engine plugins for real game engines, and the governance integration with the existing dojo license kernel.
 
 ---
 
