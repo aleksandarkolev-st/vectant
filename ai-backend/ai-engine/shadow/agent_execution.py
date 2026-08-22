@@ -37,14 +37,15 @@ class AgentContainerPolicy:
     def from_environment(cls) -> "AgentContainerPolicy":
         image = os.environ.get("SYNTHI_AGENT_RUNNER_IMAGE", "vectant-agent-runner:local").strip()
         network = os.environ.get("SYNTHI_AGENT_RUNNER_NETWORK", "").strip()
-        if not image or not network:
-            raise ValueError("agent runner image and isolated network must be configured")
+        credentials_volume = os.environ.get("SYNTHI_AGENT_CREDENTIALS_VOLUME", "").strip()
+        if not image or not network or not credentials_volume:
+            raise ValueError("agent runner image, isolated network, and credentials volume must be configured")
         return cls(
             image=image,
             network=network,
             workspace_volume=os.environ.get("SYNTHI_AGENT_WORKSPACE_VOLUME", "").strip(),
             workspace_volume_root=os.environ.get("SYNTHI_AGENT_WORKSPACE_VOLUME_ROOT", "/data").strip(),
-            credentials_volume=os.environ.get("SYNTHI_AGENT_CREDENTIALS_VOLUME", "").strip(),
+            credentials_volume=credentials_volume,
             memory=os.environ.get("SYNTHI_AGENT_MEMORY", "2g").strip(),
             cpus=os.environ.get("SYNTHI_AGENT_CPUS", "2").strip(),
             pids_limit=int(os.environ.get("SYNTHI_AGENT_PIDS_LIMIT", "512")),

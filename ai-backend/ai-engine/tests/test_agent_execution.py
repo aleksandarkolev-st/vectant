@@ -55,3 +55,11 @@ def test_agent_container_rejects_workspace_outside_configured_volume(tmp_path):
             workspace=tmp_path, run_id="r", runner_command=["hermes", "chat"],
             policy=AgentContainerPolicy(image="runner", network="isolated", workspace_volume="collab-data", workspace_volume_root=str(tmp_path / "other")),
         )
+
+
+def test_environment_policy_fails_closed_without_a_credentials_volume(monkeypatch):
+    monkeypatch.setenv("SYNTHI_AGENT_RUNNER_NETWORK", "isolated")
+    monkeypatch.delenv("SYNTHI_AGENT_CREDENTIALS_VOLUME", raising=False)
+
+    with pytest.raises(ValueError, match="credentials volume"):
+        AgentContainerPolicy.from_environment()

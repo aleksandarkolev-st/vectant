@@ -373,6 +373,9 @@ services:
       SYNTHI_AGENT_RUNNER_NETWORK: "vectant-ade_agent-egress"
       SYNTHI_AGENT_WORKSPACE_VOLUME: "vectant-ade_collab-data"
       SYNTHI_AGENT_WORKSPACE_VOLUME_ROOT: "/data"
+      # Provisioned out-of-band from the runtime's secret manager; never
+      # copied from ai-engine's process environment into an agent container.
+      SYNTHI_AGENT_CREDENTIALS_VOLUME: "vectant-ade_agent-credentials"
       # Tell resolve_workspace_path() where to find slug-rooted repos.
       # The collab-data named volume is shared with collab-server (which
       # writes); we don't need depends_on because the volume is created
@@ -516,6 +519,7 @@ volumes:
   postgres-data:
   collab-data:
   codesite-shadow-scratch:
+  agent-credentials:
 
 networks:
   agent-egress:

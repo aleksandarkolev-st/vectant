@@ -472,12 +472,12 @@ def execute_external_runner(run_id: str, payload: RunnerExecutionRequest, worksp
         # The server-created invocation remains the authoritative budget
         # record even if an adapter has no provider usage report yet.
         artifact.cost_estimated_usd = payload.budget_usd
+    except PermissionError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except OSError as error:
         raise HTTPException(status_code=503, detail=f"{payload.runner_kind} runner is unavailable: {error}") from error
     except (RuntimeError, ValueError) as error:
         raise HTTPException(status_code=422, detail=f"runner chamber could not be prepared: {error}") from error
-    except PermissionError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
     artifact.end_state_hash = str(diff["end_state_hash"])
     artifact.diff_summary = diff
     trace = adapter.collect_trace(invocation, artifact)
