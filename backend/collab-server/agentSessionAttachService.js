@@ -13,6 +13,9 @@ const DEFAULT_CAPABILITIES = Object.freeze([
   'codesite.context.read',
   'codesite.inbox.read',
   'codesite.events.read',
+  'codesite.knowledge.read',
+  'codesite.knowledge.write',
+  'codesite.inbox.respond',
 ]);
 const DEFAULT_SUBSCRIPTIONS = Object.freeze([
   'project.events',

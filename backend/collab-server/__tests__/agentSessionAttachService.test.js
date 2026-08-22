@@ -88,7 +88,14 @@ test('builds attach identity only from the trusted gateway projection', () => {
     agentProvider: 'codex',
     providerSessionRef: 'codex-session-1',
     agentRuntime: 'terminal',
-    capabilities: ['codesite.context.read', 'codesite.inbox.read', 'codesite.events.read'],
+    capabilities: [
+      'codesite.context.read',
+      'codesite.inbox.read',
+      'codesite.events.read',
+      'codesite.knowledge.read',
+      'codesite.knowledge.write',
+      'codesite.inbox.respond',
+    ],
     subscriptions: ['project.events', 'agent.inbox'],
     deliveryChannel: { type: 'mcp_poll' },
     executionHost: {
