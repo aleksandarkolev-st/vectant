@@ -578,6 +578,10 @@ function proofAuthorityEnvValue(key) {
 }
 
 function resolveProofAuthorityFilePath(filePath) {
+  // Relative paths resolve against the repo root. Honor the explicit base-dir
+  // override first (tests/CLIs running from arbitrary cwds), then cwd.
+  const override = process.env.SYNTHI_CODESITE_PROOF_AUTHORITY_BASE_DIR;
+  if (override) return path.resolve(override, filePath);
   return path.isAbsolute(filePath)
     ? path.resolve(filePath)
     : path.resolve(repoRoot(), filePath);
