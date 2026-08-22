@@ -1,7 +1,12 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { shouldUseContainerTerminal, codeSiteTerminalLaunchMode, codeSiteTerminalReattachDecision } = require('../terminalRouting');
+const {
+  shouldUseContainerTerminal,
+  codeSiteTerminalLaunchMode,
+  codeSiteTerminalReattachDecision,
+  agentSessionReattachDecision,
+} = require('../terminalRouting');
 const {
   runtimeTerminalTarget,
   programRuntimeTarget,
@@ -115,6 +120,90 @@ test('CodeSite terminal reattach permits only matching overlay-backed sessions',
       codesiteQuarantine: { mountMode: 'docker-overlay', overlayId: 'overlay-1' },
     },
   }), { ok: true });
+});
+
+function completeAgentBinding(overrides = {}) {
+  return {
+    workspaceSlug: 'repo',
+    collaborationSessionId: 'collab-1',
+    ownerUserId: 'owner-1',
+    collaborationUserId: 'member-1',
+    effectiveWorkspaceUserId: 'workspace-user-1',
+    projectId: 'project-1',
+    agentSessionId: 'agent-1',
+    agentProvider: 'codex',
+    providerSessionRef: 'provider-session-1',
+    runtimeScope: 'runtime-1',
+    terminalSessionId: 'terminal-1',
+    runtimeSessionId: null,
+    activeMutationLeaseId: null,
+    activeTransactionId: null,
+    ...overrides,
+  };
+}
+
+test('agent reattach permits unmanaged sessions and exact server-derived bindings', () => {
+  assert.deepEqual(agentSessionReattachDecision(), { ok: true });
+  const binding = completeAgentBinding();
+  assert.deepEqual(agentSessionReattachDecision({
+    requestedBinding: { ...binding },
+    existingSession: { codeSiteAgentBinding: { ...binding } },
+  }), { ok: true });
+});
+
+test('agent reattach fails closed when only one side is attached or an identity is incomplete', () => {
+  const binding = completeAgentBinding();
+  assert.equal(agentSessionReattachDecision({
+    requestedBinding: binding,
+    existingSession: {},
+  }).reason, 'attachment_state_mismatch');
+  assert.equal(agentSessionReattachDecision({
+    requestedBinding: null,
+    existingSession: { codeSiteAgentBinding: binding },
+  }).reason, 'attachment_state_mismatch');
+  assert.equal(agentSessionReattachDecision({
+    requestedBinding: completeAgentBinding({ ownerUserId: '' }),
+    existingSession: { codeSiteAgentBinding: binding },
+  }).reason, 'identity_incomplete');
+  assert.equal(agentSessionReattachDecision({
+    requestedBinding: completeAgentBinding({ terminalSessionId: null }),
+    existingSession: { codeSiteAgentBinding: binding },
+  }).reason, 'runtime_identity_incomplete');
+  const missingTransactionIdentity = completeAgentBinding();
+  delete missingTransactionIdentity.activeTransactionId;
+  assert.equal(agentSessionReattachDecision({
+    requestedBinding: missingTransactionIdentity,
+    existingSession: { codeSiteAgentBinding: binding },
+  }).reason, 'transaction_identity_incomplete');
+});
+
+test('agent reattach rejects every mismatched ownership, provider, runtime, and transaction identity', () => {
+  const binding = completeAgentBinding();
+  const mismatches = {
+    workspaceSlug: 'other-repo',
+    collaborationSessionId: 'collab-2',
+    ownerUserId: 'owner-2',
+    collaborationUserId: 'member-2',
+    effectiveWorkspaceUserId: 'workspace-user-2',
+    projectId: 'project-2',
+    agentSessionId: 'agent-2',
+    agentProvider: 'claude',
+    providerSessionRef: 'provider-session-2',
+    runtimeScope: 'runtime-2',
+    terminalSessionId: 'terminal-2',
+    runtimeSessionId: 'runtime-session-2',
+    activeMutationLeaseId: 'lease-2',
+    activeTransactionId: 'transaction-2',
+  };
+  for (const [field, value] of Object.entries(mismatches)) {
+    const decision = agentSessionReattachDecision({
+      requestedBinding: completeAgentBinding({ [field]: value }),
+      existingSession: { codeSiteAgentBinding: binding },
+    });
+    assert.equal(decision.ok, false, field);
+    assert.equal(decision.reason, `${field}_mismatch`, field);
+    assert.equal(JSON.stringify(decision).includes(value), false, `${field} value leaked`);
+  }
 });
 
 // S3-T1 — Slice 3: when the Sysbox runtime backend is on, the terminal must exec
