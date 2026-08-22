@@ -4755,14 +4755,23 @@ describe('CodeSite control plane transaction validation', () => {
       'durable_inbox',
       'sse_stream',
       'mcp_poll',
-      'repo_local_projection',
       'webhook',
       'a2a',
       'provider_callback',
     ]));
+    expect(postedPayload.payload.delivery.modes).not.toContain('repo_local_projection');
+    expect(postedPayload.payload.delivery.recipient).toMatchObject({
+      agentSessionId: 'agent-2',
+      provider: 'codex',
+      runtime: 'cloud',
+      providerSessionBound: true,
+    });
+    expect(postedPayload.payload.delivery.recipient).not.toHaveProperty('providerSessionRef');
     const payloadUpdate = prisma.codeSiteAgentInboxItem.update.mock.calls.at(-1)[0];
     const storedPayload = JSON.parse(payloadUpdate.data.redactedPayloadJson);
     expect(storedPayload.delivery.adapterStatus).toBe('delivered');
+    expect(storedPayload.delivery.recipient).toMatchObject({ providerSessionBound: true });
+    expect(storedPayload.delivery.recipient).not.toHaveProperty('providerSessionRef');
     expect(storedPayload.delivery.targets[0].endpoint).toBe('https://hooks.example.test/codesite');
     expect(storedPayload.delivery.attempts).toEqual(expect.arrayContaining([
       expect.objectContaining({ mode: 'webhook', status: 'delivered', httpStatus: 202 }),

@@ -5695,7 +5695,6 @@ function buildInboxDeliveryPlan(session, deliveryTargets = []) {
       'durable_inbox',
       'sse_stream',
       'mcp_poll',
-      'repo_local_projection',
       ...outboundModes,
     ]),
     targets: deliveryTargets.map(publicDeliveryTarget),
@@ -5704,7 +5703,7 @@ function buildInboxDeliveryPlan(session, deliveryTargets = []) {
       agentSessionId: session.id,
       provider: session.agentProvider || null,
       runtime: session.agentRuntime || null,
-      providerSessionRef: session.providerSessionRef || null,
+      providerSessionBound: Boolean(session.providerSessionRef),
     },
   };
 }

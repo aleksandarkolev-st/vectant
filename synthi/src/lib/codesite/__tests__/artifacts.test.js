@@ -332,8 +332,9 @@ describe('CodeSite artifact projection', () => {
         codeSiteBlackBox: 'sha256:replay',
       }),
     ]));
-    expect(paths).toContain('projects/site_signup_email_verification/inbox/CODEX-04/evt-rfi.json');
-    expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/inbox/CODEX-04/evt-rfi.json').content).redactedPayload.body.apiToken).toBe('[redacted]');
+    expect(paths.some((relativePath) => relativePath.includes('/inbox/'))).toBe(false);
+    expect(manifest).not.toHaveProperty('inbox_root');
+    expect(JSON.parse(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/flights/CODEX-04/black-box.json').content)).not.toHaveProperty('inbox');
     expect(paths).toContain('projects/site_signup_email_verification/incidents/inc-1.json');
     expect(files.find((file) => file.relativePath === 'projects/site_signup_email_verification/incidents/incident-replay-inc-1.jsonl').content).toContain('clearance_issued');
 	    expect(paths).toContain('projects/site_signup_email_verification/proof-bundles/proof-1.proof.json');
@@ -404,6 +405,64 @@ describe('CodeSite artifact projection', () => {
       'portableDigest',
     ]));
 	  });
+
+  it('keeps recipient-private inbox and provider delivery data out of shared repo artifacts', () => {
+    const project = projectFixture();
+    project.agentSessions[0] = {
+      ...project.agentSessions[0],
+      providerSessionRef: 'provider-private-ref-sentinel',
+      agentAccessToken: 'agent-token-sentinel',
+      privatePrompt: 'prompt-sentinel',
+      terminalTranscript: 'transcript-sentinel',
+      deliverySecret: 'secret-sentinel',
+      deliveryPlan: {
+        modes: ['durable_inbox', 'mcp_poll', 'repo_local_projection'],
+        recipient: {
+          providerSessionRef: 'provider-delivery-ref-sentinel',
+        },
+      },
+    };
+    project.inboxItems[0].redactedPayload = {
+      body: {
+        token: 'inbox-token-sentinel',
+        prompt: 'inbox-prompt-sentinel',
+        transcript: 'inbox-transcript-sentinel',
+        secret: 'inbox-secret-sentinel',
+      },
+    };
+
+    const files = buildArtifactProjection(project);
+    const paths = files.map((file) => file.relativePath);
+    const serialized = files.map((file) => file.content).join('\n');
+    const sharedSession = JSON.parse(files.find((file) => file.relativePath.endsWith('/agent-session.json')).content);
+
+    expect(paths.some((relativePath) => relativePath.includes('/inbox/'))).toBe(false);
+    expect(JSON.parse(files.find((file) => file.relativePath === 'manifest.json').content)).not.toHaveProperty('inbox_root');
+    expect(sharedSession).toMatchObject({
+      providerSessionBound: true,
+      deliveryPlan: {
+        modes: ['durable_inbox', 'mcp_poll'],
+        recipient: { providerSessionBound: true },
+      },
+    });
+    expect(sharedSession).not.toHaveProperty('providerSessionRef');
+    expect(serialized).not.toContain('providerSessionRef');
+    for (const sentinel of [
+      'provider-private-ref-sentinel',
+      'provider-delivery-ref-sentinel',
+      'agent-token-sentinel',
+      'prompt-sentinel',
+      'transcript-sentinel',
+      'secret-sentinel',
+      'inbox-token-sentinel',
+      'inbox-prompt-sentinel',
+      'inbox-transcript-sentinel',
+      'inbox-secret-sentinel',
+      'repo_local_projection',
+    ]) {
+      expect(serialized).not.toContain(sentinel);
+    }
+  });
 
   it('writes the repo-local artifact tree when an artifact root is available', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-artifacts-'));
@@ -696,6 +755,29 @@ describe('CodeSite artifact projection', () => {
     expect(history).toContain('"action":"write"');
     expect(history).toContain('"action":"remove"');
     expect(history).toContain('projects/site_signup_email_verification/proof-bundles/proof-1.proof.json');
+  });
+
+  it('removes stale recipient inbox files recorded by the previous projection index', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-artifacts-private-inbox-'));
+    const artifactRoot = path.join(root, '.synthi', 'codesite');
+    const staleRelativePath = 'projects/site_signup_email_verification/inbox/CODEX-04/evt-private.json';
+    const stalePath = path.join(artifactRoot, staleRelativePath);
+    await fs.mkdir(path.dirname(stalePath), { recursive: true });
+    await fs.writeFile(stalePath, '{"secret":"stale-private-inbox"}\n', 'utf8');
+    await fs.writeFile(
+      path.join(artifactRoot, '.codesite-projection-files.json'),
+      `${JSON.stringify([staleRelativePath], null, 2)}\n`,
+      'utf8',
+    );
+
+    await writeArtifactProjection(projectFixture(), null, artifactRoot);
+
+    await expect(fs.readFile(stalePath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    const index = JSON.parse(await fs.readFile(path.join(artifactRoot, '.codesite-projection-files.json'), 'utf8'));
+    expect(index.some((relativePath) => relativePath.includes('/inbox/'))).toBe(false);
+    const history = await fs.readFile(path.join(artifactRoot, 'artifact-path-history.jsonl'), 'utf8');
+    expect(history).toContain(`"action":"remove"`);
+    expect(history).toContain(staleRelativePath);
   });
 
   it('compacts repo-local artifact path history while retaining current proof paths', async () => {

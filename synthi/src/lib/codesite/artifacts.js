@@ -386,7 +386,6 @@ export function buildArtifactProjection(project, controlState = null) {
       schemas: 'schemas/',
       compiler_output: 'airspace/compiler-output.json',
       pilot_license_health: `${projectDir}/pilot-license-health.json`,
-      inbox_root: `${projectDir}/inbox/`,
       quarantine_root: `${projectDir}/quarantines/`,
       quarantine_index: `${projectDir}/quarantines/index.jsonl`,
       filesystem_boundary_proof: `${projectDir}/filesystem-boundary-proof.json`,
@@ -450,12 +449,12 @@ export function buildArtifactProjection(project, controlState = null) {
   }
 
   for (const session of asArray(project.agentSessions)) {
+    const sharedSession = sharedAgentSessionProjection(session);
     const callsign = safeSegment(session.displayCallsign);
     const flightPlans = asArray(project.executionPlans).filter((item) => item.agentSessionId === session.id);
     const clearances = asArray(project.mutationLeases).filter((item) => item.agentSessionId === session.id);
     const transactions = asArray(project.mutationTxns).filter((item) => item.agentSessionId === session.id);
     const assumptions = asArray(project.assumptions).filter((item) => item.ownerSessionId === session.id);
-    const inbox = asArray(project.inboxItems).filter((item) => item.agentSessionId === session.id);
     const events = eventsForSession(project.events, session, transactions, clearances);
     const landings = landingRunsForSession(project.inspectionRuns, session, flightPlans);
     const proofs = asArray(project.proofBundles).filter((proof) => transactions.some((txn) => txn.id === proof.transactionId));
@@ -479,7 +478,7 @@ export function buildArtifactProjection(project, controlState = null) {
     ));
     const sessionIncidents = incidentsForSession(project.incidents, session, transactions, proofs);
 
-    files.push(jsonFile(`${projectDir}/flights/${callsign}/agent-session.json`, session));
+    files.push(jsonFile(`${projectDir}/flights/${callsign}/agent-session.json`, sharedSession));
     files.push(jsonFile(`${projectDir}/flights/${callsign}/pilot-license-health.json`, pilotHealth));
     files.push({
       relativePath: `${projectDir}/flights/${callsign}/transponder.jsonl`,
@@ -509,12 +508,11 @@ export function buildArtifactProjection(project, controlState = null) {
     files.push(jsonFile(`${projectDir}/flights/${callsign}/assumptions.json`, assumptions));
     files.push(jsonFile(`${projectDir}/flights/${callsign}/black-box.json`, {
       displayCallsign: session.displayCallsign,
-      session,
+      session: sharedSession,
       flightPlans,
       clearances,
       transactions,
       assumptions,
-      inbox,
       events,
       inspections: landings,
       pilotLicenseHealth: pilotHealth,
@@ -523,9 +521,6 @@ export function buildArtifactProjection(project, controlState = null) {
       filesystemBoundaryProofs: sessionFilesystemBoundaryProofs,
       causalReplays: sessionIncidents.map((incident) => incidentHandoverSummary(project, incident)),
     }));
-    for (const item of inbox) {
-      files.push(jsonFile(`${projectDir}/inbox/${callsign}/${item.eventId || item.id}.json`, item));
-    }
   }
 
   for (const document of asArray(project.documents)) {
@@ -1013,6 +1008,34 @@ function jsonFile(relativePath, value) {
     relativePath,
     content: `${JSON.stringify(value ?? null, null, 2)}\n`,
   };
+}
+
+function sharedAgentSessionProjection(session = {}) {
+  return scrubSharedAgentValue(session);
+}
+
+function scrubSharedAgentValue(value) {
+  if (Array.isArray(value)) {
+    return value
+      .filter((item) => item !== 'repo_local_projection')
+      .map(scrubSharedAgentValue);
+  }
+  if (!value || typeof value !== 'object') return value;
+
+  const output = {};
+  let providerSessionBound = Boolean(value.providerSessionBound);
+  for (const [key, item] of Object.entries(value)) {
+    if (key === 'providerSessionRef') {
+      providerSessionBound = providerSessionBound || Boolean(item);
+      continue;
+    }
+    if (/(?:token|secret|credential|prompt|transcript)/i.test(key)) continue;
+    output[key] = scrubSharedAgentValue(item);
+  }
+  if (providerSessionBound || Object.hasOwn(value, 'providerSessionBound') || Object.hasOwn(value, 'providerSessionRef')) {
+    output.providerSessionBound = providerSessionBound;
+  }
+  return output;
 }
 
 export function resolveConfiguredArtifactRoot(workspaceSlug) {
