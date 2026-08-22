@@ -26,6 +26,25 @@ function normalizeScopes(value) {
   return scopes.length ? [...new Set(scopes)] : ['collab:terminal'];
 }
 
+function normalizeAgentBindingRequest(url) {
+  const projectId = String(url.searchParams.get('codeSiteProjectId') || '').trim();
+  const provider = String(url.searchParams.get('agentProvider') || '').trim().toLowerCase();
+  const providerSessionRef = String(url.searchParams.get('providerSessionRef') || '').trim();
+  const supplied = [projectId, provider, providerSessionRef].filter(Boolean).length;
+  if (supplied === 0) return { ok: true, binding: null };
+  if (supplied !== 3) return { ok: false, status: 400, error: 'Agent binding must include project, provider, and provider session.' };
+  if (!/^[A-Za-z0-9._:@-]{1,256}$/.test(projectId)) {
+    return { ok: false, status: 400, error: 'Agent project identifier is invalid.' };
+  }
+  if (!/^[a-z0-9][a-z0-9_.-]{0,63}$/.test(provider)) {
+    return { ok: false, status: 400, error: 'Agent provider is invalid.' };
+  }
+  if (!/^[\x21-\x7e]{1,256}$/.test(providerSessionRef)) {
+    return { ok: false, status: 400, error: 'Agent provider session is invalid.' };
+  }
+  return { ok: true, binding: { projectId, provider, providerSessionRef } };
+}
+
 function runtimeIdentityFor({ workspaceSlug, workspaceUserId, collabSessionId }) {
   const workspacePart = scopedRuntimePart('ws', workspaceSlug);
   if (collabSessionId) {
@@ -63,6 +82,15 @@ export async function GET(req) {
       }
       const workspaceUserId = access.session?.user?.id || access.email || String(subject);
       const collabSessionId = String(url.searchParams.get('collabSessionId') || '').trim();
+      const agentBindingRequest = normalizeAgentBindingRequest(url);
+      if (!agentBindingRequest.ok) {
+        return NextResponse.json({ error: agentBindingRequest.error }, { status: agentBindingRequest.status });
+      }
+      if (agentBindingRequest.binding && (!scopes.includes('collab:terminal') || !collabSessionId)) {
+        return NextResponse.json({
+          error: 'Agent binding requires terminal scope and an active collaboration session.',
+        }, { status: 400 });
+      }
       const runtimeIdentity = runtimeIdentityFor({ workspaceSlug, workspaceUserId, collabSessionId });
       const signed = jwt.sign(
         {
@@ -75,6 +103,7 @@ export async function GET(req) {
           filesystemUserId: runtimeIdentity.filesystemUserId,
           runtimeScope: runtimeIdentity.runtimeScope,
           ...(runtimeIdentity.collabSessionId ? { collabSessionId: runtimeIdentity.collabSessionId } : {}),
+          ...(agentBindingRequest.binding ? { agentBinding: agentBindingRequest.binding } : {}),
         },
         authSecret,
         { expiresIn: '5m', audience: 'synthi-gateway' }
@@ -86,6 +115,7 @@ export async function GET(req) {
         scopes,
         runtimeScope: runtimeIdentity.runtimeScope,
         filesystemUserId: runtimeIdentity.filesystemUserId,
+        ...(agentBindingRequest.binding ? { agentBinding: agentBindingRequest.binding } : {}),
       });
     }
 
@@ -100,3 +130,5 @@ export async function GET(req) {
     return NextResponse.json({ error: 'Failed to create token' }, { status: 500 });
   }
 }
+
+export { normalizeAgentBindingRequest, normalizeScopes, runtimeIdentityFor };

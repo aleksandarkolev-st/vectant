@@ -29,6 +29,7 @@ const gitService = require('./gitService');
 const {
   COMMAND_SCOPES,
   authorizeCollabGatewayRequest,
+  authorizeTerminalGatewayRequest,
   hasTrustedInternalToken,
   requireCollabGatewayAuth,
 } = require('./collabGatewayAuth');
@@ -6942,10 +6943,9 @@ server.on('upgrade', (request, socket, head) => {
   } else if (pathname === 'terminal') {
     const terminalUrl = new URL(request.url || '/terminal', `http://${request.headers.host || 'localhost'}`);
     const terminalSlug = terminalUrl.searchParams.get('workspace') || '';
-    const auth = authorizeCollabGatewayRequest({
+    const auth = authorizeTerminalGatewayRequest({
       req: request,
       slug: terminalSlug,
-      requiredScope: COMMAND_SCOPES.TERMINAL,
       config,
       sessionManager,
     });
@@ -6968,6 +6968,15 @@ server.on('upgrade', (request, socket, head) => {
       else if (auth.workspaceUserId) terminalUrl.searchParams.set('filesystemUserId', auth.workspaceUserId);
       if (auth.runtimeScope) terminalUrl.searchParams.set('runtimeScope', auth.runtimeScope);
       if (auth.collabSessionId) terminalUrl.searchParams.set('collabSessionId', auth.collabSessionId);
+      if (auth.agentBinding) {
+        terminalUrl.searchParams.set('codeSiteProjectId', auth.agentBinding.projectId);
+        terminalUrl.searchParams.set('agentProvider', auth.agentBinding.provider);
+        terminalUrl.searchParams.set('providerSessionRef', auth.agentBinding.providerSessionRef);
+      } else {
+        terminalUrl.searchParams.delete('codeSiteProjectId');
+        terminalUrl.searchParams.delete('agentProvider');
+        terminalUrl.searchParams.delete('providerSessionRef');
+      }
       terminalUrl.searchParams.delete('token');
       request.url = `${terminalUrl.pathname}${terminalUrl.search}`;
     }
