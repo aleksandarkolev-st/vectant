@@ -11035,6 +11035,7 @@ function projectSummary(project) {
 }
 
 function projectProjection(project) {
+  const projectionNow = Date.now();
   const mutationTxns = asArray(project.mutationTxns);
   const mutationLeases = asArray(project.mutationLeases);
   const inspectionRuns = asArray(project.inspectionRuns);
@@ -11046,7 +11047,7 @@ function projectProjection(project) {
     controlPlan: parseJson(project.controlPlanJson, {}),
     members: asArray(project.members).map(projectMembershipProjection),
     agentSessions: asArray(project.agentSessions).map(sessionProjection),
-    agentRegistry: asArray(project.agentSessions).map(agentRegistryProjection),
+    agentRegistry: asArray(project.agentSessions).map((session) => agentRegistryProjection(session, projectionNow)),
     executionPlans: asArray(project.executionPlans).map(executionPlanProjection),
     mutationLeases: mutationLeases.map(mutationLeaseProjection),
     mutationTxns: mutationTxns.map(transactionProjection),
@@ -11103,8 +11104,8 @@ function agentPresence(session, now = Date.now()) {
     : { presence: 'offline', reason: 'heartbeat_stale' };
 }
 
-function agentRegistryProjection(session) {
-  const presence = agentPresence(session);
+function agentRegistryProjection(session, now = Date.now()) {
+  const presence = agentPresence(session, now);
   return {
     id: session.id,
     displayCallsign: session.displayCallsign,
