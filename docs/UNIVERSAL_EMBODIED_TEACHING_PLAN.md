@@ -12,9 +12,11 @@ Verified to date:
 - P5 governance unification: case law caps violated substrates at observe-only until re-verified; mixed-substrate proof capsules validated against single licenses; entrustment dial promotes only on discrimination-proven evidence.
 - Semantic-quality metrics implemented per the Metrics section: contract precision/recall probes, counterfactual discrimination, causal false-positive rate, affordance degradation tracking.
 - MCP tool surface: all seven synthi_* handlers proven over a real user journey (list/attach/observe/teach/compile/run/explain).
-- Visual proof: .visual-proof/embodied-core/conformance-report.html regenerated from live runs (18 suites GREEN, ALL WORLDS CONFORM) and verified in Firefox on the desktop via accessibility-tree capture.
+- Plan-named modules delivered: hardening.ts (counterfactual wind tunnel: equivalents pass, twins fail, vacuous/brittle flagged), replay.ts (authorization-first orchestration with single timing retry and human explanations), observation.ts (channel registry + composable redaction policies), adapters/runtime/ (pods, notebooks, program lifecycle with ambient CPU dynamics).
+- Golden fixtures delivered: rotate-logs-and-restart (P1, cross-substrate terminal+kernel), run-tests-and-triage-failure (P1, red-green recovery), edit-HMR-verify (P4 acceptance, per-node licensing).
+- Visual proof: .visual-proof/embodied-core/conformance-report.html regenerated from live runs (25 suites GREEN, ALL WORLDS CONFORM) and verified in Firefox on the desktop via accessibility-tree capture.
 
-Not yet implemented from this plan: production engine plugins for real game engines behind the WS protocol (Godot/Unity), the runtime/pod adapter, UI panel work wiring the Observe substrate picker, and integration of the dojo stack's world_manifest. The browser adapter wrapper exists but the legacy browser tools have not been internally re-pointed onto it.
+Not yet implemented from this plan: production engine plugins for real game engines behind the WS protocol (Godot/Unity), UI panel work wiring the Observe substrate picker, and integration of the dojo stack's world_manifest. The browser adapter wrapper exists but the legacy browser tools have not been internally re-pointed onto it.
 
 ---
 
