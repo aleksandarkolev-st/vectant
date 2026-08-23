@@ -463,6 +463,41 @@ function createRuntimeManager({
     }));
   }
 
+  async function probeOverlayCapability({ timeoutMs = 2_000 } = {}) {
+    if (!docker || typeof docker.ping !== 'function' || typeof docker.info !== 'function') {
+      return { ok: false, code: 'docker_runtime_probe_unavailable' };
+    }
+
+    let timer;
+    try {
+      const probe = Promise.all([
+        docker.ping(),
+        docker.info(),
+        typeof docker.getImage === 'function'
+          ? docker.getImage(image).inspect()
+          : Promise.reject(new Error('docker_image_probe_unavailable')),
+      ]);
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('docker_runtime_probe_timeout')), timeoutMs);
+        if (typeof timer.unref === 'function') timer.unref();
+      });
+      const [, info] = await Promise.race([probe, timeout]);
+      if (String(info?.OSType || '').toLowerCase() !== 'linux') {
+        return { ok: false, code: 'linux_overlay_runtime_required' };
+      }
+      return { ok: true, code: 'docker_overlay_runtime_ready' };
+    } catch (error) {
+      return {
+        ok: false,
+        code: error?.message === 'docker_runtime_probe_timeout'
+          ? 'docker_runtime_probe_timeout'
+          : 'docker_overlay_runtime_unavailable',
+      };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   async function removeRuntimeContainer(id) {
     try {
       const c = docker.getContainer(id);
@@ -638,7 +673,7 @@ function createRuntimeManager({
     });
   }
 
-  return { ensureRuntimeContainer, waitForRuntimeReady, touch, teardown, cullIdle, execInRuntime, execInteractiveShell, runOnce, listRuntimeSessions, _sessions: sessions };
+  return { ensureRuntimeContainer, waitForRuntimeReady, touch, teardown, cullIdle, execInRuntime, execInteractiveShell, runOnce, listRuntimeSessions, probeOverlayCapability, _sessions: sessions };
 }
 
 function codeSiteOverlayWorkspaceMount({ dataVolume, dataVolumeRoot, overlayRoots }) {

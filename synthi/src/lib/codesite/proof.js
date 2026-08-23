@@ -429,6 +429,11 @@ function proofAuthorityEnvValue(key) {
 
 function resolveProofAuthorityFilePath(filePath) {
   if (pathIsAbsolute(filePath)) return filePath;
+  // Relative paths are resolved against the repo root. Prefer the explicit
+  // env override (used by tests/CLIs running from arbitrary cwds), then fall
+  // back to the process cwd with a synthi-package correction.
+  const override = process.env.SYNTHI_CODESITE_PROOF_AUTHORITY_BASE_DIR;
+  if (override) return `${override.replace(/[\\/]+$/, '')}/${filePath}`;
   const cwd = typeof process !== 'undefined' ? process.cwd?.() : '';
   const base = cwd && cwd.split(/[\\/]/).at(-1) === 'synthi'
     ? cwd.replace(/[\\/]synthi$/, '')

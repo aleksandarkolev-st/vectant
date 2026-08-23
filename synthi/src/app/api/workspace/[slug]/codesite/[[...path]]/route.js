@@ -1,10 +1,12 @@
 import {
   abortTransaction,
   acknowledgeInboxItem,
+  attachAgentSession,
   attachProofBundleCommit,
   collisionPredict,
   commitTransaction,
   completeInspectionRun,
+  createAgentKnowledgeItem,
   createAgentSession,
   createCounterfactualRun,
   createDocument,
@@ -16,10 +18,12 @@ import {
   createProject,
   applyRouteRevision,
   dryRunTransactionWrites,
+  detachAgentSession,
   eventCursor,
   exportArtifacts,
   getAgentInbox,
   getAgentManifest,
+  getAgentSharedKnowledge,
   getControlState,
   getEvents,
   getIncidentReplay,
@@ -27,12 +31,20 @@ import {
   getCodeSiteMetrics,
   getProofBundle,
   getProject,
+  getRelevantAgentContext,
+  recordAgentProjectObservation,
+  createAgentExecutionPlan,
+  requestAgentMutationLease,
+  openAgentTransaction,
+  recordRuntimeProjectObservation,
   getSchemas,
   getSourceStateSince,
   getTransaction,
   getWorkspaceActiveState,
+  heartbeatAgentSession,
   listActiveTransactions,
   listPermits,
+  listProjectKnowledge,
   listProjectMembers,
   listProjects,
   listRouteRevisions,
@@ -46,6 +58,7 @@ import {
   proposeRouteRevision,
   requestMutationLease,
   resumeMaydayIncident,
+  respondToAgentKnowledgeInbox,
   previewArtifacts,
   promotePolicyDelta,
   revokeProjectMember,
@@ -59,6 +72,10 @@ import {
   updateZonePolicy,
   validateTransaction,
 } from '@/lib/codesite/controlPlane';
+import {
+  probeCodeSiteActivityBridge,
+  probeCodeSiteDeploymentStatus,
+} from '@/lib/codesite/activityBridgeReadiness';
 import {
   enforceRateLimit,
   errorJson,
@@ -77,10 +94,44 @@ export const dynamic = 'force-dynamic';
 export async function GET(request, { params }) {
   const { slug, path } = await params;
   const route = parsePath(path);
+  if (route[0] === 'agent-sessions' && route[2] === 'relevant-context' && route.length === 3) {
+    try {
+      return okJson(await getRelevantAgentContext(slug, route[1], bearerToken(request)));
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
+  if (route[0] === 'agent-sessions' && route[2] === 'knowledge' && route.length === 3) {
+    try {
+      return okJson({
+        knowledge: await getAgentSharedKnowledge(
+          slug,
+          route[1],
+          bearerToken(request),
+          requestQuery(request),
+        ),
+      });
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
   const access = await requireCodesiteAccess(slug, 'read', request);
   if (!access.ok) return errorJson(access.status, access.error);
 
   try {
+    if (route[0] === 'readiness' && route.length === 1) {
+      if (!access.actor?.internalService) return errorJson(403, 'codesite_readiness_internal_auth_required');
+      const bridge = await probeCodeSiteActivityBridge(request);
+      return okJson({
+        ok: bridge.ok,
+        checks: {
+          controlPlaneReachable: true,
+          activityBridgeReachable: bridge.ok,
+        },
+        ...(bridge.ok ? {} : { code: bridge.code || 'activity_bridge_unavailable' }),
+      }, { status: bridge.ok ? 200 : 503 });
+    }
+
     if (route.length === 0 || route.join('/') === 'projects') {
       return okJson({ projects: await listProjects(slug, access.actor) });
     }
@@ -89,6 +140,37 @@ export async function GET(request, { params }) {
       const project = await getProject(slug, route[1], access.actor);
       if (!project) return errorJson(404, 'project_not_found');
       return okJson({ project });
+    }
+
+    if (route[0] === 'projects' && route[2] === 'knowledge' && route.length === 3) {
+      return okJson({
+        knowledge: await listProjectKnowledge(slug, route[1], requestQuery(request), access.actor),
+      });
+    }
+
+    if (route[0] === 'projects' && route[2] === 'deployment-status' && route.length === 3) {
+      // PROJECT_INCLUDE reads the durable inbox relation, so a successful
+      // project read proves both authorization and inbox-store reachability.
+      const project = await getProject(slug, route[1], access.actor);
+      if (!project) return errorJson(404, 'project_not_found');
+      const serviceStatus = await probeCodeSiteDeploymentStatus(request);
+      const checks = {
+        controlPlaneReachable: { ok: true, code: 'project_query_succeeded' },
+        activityBridgeReachable: {
+          ok: serviceStatus.activityBridge.ok,
+          code: serviceStatus.activityBridge.ok
+            ? 'authenticated_activity_round_trip_succeeded'
+            : (serviceStatus.activityBridge.code || 'activity_bridge_unavailable'),
+        },
+        overlayCapable: serviceStatus.capabilities.checks.overlayCapable,
+        inboxDeliveryCapable: { ok: true, code: 'durable_inbox_query_succeeded' },
+        runtimeEventAdapterHealthy: serviceStatus.capabilities.checks.runtimeEventAdapterHealthy,
+      };
+      return okJson({
+        status: Object.values(checks).every((check) => check.ok) ? 'healthy' : 'degraded',
+        checkedAt: new Date().toISOString(),
+        checks,
+      });
     }
 
     if (route[0] === 'projects' && route[2] === 'control-state') {
@@ -210,9 +292,100 @@ export async function GET(request, { params }) {
   }
 }
 
+function bearerToken(request) {
+  const authorization = String(request.headers.get('authorization') || '');
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1].trim() : '';
+}
+
+function requestQuery(request) {
+  return Object.fromEntries(new URL(request.url).searchParams.entries());
+}
+
 export async function POST(request, { params }) {
   const { slug, path } = await params;
   const route = parsePath(path);
+  if (route[0] === 'agent-sessions'
+    && route[2] === 'inbox'
+    && route[4] === 'respond'
+    && route.length === 5) {
+    try {
+      return okJson(await respondToAgentKnowledgeInbox(
+        slug,
+        route[1],
+        route[3],
+        bearerToken(request),
+        await readJson(request),
+      ));
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
+  if (route[0] === 'agent-sessions' && route[2] === 'knowledge' && route.length === 3) {
+    try {
+      return okJson(await createAgentKnowledgeItem(
+        slug,
+        route[1],
+        bearerToken(request),
+        await readJson(request),
+      ), { status: 201 });
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
+  if (route[0] === 'agent-sessions' && route[2] === 'observations' && route.length === 3) {
+    try {
+      return okJson(await recordAgentProjectObservation(
+        slug,
+        route[1],
+        bearerToken(request),
+        await readJson(request),
+      ), { status: 201 });
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
+  if (route[0] === 'agent-sessions' && route[2] === 'execution-plans' && route.length === 3) {
+    try {
+      return okJson({ executionPlan: await createAgentExecutionPlan(
+        slug,
+        route[1],
+        bearerToken(request),
+        await readJson(request),
+      ) }, { status: 201 });
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
+  if (route[0] === 'agent-sessions' && route[2] === 'mutation-leases' && route.length === 3) {
+    try {
+      return okJson({ mutationLease: await requestAgentMutationLease(
+        slug,
+        route[1],
+        bearerToken(request),
+        await readJson(request),
+      ) }, { status: 201 });
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
+  if (route[0] === 'agent-sessions' && route[2] === 'transactions' && route.length === 3) {
+    try {
+      const transaction = await openAgentTransaction(
+        slug,
+        route[1],
+        bearerToken(request),
+        await readJson(request),
+      );
+      await notifyCollabCodeSiteActivity(request, slug, {
+        event: 'transaction_opened',
+        transactionId: transaction.id,
+      }).catch(() => {});
+      return okJson({ transaction }, { status: 201 });
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
   const access = await requireCodesiteAccess(slug, postAccessMode(route), request);
   if (!access.ok) return errorJson(access.status, access.error);
   const limited = enforceRateLimit(access.actor, route.join('/'), route.includes('events') ? 'audit' : 'crud');
@@ -232,7 +405,25 @@ export async function POST(request, { params }) {
       return okJson({ project: await updateControlPlan(slug, route[1], body, access.actor) });
     }
 
-    if (route[0] === 'projects' && route[2] === 'agent-sessions') {
+    if (route[0] === 'projects' && route[2] === 'agent-sessions' && route[3] === 'attach') {
+      const authority = internalAgentLifecycleAuthority(access.actor, body);
+      if (!authority) return errorJson(403, 'agent_lifecycle_internal_auth_required');
+      return okJson(await attachAgentSession(slug, route[1], body, authority), { status: 201 });
+    }
+
+    if (route[0] === 'agent-sessions' && route[2] === 'heartbeat') {
+      const authority = internalAgentLifecycleAuthority(access.actor, body);
+      if (!authority) return errorJson(403, 'agent_lifecycle_internal_auth_required');
+      return okJson(await heartbeatAgentSession(slug, route[1], body, authority));
+    }
+
+    if (route[0] === 'agent-sessions' && route[2] === 'detach') {
+      const authority = internalAgentLifecycleAuthority(access.actor, body);
+      if (!authority) return errorJson(403, 'agent_lifecycle_internal_auth_required');
+      return okJson(await detachAgentSession(slug, route[1], body, authority));
+    }
+
+    if (route[0] === 'projects' && route[2] === 'agent-sessions' && route.length === 3) {
       return okJson({ agentSession: await createAgentSession(slug, route[1], access.actor, body) }, { status: 201 });
     }
 
@@ -349,6 +540,11 @@ export async function POST(request, { params }) {
       return okJson({ member: await revokeProjectMember(slug, route[1], route[3], body, access.actor) });
     }
 
+    if (route[0] === 'projects' && route[2] === 'observations' && route.length === 3) {
+      if (!access.actor?.internalService) return errorJson(403, 'codesite_observations_internal_auth_required');
+      return okJson(await recordRuntimeProjectObservation(slug, route[1], body), { status: 201 });
+    }
+
     if (route[0] === 'projects' && route[2] === 'collision-predict') {
       return okJson(await collisionPredict(slug, route[1], access.actor));
     }
@@ -425,7 +621,7 @@ export async function POST(request, { params }) {
       return okJson({ inspectionRun: await completeInspectionRun(slug, route[1], body, access.actor) });
     }
 
-    if (route[0] === 'agent-sessions' && route[2] === 'inbox' && route[3]) {
+    if (route[0] === 'agent-sessions' && route[2] === 'inbox' && route[3] && route.length === 4) {
       return okJson({ inboxItem: await acknowledgeInboxItem(slug, route[1], route[3], access.actor) });
     }
 
@@ -433,6 +629,20 @@ export async function POST(request, { params }) {
   } catch (error) {
     return handleCodesiteError(error);
   }
+}
+
+function internalAgentLifecycleAuthority(actor, body = {}) {
+  if (!actor?.internalService) return null;
+  return {
+    internalService: true,
+    collaborationMembershipVerified: body.collaborationMembershipVerified === true
+      || body.collaboration_membership_verified === true,
+    actorUserId: body.ownerUserId || body.owner_user_id || null,
+    collaborationUserId: body.collaborationUserId || body.collaboration_user_id || body.workspaceUserId || body.workspace_user_id || null,
+    effectiveWorkspaceUserId: body.effectiveWorkspaceUserId || body.effective_workspace_user_id || body.filesystemUserId || body.filesystem_user_id || null,
+    collaborationSessionId: body.collaborationSessionId || body.collaboration_session_id || null,
+    runtimeScope: body.runtimeScope || body.runtime_scope || null,
+  };
 }
 
 function postAccessMode(route) {
@@ -464,12 +674,13 @@ function postAccessMode(route) {
     'inspection-runs',
     'members',
     'collision-predict',
+    'observations',
   ].includes(route[2])) return 'read';
   if (route[0] === 'documents' && route[2] === 'reviews') return 'read';
   if (route[0] === 'execution-plans' && route[2] === 'route-revisions') return 'read';
   if (route[0] === 'route-revisions' && ['review', 'apply'].includes(route[2])) return 'read';
   if (route[0] === 'incidents' && route[2] === 'resume') return 'read';
-  if (route[0] === 'agent-sessions' && route[2] === 'inbox' && route[3]) return 'read';
+  if (route[0] === 'agent-sessions' && route[2] === 'inbox' && route[3] && route.length === 4) return 'read';
   if (route[0] === 'proof-bundles' && route[2] === 'commit') return 'read';
   return 'write';
 }

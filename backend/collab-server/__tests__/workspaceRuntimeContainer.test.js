@@ -133,6 +133,27 @@ test('createRuntimeManager honours privileged=false (prod Sysbox path)', async (
   assert.equal(docker.created[0].HostConfig.Privileged, false);
 });
 
+test('probeOverlayCapability verifies a live Linux daemon and the configured runtime image', async () => {
+  const docker = fakeDocker();
+  docker.ping = async () => 'OK';
+  docker.info = async () => ({ OSType: 'linux' });
+  docker.getImage = (name) => ({ inspect: async () => ({ Id: `image:${name}` }) });
+  const mgr = createRuntimeManager({ docker });
+
+  assert.deepEqual(await mgr.probeOverlayCapability(), {
+    ok: true,
+    code: 'docker_overlay_runtime_ready',
+  });
+});
+
+test('probeOverlayCapability does not claim capability without a working daemon probe', async () => {
+  const mgr = createRuntimeManager({ docker: fakeDocker() });
+  assert.deepEqual(await mgr.probeOverlayCapability(), {
+    ok: false,
+    code: 'docker_runtime_probe_unavailable',
+  });
+});
+
 test('read-write runtimes use a scoped shared group instead of world-write access', async () => {
   const docker = fakeDocker();
   const mgr = createRuntimeManager({ docker, sharedWorkspaceGid: '1000', workspaceUmask: '0002' });

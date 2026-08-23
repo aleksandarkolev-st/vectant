@@ -10,6 +10,9 @@ const COMMAND_SCOPES = Object.freeze({
 
 const SESSION_ID_RE = /^[a-f0-9]{8,64}$/i;
 const USER_ID_RE = /^[A-Za-z0-9._:@-]{1,128}$/;
+const AGENT_PROJECT_ID_RE = /^[A-Za-z0-9._:@-]{1,256}$/;
+const AGENT_PROVIDER_RE = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
+const AGENT_PROVIDER_SESSION_RE = /^[\x21-\x7e]{1,256}$/;
 
 function header(req, name) {
   const value = req?.headers?.[String(name || '').toLowerCase()];
@@ -217,6 +220,32 @@ function requestedCollabSessionId(req, parsed, payload) {
   ).trim();
 }
 
+function normalizeAgentBindingClaim(value) {
+  if (value == null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const projectId = String(value.projectId || '').trim();
+  const provider = String(value.provider || '').trim().toLowerCase();
+  const providerSessionRef = String(value.providerSessionRef || '').trim();
+  if (
+    !AGENT_PROJECT_ID_RE.test(projectId)
+    || !AGENT_PROVIDER_RE.test(provider)
+    || !AGENT_PROVIDER_SESSION_RE.test(providerSessionRef)
+  ) {
+    return false;
+  }
+  return Object.freeze({ projectId, provider, providerSessionRef });
+}
+
+function requestedAgentBinding(req, parsed) {
+  const projectId = String(query(req, 'codeSiteProjectId') || bodyField(parsed, 'codeSiteProjectId') || '').trim();
+  const provider = String(query(req, 'agentProvider') || bodyField(parsed, 'agentProvider') || '').trim().toLowerCase();
+  const providerSessionRef = String(query(req, 'providerSessionRef') || bodyField(parsed, 'providerSessionRef') || '').trim();
+  const supplied = [projectId, provider, providerSessionRef].filter(Boolean).length;
+  if (supplied === 0) return null;
+  if (supplied !== 3) return false;
+  return normalizeAgentBindingClaim({ projectId, provider, providerSessionRef });
+}
+
 function identityMismatch(req, parsed, payload) {
   const allowedUsers = new Set([
     payload.sub,
@@ -243,6 +272,25 @@ function identityMismatch(req, parsed, payload) {
         return { field: 'runtimeScope', requested };
       }
     }
+  }
+
+  const claimedAgentBinding = normalizeAgentBindingClaim(payload.agentBinding);
+  const requestAgentBinding = requestedAgentBinding(req, parsed);
+  if (payload.agentBinding != null && !claimedAgentBinding) {
+    return { field: 'agentBinding', requested: null };
+  }
+  if (requestAgentBinding === false) {
+    return { field: 'agentBinding', requested: null };
+  }
+  if (Boolean(requestAgentBinding) !== Boolean(claimedAgentBinding)) {
+    return { field: 'agentBinding', requested: requestAgentBinding };
+  }
+  if (requestAgentBinding && claimedAgentBinding && (
+    requestAgentBinding.projectId !== claimedAgentBinding.projectId
+    || requestAgentBinding.provider !== claimedAgentBinding.provider
+    || requestAgentBinding.providerSessionRef !== claimedAgentBinding.providerSessionRef
+  )) {
+    return { field: 'agentBinding', requested: requestAgentBinding };
   }
 
   return null;
@@ -354,7 +402,34 @@ function authorizeCollabGatewayRequest({
     filesystemUserId: payload.filesystemUserId ? String(payload.filesystemUserId) : '',
     runtimeScope: payload.runtimeScope ? String(payload.runtimeScope) : '',
     collabSessionId: collabSession.collabSessionId || null,
+    agentBinding: normalizeAgentBindingClaim(payload.agentBinding) || null,
   };
+}
+
+function terminalGatewayAuthProjection(result, workspaceSlug) {
+  const isGateway = result?.source === 'gateway';
+  return Object.freeze({
+    source: result?.source || '',
+    workspaceSlug: String(workspaceSlug || ''),
+    actorUserId: isGateway ? String(result.actorUserId || '') : '',
+    workspaceUserId: isGateway ? String(result.workspaceUserId || '') : '',
+    filesystemUserId: isGateway ? String(result.filesystemUserId || '') : '',
+    runtimeScope: isGateway ? String(result.runtimeScope || '') : '',
+    collabSessionId: isGateway ? result.collabSessionId || null : null,
+    agentBinding: isGateway ? normalizeAgentBindingClaim(result.agentBinding) || null : null,
+  });
+}
+
+function authorizeTerminalGatewayRequest(options = {}) {
+  const result = authorizeCollabGatewayRequest({
+    ...options,
+    requiredScope: COMMAND_SCOPES.TERMINAL,
+  });
+  if (!result.ok) return result;
+  if (options.req) {
+    options.req.collabGatewayAuth = terminalGatewayAuthProjection(result, options.slug);
+  }
+  return result;
 }
 
 function writeCollabGatewayAuthError(res, result) {
@@ -378,8 +453,11 @@ function requireCollabGatewayAuth(req, res, options = {}) {
 module.exports = {
   COMMAND_SCOPES,
   authorizeCollabGatewayRequest,
+  authorizeTerminalGatewayRequest,
   hasTrustedInternalToken,
+  normalizeAgentBindingClaim,
   requireCollabGatewayAuth,
+  terminalGatewayAuthProjection,
   verifyGatewayJwt,
   writeCollabGatewayAuthError,
 };

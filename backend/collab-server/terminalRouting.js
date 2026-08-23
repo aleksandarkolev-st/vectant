@@ -82,8 +82,96 @@ function codeSiteTerminalReattachDecision({ codeSiteContext, existingSession } =
   return { ok: true };
 }
 
+const AGENT_REATTACH_REQUIRED_IDENTITIES = Object.freeze([
+  'workspaceSlug',
+  'collaborationSessionId',
+  'ownerUserId',
+  'collaborationUserId',
+  'effectiveWorkspaceUserId',
+  'projectId',
+  'agentSessionId',
+  'displayCallsign',
+  'agentProvider',
+  'providerSessionRef',
+  'runtimeScope',
+]);
+
+const AGENT_REATTACH_OPTIONAL_RUNTIME_IDENTITIES = Object.freeze([
+  'terminalSessionId',
+  'runtimeSessionId',
+]);
+
+const AGENT_REATTACH_TRANSACTION_IDENTITIES = Object.freeze([
+  'activeMutationLeaseId',
+  'activeTransactionId',
+]);
+
+function agentSessionReattachDenied(reason) {
+  return {
+    ok: false,
+    code: 'codesite_agent_reattach_denied',
+    reason,
+    message: 'CodeSite agent reattach blocked: the requested identity does not exactly match the retained terminal session.',
+  };
+}
+
+/**
+ * Fail-closed identity check for resuming an attached CodeSite agent on a
+ * retained terminal. The caller must compare server-derived bindings only.
+ */
+function agentSessionReattachDecision({ requestedBinding, existingSession } = {}) {
+  const existingBinding = existingSession?.codeSiteAgentBinding || null;
+  if (!requestedBinding && !existingBinding) return { ok: true };
+  if (!requestedBinding || !existingBinding) {
+    return agentSessionReattachDenied('attachment_state_mismatch');
+  }
+
+  for (const field of AGENT_REATTACH_REQUIRED_IDENTITIES) {
+    if (
+      typeof requestedBinding[field] !== 'string' ||
+      !requestedBinding[field].trim() ||
+      typeof existingBinding[field] !== 'string' ||
+      !existingBinding[field].trim()
+    ) {
+      return agentSessionReattachDenied('identity_incomplete');
+    }
+  }
+
+  const requestedHasRuntimeIdentity = AGENT_REATTACH_OPTIONAL_RUNTIME_IDENTITIES.some(
+    (field) => typeof requestedBinding[field] === 'string' && Boolean(requestedBinding[field].trim()),
+  );
+  const existingHasRuntimeIdentity = AGENT_REATTACH_OPTIONAL_RUNTIME_IDENTITIES.some(
+    (field) => typeof existingBinding[field] === 'string' && Boolean(existingBinding[field].trim()),
+  );
+  if (!requestedHasRuntimeIdentity || !existingHasRuntimeIdentity) {
+    return agentSessionReattachDenied('runtime_identity_incomplete');
+  }
+
+  for (const field of AGENT_REATTACH_TRANSACTION_IDENTITIES) {
+    if (
+      !Object.prototype.hasOwnProperty.call(requestedBinding, field) ||
+      !Object.prototype.hasOwnProperty.call(existingBinding, field)
+    ) {
+      return agentSessionReattachDenied('transaction_identity_incomplete');
+    }
+  }
+
+  for (const field of [
+    ...AGENT_REATTACH_REQUIRED_IDENTITIES,
+    ...AGENT_REATTACH_OPTIONAL_RUNTIME_IDENTITIES,
+    ...AGENT_REATTACH_TRANSACTION_IDENTITIES,
+  ]) {
+    if (requestedBinding[field] !== existingBinding[field]) {
+      return agentSessionReattachDenied(`${field}_mismatch`);
+    }
+  }
+
+  return { ok: true };
+}
+
 module.exports = {
   shouldUseContainerTerminal,
   codeSiteTerminalLaunchMode,
   codeSiteTerminalReattachDecision,
+  agentSessionReattachDecision,
 };

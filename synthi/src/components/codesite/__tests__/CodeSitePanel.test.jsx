@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   createCodeSiteProject: vi.fn(),
   exportCodeSiteArtifacts: vi.fn(),
   fetchCodeSiteCoreState: vi.fn(),
+  fetchCodeSiteDeploymentStatus: vi.fn(),
   fetchCodeSiteEvidenceSlice: vi.fn(),
   fetchCodeSiteLineProvenance: vi.fn(),
   fetchCodeSiteQuarantineSlice: vi.fn(),
@@ -56,6 +57,7 @@ vi.mock('../codesiteClient', () => ({
   createEmptyCodeSiteRadarState: emptyState,
   exportCodeSiteArtifacts: h.exportCodeSiteArtifacts,
   fetchCodeSiteCoreState: h.fetchCodeSiteCoreState,
+  fetchCodeSiteDeploymentStatus: h.fetchCodeSiteDeploymentStatus,
   fetchCodeSiteEvidenceSlice: h.fetchCodeSiteEvidenceSlice,
   fetchCodeSiteLineProvenance: h.fetchCodeSiteLineProvenance,
   fetchCodeSiteQuarantineSlice: h.fetchCodeSiteQuarantineSlice,
@@ -725,6 +727,17 @@ describe('CodeSitePanel', () => {
     }));
     h.exportCodeSiteArtifacts.mockResolvedValue({ written: false, files: [] });
     h.fetchCodeSiteLineProvenance.mockResolvedValue([]);
+    h.fetchCodeSiteDeploymentStatus.mockResolvedValue({
+      status: 'degraded',
+      checkedAt: '2026-08-22T12:00:00.000Z',
+      checks: {
+        controlPlaneReachable: { ok: true, code: 'project_query_succeeded' },
+        activityBridgeReachable: { ok: true, code: 'authenticated_activity_round_trip_succeeded' },
+        overlayCapable: { ok: true, code: 'docker_overlay_runtime_ready' },
+        inboxDeliveryCapable: { ok: true, code: 'durable_inbox_query_succeeded' },
+        runtimeEventAdapterHealthy: { ok: false, code: 'runtime_event_adapter_unconfigured' },
+      },
+    });
     h.subscribeCodeSiteProjectEvents.mockImplementation((_workspaceSlug, _projectId, { onStatus } = {}) => {
       onStatus?.('live');
       return vi.fn();
@@ -831,6 +844,11 @@ describe('CodeSitePanel', () => {
     expect(container.querySelector('[data-testid="codesite-tower-now-clearance"]').textContent).toContain('1');
     expect(container.querySelector('[data-testid="codesite-tower-now-mayday"]').textContent).toContain('1');
     expect(container.querySelector('[data-testid="codesite-mobile-section-tabs"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-deployment-status"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-deployment-check-controlPlaneReachable"]').dataset.status).toBe('available');
+    expect(container.querySelector('[data-testid="codesite-deployment-check-runtimeEventAdapterHealthy"]').dataset.status).toBe('unavailable');
+    expect(container.textContent).toContain('4/5 available');
+    expect(h.fetchCodeSiteDeploymentStatus).toHaveBeenCalledWith('acme', 'proj-1');
     expect(h.subscribeCodeSiteProjectEvents).toHaveBeenCalledWith(
       'acme',
       'proj-1',
@@ -1346,6 +1364,52 @@ describe('CodeSitePanel', () => {
     expect(container.querySelectorAll('[data-testid="codesite-scope-agent-node"]')).toHaveLength(2);
     expect(container.querySelector('[data-testid="codesite-scope-topology"]').textContent).toContain('ATLAS-1');
     expect(container.querySelector('[data-testid="codesite-scope-topology"]').textContent).not.toContain('holding pattern');
+  });
+
+  it('shows a redacted live multi-owner agent registry in the workspace graph', async () => {
+    const state = radarState();
+    state.project.agentRegistry = [
+      {
+        id: 'agent-1',
+        displayCallsign: 'RESEARCH-01',
+        provider: 'gemini-cli',
+        ownerUserId: 'alice',
+        terminalSessionId: 'terminal-alice',
+        subscriptions: ['project.events', 'agent.inbox'],
+        presence: 'online',
+        providerSessionRef: 'provider-private-secret',
+      },
+      {
+        id: 'agent-2',
+        displayCallsign: 'REVIEW-02',
+        provider: 'aider',
+        ownerUserId: 'ben',
+        runtimeSessionId: 'runtime-ben',
+        subscriptions: ['project.events'],
+        presence: 'offline',
+      },
+    ];
+    h.fetchCodeSiteRadarState.mockResolvedValue(state);
+
+    renderPanel();
+    await flush();
+    await selectSection('radar');
+
+    expect(container.querySelector('[data-testid="codesite-agent-session-agent-1"]').textContent)
+      .toContain('alice');
+    expect(container.querySelector('[data-testid="codesite-agent-session-agent-1"]').textContent)
+      .toContain('terminal-alice');
+    expect(container.querySelector('[data-testid="codesite-agent-session-agent-1"]').textContent)
+      .toContain('agent.inbox');
+    expect(container.querySelector('[data-testid="codesite-agent-session-agent-2"]').textContent)
+      .toContain('ben');
+    expect(container.querySelector('[data-testid="codesite-agent-session-agent-2"]').textContent)
+      .toContain('runtime-ben');
+    expect(container.querySelector('[data-testid="codesite-agent-presence-agent-1"]').textContent)
+      .toContain('online');
+    expect(container.querySelector('[data-testid="codesite-agent-presence-agent-2"]').textContent)
+      .toContain('offline');
+    expect(container.textContent).not.toContain('provider-private-secret');
   });
 
   it('summarizes the latest activity tail in the graph evidence guardrail', async () => {

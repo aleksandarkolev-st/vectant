@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { pathToFileURL } from 'node:url';
 import { verifyProofBundleFile } from './codesite-proof-verify.mjs';
 
 const require = createRequire(import.meta.url);
@@ -1749,7 +1750,7 @@ export {
   validateMatureProofSuiteRun,
 };
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   try {
     await main(process.argv.slice(2));
   } catch (error) {

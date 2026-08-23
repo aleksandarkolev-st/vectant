@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Plus, RefreshCw } from "lucide-react";
-import { applyCodeSiteRouteRevision, applyCodeSiteQuarantine, createCodeSiteProject, createEmptyCodeSiteRadarState, exportCodeSiteArtifacts, fetchCodeSiteCoreState, fetchCodeSiteEvidenceSlice, fetchCodeSiteLineProvenance, fetchCodeSiteQuarantineSlice, fetchCodeSiteRadarState, issueCodeSitePermit, proposeCodeSiteRouteRevision, replayCodeSiteQuarantine, resumeCodeSiteMayday, reviewCodeSiteDocument, reviewCodeSiteRouteRevision, simulateCodeSiteShadowMerge, subscribeCodeSiteProjectEvents } from "./codesiteClient";
+import { applyCodeSiteRouteRevision, applyCodeSiteQuarantine, createCodeSiteProject, createEmptyCodeSiteRadarState, exportCodeSiteArtifacts, fetchCodeSiteCoreState, fetchCodeSiteDeploymentStatus, fetchCodeSiteEvidenceSlice, fetchCodeSiteLineProvenance, fetchCodeSiteQuarantineSlice, fetchCodeSiteRadarState, issueCodeSitePermit, proposeCodeSiteRouteRevision, replayCodeSiteQuarantine, resumeCodeSiteMayday, reviewCodeSiteDocument, reviewCodeSiteRouteRevision, simulateCodeSiteShadowMerge, subscribeCodeSiteProjectEvents } from "./codesiteClient";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CodeSiteIcons } from "./icons";
 import DesktopSectionRail from "./nav/DesktopSectionRail";
@@ -56,6 +56,12 @@ import {
 const POLL_MS = 30000;
 const EVIDENCE_POLL_MS = 5000;
 const STREAM_REFRESH_DEBOUNCE_MS = 400;
+
+const EMPTY_DEPLOYMENT_STATUS = {
+  status: "loading",
+  checkedAt: null,
+  checks: {},
+};
 
 /**
  * Per-view data, held apart from the core state so a core refresh cannot wipe
@@ -177,6 +183,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
   const [pendingReviewTarget, setPendingReviewTarget] = useState(null);
   const [viewSlices, setViewSlices] = useState(EMPTY_VIEW_SLICES);
   const [activeGroup, setActiveGroup] = useState(DEFAULT_GROUP_KEY);
+  const [deploymentStatus, setDeploymentStatus] = useState(EMPTY_DEPLOYMENT_STATUS);
 
   const loadRadar = useCallback(
     async ({ silent = false, full = false, projectId = selectedProjectId } = {}) => {
@@ -228,6 +235,43 @@ export default function CodeSitePanel({ workspaceSlug }) {
     }, POLL_MS);
     return () => window.clearInterval(timer);
   }, [loadRadar, radarState.selectedProjectId, workspaceSlug]);
+
+  useEffect(() => {
+    const projectId = radarState.selectedProjectId;
+    if (!workspaceSlug || !projectId) {
+      setDeploymentStatus(EMPTY_DEPLOYMENT_STATUS);
+      return undefined;
+    }
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const next = await fetchCodeSiteDeploymentStatus(workspaceSlug, projectId);
+        if (!cancelled) setDeploymentStatus(next || EMPTY_DEPLOYMENT_STATUS);
+      } catch (_) {
+        if (!cancelled) {
+          const failed = { ok: false, code: "status_request_failed" };
+          setDeploymentStatus({
+            status: "degraded",
+            checkedAt: new Date().toISOString(),
+            checks: {
+              controlPlaneReachable: failed,
+              activityBridgeReachable: failed,
+              overlayCapable: failed,
+              inboxDeliveryCapable: failed,
+              runtimeEventAdapterHealthy: failed,
+            },
+          });
+        }
+      }
+    };
+    setDeploymentStatus(EMPTY_DEPLOYMENT_STATUS);
+    void load();
+    const timer = window.setInterval(load, POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [radarState.selectedProjectId, workspaceSlug]);
 
   // A project switch invalidates every slice. Clear them so the outgoing
   // project's metrics and quarantines cannot show under the incoming one.
@@ -578,6 +622,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
     controlState?.filesystemBoundaryProofs,
   );
   const mutationTransactions = asArray(currentProject?.mutationTxns);
+  const agentRegistry = asArray(currentProject?.agentRegistry);
   const assumptions = asArray(currentProject?.assumptions);
   const proofBundles = asArray(currentProject?.proofBundles);
   const inspectionRuns = asArray(currentProject?.inspectionRuns);
@@ -1012,11 +1057,13 @@ export default function CodeSitePanel({ workspaceSlug }) {
     counts: radarState.counts,
     status: latestStatus,
     streamStatus,
+    deploymentStatus,
     collisionForecast,
     risks,
     zones,
     noFlyZones,
     activeFlights,
+    agentRegistry,
     activeLeases,
     activeTransactions,
     mutationTransactions,

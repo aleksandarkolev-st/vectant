@@ -99,6 +99,13 @@ spec:
                   name: synthi-secrets
                   key: SYNTHI_CODESITE_TOKEN
                   optional: true
+            # Authenticates transaction open/close publishes to collab-server.
+            # Keep this distinct from SYNTHI_CODESITE_TOKEN.
+            - name: COLLAB_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: COLLAB_INTERNAL_TOKEN
             # ── Database (Prisma) ───────────────────────────────────────────
             - name: DATABASE_URL
               valueFrom:
@@ -228,9 +235,12 @@ spec:
               cpu: "1"
               memory: 1Gi
           readinessProbe:
-            httpGet:
-              path: /api/auth/providers
-              port: 3000
+            exec:
+              command:
+                - node
+                - -e
+                - >-
+                  fetch('http://127.0.0.1:3000/api/workspace/__codesite_readiness__/codesite/readiness',{headers:{authorization:'Bearer '+process.env.SYNTHI_CODESITE_TOKEN}}).then((response)=>process.exit(response.ok?0:1)).catch(()=>process.exit(1))
             initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:

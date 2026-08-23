@@ -15,6 +15,10 @@ const path = require('path');
 const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
 const { createTerminalWSS, createHeadlessSession, activeSessions: terminalSessions, broadcastToAll: terminalBroadcast, getAvailableShells, resolveWorkspaceCwd } = require('./terminalService');
+const { createAgentSessionAttachService } = require('./agentSessionAttachService');
+const {
+  createRuntimeObservationPublisher,
+} = require('./runtimeObservationPublisher');
 const { createProgramRuntimeManager } = require('./programRuntimeManager');
 const { createContinuousFlushService } = require('./continuousFlushService');
 const proxyService = require('./proxyService');
@@ -29,6 +33,7 @@ const gitService = require('./gitService');
 const {
   COMMAND_SCOPES,
   authorizeCollabGatewayRequest,
+  authorizeTerminalGatewayRequest,
   hasTrustedInternalToken,
   requireCollabGatewayAuth,
 } = require('./collabGatewayAuth');
@@ -70,6 +75,12 @@ const {
 const {
   handleCodeSiteActivityRequest,
 } = require('./codesiteActivityEndpoint');
+const {
+  handleCodeSiteReadinessRequest,
+} = require('./codesiteReadiness');
+const {
+  handleCodeSiteDeploymentStatusRequest,
+} = require('./codesiteDeploymentStatus');
 const {
   codeSiteContextFromRequest,
   createCodeSiteOverlayWorkspace,
@@ -248,6 +259,11 @@ const runtimePortMonitor = isSysboxRuntimeEnabled()
 const managedProgramRuntime = createProgramRuntimeManager({
   activeSessions: terminalSessions,
   logger,
+  onSessionEvent: (event) => {
+    try {
+      runtimeObservationPublisher.handleRuntimeEvent(event);
+    } catch (_) { /* never let telemetry break the runtime */ }
+  },
   getActivePorts: () => proxyService.getActivePorts(),
   launchRuntime: async ({ sessionId, workspaceSlug, userId, env, title, command, runtimeType, metadata, codesiteContext, activeWorkspacePath }) => {
     // Slice 1 (real programs): `container` programs route into the per-workspace
@@ -2479,6 +2495,19 @@ const server = http.createServer(async (req, res) => {
       activityRegistry: codeSiteActivityRegistry,
       readJsonRequestBody,
       writeJsonResponse,
+    });
+    return;
+  }
+
+  if (req.url === '/codesite/readiness' && req.method === 'GET') {
+    await handleCodeSiteReadinessRequest(req, res);
+    return;
+  }
+
+  if (req.url === '/codesite/deployment-status') {
+    await handleCodeSiteDeploymentStatusRequest(req, res, {
+      probeOverlayCapability: workspaceRuntime?.probeOverlayCapability,
+      probeRuntimeEventAdapter: () => runtimeObservationPublisher.reportHealth(),
     });
     return;
   }
@@ -6780,11 +6809,14 @@ const sessionWss = new WebSocket.Server({ noServer: true, perMessageDeflate: wsP
 
 // Terminal PTY WebSocket server — spawns shell sessions via node-pty.
 // Clients connect to /terminal?sessionId=<id>&workspace=<slug>&cols=N&rows=N.
+const agentSessionAttachService = createAgentSessionAttachService();
+const runtimeObservationPublisher = createRuntimeObservationPublisher();
 const terminalWss = createTerminalWSS({
   enableContainerRuntime: ENABLE_CONTAINER_RUNTIME,
   enableCodeSiteDockerRuntime: ENABLE_CODESITE_DOCKER_RUNTIME,
   workspaceRuntime,
   flushWorkspaceDocsToDisk,
+  agentSessionAttachService,
 });
 
 // Grace period for guest disconnect → reconnect (prevents phantom kicks)
@@ -6924,10 +6956,9 @@ server.on('upgrade', (request, socket, head) => {
   } else if (pathname === 'terminal') {
     const terminalUrl = new URL(request.url || '/terminal', `http://${request.headers.host || 'localhost'}`);
     const terminalSlug = terminalUrl.searchParams.get('workspace') || '';
-    const auth = authorizeCollabGatewayRequest({
+    const auth = authorizeTerminalGatewayRequest({
       req: request,
       slug: terminalSlug,
-      requiredScope: COMMAND_SCOPES.TERMINAL,
       config,
       sessionManager,
     });
@@ -6950,6 +6981,9 @@ server.on('upgrade', (request, socket, head) => {
       else if (auth.workspaceUserId) terminalUrl.searchParams.set('filesystemUserId', auth.workspaceUserId);
       if (auth.runtimeScope) terminalUrl.searchParams.set('runtimeScope', auth.runtimeScope);
       if (auth.collabSessionId) terminalUrl.searchParams.set('collabSessionId', auth.collabSessionId);
+      terminalUrl.searchParams.delete('codeSiteProjectId');
+      terminalUrl.searchParams.delete('agentProvider');
+      terminalUrl.searchParams.delete('providerSessionRef');
       terminalUrl.searchParams.delete('token');
       request.url = `${terminalUrl.pathname}${terminalUrl.search}`;
     }

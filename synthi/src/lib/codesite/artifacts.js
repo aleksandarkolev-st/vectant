@@ -7,6 +7,8 @@ import { buildProofBundle, formatCommitTrailers } from './proof';
 import { buildCodeSiteMetrics } from './metrics';
 import { buildPilotLicenseHealthRecords, pilotLicenseHealthSummary } from './pilotLicense';
 import { buildFilesystemBoundaryProofRecords } from './filesystemBoundaryProof';
+import { projectKnowledgeRecord } from './knowledgeRecords';
+import { safeKnowledgeProjection } from './knowledgePolicy';
 
 export const CODESITE_ARTIFACT_VERSION = 1;
 const ARTIFACT_FILE_INDEX = '.codesite-projection-files.json';
@@ -44,6 +46,13 @@ export const CODESITE_MCP_TOOLS = [
   'synthi_codesite_get_radar',
   'synthi_codesite_get_metrics',
   'synthi_codesite_get_agent_manifest',
+  'synthi_codesite_get_relevant_context',
+  'synthi_codesite_record_discovery',
+  'synthi_codesite_record_lead',
+  'synthi_codesite_publish_shared_skill',
+  'synthi_codesite_file_handoff',
+  'synthi_codesite_get_shared_knowledge',
+  'synthi_codesite_respond_impact_notice',
   'synthi_codesite_get_schemas',
   'synthi_codesite_get_active_state',
   'synthi_codesite_list_active_transactions',
@@ -86,7 +95,7 @@ export function codesiteSchemas() {
       ownerUserId: { type: 'string' },
       agentProvider: { type: 'string' },
       agentRuntime: { type: ['string', 'null'] },
-      providerSessionRef: { type: ['string', 'null'] },
+      providerSessionBound: { type: 'boolean' },
       displayCallsign: { type: 'string' },
       status: { type: 'string' },
       permissions: { type: 'array' },
@@ -344,6 +353,43 @@ export function codesiteSchemas() {
       requiredActions: { type: 'array', items: { type: 'string' } },
       collisionForecast: { type: 'object' },
     }, ['projectId', 'workspaceSlug', 'towerState']),
+    'shared-knowledge-summary.schema.json': {
+      ...schema('SharedKnowledgeSummary', {
+        schemaVersion: { type: 'string', const: 'synthi.codesite.sharedKnowledgeSummary.v1' },
+        id: { type: ['string', 'null'] },
+        projectId: { type: 'string' },
+        kind: { enum: ['discovery', 'lead', 'shared_skill', 'handoff'] },
+        status: { type: 'string' },
+        title: { type: 'string' },
+        summary: { type: 'string' },
+        confidence: { type: ['number', 'null'], minimum: 0, maximum: 1 },
+        source: {
+          type: 'object',
+          properties: {
+            actorType: { type: 'string' },
+            actorId: { type: 'string' },
+            agentSessionId: { type: ['string', 'null'] },
+          },
+          additionalProperties: false,
+        },
+        references: {
+          type: 'object',
+          properties: {
+            paths: { type: 'array', items: { type: 'string' } },
+            symbols: { type: 'array', items: { type: 'string' } },
+            contracts: { type: 'array', items: { type: 'string' } },
+            runtimeSessionIds: { type: 'array', items: { type: 'string' } },
+            agentSessionIds: { type: 'array', items: { type: 'string' } },
+            workstreamIds: { type: 'array', items: { type: 'string' } },
+            transactionIds: { type: 'array', items: { type: 'string' } },
+          },
+          additionalProperties: false,
+        },
+        createdAt: { type: ['string', 'null'] },
+        updatedAt: { type: ['string', 'null'] },
+      }, ['schemaVersion', 'projectId', 'kind', 'status', 'title', 'summary', 'references']),
+      additionalProperties: false,
+    },
     'metrics.schema.json': schema('Metrics', {
       schemaVersion: { type: 'string' },
       projectId: { type: ['string', 'null'] },
@@ -367,6 +413,72 @@ function schema(title, properties, required) {
   };
 }
 
+const REPO_SHARED_KNOWLEDGE_KINDS = new Set(['discovery', 'lead', 'shared_skill', 'handoff']);
+const REPO_SHARED_KNOWLEDGE_REFERENCE_KEYS = [
+  'paths',
+  'symbols',
+  'contracts',
+  'runtimeSessionIds',
+  'agentSessionIds',
+  'workstreamIds',
+  'transactionIds',
+];
+const PRIVATE_KNOWLEDGE_LITERAL = /(?:providerSessionRef|privatePrompt|terminalTranscript|chainOfThought|(?:api[-_ ]?)?token|credential|cookie|privateKey|environmentValue|accountState)\s*[:=]/i;
+const PRIVATE_KEY_MATERIAL = /-----BEGIN [A-Z ]*PRIVATE KEY-----/;
+
+function repoKnowledgeProjection(item) {
+  try {
+    const projected = item?.payloadJson != null || item?.scopeJson != null
+      ? projectKnowledgeRecord(item)
+      : safeKnowledgeProjection(item);
+    if (!projected
+      || projected.visibility !== 'project'
+      || projected.redactionClass === 'owner_private'
+      || !REPO_SHARED_KNOWLEDGE_KINDS.has(projected.kind)) {
+      return null;
+    }
+    if (PRIVATE_KNOWLEDGE_LITERAL.test(projected.title)
+      || PRIVATE_KNOWLEDGE_LITERAL.test(projected.summary)
+      || PRIVATE_KEY_MATERIAL.test(projected.summary)) {
+      return null;
+    }
+    const references = Object.fromEntries(REPO_SHARED_KNOWLEDGE_REFERENCE_KEYS.map((key) => [
+      key,
+      asArray(projected.references?.[key]).map((value) => String(value)),
+    ]));
+    return {
+      schemaVersion: 'synthi.codesite.sharedKnowledgeSummary.v1',
+      id: projected.id || null,
+      projectId: projected.projectId,
+      kind: projected.kind,
+      status: projected.status,
+      title: projected.title,
+      summary: projected.summary,
+      confidence: projected.confidence ?? null,
+      source: {
+        actorType: projected.source.actorType,
+        actorId: projected.source.actorId,
+        agentSessionId: projected.source.agentSessionId || null,
+      },
+      references,
+      createdAt: projected.createdAt || null,
+      updatedAt: projected.updatedAt || null,
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+export function buildSharedKnowledgeRepoProjection(knowledgeItems = []) {
+  return asArray(knowledgeItems)
+    .map(repoKnowledgeProjection)
+    .filter(Boolean)
+    .sort((left, right) => (
+      String(left.createdAt || '').localeCompare(String(right.createdAt || ''))
+      || String(left.id || '').localeCompare(String(right.id || ''))
+    ));
+}
+
 export function buildArtifactProjection(project, controlState = null) {
   const projectDir = `projects/${project.id}`;
   const pilotLicenseHealth = asArray(controlState?.pilotLicenseHealth).length
@@ -375,6 +487,7 @@ export function buildArtifactProjection(project, controlState = null) {
   const metrics = buildCodeSiteMetrics({ project, controlState: controlState || minimalControlState(project), workspaceSlug: project.workspaceSlug });
   const quarantines = quarantineReviewRecords(project);
   const filesystemBoundaryProofs = buildFilesystemBoundaryProofRecords(project);
+  const sharedKnowledge = buildSharedKnowledgeRepoProjection(project.knowledgeItems);
   const files = [
     jsonFile('manifest.json', {
       version: CODESITE_ARTIFACT_VERSION,
@@ -386,12 +499,13 @@ export function buildArtifactProjection(project, controlState = null) {
       schemas: 'schemas/',
       compiler_output: 'airspace/compiler-output.json',
       pilot_license_health: `${projectDir}/pilot-license-health.json`,
-      inbox_root: `${projectDir}/inbox/`,
       quarantine_root: `${projectDir}/quarantines/`,
       quarantine_index: `${projectDir}/quarantines/index.jsonl`,
       filesystem_boundary_proof: `${projectDir}/filesystem-boundary-proof.json`,
       filesystem_boundary_proof_index: `${projectDir}/filesystem-boundary-proofs/index.jsonl`,
       proof_bundle_root: `${projectDir}/proof-bundles/`,
+      shared_knowledge: `${projectDir}/knowledge/index.jsonl`,
+      shared_knowledge_schema: 'schemas/shared-knowledge-summary.schema.json',
       mcp_tools: CODESITE_MCP_TOOLS,
     }),
     jsonFile('airspace/zones.json', project.zonePolicy?.zones || []),
@@ -411,6 +525,11 @@ export function buildArtifactProjection(project, controlState = null) {
     {
       relativePath: `${projectDir}/events.jsonl`,
       content: asArray(project.events).map((event) => stableJson(event)).join('\n') + (project.events?.length ? '\n' : ''),
+    },
+    {
+      relativePath: `${projectDir}/knowledge/index.jsonl`,
+      content: sharedKnowledge.map((item) => stableJson(item)).join('\n')
+        + (sharedKnowledge.length ? '\n' : ''),
     },
     {
       relativePath: `${projectDir}/quarantines/index.jsonl`,
@@ -450,12 +569,12 @@ export function buildArtifactProjection(project, controlState = null) {
   }
 
   for (const session of asArray(project.agentSessions)) {
+    const sharedSession = sharedAgentSessionProjection(session);
     const callsign = safeSegment(session.displayCallsign);
     const flightPlans = asArray(project.executionPlans).filter((item) => item.agentSessionId === session.id);
     const clearances = asArray(project.mutationLeases).filter((item) => item.agentSessionId === session.id);
     const transactions = asArray(project.mutationTxns).filter((item) => item.agentSessionId === session.id);
     const assumptions = asArray(project.assumptions).filter((item) => item.ownerSessionId === session.id);
-    const inbox = asArray(project.inboxItems).filter((item) => item.agentSessionId === session.id);
     const events = eventsForSession(project.events, session, transactions, clearances);
     const landings = landingRunsForSession(project.inspectionRuns, session, flightPlans);
     const proofs = asArray(project.proofBundles).filter((proof) => transactions.some((txn) => txn.id === proof.transactionId));
@@ -479,7 +598,7 @@ export function buildArtifactProjection(project, controlState = null) {
     ));
     const sessionIncidents = incidentsForSession(project.incidents, session, transactions, proofs);
 
-    files.push(jsonFile(`${projectDir}/flights/${callsign}/agent-session.json`, session));
+    files.push(jsonFile(`${projectDir}/flights/${callsign}/agent-session.json`, sharedSession));
     files.push(jsonFile(`${projectDir}/flights/${callsign}/pilot-license-health.json`, pilotHealth));
     files.push({
       relativePath: `${projectDir}/flights/${callsign}/transponder.jsonl`,
@@ -509,12 +628,11 @@ export function buildArtifactProjection(project, controlState = null) {
     files.push(jsonFile(`${projectDir}/flights/${callsign}/assumptions.json`, assumptions));
     files.push(jsonFile(`${projectDir}/flights/${callsign}/black-box.json`, {
       displayCallsign: session.displayCallsign,
-      session,
+      session: sharedSession,
       flightPlans,
       clearances,
       transactions,
       assumptions,
-      inbox,
       events,
       inspections: landings,
       pilotLicenseHealth: pilotHealth,
@@ -523,9 +641,6 @@ export function buildArtifactProjection(project, controlState = null) {
       filesystemBoundaryProofs: sessionFilesystemBoundaryProofs,
       causalReplays: sessionIncidents.map((incident) => incidentHandoverSummary(project, incident)),
     }));
-    for (const item of inbox) {
-      files.push(jsonFile(`${projectDir}/inbox/${callsign}/${item.eventId || item.id}.json`, item));
-    }
   }
 
   for (const document of asArray(project.documents)) {
@@ -1013,6 +1128,34 @@ function jsonFile(relativePath, value) {
     relativePath,
     content: `${JSON.stringify(value ?? null, null, 2)}\n`,
   };
+}
+
+function sharedAgentSessionProjection(session = {}) {
+  return scrubSharedAgentValue(session);
+}
+
+function scrubSharedAgentValue(value) {
+  if (Array.isArray(value)) {
+    return value
+      .filter((item) => item !== 'repo_local_projection')
+      .map(scrubSharedAgentValue);
+  }
+  if (!value || typeof value !== 'object') return value;
+
+  const output = {};
+  let providerSessionBound = Boolean(value.providerSessionBound);
+  for (const [key, item] of Object.entries(value)) {
+    if (key === 'providerSessionRef') {
+      providerSessionBound = providerSessionBound || Boolean(item);
+      continue;
+    }
+    if (/(?:token|secret|credential|prompt|transcript)/i.test(key)) continue;
+    output[key] = scrubSharedAgentValue(item);
+  }
+  if (providerSessionBound || Object.hasOwn(value, 'providerSessionBound') || Object.hasOwn(value, 'providerSessionRef')) {
+    output.providerSessionBound = providerSessionBound;
+  }
+  return output;
 }
 
 export function resolveConfiguredArtifactRoot(workspaceSlug) {

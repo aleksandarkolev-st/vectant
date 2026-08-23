@@ -4,6 +4,7 @@ import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { pathToFileURL } from 'url';
 
 const REQUIRED_FIELDS = [
   'schemaVersion',
@@ -577,6 +578,10 @@ function proofAuthorityEnvValue(key) {
 }
 
 function resolveProofAuthorityFilePath(filePath) {
+  // Relative paths resolve against the repo root. Honor the explicit base-dir
+  // override first (tests/CLIs running from arbitrary cwds), then cwd.
+  const override = process.env.SYNTHI_CODESITE_PROOF_AUTHORITY_BASE_DIR;
+  if (override) return path.resolve(override, filePath);
   return path.isAbsolute(filePath)
     ? path.resolve(filePath)
     : path.resolve(repoRoot(), filePath);
@@ -586,7 +591,7 @@ function repoRoot() {
   return path.basename(process.cwd()) === 'synthi' ? path.dirname(process.cwd()) : process.cwd();
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   try {
     main(process.argv.slice(2));
   } catch (error) {

@@ -2,10 +2,13 @@
 
 import React, { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react';
 import dynamic from 'next/dynamic';
-import { SplitSquareHorizontal, Plus, X, TerminalSquare, Bot, Settings } from 'lucide-react';
+import { SplitSquareHorizontal, Plus, X, TerminalSquare, Bot } from 'lucide-react';
 import { useDispatch } from 'react-redux';
 import { fetchFilesThunk } from '@/redux/workspaceSlice';
+import { useCollabSession } from '@/hooks/useCollabSession';
+import { fetchCodeSiteProjects } from '@/components/codesite/codesiteClient';
 import ShellSelector, { getShellMeta } from './ShellSelector';
+import { createTerminalAgentLaunch, normalizeTerminalAgentLaunch } from './terminalAgentBinding';
 import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/ContextMenu';
 
 const TerminalPane = dynamic(() => import('./TerminalPane.jsx'), { ssr: false });
@@ -38,13 +41,24 @@ function normalizeStoredTerminal(entry, index, defaultShellPref) {
   if (!entry || typeof entry !== 'object') return null;
   const shellType = typeof entry.shellType === 'string' && entry.shellType ? entry.shellType : null;
   const meta = shellType ? getShellMeta(shellType) : null;
+  let agentLaunch = null;
+  try {
+    agentLaunch = normalizeTerminalAgentLaunch({
+      binding: entry.agentBinding,
+      command: entry.agentLaunchCommand,
+    });
+  } catch (_) {
+    agentLaunch = null;
+  }
   return {
     id: typeof entry.id === 'string' && entry.id ? entry.id : `term-${index + 1}`,
     label: typeof entry.label === 'string' && entry.label ? entry.label : meta?.label || getShellMeta(defaultShellPref)?.label || 'Terminal',
-    split: Boolean(entry.split),
+    split: agentLaunch ? false : Boolean(entry.split),
     shellType,
     fixedSessionId: typeof entry.fixedSessionId === 'string' && entry.fixedSessionId ? entry.fixedSessionId : undefined,
     isAi: Boolean(entry.isAi),
+    agentBinding: agentLaunch?.binding || undefined,
+    agentLaunchCommand: agentLaunch?.command || undefined,
   };
 }
 
@@ -63,7 +77,10 @@ function readStoredTerminalManagerState(workspaceSlug, defaultShellPref) {
     const activeId = terminals.some((terminal) => terminal.id === parsed?.activeId)
       ? parsed.activeId
       : terminals[0].id;
-    return { terminals, activeId };
+    const selectedCodeSiteProjectId = typeof parsed?.selectedCodeSiteProjectId === 'string'
+      ? parsed.selectedCodeSiteProjectId
+      : '';
+    return { terminals, activeId, selectedCodeSiteProjectId };
   } catch (_) {
     return fallback;
   }
@@ -73,6 +90,7 @@ function writeStoredTerminalManagerState(workspaceSlug, state) {
   try {
     localStorage.setItem(terminalManagerStorageKey(workspaceSlug), JSON.stringify({
       activeId: state.activeId,
+      selectedCodeSiteProjectId: state.selectedCodeSiteProjectId || '',
       terminals: state.terminals.map((terminal) => ({
         id: terminal.id,
         label: terminal.label,
@@ -80,6 +98,8 @@ function writeStoredTerminalManagerState(workspaceSlug, state) {
         shellType: terminal.shellType || null,
         fixedSessionId: terminal.fixedSessionId || undefined,
         isAi: Boolean(terminal.isAi),
+        agentBinding: terminal.agentBinding || undefined,
+        agentLaunchCommand: terminal.agentLaunchCommand || undefined,
       })),
     }));
   } catch (_) {}
@@ -89,12 +109,24 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
   const [defaultShellPref, setDefaultShellPref] = useState(() => getStoredDefaultShell());
   const [terminals, setTerminals] = useState(() => readStoredTerminalManagerState(workspaceSlug, getStoredDefaultShell()).terminals);
   const [activeId, setActiveId] = useState(() => readStoredTerminalManagerState(workspaceSlug, getStoredDefaultShell()).activeId);
+  const [selectedCodeSiteProjectId, setSelectedCodeSiteProjectId] = useState(
+    () => readStoredTerminalManagerState(workspaceSlug, getStoredDefaultShell()).selectedCodeSiteProjectId || '',
+  );
+  const [codeSiteProjects, setCodeSiteProjects] = useState([]);
+  const [agentLauncherOpen, setAgentLauncherOpen] = useState(false);
+  const [agentProvider, setAgentProvider] = useState('');
+  const [agentLaunchCommand, setAgentLaunchCommand] = useState('');
+  const [agentLauncherStatus, setAgentLauncherStatus] = useState('idle');
+  const [agentLauncherError, setAgentLauncherError] = useState('');
   const [editingTabId, setEditingTabId] = useState(null);
   const [editingName, setEditingName] = useState('');
   const dragRef = useRef(null);
   const dispatch = useDispatch();
   const fsRefreshTimer = useRef(null);
   const defaultShellPrefRef = useRef(defaultShellPref);
+  const { role: collaborationRole, permissions: collaborationPermissions } = useCollabSession();
+  const collaborationActive = collaborationRole === 'hosting' || collaborationRole === 'guest';
+  const canLaunchAgent = collaborationActive && collaborationPermissions?.canTerminal !== false;
 
   useEffect(() => {
     defaultShellPrefRef.current = defaultShellPref;
@@ -104,11 +136,46 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
     const restored = readStoredTerminalManagerState(workspaceSlug, defaultShellPrefRef.current);
     setTerminals(restored.terminals);
     setActiveId(restored.activeId);
+    setSelectedCodeSiteProjectId(restored.selectedCodeSiteProjectId || '');
+    setAgentLauncherOpen(false);
   }, [workspaceSlug]);
 
   useEffect(() => {
-    writeStoredTerminalManagerState(workspaceSlug, { terminals, activeId });
-  }, [workspaceSlug, terminals, activeId]);
+    writeStoredTerminalManagerState(workspaceSlug, {
+      terminals,
+      activeId,
+      selectedCodeSiteProjectId,
+    });
+  }, [workspaceSlug, terminals, activeId, selectedCodeSiteProjectId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCodeSiteProjects([]);
+    setAgentLauncherError('');
+    if (!workspaceSlug) {
+      setAgentLauncherStatus('idle');
+      return () => { cancelled = true; };
+    }
+    setAgentLauncherStatus('loading');
+    fetchCodeSiteProjects(workspaceSlug).then((projects) => {
+      if (cancelled) return;
+      const authorizedProjects = Array.isArray(projects) ? projects : [];
+      setCodeSiteProjects(authorizedProjects);
+      setSelectedCodeSiteProjectId((current) => (
+        authorizedProjects.some((project) => project.id === current)
+          ? current
+          : authorizedProjects[0]?.id || ''
+      ));
+      setAgentLauncherStatus('ready');
+    }).catch(() => {
+      if (cancelled) return;
+      setCodeSiteProjects([]);
+      setSelectedCodeSiteProjectId('');
+      setAgentLauncherStatus('error');
+      setAgentLauncherError('Authorized CodeSite projects could not be loaded.');
+    });
+    return () => { cancelled = true; };
+  }, [workspaceSlug]);
 
   // ── Debounced file tree refresh on filesystem changes ────────────────
   const handleFsChange = useCallback(() => {
@@ -198,6 +265,45 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
     setActiveId(id);
   };
 
+  const launchAgentTerminal = (event) => {
+    event.preventDefault();
+    setAgentLauncherError('');
+    const project = codeSiteProjects.find((entry) => entry.id === selectedCodeSiteProjectId);
+    if (!canLaunchAgent) {
+      setAgentLauncherError('Join an active shared session with terminal access first.');
+      return;
+    }
+    if (!project) {
+      setAgentLauncherError('Select an authorized CodeSite project.');
+      return;
+    }
+    try {
+      const launch = createTerminalAgentLaunch({
+        projectId: project.id,
+        provider: agentProvider,
+        command: agentLaunchCommand,
+      });
+      const id = `agent-${launch.binding.providerSessionRef}`;
+      const newTerminal = {
+        id,
+        label: `${launch.binding.provider} · ${project.title || project.id}`,
+        split: false,
+        shellType: defaultShellPref,
+        agentBinding: launch.binding,
+        agentLaunchCommand: launch.command,
+      };
+      setTerminals((current) => [...current, newTerminal]);
+      setActiveId(id);
+      setAgentLauncherOpen(false);
+    } catch (error) {
+      setAgentLauncherError(
+        error?.code === 'invalid_terminal_agent_binding'
+          ? 'Use a provider identifier containing letters, numbers, dots, dashes, or underscores.'
+          : 'Enter one explicit agent launch command without line breaks.',
+      );
+    }
+  };
+
   // ── Keyboard shortcut: Ctrl+Shift+` to create new terminal ──────────
   useEffect(() => {
     if (!visible) return;
@@ -212,7 +318,9 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
   }, [visible, defaultShellPref, terminals.length]);
 
   const toggleSplit = () => {
-    setTerminals(prev => prev.map(t => t.id === activeId ? { ...t, split: !t.split } : t));
+    setTerminals(prev => prev.map(t => (
+      t.id === activeId && !t.agentBinding ? { ...t, split: !t.split } : t
+    )));
   };
 
   const closeActive = () => {
@@ -282,9 +390,12 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
       {
         id: 'split',
         label: t.split ? 'Unsplit' : 'Split Terminal',
+        disabled: Boolean(t.agentBinding),
         dividerAfter: true,
         action: () => {
-          setTerminals(prev => prev.map(x => x.id === t.id ? { ...x, split: !x.split } : x));
+          setTerminals(prev => prev.map(x => (
+            x.id === t.id && !x.agentBinding ? { ...x, split: !x.split } : x
+          )));
         },
       },
       {
@@ -327,7 +438,7 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
 
   const header = (
     <div
-      className="h-9 flex items-center justify-between px-2 border-b select-none"
+      className="relative h-9 flex items-center justify-between px-2 border-b select-none"
       style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sidebar)' }}
       ref={dragRef}
       onContextMenu={onStripContextMenu}
@@ -430,10 +541,100 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
           currentDefault={defaultShellPref}
           onSetDefault={(shellKey) => { setDefaultShellPref(shellKey); setStoredDefaultShell(shellKey); }}
         />
+        <div className="relative">
+          <button
+            type="button"
+            data-testid="terminal-agent-launcher-toggle"
+            className="w-7 h-7 flex items-center justify-center rounded th-btn-ghost transition-colors"
+            onClick={() => {
+              setAgentLauncherOpen((open) => !open);
+              setAgentLauncherError('');
+            }}
+            title="Launch a project agent"
+            aria-expanded={agentLauncherOpen}
+          >
+            <Bot className="w-3.5 h-3.5" strokeWidth={2} />
+          </button>
+          {agentLauncherOpen ? (
+            <form
+              data-testid="terminal-agent-launcher"
+              onSubmit={launchAgentTerminal}
+              className="absolute right-0 top-8 z-50 grid w-72 gap-3 rounded-lg border p-3 text-xs shadow-xl"
+              style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}
+            >
+              <div>
+                <div className="font-semibold">Attach a project agent</div>
+                <div className="mt-0.5 text-[10px] leading-4" style={{ color: 'var(--text-muted)' }}>
+                  Start any installed agent CLI in its own attributed session.
+                </div>
+              </div>
+              <label className="grid gap-1">
+                <span className="text-[10px] font-medium" style={{ color: 'var(--text-secondary)' }}>CodeSite project</span>
+                <select
+                  data-testid="terminal-agent-project"
+                  value={selectedCodeSiteProjectId}
+                  onChange={(event) => setSelectedCodeSiteProjectId(event.target.value)}
+                  disabled={agentLauncherStatus !== 'ready' || codeSiteProjects.length === 0}
+                  className="h-8 rounded-md border bg-transparent px-2 outline-none"
+                  style={{ borderColor: 'var(--border-subtle)' }}
+                >
+                  {codeSiteProjects.length === 0 ? <option value="">No authorized projects</option> : null}
+                  {codeSiteProjects.map((project) => (
+                    <option key={project.id} value={project.id}>{project.title || project.id}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="grid gap-1">
+                <span className="text-[10px] font-medium" style={{ color: 'var(--text-secondary)' }}>Provider identifier</span>
+                <input
+                  data-testid="terminal-agent-provider"
+                  value={agentProvider}
+                  onChange={(event) => setAgentProvider(event.target.value)}
+                  placeholder="my_agent.v2"
+                  autoComplete="off"
+                  className="h-8 rounded-md border bg-transparent px-2 outline-none"
+                  style={{ borderColor: 'var(--border-subtle)' }}
+                />
+              </label>
+              <label className="grid gap-1">
+                <span className="text-[10px] font-medium" style={{ color: 'var(--text-secondary)' }}>Launch command</span>
+                <input
+                  data-testid="terminal-agent-command"
+                  value={agentLaunchCommand}
+                  onChange={(event) => setAgentLaunchCommand(event.target.value)}
+                  placeholder="agent-host --project current"
+                  autoComplete="off"
+                  className="h-8 rounded-md border bg-transparent px-2 font-mono outline-none"
+                  style={{ borderColor: 'var(--border-subtle)' }}
+                />
+              </label>
+              {!collaborationActive ? (
+                <div className="text-[10px] leading-4" style={{ color: 'var(--status-warning)' }}>
+                  Start or join a shared session before attaching an agent.
+                </div>
+              ) : null}
+              {agentLauncherError ? (
+                <div data-testid="terminal-agent-launcher-error" className="text-[10px] leading-4" style={{ color: 'var(--status-error)' }}>
+                  {agentLauncherError}
+                </div>
+              ) : null}
+              <button
+                type="submit"
+                data-testid="terminal-agent-launch"
+                disabled={!canLaunchAgent || agentLauncherStatus !== 'ready' || !selectedCodeSiteProjectId}
+                className="h-8 rounded-md px-3 font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+                style={{ background: 'var(--text-primary)', color: 'var(--bg-app)' }}
+              >
+                Launch attributed agent
+              </button>
+            </form>
+          ) : null}
+        </div>
         <button 
           className="w-7 h-7 flex items-center justify-center rounded th-btn-ghost transition-colors" 
-          onClick={toggleSplit} 
-          title="Split Terminal"
+          onClick={toggleSplit}
+          disabled={Boolean(terminals.find((terminal) => terminal.id === activeId)?.agentBinding)}
+          title={terminals.find((terminal) => terminal.id === activeId)?.agentBinding ? 'Agent terminals cannot be split' : 'Split Terminal'}
         >
           <SplitSquareHorizontal className="w-3.5 h-3.5" strokeWidth={2} />
         </button>
@@ -471,7 +672,7 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
                     Wait for a real workspaceName before mounting so the PTY
                     prompt is correct on first frame and never shows the slug. */}
                 {workspaceSlug ? (
-                  <TerminalPane key={`${t.id}-main`} terminalId={t.id} paneSide="main" workspaceSlug={workspaceSlug} workspaceName={workspaceName || workspaceSlug} onFsChange={handleFsChange} fixedSessionId={t.fixedSessionId || null} shellType={t.shellType || null} />
+                  <TerminalPane key={`${t.id}-main`} terminalId={t.id} paneSide="main" workspaceSlug={workspaceSlug} workspaceName={workspaceName || workspaceSlug} onFsChange={handleFsChange} fixedSessionId={t.fixedSessionId || null} shellType={t.shellType || null} agentBinding={t.agentBinding || null} agentLaunchCommand={t.agentLaunchCommand || null} />
                 ) : (
                   <div className="h-full w-full" style={{ background: 'var(--bg-app)' }} />
                 )}

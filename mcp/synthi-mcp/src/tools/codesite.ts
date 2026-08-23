@@ -27,6 +27,13 @@ export const CODESITE_TOOL_NAMES = [
   "synthi_codesite_validate_transaction",
   "synthi_codesite_request_commit",
   "synthi_codesite_get_source_state_since",
+  "synthi_codesite_get_relevant_context",
+  "synthi_codesite_record_discovery",
+  "synthi_codesite_record_lead",
+  "synthi_codesite_publish_shared_skill",
+  "synthi_codesite_file_handoff",
+  "synthi_codesite_get_shared_knowledge",
+  "synthi_codesite_respond_impact_notice",
   "synthi_codesite_get_radar",
   "synthi_codesite_get_metrics",
   "synthi_codesite_get_agent_manifest",
@@ -67,6 +74,17 @@ export const CODESITE_TOOL_NAMES = [
 ] as const;
 
 type CodeSiteToolName = (typeof CODESITE_TOOL_NAMES)[number];
+type AgentBoundKnowledgeToolName =
+  | "synthi_codesite_record_discovery"
+  | "synthi_codesite_record_lead"
+  | "synthi_codesite_publish_shared_skill"
+  | "synthi_codesite_file_handoff"
+  | "synthi_codesite_get_shared_knowledge"
+  | "synthi_codesite_respond_impact_notice";
+type RoutedCodeSiteToolName = Exclude<
+  CodeSiteToolName,
+  "synthi_codesite_get_relevant_context" | AgentBoundKnowledgeToolName
+>;
 
 type JsonObject = Record<string, unknown>;
 
@@ -149,7 +167,134 @@ const COMMON_PROPERTIES = {
   },
 } as const;
 
+const KNOWLEDGE_REFERENCE_PROPERTIES = {
+  paths: { type: "array", items: { type: "string" }, maxItems: 32 },
+  symbols: { type: "array", items: { type: "string" }, maxItems: 32 },
+  contracts: { type: "array", items: { type: "string" }, maxItems: 32 },
+  workstream_ids: { type: "array", items: { type: "string" }, maxItems: 32 },
+  transaction_ids: { type: "array", items: { type: "string" }, maxItems: 32 },
+} as const;
+
+const KNOWLEDGE_COMMON_PROPERTIES = {
+  title: { type: "string", minLength: 1, maxLength: 160 },
+  summary: { type: "string", minLength: 1, maxLength: 4096 },
+  references: {
+    type: "object",
+    properties: KNOWLEDGE_REFERENCE_PROPERTIES,
+    additionalProperties: false,
+  },
+  evidence_refs: { type: "array", items: { type: "string" }, maxItems: 64 },
+  tags: { type: "array", items: { type: "string" }, maxItems: 32 },
+  visibility: { type: "string", enum: ["project", "restricted", "owner_private"] },
+  redaction_class: { type: "string", enum: ["project_fact", "owner_private"] },
+  expires_at: { type: "string", format: "date-time" },
+} as const;
+
+const SHARED_SKILL_RECIPE_PROPERTIES = {
+  commands: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 32 },
+  required_permissions: { type: "array", items: { type: "string" }, maxItems: 32 },
+  required_tools: { type: "array", items: { type: "string" }, maxItems: 32 },
+  required_environment_keys: { type: "array", items: { type: "string" }, maxItems: 32 },
+  usage_conditions: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 32 },
+  working_directory: { type: "string", maxLength: 512 },
+  action_class: { type: "string", enum: ["read_only", "workspace_mutation"] },
+} as const;
+
+const IMPACT_NOTICE_ACTIONS = ["acknowledge", "refresh", "rebase_requested", "abort", "dismiss"] as const;
+const SHARED_KNOWLEDGE_STATUSES = [
+  "draft", "verified", "rejected", "invalidated", "archived",
+  "open", "claimed", "escalated", "resolved", "dismissed",
+  "pending_review", "published", "deprecated", "revoked",
+  "pending", "acknowledged", "rebasing", "irrelevant", "aborted", "expired",
+  "ready", "reopened", "completed", "declined", "cancelled",
+] as const;
+
 export const CODESITE_TOOLS = [
+  {
+    name: "synthi_codesite_get_relevant_context",
+    description: "Read the compact CodeSite working context bound to this attached agent process.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  agentBoundCodeSiteTool(
+    "synthi_codesite_record_discovery",
+    "Record a redacted, evidence-backed project discovery as the currently attached agent.",
+    {
+      ...KNOWLEDGE_COMMON_PROPERTIES,
+      status: { type: "string", enum: ["draft", "verified"] },
+      confidence: { type: "number", minimum: 0, maximum: 1 },
+      verification: { type: "string", enum: ["unverified", "verified", "rejected"] },
+    },
+    ["title", "summary", "references", "evidence_refs", "confidence"],
+  ),
+  agentBoundCodeSiteTool(
+    "synthi_codesite_record_lead",
+    "Record a project-scoped lead as the currently attached agent.",
+    {
+      ...KNOWLEDGE_COMMON_PROPERTIES,
+      status: { type: "string", enum: ["open", "claimed", "escalated"] },
+      confidence: { type: "number", minimum: 0, maximum: 1 },
+      priority: { type: "string", enum: ["low", "medium", "high", "critical"] },
+    },
+    ["title", "summary", "references", "confidence"],
+  ),
+  agentBoundCodeSiteTool(
+    "synthi_codesite_publish_shared_skill",
+    "Publish an evidence-backed, redacted skill recipe for this project as the currently attached agent.",
+    {
+      ...KNOWLEDGE_COMMON_PROPERTIES,
+      status: { type: "string", enum: ["draft", "pending_review", "published"] },
+      skill_key: { type: "string", minLength: 1, maxLength: 128 },
+      recipe: {
+        type: "object",
+        properties: SHARED_SKILL_RECIPE_PROPERTIES,
+        required: ["commands", "required_permissions", "usage_conditions"],
+        additionalProperties: false,
+      },
+    },
+    ["title", "summary", "references", "evidence_refs", "skill_key", "recipe"],
+  ),
+  agentBoundCodeSiteTool(
+    "synthi_codesite_file_handoff",
+    "File an evidence-backed handoff from the currently attached agent to another project agent.",
+    {
+      ...KNOWLEDGE_COMMON_PROPERTIES,
+      status: { type: "string", enum: ["draft", "ready"] },
+      to_agent_session_id: { type: "string", minLength: 1, maxLength: 128 },
+      unresolved_risks: { type: "array", items: { type: "string" }, maxItems: 32 },
+      required_actions: { type: "array", items: { type: "string" }, maxItems: 32 },
+    },
+    ["title", "summary", "references", "evidence_refs", "to_agent_session_id"],
+  ),
+  agentBoundCodeSiteTool(
+    "synthi_codesite_get_shared_knowledge",
+    "Read redacted shared knowledge relevant to the currently attached agent.",
+    {
+      kind: { type: "string", enum: ["discovery", "lead", "shared_skill", "impact_notice", "handoff"] },
+      status: { type: "string", enum: SHARED_KNOWLEDGE_STATUSES },
+      since: { type: "string", format: "date-time" },
+      limit: { type: "integer", minimum: 1, maximum: 100 },
+      path: { type: "string" },
+      symbol: { type: "string" },
+      contract: { type: "string" },
+      workstream_id: { type: "string" },
+    },
+    [],
+  ),
+  agentBoundCodeSiteTool(
+    "synthi_codesite_respond_impact_notice",
+    "Respond to an impact notice delivered to the currently attached agent.",
+    {
+      notice_id: { type: "string", minLength: 1, maxLength: 128 },
+      action: { type: "string", enum: IMPACT_NOTICE_ACTIONS },
+      reason: { type: "string", maxLength: 2048 },
+      evidence_refs: { type: "array", items: { type: "string" }, maxItems: 64 },
+    },
+    ["notice_id", "action"],
+  ),
   codeSiteTool("synthi_codesite_list_projects", "List visible CodeSite projects for a workspace.", {}, []),
   codeSiteTool("synthi_codesite_create_project", "Create a CodeSite project and owner membership for a workspace.", {
     title: { type: "string" },
@@ -527,6 +672,12 @@ export async function dispatchCodeSiteTool(toolName: string, args: unknown): Pro
   if (!isCodeSiteToolName(toolName)) return null;
   try {
     const input = objectArg(args);
+    if (toolName === "synthi_codesite_get_relevant_context") {
+      return await dispatchRelevantAgentContext(input);
+    }
+    if (isAgentBoundKnowledgeToolName(toolName)) {
+      return await dispatchAgentBoundKnowledgeTool(toolName, input);
+    }
     if (toolName === "synthi_codesite_apply_patch") {
       return await dispatchCodeSiteApplyPatch(input);
     }
@@ -570,6 +721,102 @@ export async function dispatchCodeSiteTool(toolName: string, args: unknown): Pro
   }
 }
 
+async function dispatchAgentBoundKnowledgeTool(
+  toolName: AgentBoundKnowledgeToolName,
+  args: JsonObject,
+): Promise<ToolResponse> {
+  assertNoForgedAgentAuthority(args);
+  validateAgentBoundKnowledgeArguments(toolName, args);
+  const agentSessionId = envString("SYNTHI_CODESITE_AGENT_SESSION_ID");
+  const agentToken = envString("SYNTHI_CODESITE_AGENT_TOKEN");
+  if (!agentSessionId || !agentToken) {
+    return errorResponse("codesite_agent_knowledge_environment_required");
+  }
+
+  const apiBase = resolveApiBase({});
+  const basePath = `/agent-sessions/${encodeURIComponent(agentSessionId)}`;
+  let method: "GET" | "POST" = "POST";
+  let path = `${basePath}/knowledge`;
+  let body: JsonObject | undefined;
+  let url = new URL(`${apiBase}${path}`);
+
+  if (toolName === "synthi_codesite_get_shared_knowledge") {
+    method = "GET";
+    for (const key of SHARED_KNOWLEDGE_FILTER_KEYS) {
+      const value = args[key];
+      if (value !== undefined) url.searchParams.set(key, String(value));
+    }
+  } else if (toolName === "synthi_codesite_respond_impact_notice") {
+    path = `${basePath}/inbox/${encodeURIComponent(requiredString(args, "notice_id"))}/respond`;
+    url = new URL(`${apiBase}${path}`);
+    body = withoutUndefined({
+      action: args["action"],
+      reason: args["reason"],
+      evidence_refs: args["evidence_refs"],
+    });
+  } else {
+    body = { ...args, kind: knowledgeKindForTool(toolName) };
+  }
+
+  const request = { method, path, url: url.toString() };
+  const response = await fetch(url, {
+    method,
+    headers: {
+      accept: "application/json",
+      authorization: `Bearer ${agentToken}`,
+      ...(body ? { "content-type": "application/json" } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!response.ok) {
+    return errorResponse("codesite_agent_knowledge_request_failed", {
+      status: response.status,
+      request,
+    });
+  }
+  const data = sanitizeKnowledgeResponse(parseJsonObject(await response.text()));
+  return jsonResponse({
+    ok: true,
+    tool: toolName,
+    request,
+    response: data as JsonObject,
+  });
+}
+
+async function dispatchRelevantAgentContext(args: JsonObject): Promise<ToolResponse> {
+  if (Object.keys(args).length > 0) {
+    return errorResponse("codesite_agent_context_arguments_forbidden");
+  }
+  const agentSessionId = envString("SYNTHI_CODESITE_AGENT_SESSION_ID");
+  const agentToken = envString("SYNTHI_CODESITE_AGENT_TOKEN");
+  if (!agentSessionId || !agentToken) {
+    return errorResponse("codesite_agent_context_environment_required");
+  }
+  const apiBase = resolveApiBase({});
+  const path = `/agent-sessions/${encodeURIComponent(agentSessionId)}/relevant-context`;
+  const url = new URL(`${apiBase}${path}`);
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      accept: "application/json",
+      authorization: `Bearer ${agentToken}`,
+    },
+  });
+  if (!response.ok) {
+    return errorResponse("codesite_agent_context_request_failed", {
+      status: response.status,
+      request: { method: "GET", path, url: url.toString() },
+    });
+  }
+  const data = parseJsonObject(await response.text());
+  return jsonResponse({
+    ok: true,
+    tool: "synthi_codesite_get_relevant_context",
+    request: { method: "GET", path, url: url.toString() },
+    response: data,
+  });
+}
+
 function codeSiteTool(
   name: CodeSiteToolName,
   description: string,
@@ -590,7 +837,25 @@ function codeSiteTool(
   };
 }
 
-function buildCodeSiteRequest(toolName: CodeSiteToolName, args: JsonObject): CodeSiteRequest | null {
+function agentBoundCodeSiteTool(
+  name: AgentBoundKnowledgeToolName,
+  description: string,
+  properties: JsonObject,
+  required: string[],
+): { name: AgentBoundKnowledgeToolName; description: string; inputSchema: JsonObject } {
+  return {
+    name,
+    description,
+    inputSchema: {
+      type: "object",
+      properties,
+      required,
+      additionalProperties: false,
+    },
+  };
+}
+
+function buildCodeSiteRequest(toolName: RoutedCodeSiteToolName, args: JsonObject): CodeSiteRequest | null {
   switch (toolName) {
     case "synthi_codesite_list_projects":
       return {
@@ -1213,6 +1478,163 @@ function parseJsonObject(text: string): JsonObject {
   } catch {
     return { text };
   }
+}
+
+const AGENT_BOUND_WRITER_ARGUMENTS: Record<
+  Exclude<AgentBoundKnowledgeToolName, "synthi_codesite_get_shared_knowledge" | "synthi_codesite_respond_impact_notice">,
+  { allowed: readonly string[]; required: readonly string[] }
+> = {
+  synthi_codesite_record_discovery: {
+    allowed: [...Object.keys(KNOWLEDGE_COMMON_PROPERTIES), "status", "confidence", "verification"],
+    required: ["title", "summary", "references", "evidence_refs", "confidence"],
+  },
+  synthi_codesite_record_lead: {
+    allowed: [...Object.keys(KNOWLEDGE_COMMON_PROPERTIES), "status", "confidence", "priority"],
+    required: ["title", "summary", "references", "confidence"],
+  },
+  synthi_codesite_publish_shared_skill: {
+    allowed: [...Object.keys(KNOWLEDGE_COMMON_PROPERTIES), "status", "skill_key", "recipe"],
+    required: ["title", "summary", "references", "evidence_refs", "skill_key", "recipe"],
+  },
+  synthi_codesite_file_handoff: {
+    allowed: [...Object.keys(KNOWLEDGE_COMMON_PROPERTIES), "status", "to_agent_session_id", "unresolved_risks", "required_actions"],
+    required: ["title", "summary", "references", "evidence_refs", "to_agent_session_id"],
+  },
+};
+
+const SHARED_KNOWLEDGE_FILTER_KEYS = [
+  "kind",
+  "status",
+  "since",
+  "limit",
+  "path",
+  "symbol",
+  "contract",
+  "workstream_id",
+] as const;
+
+const KNOWLEDGE_KINDS = new Set(["discovery", "lead", "shared_skill", "impact_notice", "handoff"]);
+const KNOWLEDGE_STATUSES = new Set<string>(SHARED_KNOWLEDGE_STATUSES);
+const IMPACT_ACTIONS_REQUIRING_EVIDENCE = new Set(["rebase_requested", "abort", "dismiss"]);
+
+function validateAgentBoundKnowledgeArguments(toolName: AgentBoundKnowledgeToolName, args: JsonObject): void {
+  if (toolName === "synthi_codesite_get_shared_knowledge") {
+    assertAllowedKeys(args, SHARED_KNOWLEDGE_FILTER_KEYS);
+    const kind = optionalString(args["kind"]);
+    const status = optionalString(args["status"]);
+    if (kind && !KNOWLEDGE_KINDS.has(kind)) throw new Error("codesite_shared_knowledge_kind_invalid");
+    if (status && !KNOWLEDGE_STATUSES.has(status)) throw new Error("codesite_shared_knowledge_status_invalid");
+    const limit = args["limit"];
+    if (limit !== undefined && (!Number.isInteger(limit) || Number(limit) < 1 || Number(limit) > 100)) {
+      throw new Error("codesite_shared_knowledge_limit_invalid");
+    }
+    return;
+  }
+  if (toolName === "synthi_codesite_respond_impact_notice") {
+    assertAllowedKeys(args, ["notice_id", "action", "reason", "evidence_refs"]);
+    requireArguments(args, ["notice_id", "action"]);
+    const action = requiredString(args, "action");
+    if (!(IMPACT_NOTICE_ACTIONS as readonly string[]).includes(action)) {
+      throw new Error("codesite_impact_notice_action_invalid");
+    }
+    if (IMPACT_ACTIONS_REQUIRING_EVIDENCE.has(action)) {
+      if (!optionalString(args["reason"])) throw new Error("codesite_impact_notice_reason_required");
+      if (stringListArg(args["evidence_refs"]).length === 0) {
+        throw new Error("codesite_impact_notice_evidence_required");
+      }
+    }
+    return;
+  }
+  const contract = AGENT_BOUND_WRITER_ARGUMENTS[toolName];
+  assertAllowedKeys(args, contract.allowed);
+  requireArguments(args, contract.required);
+  if (args["references"] !== undefined) {
+    const references = requiredObject(args["references"], "codesite_knowledge_references_invalid");
+    assertAllowedKeys(references, Object.keys(KNOWLEDGE_REFERENCE_PROPERTIES));
+  }
+  if (toolName === "synthi_codesite_publish_shared_skill") {
+    const recipe = requiredObject(args["recipe"], "codesite_shared_skill_recipe_invalid");
+    assertAllowedKeys(recipe, Object.keys(SHARED_SKILL_RECIPE_PROPERTIES));
+    requireArguments(recipe, ["commands", "required_permissions", "usage_conditions"]);
+  }
+}
+
+function knowledgeKindForTool(
+  toolName: Exclude<AgentBoundKnowledgeToolName, "synthi_codesite_get_shared_knowledge" | "synthi_codesite_respond_impact_notice">,
+): "discovery" | "lead" | "shared_skill" | "handoff" {
+  if (toolName === "synthi_codesite_record_discovery") return "discovery";
+  if (toolName === "synthi_codesite_record_lead") return "lead";
+  if (toolName === "synthi_codesite_publish_shared_skill") return "shared_skill";
+  return "handoff";
+}
+
+function assertNoForgedAgentAuthority(value: unknown, seen = new Set<object>()): void {
+  if (!value || typeof value !== "object") return;
+  if (seen.has(value as object)) throw new Error("codesite_agent_knowledge_arguments_invalid");
+  seen.add(value as object);
+  for (const [key, child] of Object.entries(value as JsonObject)) {
+    const normalized = key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+    const sourceIdentity = [
+      "agent_session_id", "from_agent_session_id", "source_agent_session_id", "created_by_agent_session_id",
+      "owner_agent_session_id", "project_id", "workspace_slug", "user_id", "owner_user_id", "created_by_user_id",
+      "actor_id", "actor_type", "source", "session_id", "terminal_session_id", "runtime_session_id", "runtime_scope",
+      "execution_host", "provider", "provider_id", "provider_session_ref", "provider_session_bound",
+      "auth_token", "base_url", "codesite_api_base_url", "collab_base_url", "cookie", "body",
+    ].includes(normalized);
+    const privateMaterial = /(token|secret|credential|password|passwd|cookie|prompt|transcript|provider_session)/i.test(normalized);
+    if (sourceIdentity || privateMaterial) {
+      throw new Error("codesite_agent_knowledge_identity_arguments_forbidden");
+    }
+    assertNoForgedAgentAuthority(child, seen);
+  }
+  seen.delete(value as object);
+}
+
+function assertAllowedKeys(args: JsonObject, allowed: readonly string[]): void {
+  const allowedKeys = new Set(allowed);
+  if (Object.keys(args).some((key) => !allowedKeys.has(key))) {
+    throw new Error("codesite_agent_knowledge_arguments_invalid");
+  }
+}
+
+function requireArguments(args: JsonObject, required: readonly string[]): void {
+  if (required.some((key) => args[key] === undefined || args[key] === null || args[key] === "")) {
+    throw new Error("codesite_agent_knowledge_arguments_required");
+  }
+}
+
+function requiredObject(value: unknown, error: string): JsonObject {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(error);
+  return value as JsonObject;
+}
+
+function withoutUndefined(value: JsonObject): JsonObject {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined));
+}
+
+function sanitizeKnowledgeResponse(value: unknown, depth = 0): unknown {
+  if (value == null || typeof value === "boolean" || typeof value === "number") return value;
+  if (typeof value === "string") return value.slice(0, 8192);
+  if (depth >= 8) return "[depth-limited]";
+  if (Array.isArray(value)) return value.slice(0, 256).map((entry) => sanitizeKnowledgeResponse(entry, depth + 1));
+  if (typeof value !== "object") return String(value).slice(0, 8192);
+  return Object.fromEntries(
+    Object.entries(value as JsonObject)
+      .filter(([key]) => !/(token|secret|credential|password|cookie|prompt|transcript|provider[_]?session[_]?ref)/i.test(key))
+      .slice(0, 256)
+      .map(([key, entry]) => [key, sanitizeKnowledgeResponse(entry, depth + 1)]),
+  );
+}
+
+function isAgentBoundKnowledgeToolName(toolName: CodeSiteToolName): toolName is AgentBoundKnowledgeToolName {
+  return [
+    "synthi_codesite_record_discovery",
+    "synthi_codesite_record_lead",
+    "synthi_codesite_publish_shared_skill",
+    "synthi_codesite_file_handoff",
+    "synthi_codesite_get_shared_knowledge",
+    "synthi_codesite_respond_impact_notice",
+  ].includes(toolName as AgentBoundKnowledgeToolName);
 }
 
 function isCodeSiteToolName(toolName: string): toolName is CodeSiteToolName {

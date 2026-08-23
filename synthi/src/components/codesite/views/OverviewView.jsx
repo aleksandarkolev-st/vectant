@@ -21,12 +21,14 @@ import {
 } from "../ui";
 import TowerNowStrip from "./overview/TowerNowStrip";
 import CodeSiteOperatingModel from "./overview/CodeSiteOperatingModel";
+import DeploymentStatusCard from "./overview/DeploymentStatusCard";
 
 export default function OverviewView({
   project,
   counts,
   status,
   streamStatus,
+  deploymentStatus,
   collisionForecast,
   risks,
   activeFlights,
@@ -162,6 +164,8 @@ export default function OverviewView({
           />
         </div>
       </div>
+
+      <DeploymentStatusCard deploymentStatus={deploymentStatus} />
 
       <Section
         title="Needs Attention"

@@ -300,6 +300,7 @@ function createProgramRuntimeManager(options = {}) {
     httpProbe = defaultHttpProbe,
     setIntervalFn = setInterval,
     clearIntervalFn = clearInterval,
+    onSessionEvent = null,
   } = options;
   const managedSessions = new Map();
   const infraPortSet = new Set(normalizePorts(infraPorts));
@@ -323,6 +324,32 @@ function createProgramRuntimeManager(options = {}) {
     };
 
     record.events.push(event);
+    try {
+      if (typeof onSessionEvent === 'function') {
+        onSessionEvent({
+          type: event.type,
+          createdAt: new Date(event.createdAt).toISOString(),
+          data: event.data,
+          session: {
+            sessionId: record.sessionId,
+            workspaceSlug: record.workspaceSlug,
+            userId: record.userId,
+            state: record.state,
+            exitCode: record.exitCode,
+            stopReason: record.stopReason,
+            healthState: record.healthState,
+            activePorts: normalizePorts(record.activePorts),
+            projectId: record.codesiteContext?.projectId || null,
+          },
+        });
+      }
+    } catch (hookError) {
+      logger?.warn?.('codesite_runtime_event_hook_failed', {
+        sessionId: record?.sessionId,
+        type,
+        error: hookError?.message || String(hookError),
+      });
+    }
     return cloneEvent(event);
   }
 

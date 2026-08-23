@@ -80,6 +80,13 @@ spec:
                 secretKeyRef:
                   name: DATABASE_URL
                   key: latest
+            # Must match the collab-server deployment's activity token. Keep it
+            # distinct from the CodeSite control-plane service token.
+            - name: COLLAB_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: COLLAB_INTERNAL_TOKEN
+                  key: latest
             - name: CLOUDFLARE_TURN_TOKEN_ID
               valueFrom:
                 secretKeyRef:

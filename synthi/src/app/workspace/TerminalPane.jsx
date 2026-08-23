@@ -26,6 +26,12 @@ import {
   subscribeTerminalOverrides,
   applyOverridesToTheme,
 } from '@/lib/terminal-color-overrides';
+import {
+  agentStartupInputForReady,
+  appendTerminalAgentBindingParams,
+  normalizeTerminalAgentLaunch,
+  requestTerminalGatewayToken,
+} from './terminalAgentBinding';
 
 // ─── Session-scoped paste auto-approve ───────────────────────────────────
 // When the user ticks "Don't ask again this session" in the multi-line
@@ -62,26 +68,6 @@ const TERMINAL_MOTION_EASE = [0.16, 1, 0.3, 1];
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000]; // Exponential backoff
 const MAX_RECONNECT_ATTEMPTS = 4;
 const terminalSessionIdCache = new Map();
-
-async function fetchTerminalGatewayToken(workspaceSlug, { collabSessionId = '' } = {}) {
-  const params = new URLSearchParams({
-    workspaceSlug,
-    scopes: 'collab:terminal',
-  });
-  if (collabSessionId) params.set('collabSessionId', collabSessionId);
-
-  const res = await fetch(`/api/auth/token?${params.toString()}`, {
-    method: 'GET',
-    credentials: 'same-origin',
-  });
-  const text = await res.text().catch(() => '');
-  let payload = {};
-  try { payload = text ? JSON.parse(text) : {}; } catch (_) { payload = { error: text }; }
-  if (!res.ok || !payload.token) {
-    throw new Error(payload.error || `terminal_auth_failed_${res.status}`);
-  }
-  return payload;
-}
 
 function getTerminalStorage(storageName) {
   if (typeof window === 'undefined') return null;
@@ -217,7 +203,7 @@ const SYNTHI_THEME_FALLBACK = {
  * parent prop changes.  All communication happens through refs and WebSocket.
  * The freeze comparator always returns true (props are equal → skip re-render).
  */
-const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSide = 'main', workspaceSlug = '', workspaceName = '', onFsChange, fixedSessionId = null, shellType = null }) {
+const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSide = 'main', workspaceSlug = '', workspaceName = '', onFsChange, fixedSessionId = null, shellType = null, agentBinding = null, agentLaunchCommand = null }) {
   const containerRef = useRef(null);
   const terminalRef = useRef(null);   // { term, fitAddon, dispose() }
   const wsRef = useRef(null);
@@ -225,6 +211,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   const inputDataDisposableRef = useRef(null);
   const inputBinaryDisposableRef = useRef(null);
   const inputBufferRef = useRef('');
+  const agentStartupSessionsRef = useRef(new Set());
   const oauthOutputBufferRef = useRef('');
   const oauthRelaySeenLinksRef = useRef(new Set());
   const openTerminalLinkRef = useRef(null);
@@ -900,6 +887,17 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         cols: String(cols),
         rows: String(rows),
       });
+      let normalizedAgentLaunch;
+      try {
+        normalizedAgentLaunch = normalizeTerminalAgentLaunch({
+          binding: agentBinding,
+          command: agentLaunchCommand,
+        });
+        appendTerminalAgentBindingParams(params, normalizedAgentLaunch?.binding || null);
+      } catch (_) {
+        if (mountedRef.current) setState('error');
+        return;
+      }
       if (runtimeIdentity.runtimeScope) {
         params.set('runtimeScope', runtimeIdentity.runtimeScope);
       }
@@ -925,8 +923,9 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
 
       let gateway;
       try {
-        gateway = await fetchTerminalGatewayToken(workspaceSlug, {
+        gateway = await requestTerminalGatewayToken(workspaceSlug, {
           collabSessionId: runtimeIdentity.collabSessionId || '',
+          agentBinding: normalizedAgentLaunch?.binding || null,
         });
       } catch (_) {
         if (mountedRef.current) {
@@ -1024,6 +1023,16 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
             switch (msg.type) {
               case 'ready':
                 setShellInfo(`${msg.shell} (pid ${msg.pid})`);
+                {
+                  const startupInput = agentStartupInputForReady(
+                    normalizedAgentLaunch,
+                    msg,
+                    agentStartupSessionsRef.current,
+                  );
+                  if (startupInput && ws.readyState === WebSocket.OPEN) {
+                    ws.send(new TextEncoder().encode(startupInput));
+                  }
+                }
                 // Sync actual terminal size now that the PTY is alive
                 try {
                   fitAddon.fit();
@@ -1124,7 +1133,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         try { terminalInstance.dispose(); } catch (_) {}
       }
     };
-  }, [sessionKey, terminalId, workspaceSlug, fixedSessionId, shellType, isGuest, canTerminal, cleanup, disposeInputHandlers]); // Re-connect if terminal tab, workspace, shell type, or terminal permission changes
+  }, [sessionKey, terminalId, workspaceSlug, fixedSessionId, shellType, agentBinding, agentLaunchCommand, isGuest, canTerminal, cleanup, disposeInputHandlers]); // Re-connect if terminal tab, workspace, shell type, agent launch, or terminal permission changes
 
   // ─── Reconnect button handler ─────────────────────────────────────────
   const handleReconnect = useCallback(() => {

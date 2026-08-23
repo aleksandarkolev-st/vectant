@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import { createHash, randomBytes } from 'crypto';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -43,6 +44,26 @@ import {
   codeSiteEvidenceRefsJson,
   firstCodeSiteRef,
 } from './substrateIdentity';
+import {
+  buildKnowledgeRecord,
+  buildKnowledgeReferenceRecords,
+  projectKnowledgeRecord,
+} from './knowledgeRecords';
+import { buildKnowledgeDeliveryPlan } from './knowledgeRouting';
+import { validateKnowledgeResponse } from './knowledgeResponses';
+import {
+  deliveryAllowedOrigins,
+  endpointDeliveryAllowed,
+  signDeliveryEnvelope,
+} from './deliverySecurity';
+import { createProjectCoordinationBus, ProjectCoordinationBusError } from './projectCoordinationBus';
+import { canonicalKnowledgeEventType } from './knowledgeEvents';
+import {
+  buildObservationCoordinationInput,
+  normalizeProjectObservation,
+  normalizeRuntimeObservedObservation,
+  normalizeSourceChangedObservation,
+} from './projectObservation';
 
 const EVENT_ORDER_BY = [{ logicalTime: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }];
 const ACTIVE_FLIGHT_STATUSES = ['filed', 'preflight', 'cleared', 'taxiing', 'airborne', 'holding', 'rerouted', 'landing_requested'];
@@ -158,6 +179,7 @@ const PROJECT_INCLUDE = {
   counterfactualRuns: true,
   policyDeltas: true,
   inboxItems: true,
+  knowledgeItems: { include: { references: true } },
 };
 
 const PROJECT_READ_ROLES = new Set(['owner', 'admin', 'operator', 'agent', 'observer', 'viewer', 'read']);
@@ -1425,6 +1447,1783 @@ export async function createAgentSession(workspaceSlug, projectId, actor, body =
   return sessionProjection(session);
 }
 
+const AGENT_DELIVERY_CHANNEL_TYPES = new Set([
+  'managed_sse',
+  'mcp_poll',
+  'repo_projection',
+]);
+const AGENT_ACCESS_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+const AGENT_CONTEXT_HEARTBEAT_MAX_AGE_MS = 5 * 60 * 1000;
+const AGENT_CONTEXT_MAX_BYTES = 64 * 1024;
+
+function agentAccessTokenHash(token) {
+  return createHash('sha256').update(String(token || ''), 'utf8').digest('hex');
+}
+
+function mintAgentAccessToken(now = new Date()) {
+  const token = `csa_${randomBytes(32).toString('base64url')}`;
+  return {
+    token,
+    hash: agentAccessTokenHash(token),
+    issuedAt: now,
+    expiresAt: new Date(now.getTime() + AGENT_ACCESS_TOKEN_TTL_MS),
+  };
+}
+
+function requiredAgentBinding(value, code, maxLength = 256) {
+  const normalized = String(value || '').trim();
+  if (!normalized) throw badRequest(code);
+  if (normalized.length > maxLength) throw badRequest(`${code}_too_long`);
+  return normalized;
+}
+
+function optionalAgentBinding(value, code, maxLength = 256) {
+  if (value == null || value === '') return null;
+  return requiredAgentBinding(value, code, maxLength);
+}
+
+function normalizedAgentProvider(value) {
+  const provider = requiredAgentBinding(value, 'agent_provider_required', 64).toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_.-]*$/.test(provider)) throw badRequest('agent_provider_invalid');
+  return provider;
+}
+
+function normalizedAgentStringList(value, code) {
+  const list = unique(asArray(value).map((entry) => String(entry || '').trim()).filter(Boolean));
+  if (list.length > 128 || list.some((entry) => entry.length > 256)) throw badRequest(code);
+  return list;
+}
+
+function normalizedAgentDeliveryChannel(value = {}) {
+  const channel = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const type = String(channel.type || 'mcp_poll').trim().toLowerCase();
+  if (!AGENT_DELIVERY_CHANNEL_TYPES.has(type)) throw badRequest('agent_delivery_channel_invalid');
+  if (channel.url || channel.endpoint || channel.callbackUrl || channel.callback_url) {
+    throw badRequest('agent_delivery_external_endpoint_forbidden');
+  }
+  return {
+    type,
+    channelId: optionalAgentBinding(channel.channelId || channel.channel_id, 'agent_delivery_channel_id_invalid', 256),
+  };
+}
+
+function normalizedAgentExecutionHost(value = {}) {
+  const host = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return {
+    type: optionalAgentBinding(host.type, 'agent_execution_host_type_invalid', 64) || 'workspace_terminal',
+    hostId: optionalAgentBinding(host.hostId || host.host_id, 'agent_execution_host_id_invalid', 256),
+    platform: optionalAgentBinding(host.platform, 'agent_execution_host_platform_invalid', 64),
+  };
+}
+
+function automaticAgentCallsign(provider, identity) {
+  const prefix = String(provider || 'agent').replace(/[^a-z0-9]/gi, '').slice(0, 8).toUpperCase() || 'AGENT';
+  const suffix = digest(identity).replace(/^sha256:/, '').slice(0, 6).toUpperCase();
+  return `${prefix}-${suffix}`;
+}
+
+function agentAttachmentIdentity(body = {}) {
+  const ownerUserId = requiredAgentBinding(body.ownerUserId || body.owner_user_id, 'agent_owner_required');
+  const collaborationUserId = requiredAgentBinding(
+    body.collaborationUserId || body.collaboration_user_id || body.workspaceUserId || body.workspace_user_id,
+    'agent_collaboration_user_required',
+  );
+  const effectiveWorkspaceUserId = requiredAgentBinding(
+    body.effectiveWorkspaceUserId || body.effective_workspace_user_id || body.filesystemUserId || body.filesystem_user_id,
+    'agent_effective_workspace_user_required',
+  );
+  const collaborationSessionId = requiredAgentBinding(
+    body.collaborationSessionId || body.collaboration_session_id,
+    'agent_collaboration_session_required',
+  );
+  const terminalSessionId = optionalAgentBinding(
+    body.terminalSessionId || body.terminal_session_id,
+    'agent_terminal_session_invalid',
+  );
+  const runtimeSessionId = optionalAgentBinding(
+    body.runtimeSessionId || body.runtime_session_id,
+    'agent_runtime_session_invalid',
+  );
+  if (!terminalSessionId && !runtimeSessionId) throw badRequest('agent_terminal_or_runtime_session_required');
+  const agentProvider = normalizedAgentProvider(body.agentProvider || body.agent_provider || body.provider);
+  return {
+    ownerUserId,
+    collaborationUserId,
+    effectiveWorkspaceUserId,
+    collaborationSessionId,
+    terminalSessionId,
+    runtimeSessionId,
+    runtimeScope: requiredAgentBinding(body.runtimeScope || body.runtime_scope, 'agent_runtime_scope_required'),
+    agentProvider,
+    providerSessionRef: requiredAgentBinding(
+      body.providerSessionRef || body.provider_session_ref,
+      'agent_provider_session_required',
+    ),
+    activeMutationLeaseId: optionalAgentBinding(
+      body.activeMutationLeaseId || body.active_mutation_lease_id || body.mutationLeaseId || body.mutation_lease_id,
+      'agent_mutation_lease_invalid',
+    ),
+    activeTransactionId: optionalAgentBinding(
+      body.activeTransactionId || body.active_transaction_id || body.transactionId || body.transaction_id,
+      'agent_transaction_invalid',
+    ),
+  };
+}
+
+function requireAgentAttachAuthority(authority, identity) {
+  if (
+    !authority?.internalService
+    || authority.collaborationMembershipVerified !== true
+    || authority.actorUserId !== identity.ownerUserId
+    || authority.collaborationUserId !== identity.collaborationUserId
+    || authority.effectiveWorkspaceUserId !== identity.effectiveWorkspaceUserId
+    || authority.collaborationSessionId !== identity.collaborationSessionId
+    || authority.runtimeScope !== identity.runtimeScope
+  ) {
+    throw forbidden('agent_attach_authority_forbidden');
+  }
+}
+
+function assertAgentAttachmentMatch(session, identity) {
+  const exact = [
+    ['projectId', identity.projectId],
+    ['workspaceSlug', identity.workspaceSlug],
+    ['ownerUserId', identity.ownerUserId],
+    ['collaborationUserId', identity.collaborationUserId],
+    ['effectiveWorkspaceUserId', identity.effectiveWorkspaceUserId],
+    ['collaborationSessionId', identity.collaborationSessionId],
+    ['terminalSessionId', identity.terminalSessionId],
+    ['runtimeSessionId', identity.runtimeSessionId],
+    ['runtimeScope', identity.runtimeScope],
+    ['agentProvider', identity.agentProvider],
+    ['providerSessionRef', identity.providerSessionRef],
+    ['activeMutationLeaseId', identity.activeMutationLeaseId],
+    ['activeTransactionId', identity.activeTransactionId],
+  ];
+  const mismatches = exact
+    .filter(([field, expected]) => (session?.[field] || null) !== (expected || null))
+    .map(([field]) => field);
+  if (mismatches.length) {
+    throw forbidden('agent_session_resume_identity_mismatch', {
+      agentSessionId: session?.id || null,
+      mismatches,
+    });
+  }
+}
+
+function projectAgentMember(project, userId) {
+  return asArray(project?.members).find((member) => member?.userId === userId) || null;
+}
+
+async function bindProjectCollaborationSession(project, identity) {
+  if (project.collaborationSessionId && project.collaborationSessionId !== identity.collaborationSessionId) {
+    throw forbidden('agent_project_collaboration_mismatch');
+  }
+  const existingMember = projectAgentMember(project, identity.ownerUserId);
+  if (existingMember && !projectPermissionAllows(existingMember, 'read')) {
+    throw forbidden('agent_project_membership_revoked');
+  }
+  if (project.collaborationSessionId) return project;
+
+  const mayEstablishBinding = project.createdByUserId === identity.ownerUserId
+    || Boolean(existingMember && ['owner', 'admin'].includes(String(existingMember.role || '').toLowerCase()));
+  if (!mayEstablishBinding) throw forbidden('agent_project_collaboration_binding_forbidden');
+
+  const result = await prisma.codeSiteProject.updateMany({
+    where: { id: project.id, collaborationSessionId: null },
+    data: { collaborationSessionId: identity.collaborationSessionId },
+  });
+  if (result.count === 1) return { ...project, collaborationSessionId: identity.collaborationSessionId };
+  const winner = await prisma.codeSiteProject.findFirst({
+    where: { id: project.id, workspaceSlug: identity.workspaceSlug },
+    include: { members: true },
+  });
+  if (winner?.collaborationSessionId !== identity.collaborationSessionId) {
+    throw forbidden('agent_project_collaboration_mismatch');
+  }
+  return winner;
+}
+
+function agentAttachmentCandidateWhere(identity) {
+  return {
+    OR: [
+      ...(identity.terminalSessionId ? [{
+        collaborationSessionId: identity.collaborationSessionId,
+        terminalSessionId: identity.terminalSessionId,
+        endedAt: null,
+      }] : []),
+      ...(identity.runtimeSessionId ? [{
+        collaborationSessionId: identity.collaborationSessionId,
+        runtimeSessionId: identity.runtimeSessionId,
+        endedAt: null,
+      }] : []),
+      {
+        projectId: identity.projectId,
+        ownerUserId: identity.ownerUserId,
+        agentProvider: identity.agentProvider,
+        providerSessionRef: identity.providerSessionRef,
+        endedAt: null,
+      },
+    ],
+  };
+}
+
+async function findAgentAttachmentCandidates(identity) {
+  return prisma.codeSiteAgentSession.findMany({
+    where: agentAttachmentCandidateWhere(identity),
+  });
+}
+
+function singleAgentAttachmentCandidate(candidates) {
+  const candidateIds = unique(candidates.map((candidate) => candidate.id));
+  if (candidateIds.length > 1) {
+    throw forbidden('agent_session_binding_collision', { agentSessionIds: candidateIds });
+  }
+  return candidates[0] || null;
+}
+
+async function verifyAgentMutationBindings(identity, sessionId) {
+  if (!identity.activeMutationLeaseId && !identity.activeTransactionId) return;
+  if (!sessionId) throw forbidden('agent_attach_mutation_context_forbidden');
+  if (identity.activeMutationLeaseId) {
+    const lease = await prisma.codeSiteMutationLease.findFirst({
+      where: {
+        id: identity.activeMutationLeaseId,
+        projectId: identity.projectId,
+        agentSessionId: sessionId,
+        status: { in: ['active', 'holding'] },
+      },
+    });
+    if (!lease) throw forbidden('agent_mutation_lease_binding_mismatch');
+  }
+  if (identity.activeTransactionId) {
+    const transaction = await prisma.codeSiteMutationTransaction.findFirst({
+      where: {
+        id: identity.activeTransactionId,
+        projectId: identity.projectId,
+        agentSessionId: sessionId,
+        mutationLeaseId: identity.activeMutationLeaseId || undefined,
+        status: { in: ['open', 'prepared'] },
+      },
+    });
+    if (!transaction) throw forbidden('agent_transaction_binding_mismatch');
+  }
+}
+
+function isAgentBindingUniqueConflict(error) {
+  return error?.code === 'P2002';
+}
+
+export async function attachAgentSession(workspaceSlug, projectId, body = {}, authority = null) {
+  const identity = {
+    ...agentAttachmentIdentity(body),
+    workspaceSlug: requiredAgentBinding(workspaceSlug, 'workspace_required'),
+    projectId: requiredAgentBinding(projectId, 'project_required'),
+  };
+  requireAgentAttachAuthority(authority, identity);
+  let project = await prisma.codeSiteProject.findFirst({
+    where: { id: identity.projectId, workspaceSlug: identity.workspaceSlug },
+    include: { members: true },
+  });
+  if (!project) throw notFound('codesite_project_not_found');
+  if (project.status !== 'active') throw forbidden('codesite_project_inactive');
+  project = await bindProjectCollaborationSession(project, identity);
+
+  const capabilities = normalizedAgentStringList(body.capabilities || body.tools || [], 'agent_capabilities_invalid');
+  const subscriptions = normalizedAgentStringList(body.subscriptions || [], 'agent_subscriptions_invalid');
+  const deliveryChannel = normalizedAgentDeliveryChannel(body.deliveryChannel || body.delivery_channel || {});
+  const executionHost = normalizedAgentExecutionHost(body.executionHost || body.execution_host || {});
+
+  const candidates = await findAgentAttachmentCandidates(identity);
+  let existing = singleAgentAttachmentCandidate(candidates);
+  if (existing) assertAgentAttachmentMatch(existing, identity);
+  await verifyAgentMutationBindings(identity, existing?.id || null);
+
+  const member = await upsertProjectMemberRecord({
+    projectId: project.id,
+    workspaceSlug: identity.workspaceSlug,
+    userId: identity.ownerUserId,
+    role: 'agent',
+    source: 'collab_agent_attach',
+    createdByUserId: identity.ownerUserId,
+  });
+  if (!member) throw serviceUnavailable('agent_project_membership_persistence_failed');
+
+  const now = new Date();
+  const credentialFor = (candidate) => {
+    const expired = !candidate?.agentAccessTokenExpiresAt
+      || new Date(candidate.agentAccessTokenExpiresAt).getTime() <= now.getTime();
+    return !candidate || !candidate.agentAccessTokenHash || expired || body.rotateAgentAccessToken === true
+      ? mintAgentAccessToken(now)
+      : null;
+  };
+  let accessCredential = credentialFor(existing);
+  let session;
+  let eventType;
+  const resumeExisting = async (candidate) => {
+    assertAgentAttachmentMatch(candidate, identity);
+    await verifyAgentMutationBindings(identity, candidate.id);
+    return prisma.codeSiteAgentSession.update({
+      where: { id: candidate.id },
+      data: {
+        agentRuntime: body.agentRuntime || body.agent_runtime || candidate.agentRuntime || null,
+        status: 'attached',
+        permissionsJson: stringifyJson(capabilities),
+        capabilitiesJson: stringifyJson(capabilities),
+        executionHostJson: stringifyJson(executionHost),
+        subscriptionsJson: stringifyJson(subscriptions),
+        deliveryChannelJson: stringifyJson(deliveryChannel),
+        ...(accessCredential ? {
+          agentAccessTokenHash: accessCredential.hash,
+          agentAccessTokenIssuedAt: accessCredential.issuedAt,
+          agentAccessTokenExpiresAt: accessCredential.expiresAt,
+        } : {}),
+        attachedAt: candidate.attachedAt || now,
+        lastHeartbeatAt: now,
+        detachedAt: null,
+        endedAt: null,
+      },
+    });
+  };
+  if (existing) {
+    session = await resumeExisting(existing);
+    eventType = 'agent_resumed';
+  } else {
+    const callsign = String(
+      body.displayCallsign
+      || body.display_callsign
+      || body.callsign
+      || automaticAgentCallsign(identity.agentProvider, identity),
+    ).trim().toUpperCase();
+    if (!/^[A-Z0-9][A-Z0-9-]{1,31}$/.test(callsign)) throw badRequest('agent_callsign_invalid');
+    const createData = {
+      projectId: project.id,
+      workspaceSlug: identity.workspaceSlug,
+      ownerUserId: identity.ownerUserId,
+      collaborationUserId: identity.collaborationUserId,
+      effectiveWorkspaceUserId: identity.effectiveWorkspaceUserId,
+      collaborationSessionId: identity.collaborationSessionId,
+      terminalSessionId: identity.terminalSessionId,
+      runtimeSessionId: identity.runtimeSessionId,
+      runtimeScope: identity.runtimeScope,
+      agentProvider: identity.agentProvider,
+      agentRuntime: body.agentRuntime || body.agent_runtime || 'terminal',
+      providerSessionRef: identity.providerSessionRef,
+      displayCallsign: callsign,
+      status: 'attached',
+      permissionsJson: stringifyJson(capabilities),
+      redactionPolicyJson: stringifyJson(body.redactionPolicy || body.redaction_policy || defaultRedactionPolicy()),
+      capabilitiesJson: stringifyJson(capabilities),
+      executionHostJson: stringifyJson(executionHost),
+      subscriptionsJson: stringifyJson(subscriptions),
+      deliveryChannelJson: stringifyJson(deliveryChannel),
+      attachSource: 'collab_terminal_adapter',
+      bindingVersion: 1,
+      agentAccessTokenHash: accessCredential.hash,
+      agentAccessTokenIssuedAt: accessCredential.issuedAt,
+      agentAccessTokenExpiresAt: accessCredential.expiresAt,
+      activeMutationLeaseId: identity.activeMutationLeaseId,
+      activeTransactionId: identity.activeTransactionId,
+      attachedAt: now,
+      lastHeartbeatAt: now,
+    };
+    try {
+      session = await prisma.codeSiteAgentSession.create({ data: createData });
+      eventType = 'agent_attached';
+    } catch (error) {
+      if (!isAgentBindingUniqueConflict(error)) throw error;
+      existing = singleAgentAttachmentCandidate(await findAgentAttachmentCandidates(identity));
+      if (!existing) throw error;
+      accessCredential = credentialFor(existing);
+      session = await resumeExisting(existing);
+      eventType = 'agent_resumed';
+    }
+  }
+  const event = await recordEvent(project.id, {
+    eventType,
+    displayCallsign: session.displayCallsign,
+    actorType: 'agent_session',
+    actorId: session.id,
+    details: {
+      ownerUserId: identity.ownerUserId,
+      collaborationUserId: identity.collaborationUserId,
+      effectiveWorkspaceUserId: identity.effectiveWorkspaceUserId,
+      collaborationSessionId: identity.collaborationSessionId,
+      terminalSessionId: identity.terminalSessionId,
+      runtimeSessionId: identity.runtimeSessionId,
+      runtimeScope: identity.runtimeScope,
+      provider: identity.agentProvider,
+      status: session.status,
+      subscriptions,
+      deliveryChannel: deliveryChannel.type,
+    },
+  });
+  return {
+    session: sessionProjection(session),
+    event: eventProjection(event),
+    resumed: eventType === 'agent_resumed',
+    agentAccessToken: accessCredential?.token || null,
+    agentAccessTokenExpiresAt: accessCredential?.expiresAt || session.agentAccessTokenExpiresAt || null,
+  };
+}
+
+async function requireAttachedAgentSession(workspaceSlug, sessionId, body, authority) {
+  const session = await prisma.codeSiteAgentSession.findFirst({
+    where: { id: sessionId, project: { workspaceSlug } },
+  });
+  if (!session) throw notFound('agent_session_not_found');
+  if (session.endedAt) throw forbidden('agent_session_ended');
+  const identity = {
+    ...agentAttachmentIdentity(body),
+    workspaceSlug,
+    projectId: session.projectId,
+  };
+  requireAgentAttachAuthority(authority, identity);
+  assertAgentAttachmentMatch(session, identity);
+  await verifyAgentMutationBindings(identity, session.id);
+  return session;
+}
+
+export async function heartbeatAgentSession(workspaceSlug, sessionId, body = {}, authority = null) {
+  const session = await requireAttachedAgentSession(workspaceSlug, sessionId, body, authority);
+  const now = new Date();
+  const updated = await prisma.codeSiteAgentSession.update({
+    where: { id: session.id },
+    data: { status: 'attached', lastHeartbeatAt: now, detachedAt: null, endedAt: null },
+  });
+  const event = await recordEvent(session.projectId, {
+    eventType: 'agent_heartbeat',
+    displayCallsign: session.displayCallsign,
+    actorType: 'agent_session',
+    actorId: session.id,
+    details: { status: 'attached', terminalSessionId: session.terminalSessionId },
+  });
+  return { session: sessionProjection(updated), event: eventProjection(event) };
+}
+
+export async function detachAgentSession(workspaceSlug, sessionId, body = {}, authority = null) {
+  const session = await requireAttachedAgentSession(workspaceSlug, sessionId, body, authority);
+  const now = new Date();
+  const updated = await prisma.codeSiteAgentSession.update({
+    where: { id: session.id },
+    data: { status: 'detached', detachedAt: now, endedAt: body.ended === true ? now : null },
+  });
+  const event = await recordEvent(session.projectId, {
+    eventType: 'agent_detached',
+    displayCallsign: session.displayCallsign,
+    actorType: 'agent_session',
+    actorId: session.id,
+    details: {
+      status: 'detached',
+      terminalSessionId: session.terminalSessionId,
+      reason: String(body.reason || 'terminal_detached').slice(0, 120),
+    },
+  });
+  return { session: sessionProjection(updated), event: eventProjection(event) };
+}
+
+function boundedAgentContextValue(value, depth = 0) {
+  if (value == null || typeof value === 'boolean' || typeof value === 'number') return value;
+  if (typeof value === 'string') return value.slice(0, 2048);
+  if (value instanceof Date) return value.toISOString();
+  if (depth >= 5) return '[depth-limited]';
+  if (Array.isArray(value)) return value.slice(0, 32).map((entry) => boundedAgentContextValue(entry, depth + 1));
+  if (typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value)
+      .filter(([key]) => !/(token|secret|credential|prompt|transcript|providerSessionRef)/i.test(key))
+      .slice(0, 48)
+      .map(([key, entry]) => [key, boundedAgentContextValue(entry, depth + 1)]));
+  }
+  return String(value).slice(0, 2048);
+}
+
+function trimAgentContextToLimit(context) {
+  const collections = [
+    () => context.inbox,
+    () => context.sharedKnowledge?.impactNotices,
+    () => context.sharedKnowledge?.handoffs,
+    () => context.sharedKnowledge?.leads,
+    () => context.sharedKnowledge?.discoveries,
+    () => context.sharedKnowledge?.skills,
+    () => context.inspections,
+    () => context.transactions,
+    () => context.leases,
+    () => context.workstreams,
+  ];
+  const contentBudget = AGENT_CONTEXT_MAX_BYTES - 256;
+  let serialized = stableJson(context);
+  while (Buffer.byteLength(serialized, 'utf8') > contentBudget) {
+    const target = collections.map((read) => read()).find((value) => value?.length > 0);
+    if (!target) break;
+    target.pop();
+    context.truncated = true;
+    serialized = stableJson(context);
+  }
+  if (Buffer.byteLength(serialized, 'utf8') > contentBudget) {
+    context.constraints = { truncated: true };
+    context.sourceState = { truncated: true };
+    context.truncated = true;
+  }
+  context.bytes = Buffer.byteLength(stableJson(context), 'utf8');
+  return context;
+}
+
+function requiredAgentCapabilities(value) {
+  if (value == null || value === '') return [];
+  const capabilities = unique(asArray(value).map((entry) => String(entry || '').trim()).filter(Boolean));
+  if (capabilities.length === 0
+    || capabilities.length > 32
+    || capabilities.some((capability) => capability.length > 128 || !/^[a-z0-9][a-z0-9.*:_-]*$/i.test(capability))) {
+    throw forbidden('agent_capability_required');
+  }
+  return capabilities;
+}
+
+export async function requireAgentTokenAuthority(
+  workspaceSlug,
+  sessionId,
+  agentAccessToken,
+  { requiredCapability = null, now = new Date() } = {},
+) {
+  const token = String(agentAccessToken || '').trim();
+  const normalizedWorkspaceSlug = String(workspaceSlug || '').trim();
+  const normalizedSessionId = String(sessionId || '').trim();
+  if (!normalizedWorkspaceSlug
+    || !normalizedSessionId
+    || !/^csa_[A-Za-z0-9_-]{32,128}$/.test(token)) {
+    throw forbidden('agent_access_token_invalid');
+  }
+  const session = await prisma.codeSiteAgentSession.findFirst({
+    where: {
+      id: normalizedSessionId,
+      workspaceSlug: normalizedWorkspaceSlug,
+      agentAccessTokenHash: agentAccessTokenHash(token),
+      endedAt: null,
+    },
+    include: { project: { include: { members: true } } },
+  });
+  if (!session) throw forbidden('agent_access_token_invalid');
+
+  const authorizedAt = now instanceof Date ? new Date(now.getTime()) : new Date(now);
+  const authorizedAtMs = authorizedAt.getTime();
+  if (!Number.isFinite(authorizedAtMs)) throw forbidden('agent_access_token_invalid');
+  const expiresAtMs = session.agentAccessTokenExpiresAt
+    ? new Date(session.agentAccessTokenExpiresAt).getTime()
+    : Number.NaN;
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= authorizedAtMs) {
+    throw forbidden('agent_access_token_expired');
+  }
+  if (session.status !== 'attached') throw forbidden('agent_session_not_attached');
+  const heartbeatAtMs = session.lastHeartbeatAt
+    ? new Date(session.lastHeartbeatAt).getTime()
+    : Number.NaN;
+  const heartbeatAgeMs = authorizedAtMs - heartbeatAtMs;
+  if (!Number.isFinite(heartbeatAtMs)
+    || heartbeatAgeMs < 0
+    || heartbeatAgeMs > AGENT_CONTEXT_HEARTBEAT_MAX_AGE_MS) {
+    throw forbidden('agent_session_heartbeat_stale');
+  }
+  if (!session.project || session.project.status !== 'active') throw forbidden('codesite_project_inactive');
+  const member = projectAgentMember(session.project, session.ownerUserId);
+  if (!member || !projectPermissionAllows(member, 'read')) throw forbidden('agent_project_membership_revoked');
+
+  const capabilities = unique(asArray(parseJson(session.capabilitiesJson, []))
+    .map((capability) => String(capability || '').trim())
+    .filter(Boolean));
+  const requiredCapabilities = requiredAgentCapabilities(requiredCapability);
+  if (requiredCapabilities.some((capability) => !capabilities.includes(capability))) {
+    throw forbidden('agent_capability_required', { requiredCapabilities });
+  }
+  return {
+    session,
+    project: session.project,
+    member,
+    capabilities,
+    authorizedAt,
+  };
+}
+
+export async function getRelevantAgentContext(workspaceSlug, sessionId, agentAccessToken) {
+  const { session, authorizedAt: now } = await requireAgentTokenAuthority(
+    workspaceSlug,
+    sessionId,
+    agentAccessToken,
+    { requiredCapability: 'codesite.context.read' },
+  );
+
+  const [workstreams, leases, transactions, inbox, inspections, knowledgeRows, peerSessions] = await Promise.all([
+    prisma.codeSiteExecutionPlan.findMany({
+      where: { projectId: session.projectId, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
+      orderBy: { filedAt: 'desc' },
+      take: 24,
+    }),
+    prisma.codeSiteMutationLease.findMany({
+      where: { projectId: session.projectId, agentSessionId: session.id, status: { in: ['active', 'holding'] } },
+      orderBy: { issuedAt: 'desc' },
+      take: 16,
+    }),
+    prisma.codeSiteMutationTransaction.findMany({
+      where: { projectId: session.projectId, agentSessionId: session.id, status: { in: ['open', 'prepared', 'blocked'] } },
+      orderBy: { openedAt: 'desc' },
+      take: 16,
+    }),
+    prisma.codeSiteAgentInboxItem.findMany({
+      where: {
+        projectId: session.projectId,
+        status: { in: ['unread', 'pending'] },
+        OR: [
+          { agentSessionId: session.id },
+          { recipientUserId: session.ownerUserId },
+        ],
+      },
+      orderBy: { createdAt: 'asc' },
+      take: 32,
+    }),
+    prisma.codeSiteInspectionRun.findMany({
+      where: { projectId: session.projectId, status: { in: ['required', 'queued', 'running', 'failed'] } },
+      orderBy: { requestedAt: 'desc' },
+      take: 24,
+    }),
+    prisma.codeSiteKnowledgeItem.findMany({
+      where: {
+        projectId: session.projectId,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+      },
+      include: { references: true },
+      orderBy: { updatedAt: 'desc' },
+      take: 100,
+    }),
+    prisma.codeSiteAgentSession.findMany({
+      where: {
+        projectId: session.projectId,
+        id: { not: session.id },
+        endedAt: null,
+        status: { in: ['attached', 'detached'] },
+      },
+      select: {
+        id: true,
+        displayCallsign: true,
+        ownerUserId: true,
+        agentProvider: true,
+        terminalSessionId: true,
+        runtimeSessionId: true,
+        status: true,
+        attachedAt: true,
+        lastHeartbeatAt: true,
+      },
+      orderBy: { attachedAt: 'desc' },
+      take: 24,
+    }),
+  ]);
+
+  const relevantKnowledge = visibleKnowledgeRowsForSession(
+    knowledgeRows,
+    session,
+    workstreams,
+    transactions,
+    inbox,
+  ).map(projectKnowledgeRecord).filter(Boolean);
+
+  const projectControl = boundedAgentContextValue(parseJson(session.project.controlPlanJson, {}));
+  const zonePolicy = boundedAgentContextValue(parseJson(session.project.zonePolicyJson, {}));
+  const context = {
+    contextVersion: 'synthi.codesite.agentContext.v1',
+    generatedAt: now.toISOString(),
+    maxBytes: AGENT_CONTEXT_MAX_BYTES,
+    truncated: false,
+    agent: {
+      id: session.id,
+      callsign: session.displayCallsign,
+      ownerUserId: session.ownerUserId,
+      collaborationUserId: session.collaborationUserId,
+      effectiveWorkspaceUserId: session.effectiveWorkspaceUserId,
+      collaborationSessionId: session.collaborationSessionId,
+      terminalSessionId: session.terminalSessionId,
+      runtimeSessionId: session.runtimeSessionId,
+      runtimeScope: session.runtimeScope,
+      provider: session.agentProvider,
+      capabilities: parseJson(session.capabilitiesJson, []),
+      subscriptions: parseJson(session.subscriptionsJson, []),
+    },
+    project: {
+      id: session.projectId,
+      workspaceSlug,
+      title: String(session.project.title || '').slice(0, 512),
+      request: String(session.project.request || '').slice(0, 2048),
+    },
+    workstreams: workstreams.map((plan) => boundedAgentContextValue({
+      id: plan.id,
+      ownerAgentSessionId: plan.agentSessionId,
+      callsign: plan.displayCallsign,
+      mission: plan.mission,
+      domain: plan.domain,
+      status: plan.status,
+      route: parseJson(plan.routeJson, []),
+      blockedZones: parseJson(plan.blockedZonesJson, []),
+    })),
+    leases: leases.map((lease) => boundedAgentContextValue({
+      id: lease.id,
+      status: lease.status,
+      executionPlanId: lease.executionPlanId,
+      route: parseJson(lease.leaseJson, {}),
+      expiresAt: lease.expiresAt,
+    })),
+    transactions: transactions.map((transaction) => boundedAgentContextValue({
+      id: transaction.id,
+      status: transaction.status,
+      mutationLeaseId: transaction.mutationLeaseId,
+      baseSnapshot: transaction.baseSnapshot,
+      writeSet: parseJson(transaction.writeSetJson, []),
+      observedWriteSet: parseJson(transaction.observedWriteSetJson, []),
+    })),
+    inbox: inbox.map((item) => boundedAgentContextValue({
+      id: item.id,
+      kind: item.kind,
+      status: item.status,
+      requiresResponse: item.requiresResponse,
+      eventId: item.eventId,
+      documentId: item.documentId,
+      knowledgeItemId: item.knowledgeItemId,
+      payload: parseJson(item.redactedPayloadJson, {}),
+      createdAt: item.createdAt,
+    })),
+    sourceState: boundedAgentContextValue({
+      activeTransactionId: session.activeTransactionId || null,
+      activeMutationLeaseId: session.activeMutationLeaseId || null,
+      routes: workstreams.filter((plan) => plan.agentSessionId === session.id).map((plan) => parseJson(plan.routeJson, [])),
+    }),
+    constraints: {
+      controlPlan: projectControl,
+      zonePolicy,
+    },
+    inspections: inspections.map((inspection) => boundedAgentContextValue({
+      id: inspection.id,
+      executionPlanId: inspection.executionPlanId,
+      type: inspection.type,
+      status: inspection.status,
+      result: parseJson(inspection.resultJson, null),
+    })),
+    sharedKnowledge: {
+      discoveries: relevantKnowledge.filter((item) => item.kind === 'discovery').slice(0, 24),
+      leads: relevantKnowledge.filter((item) => item.kind === 'lead').slice(0, 24),
+      skills: relevantKnowledge.filter((item) => item.kind === 'shared_skill').slice(0, 24),
+      handoffs: relevantKnowledge.filter((item) => item.kind === 'handoff').slice(0, 24),
+      impactNotices: relevantKnowledge.filter((item) => item.kind === 'impact_notice').slice(0, 24),
+      phaseAvailable: true,
+    },
+    peerAgents: peerSessions.map((peer) => boundedAgentContextValue({
+      id: peer.id,
+      callsign: peer.displayCallsign,
+      ownerUserId: peer.ownerUserId,
+      provider: peer.agentProvider,
+      terminalSessionId: peer.terminalSessionId,
+      runtimeSessionId: peer.runtimeSessionId,
+      status: peer.status,
+      attachedAt: peer.attachedAt,
+      lastHeartbeatAt: peer.lastHeartbeatAt,
+    })),
+  };
+  return trimAgentContextToLimit(context);
+}
+
+const KNOWLEDGE_CREATE_KINDS = new Set(['discovery', 'lead', 'shared_skill', 'handoff']);
+const KNOWLEDGE_QUERY_KINDS = new Set([...KNOWLEDGE_CREATE_KINDS, 'impact_notice']);
+
+function nextKnowledgeId(prefix = 'knw') {
+  return `${prefix}_${randomBytes(18).toString('base64url')}`;
+}
+
+function knowledgeEventType(item) {
+  if (item.kind === 'discovery') return 'discovery_recorded';
+  if (item.kind === 'lead') return item.status === 'resolved' ? 'lead_resolved' : 'lead_opened';
+  if (item.kind === 'shared_skill') return item.status === 'published' ? 'shared_skill_published' : 'shared_skill_updated';
+  if (item.kind === 'handoff') return 'handoff_ready';
+  return 'impact_notice_created';
+}
+
+function knowledgeResponseEventType(kind, action) {
+  if (kind === 'lead') {
+    if (action === 'claim') return 'lead_claimed';
+    if (action === 'resolve') return 'lead_resolved';
+    if (action === 'dismiss') return 'lead_dismissed';
+  }
+  if (kind === 'handoff' && ['accept', 'acknowledge'].includes(action)) return 'handoff_acknowledged';
+  return 'impact_notice_responded';
+}
+
+function knowledgeScope(row) {
+  return parseJson(row?.scopeJson, {});
+}
+
+function knowledgeVisibility(row) {
+  return String(knowledgeScope(row).visibility || 'project');
+}
+
+function validateKnowledgeQuery(input = {}) {
+  const kind = String(input.kind || '').trim().toLowerCase();
+  if (kind && !KNOWLEDGE_QUERY_KINDS.has(kind)) throw badRequest('knowledge_kind_invalid');
+  const status = String(input.status || '').trim().toLowerCase();
+  if (status && !/^[a-z][a-z0-9_]{0,63}$/.test(status)) throw badRequest('knowledge_status_invalid');
+  const limitValue = Number(input.limit || 50);
+  const limit = Number.isInteger(limitValue) ? Math.min(Math.max(limitValue, 1), 100) : 50;
+  const since = input.since ? new Date(input.since) : null;
+  if (since && !Number.isFinite(since.getTime())) throw badRequest('knowledge_since_invalid');
+  return { kind: kind || null, status: status || null, limit, since };
+}
+
+function knowledgeWhere(projectId, query) {
+  return {
+    projectId,
+    ...(query.kind ? { kind: query.kind } : {}),
+    ...(query.status ? { status: query.status } : {}),
+    ...(query.since ? { updatedAt: { gt: query.since } } : {}),
+    OR: [
+      { expiresAt: null },
+      { expiresAt: { gt: new Date() } },
+    ],
+  };
+}
+
+function knowledgeIdsFromInbox(inbox) {
+  return new Set(asArray(inbox).map((item) => item.knowledgeItemId).filter(Boolean));
+}
+
+function visibleKnowledgeRowsForSession(rows, session, executionPlans, transactions, inbox) {
+  const inboxKnowledgeIds = knowledgeIdsFromInbox(inbox);
+  return rows.filter((row) => {
+    const visibility = knowledgeVisibility(row);
+    const owned = row.createdByAgentSessionId === session.id
+      || row.ownerAgentSessionId === session.id
+      || row.createdByUserId === session.ownerUserId
+      || row.ownerUserId === session.ownerUserId;
+    if (visibility === 'owner_private') return owned;
+    if (visibility === 'restricted' && !owned && !inboxKnowledgeIds.has(row.id)) return false;
+    if (owned || inboxKnowledgeIds.has(row.id)) return true;
+    if (row.kind === 'shared_skill' && row.status === 'published') return true;
+    const projected = projectKnowledgeRecord(row);
+    if (!projected) return false;
+    return buildKnowledgeDeliveryPlan({
+      item: {
+        ...projected,
+        createdByAgentSessionId: row.createdByAgentSessionId,
+      },
+      sessions: [session],
+      executionPlans,
+      transactions,
+    }).length > 0;
+  });
+}
+
+async function loadRelevantKnowledgeForSession(session, queryInput = {}, state = {}) {
+  const query = validateKnowledgeQuery(queryInput);
+  const [rows, executionPlans, transactions, inbox] = await Promise.all([
+    state.rows || prisma.codeSiteKnowledgeItem.findMany({
+      where: knowledgeWhere(session.projectId, query),
+      include: { references: true },
+      orderBy: { updatedAt: 'desc' },
+      take: 200,
+    }),
+    state.executionPlans || prisma.codeSiteExecutionPlan.findMany({
+      where: { projectId: session.projectId, agentSessionId: session.id, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
+      orderBy: { filedAt: 'desc' },
+      take: 32,
+    }),
+    state.transactions || prisma.codeSiteMutationTransaction.findMany({
+      where: { projectId: session.projectId, agentSessionId: session.id, status: { in: ['open', 'prepared', 'blocked', 'validated'] } },
+      orderBy: { openedAt: 'desc' },
+      take: 32,
+    }),
+    state.inbox || prisma.codeSiteAgentInboxItem.findMany({
+      where: { projectId: session.projectId, agentSessionId: session.id, knowledgeItemId: { not: null } },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    }),
+  ]);
+  return visibleKnowledgeRowsForSession(rows, session, executionPlans, transactions, inbox)
+    .slice(0, query.limit)
+    .map(projectKnowledgeRecord)
+    .filter(Boolean);
+}
+
+async function requireKnowledgeReferenceTargets(projectId, item, state) {
+  const refs = item.references;
+  const sessionIds = new Set(state.sessions.map((session) => session.id));
+  const workstreamIds = new Set(state.executionPlans.map((plan) => plan.id));
+  const transactionIds = new Set(state.transactions.map((transaction) => transaction.id));
+  const missing = {
+    agentSessionIds: refs.agentSessionIds.filter((id) => !sessionIds.has(id)),
+    workstreamIds: refs.workstreamIds.filter((id) => !workstreamIds.has(id)),
+    transactionIds: refs.transactionIds.filter((id) => !transactionIds.has(id)),
+  };
+  if (item.kind === 'handoff' && !sessionIds.has(item.toAgentSessionId)) {
+    missing.agentSessionIds.push(item.toAgentSessionId);
+  }
+  if (item.kind === 'lead' && item.ownerAgentSessionId && !sessionIds.has(item.ownerAgentSessionId)) {
+    missing.agentSessionIds.push(item.ownerAgentSessionId);
+  }
+  if (Object.values(missing).some((ids) => ids.length)) {
+    throw badRequest('knowledge_reference_outside_project', { projectId, missing });
+  }
+}
+
+async function createKnowledgeWithClient(db, record, knowledgeId, eventInput) {
+  const created = await db.codeSiteKnowledgeItem.create({
+    data: { id: knowledgeId, ...record.data },
+  });
+  const referenceRows = buildKnowledgeReferenceRecords(record.normalized, knowledgeId);
+  if (referenceRows.length) await db.codeSiteKnowledgeReference.createMany({ data: referenceRows });
+  const event = await publishKnowledgeCoordinationEventWithClient(
+    db,
+    record.normalized.projectId,
+    eventInput,
+  );
+  const updated = await db.codeSiteKnowledgeItem.update({
+    where: { id: knowledgeId },
+    data: { sourceEventId: event.id },
+  });
+  return {
+    row: { ...created, ...updated, references: referenceRows },
+    event,
+  };
+}
+
+async function publishKnowledgeCoordinationEventWithClient(db, projectId, input) {
+  const eventId = nextKnowledgeId('evt');
+  let storedEvent = null;
+  const bus = createProjectCoordinationBus({
+    normalize: async () => ({
+      id: eventId,
+      projectId,
+      eventType: validateCodeSiteEventType(input.eventType),
+      payload: {
+        displayCallsign: input.displayCallsign || null,
+        actorType: input.actorType || null,
+        actorId: input.actorId || null,
+        details: input.details || {},
+        evidenceRefs: input.evidenceRefs || [],
+      },
+    }),
+    redact: async (event) => event,
+    classify: async (event) => ({
+      ...event,
+      classification: {
+        class: event.eventType,
+        redactionClass: event.eventType.startsWith('impact_notice') ? 'project_notice' : 'project_fact',
+      },
+    }),
+    correlate: async (event) => ({
+      ...event,
+      correlation: {
+        knowledgeItemId: event.payload.details.knowledgeItemId || null,
+        sourceKnowledgeItemId: event.payload.details.sourceKnowledgeItemId || null,
+        recipientAgentSessionId: event.payload.details.recipientAgentSessionId || null,
+        targetTransactionIds: asArray(event.payload.details.targetTransactionIds),
+        references: event.payload.details.references || null,
+      },
+    }),
+    authorize: async (event) => ({
+      allowed: event.projectId === projectId,
+      recipients: unique([
+        event.payload.details.recipientAgentSessionId,
+        ...asArray(event.payload.details.recipientAgentSessionIds),
+      ].filter(Boolean)),
+    }),
+    persist: async (event) => {
+      storedEvent = await recordEventWithClient(db, projectId, {
+        id: event.id,
+        mutationLeaseId: input.mutationLeaseId,
+        eventType: event.eventType,
+        displayCallsign: event.payload.displayCallsign,
+        actorType: event.payload.actorType,
+        actorId: event.payload.actorId,
+        details: event.payload.details,
+        evidenceRefs: event.payload.evidenceRefs,
+      }, { syncArtifacts: false });
+      return {
+        ...event,
+        persisted: {
+          id: storedEvent.id,
+          logicalTime: storedEvent.logicalTime ?? null,
+          createdAt: storedEvent.createdAt instanceof Date
+            ? storedEvent.createdAt.toISOString()
+            : String(storedEvent.createdAt || ''),
+        },
+      };
+    },
+    route: async (event, { authorization }) => ({
+      eventId: event.id,
+      mode: 'durable_relevance_router',
+      recipientAgentSessionIds: authorization.recipients,
+    }),
+  });
+  await bus.publish({
+    id: eventId,
+    projectId,
+    eventType: input.eventType,
+    payload: {
+      displayCallsign: input.displayCallsign || null,
+      actorType: input.actorType || null,
+      actorId: input.actorId || null,
+      details: input.details || {},
+      evidenceRefs: input.evidenceRefs || [],
+    },
+  });
+  if (!storedEvent) throw new Error('knowledge_coordination_event_not_persisted');
+  return storedEvent;
+}
+
+async function persistKnowledgeAndImpacts(authority, record, deliveryPlan) {
+  const sourceKnowledgeId = nextKnowledgeId('knw');
+  const source = record.normalized.source;
+  const projectId = authority.session?.projectId || record.normalized.projectId;
+  return prisma.$transaction(async (db) => {
+    const persistedSource = await createKnowledgeWithClient(db, record, sourceKnowledgeId, {
+      eventType: knowledgeEventType(record.normalized),
+      displayCallsign: authority.session?.displayCallsign || null,
+      actorType: source.actorType === 'agent' ? 'agent_session' : source.actorType,
+      actorId: source.actorId,
+      evidenceRefs: record.normalized.evidenceRefs,
+      details: {
+        knowledgeItemId: sourceKnowledgeId,
+        kind: record.normalized.kind,
+        status: record.normalized.status,
+        title: record.normalized.title,
+        references: record.normalized.references,
+        confidence: record.normalized.confidence,
+      },
+    });
+    const impacts = [];
+    for (const target of deliveryPlan) {
+      const impactId = nextKnowledgeId('imp');
+      const impactInput = {
+        kind: 'impact_notice',
+        projectId,
+        title: `Impact: ${record.normalized.title}`.slice(0, 160),
+        summary: record.normalized.summary,
+        status: 'pending',
+        source: { actorType: 'system', actorId: sourceKnowledgeId },
+        references: {
+          ...record.normalized.references,
+          agentSessionIds: unique([...record.normalized.references.agentSessionIds, target.agentSessionId]),
+          transactionIds: unique([...record.normalized.references.transactionIds, ...target.transactionIds]),
+        },
+        evidenceRefs: record.normalized.evidenceRefs,
+        confidence: record.normalized.confidence,
+        sourceKnowledgeId,
+        recipientAgentSessionIds: [target.agentSessionId],
+        requiresResponse: true,
+      };
+      const impactRecord = buildKnowledgeRecord(impactInput, { projectId });
+      impactRecord.data.dedupeKey = target.dedupeKey;
+      impactRecord.data.targetTransactionId = target.transactionIds[0] || null;
+      const impact = await createKnowledgeWithClient(db, impactRecord, impactId, {
+        eventType: 'impact_notice_created',
+        actorType: 'knowledge_router',
+        actorId: sourceKnowledgeId,
+        evidenceRefs: record.normalized.evidenceRefs,
+        details: {
+          knowledgeItemId: impactId,
+          sourceKnowledgeItemId: sourceKnowledgeId,
+          recipientAgentSessionId: target.agentSessionId,
+          targetTransactionIds: target.transactionIds,
+          reasons: target.reasons,
+          deliveryState: target.deliveryState,
+        },
+      });
+      const inboxItem = await db.codeSiteAgentInboxItem.create({
+        data: {
+          projectId,
+          agentSessionId: target.agentSessionId,
+          recipientUserId: target.recipientUserId,
+          eventId: impact.event.id,
+          knowledgeItemId: impactId,
+          kind: 'impact_notice',
+          requiresResponse: true,
+          status: 'pending',
+          redactedPayloadJson: stringifyJson({
+            knowledgeItemId: impactId,
+            sourceKnowledgeItemId: sourceKnowledgeId,
+            title: impactInput.title,
+            summary: impactInput.summary,
+            references: impactInput.references,
+            reasons: target.reasons,
+            targetTransactionIds: target.transactionIds,
+          }),
+        },
+      });
+      impacts.push({ knowledge: projectKnowledgeRecord(impact.row), inboxItem: inboxProjection(inboxItem) });
+    }
+    return {
+      knowledge: projectKnowledgeRecord(persistedSource.row),
+      event: eventProjection(persistedSource.event),
+      impacts,
+    };
+  });
+}
+
+export async function createAgentKnowledgeItem(workspaceSlug, sessionId, agentAccessToken, body = {}) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.knowledge.write',
+  });
+  const requestedKind = String(body.kind || body.type || '').trim().toLowerCase().replace(/[ -]+/g, '_');
+  if (!KNOWLEDGE_CREATE_KINDS.has(requestedKind)) throw badRequest('agent_knowledge_kind_forbidden');
+  if (body.projectId && body.projectId !== authority.session.projectId) throw forbidden('knowledge_project_mismatch');
+  const input = {
+    ...body,
+    kind: requestedKind,
+    projectId: authority.session.projectId,
+    source: {
+      ...(body.source && typeof body.source === 'object' ? body.source : {}),
+      actorType: 'agent',
+      actorId: authority.session.id,
+      agentSessionId: authority.session.id,
+      terminalSessionId: authority.session.terminalSessionId || null,
+    },
+    ...(requestedKind === 'handoff' ? { fromAgentSessionId: authority.session.id } : {}),
+  };
+  const record = buildKnowledgeRecord(input, {
+    projectId: authority.session.projectId,
+    agentSessionId: authority.session.id,
+    userId: authority.session.ownerUserId,
+  });
+  const [sessions, executionPlans, transactions] = await Promise.all([
+    prisma.codeSiteAgentSession.findMany({
+      where: { projectId: authority.session.projectId, endedAt: null, status: { in: ['attached', 'detached'] } },
+    }),
+    prisma.codeSiteExecutionPlan.findMany({
+      where: { projectId: authority.session.projectId, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
+    }),
+    prisma.codeSiteMutationTransaction.findMany({
+      where: { projectId: authority.session.projectId, status: { in: ['open', 'prepared', 'blocked', 'validated'] } },
+    }),
+  ]);
+  const routingState = { sessions, executionPlans, transactions };
+  await requireKnowledgeReferenceTargets(authority.session.projectId, record.normalized, routingState);
+  const existing = await prisma.codeSiteKnowledgeItem.findFirst({
+    where: { projectId: authority.session.projectId, dedupeKey: record.data.dedupeKey },
+    include: { references: true },
+  });
+  if (existing) return { knowledge: projectKnowledgeRecord(existing), event: null, impacts: [], duplicate: true };
+  const deliveryPlan = buildKnowledgeDeliveryPlan({
+    item: { ...record.normalized, id: 'pending', createdByAgentSessionId: authority.session.id },
+    sessions,
+    executionPlans,
+    transactions,
+  });
+  const result = await persistKnowledgeAndImpacts(authority, record, deliveryPlan);
+  await syncArtifactsForProject(authority.session.projectId, { reason: 'knowledge_recorded', eventId: result.event?.id });
+  return { ...result, duplicate: false };
+}
+
+const MAX_OBSERVATION_BODY_BYTES = 256 * 1024;
+
+function coordinationStageError(code, details) {
+  return new ProjectCoordinationBusError(code, { stage: 'authorize', status: 403, details });
+}
+
+function runtimeObservationInboxTargets(projectId, observation, { sessions, executionPlans, transactions }) {
+  const projected = {
+    id: `obs:${observation.id}`,
+    kind: 'runtime_observation',
+    createdByAgentSessionId: null,
+    references: observation.payload.references,
+  };
+  return buildKnowledgeDeliveryPlan({
+    item: projected,
+    sessions,
+    executionPlans,
+    transactions,
+  });
+}
+
+const MAX_ROUTE_TARGETS = 32;
+
+/**
+ * Shared relevance-routed impact delivery for coordination facts (runtime
+ * observations, landed source changes). Persists one causal event and durable
+ * inbox notices for every eligible agent whose routes/subscriptions intersect
+ * the referenced paths. Never notifies the producing agent itself unless that
+ * agent is also an explicit reference target.
+ */
+async function deliverCoordinationImpacts(projectId, { eventType, normalized, actorId = null }) {
+  const coordinationInput = buildObservationCoordinationInput(normalized, { actorId });
+  if (!coordinationInput) return { event: null, notifiedAgentSessionIds: [] };
+
+  let storedEvent = null;
+  const storedInboxItems = [];
+  const bus = createProjectCoordinationBus({
+    normalize: async () => ({
+      id: normalized.id,
+      projectId,
+      eventType: coordinationInput.eventType,
+      payload: {
+        displayCallsign: null,
+        actorType: 'adapter',
+        actorId: coordinationInput.actorId,
+        details: coordinationInput.details,
+        evidenceRefs: coordinationInput.evidenceRefs,
+      },
+    }),
+    redact: async (event) => event,
+    classify: async (event) => ({
+      ...event,
+      classification: { class: event.eventType, redactionClass: 'project_fact' },
+    }),
+    correlate: async (event) => ({
+      ...event,
+      correlation: {
+        observationId: normalized.id,
+        producer: normalized.producer,
+        references: normalized.payload.references,
+        targetTransactionIds: normalized.payload.references.transactionIds,
+      },
+    }),
+    authorize: async (event) => ({ allowed: event.projectId === projectId, recipients: [] }),
+    persist: async (event) => {
+      storedEvent = await recordEventWithClient(prisma, projectId, {
+        id: event.id,
+        mutationLeaseId: coordinationInput.mutationLeaseId,
+        eventType: event.eventType,
+        displayCallsign: event.payload.displayCallsign,
+        actorType: event.payload.actorType,
+        actorId: event.payload.actorId,
+        details: event.payload.details,
+        evidenceRefs: event.payload.evidenceRefs,
+      }, { syncArtifacts: false });
+      return {
+        ...event,
+        persisted: {
+          id: storedEvent.id,
+          logicalTime: storedEvent.logicalTime ?? null,
+          createdAt: storedEvent.createdAt instanceof Date
+            ? storedEvent.createdAt.toISOString()
+            : String(storedEvent.createdAt || ''),
+        },
+      };
+    },
+    route: async (event) => {
+      const [sessions, executionPlans, transactions] = await Promise.all([
+        prisma.codeSiteAgentSession.findMany({
+          where: { projectId, endedAt: null, status: { in: ['attached', 'detached'] } },
+        }),
+        prisma.codeSiteExecutionPlan.findMany({
+          where: { projectId, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
+        }),
+        prisma.codeSiteMutationTransaction.findMany({
+          where: { projectId, status: { in: ['open', 'prepared', 'blocked', 'validated'] } },
+        }),
+      ]);
+      const projected = {
+        id: `obs:${normalized.id}`,
+        kind: eventType === 'source_changed_observed' ? 'source_change' : 'runtime_observation',
+        createdByAgentSessionId: normalized.payload.references.agentSessionIds[0] || null,
+        references: normalized.payload.references,
+      };
+      const targets = buildKnowledgeDeliveryPlan({
+        item: projected,
+        sessions,
+        executionPlans,
+        transactions,
+      }).slice(0, MAX_ROUTE_TARGETS);
+      for (const target of targets) {
+        const inboxItem = await prisma.codeSiteAgentInboxItem.create({
+          data: {
+            projectId,
+            agentSessionId: target.agentSessionId,
+            recipientUserId: target.recipientUserId,
+            eventId: storedEvent?.id || event.id,
+            kind: eventType === 'source_changed_observed' ? 'source_changed' : 'runtime_observed',
+            requiresResponse: false,
+            status: 'unread',
+            redactedPayloadJson: stringifyJson({
+              observationId: normalized.id,
+              title: eventType === 'source_changed_observed'
+                ? `Source changed: ${normalized.producer.kind}`
+                : `Runtime: ${normalized.producer.kind}`,
+              references: normalized.payload.references,
+              fact: normalized.payload.fact,
+              occurredAt: normalized.occurredAt,
+              reasons: target.reasons,
+              evidenceRefs: normalized.payload.evidenceRefs,
+            }),
+          },
+        });
+        storedInboxItems.push(inboxProjection(inboxItem));
+      }
+      return {
+        eventId: event.id,
+        mode: 'durable_relevance_router',
+        recipientAgentSessionIds: unique(targets.map((target) => target.agentSessionId)),
+      };
+    },
+  });
+  await bus.publish({
+    id: normalized.id,
+    projectId,
+    eventType: coordinationInput.eventType,
+    payload: {
+      displayCallsign: null,
+      actorType: 'adapter',
+      actorId: coordinationInput.actorId,
+      details: coordinationInput.details,
+      evidenceRefs: coordinationInput.evidenceRefs,
+    },
+  });
+  if (!storedEvent) throw new Error('coordination_event_not_persisted');
+  return {
+    event: eventProjection(storedEvent),
+    notifiedAgentSessionIds: storedInboxItems.map((item) => item.agentSessionId),
+    inboxItems: storedInboxItems,
+  };
+}
+
+async function notifySourceChangeImpacts(projectId, input) {
+  try {
+    const normalized = normalizeSourceChangedObservation({
+      eventType: 'source_changed',
+      producer: { kind: input.producerKind, eventId: input.producerEventId },
+      occurredAt: input.occurredAt,
+      refs: {
+        transactionIds: [input.transactionId].filter(Boolean),
+        mutationLeaseIds: [input.mutationLeaseId].filter(Boolean),
+        agentSessionIds: [input.agentSessionId].filter(Boolean),
+        paths: input.paths || [],
+      },
+      evidenceRefs: input.evidenceRefs || [],
+      fact: input.fact,
+    });
+    await deliverCoordinationImpacts(projectId, {
+      eventType: 'source_changed_observed',
+      normalized,
+      actorId: input.transactionId,
+    });
+  } catch (error) {
+    // Landing must never fail because impact routing failed; the commit event
+    // above is already durable and the failure is observable in server logs.
+    console.error('[CodeSite] source-change impact routing failed', {
+      projectId,
+      transactionId: input.transactionId,
+      error: error?.message || String(error),
+    });
+  }
+}
+
+export async function recordRuntimeProjectObservation(workspaceSlug, projectId, body = {}) {
+  const project = await prisma.codeSiteProject.findFirst({
+    where: { id: String(projectId || ''), workspaceSlug },
+    include: { members: true },
+  });
+  if (!project) throw notFound('codesite_project_not_found');
+  if (project.status !== 'active') throw forbidden('codesite_project_inactive');
+  // Workstream F: the internal adapter endpoint accepts both runtime and
+  // source-change observations; the event type in the body decides which
+  // normalizer validates it (runtime facts vs source-change facts).
+  const requestedEventType = body.eventType === 'source_changed' ? 'source_changed' : 'runtime_observed';
+  const normalized = requestedEventType === 'source_changed'
+    ? normalizeSourceChangedObservation({
+      eventType: 'source_changed',
+      ...body,
+      projectId: project.id,
+    })
+    : normalizeRuntimeObservedObservation({
+      eventType: 'runtime_observed',
+      ...body,
+      projectId: project.id,
+    });
+  const coordinationInput = buildObservationCoordinationInput(normalized, {
+    actorId: typeof body.adapterSessionId === 'string' ? body.adapterSessionId : null,
+  });
+  if (!coordinationInput) throw badRequest('observation_coordination_unmappable');
+
+  let storedEvent = null;
+  let storedInboxItems = [];
+  const bus = createProjectCoordinationBus({
+    normalize: async () => ({
+      id: normalized.id,
+      projectId: project.id,
+      eventType: coordinationInput.eventType,
+      payload: {
+        displayCallsign: null,
+        actorType: 'adapter',
+        actorId: coordinationInput.actorId,
+        details: coordinationInput.details,
+        evidenceRefs: coordinationInput.evidenceRefs,
+      },
+    }),
+    redact: async (event) => event,
+    classify: async (event) => ({
+      ...event,
+      classification: { class: event.eventType, redactionClass: 'project_fact' },
+    }),
+    correlate: async (event) => ({
+      ...event,
+      correlation: {
+        observationId: normalized.id,
+        producer: normalized.producer,
+        references: normalized.payload.references,
+        targetTransactionIds: normalized.payload.references.transactionIds,
+      },
+    }),
+    authorize: async (event) => ({ allowed: event.projectId === project.id, recipients: [] }),
+    persist: async (event) => {
+      storedEvent = await recordEventWithClient(prisma, project.id, {
+        id: event.id,
+        mutationLeaseId: coordinationInput.mutationLeaseId,
+        eventType: event.eventType,
+        displayCallsign: event.payload.displayCallsign,
+        actorType: event.payload.actorType,
+        actorId: event.payload.actorId,
+        details: event.payload.details,
+        evidenceRefs: event.payload.evidenceRefs,
+      }, { syncArtifacts: false });
+      return {
+        ...event,
+        persisted: {
+          id: storedEvent.id,
+          logicalTime: storedEvent.logicalTime ?? null,
+          createdAt: storedEvent.createdAt instanceof Date
+            ? storedEvent.createdAt.toISOString()
+            : String(storedEvent.createdAt || ''),
+        },
+      };
+    },
+    route: async (event) => {
+      const [sessions, executionPlans, transactions] = await Promise.all([
+        prisma.codeSiteAgentSession.findMany({
+          where: { projectId: project.id, endedAt: null, status: { in: ['attached', 'detached'] } },
+        }),
+        prisma.codeSiteExecutionPlan.findMany({
+          where: { projectId: project.id, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
+        }),
+        prisma.codeSiteMutationTransaction.findMany({
+          where: { projectId: project.id, status: { in: ['open', 'prepared', 'blocked', 'validated'] } },
+        }),
+      ]);
+      const targets = runtimeObservationInboxTargets(project.id, normalized, {
+        sessions,
+        executionPlans,
+        transactions,
+      }).slice(0, 32);
+      storedInboxItems = [];
+      for (const target of targets) {
+        const inboxItem = await prisma.codeSiteAgentInboxItem.create({
+          data: {
+            projectId: project.id,
+            agentSessionId: target.agentSessionId,
+            recipientUserId: target.recipientUserId,
+            eventId: storedEvent?.id || event.id,
+            kind: 'runtime_observed',
+            requiresResponse: false,
+            status: 'unread',
+            redactedPayloadJson: stringifyJson({
+              observationId: normalized.id,
+              title: `Runtime: ${normalized.producer.kind}`,
+              references: normalized.payload.references,
+              fact: normalized.payload.fact,
+              occurredAt: normalized.occurredAt,
+              reasons: target.reasons,
+              evidenceRefs: normalized.payload.evidenceRefs,
+            }),
+          },
+        });
+        storedInboxItems.push(inboxProjection(inboxItem));
+      }
+      return {
+        eventId: event.id,
+        mode: 'durable_relevance_router',
+        recipientAgentSessionIds: unique(targets.map((target) => target.agentSessionId)),
+      };
+    },
+  });
+  await bus.publish({
+    id: normalized.id,
+    projectId: project.id,
+    eventType: coordinationInput.eventType,
+    payload: {
+      displayCallsign: null,
+      actorType: 'adapter',
+      actorId: coordinationInput.actorId,
+      details: coordinationInput.details,
+      evidenceRefs: coordinationInput.evidenceRefs,
+    },
+  });
+  if (!storedEvent) throw new Error('runtime_observation_event_not_persisted');
+  return {
+    observation: {
+      id: normalized.id,
+      schemaVersion: normalized.schemaVersion,
+      eventType: normalized.eventType,
+      producer: normalized.producer,
+      occurredAt: normalized.occurredAt,
+      references: normalized.payload.references,
+      fact: normalized.payload.fact,
+      evidenceRefs: normalized.payload.evidenceRefs,
+    },
+    event: eventProjection(storedEvent),
+    notifiedAgentSessionIds: storedInboxItems.map((item) => item.agentSessionId),
+    inboxItems: storedInboxItems,
+  };
+}
+
+export async function recordAgentProjectObservation(workspaceSlug, sessionId, agentAccessToken, body = {}, options = {}) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.observations.write',
+    now: options.now,
+  });
+  const session = authority.session;
+  if (Buffer.byteLength(JSON.stringify(body ?? {}), 'utf8') > MAX_OBSERVATION_BODY_BYTES) {
+    throw badRequest('observation_payload_too_large', { maxBytes: MAX_OBSERVATION_BODY_BYTES });
+  }
+  const normalized = normalizeProjectObservation({
+    ...body,
+    projectId: session.projectId,
+  });
+  if (normalized.payload.references.agentSessionIds.length
+    && !normalized.payload.references.agentSessionIds.includes(session.id)) {
+    throw forbidden('observation_agent_session_mismatch');
+  }
+  if (normalized.payload.providerSessionBound && !session.providerSessionRef) {
+    throw badRequest('observation_provider_binding_unavailable');
+  }
+  const coordinationInput = buildObservationCoordinationInput(normalized, {
+    actorId: session.terminalSessionId || session.runtimeSessionId || session.id,
+  });
+  if (!coordinationInput) throw badRequest('observation_coordination_unmappable');
+
+  let storedEvent = null;
+  const bus = createProjectCoordinationBus({
+    normalize: async () => ({
+      id: normalized.id,
+      projectId: session.projectId,
+      eventType: coordinationInput.eventType,
+      payload: {
+        displayCallsign: session.displayCallsign || null,
+        actorType: coordinationInput.actorType,
+        actorId: coordinationInput.actorId,
+        details: coordinationInput.details,
+        evidenceRefs: coordinationInput.evidenceRefs,
+      },
+    }),
+    redact: async (event) => event,
+    classify: async (event) => ({
+      ...event,
+      classification: {
+        class: event.eventType,
+        redactionClass: 'project_fact',
+      },
+    }),
+    correlate: async (event) => ({
+      ...event,
+      correlation: {
+        observationId: normalized.id,
+        producer: normalized.producer,
+        references: normalized.payload.references,
+        targetTransactionIds: normalized.payload.references.transactionIds,
+        targetAgentSessionIds: normalized.payload.references.agentSessionIds,
+      },
+    }),
+    authorize: async (event) => {
+      const transactionIds = normalized.payload.references.transactionIds;
+      const ownerSessionIds = new Set();
+      if (transactionIds.length) {
+        const ownedTransactions = await prisma.codeSiteMutationTransaction.findMany({
+          where: {
+            projectId: session.projectId,
+            id: { in: transactionIds },
+            status: { in: ['open', 'prepared', 'blocked', 'validated'] },
+          },
+          select: { id: true, agentSessionId: true },
+        });
+        const knownTransactionIds = new Set(ownedTransactions.map((transaction) => transaction.id));
+        for (const transaction of ownedTransactions) {
+          if (transaction.agentSessionId) ownerSessionIds.add(transaction.agentSessionId);
+        }
+        if (knownTransactionIds.size !== transactionIds.length) {
+          throw coordinationStageError('observation_transaction_outside_project', transactionIds);
+        }
+      }
+      return {
+        allowed: event.projectId === session.projectId,
+        recipients: unique([
+          ...normalized.payload.references.agentSessionIds,
+          ...ownerSessionIds,
+        ]),
+      };
+    },
+    persist: async (event) => {
+      storedEvent = await recordEventWithClient(prisma, session.projectId, {
+        id: event.id,
+        mutationLeaseId: coordinationInput.mutationLeaseId,
+        eventType: event.eventType,
+        displayCallsign: event.payload.displayCallsign,
+        actorType: event.payload.actorType,
+        actorId: event.payload.actorId,
+        details: event.payload.details,
+        evidenceRefs: event.payload.evidenceRefs,
+      }, { syncArtifacts: false });
+      return {
+        ...event,
+        persisted: {
+          id: storedEvent.id,
+          logicalTime: storedEvent.logicalTime ?? null,
+          createdAt: storedEvent.createdAt instanceof Date
+            ? storedEvent.createdAt.toISOString()
+            : String(storedEvent.createdAt || ''),
+        },
+      };
+    },
+    route: async (event, { authorization }) => ({
+      eventId: event.id,
+      mode: 'durable_relevance_router',
+      recipientAgentSessionIds: authorization.recipients,
+    }),
+  });
+  await bus.publish({
+    id: normalized.id,
+    projectId: session.projectId,
+    eventType: coordinationInput.eventType,
+    payload: {
+      displayCallsign: session.displayCallsign || null,
+      actorType: coordinationInput.actorType,
+      actorId: coordinationInput.actorId,
+      details: coordinationInput.details,
+      evidenceRefs: coordinationInput.evidenceRefs,
+    },
+  });
+  if (!storedEvent) throw new Error('observation_event_not_persisted');
+  return {
+    observation: {
+      id: normalized.id,
+      schemaVersion: normalized.schemaVersion,
+      eventType: normalized.eventType,
+      producer: normalized.producer,
+      occurredAt: normalized.occurredAt,
+      references: normalized.payload.references,
+      fact: normalized.payload.fact,
+      evidenceRefs: normalized.payload.evidenceRefs,
+    },
+    event: eventProjection(storedEvent),
+  };
+}
+
+export async function getAgentSharedKnowledge(workspaceSlug, sessionId, agentAccessToken, query = {}) {
+  const { session } = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.knowledge.read',
+  });
+  return loadRelevantKnowledgeForSession(session, query);
+}
+
+export async function listProjectKnowledge(workspaceSlug, projectId, query = {}, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'read');
+  const normalized = validateKnowledgeQuery(query);
+  const rows = await prisma.codeSiteKnowledgeItem.findMany({
+    where: knowledgeWhere(project.id, normalized),
+    include: { references: true },
+    orderBy: { updatedAt: 'desc' },
+    take: normalized.limit,
+  });
+  const userId = actorUserId(actor);
+  return rows.filter((row) => {
+    const visibility = knowledgeVisibility(row);
+    if (visibility === 'project') return true;
+    return Boolean(userId && (row.createdByUserId === userId || row.ownerUserId === userId));
+  }).map(projectKnowledgeRecord).filter(Boolean);
+}
+
+export async function respondToAgentKnowledgeInbox(
+  workspaceSlug,
+  sessionId,
+  inboxItemId,
+  agentAccessToken,
+  body = {},
+) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.inbox.respond',
+  });
+  const inboxItem = await prisma.codeSiteAgentInboxItem.findFirst({
+    where: {
+      id: inboxItemId,
+      projectId: authority.session.projectId,
+      agentSessionId: authority.session.id,
+    },
+    include: { knowledgeItem: { include: { references: true } } },
+  });
+  if (!inboxItem || !inboxItem.knowledgeItem) throw notFound('knowledge_inbox_item_not_found');
+  const response = validateKnowledgeResponse(inboxItem.knowledgeItem.kind, body);
+  if (inboxItem.respondedAt) {
+    const previous = parseJson(inboxItem.responseJson, {});
+    if (inboxItem.responseAction === response.action && stableJson(previous) === stableJson(response)) {
+      return {
+        inboxItem: inboxProjection(inboxItem),
+        knowledge: projectKnowledgeRecord(inboxItem.knowledgeItem),
+        response,
+        duplicate: true,
+      };
+    }
+    throw conflict('knowledge_inbox_already_responded', { inboxItemId });
+  }
+  const now = new Date();
+  const updated = await prisma.$transaction(async (db) => {
+    const nextInbox = await db.codeSiteAgentInboxItem.update({
+      where: { id: inboxItem.id },
+      data: {
+        status: response.action === 'acknowledge' ? 'acknowledged' : 'responded',
+        responseAction: response.action,
+        responseJson: stringifyJson(response),
+        respondedAt: now,
+        acknowledgedAt: now,
+      },
+    });
+    let nextKnowledge = inboxItem.knowledgeItem;
+    if (response.targetStatus) {
+      nextKnowledge = await db.codeSiteKnowledgeItem.update({
+        where: { id: inboxItem.knowledgeItem.id },
+        data: {
+          status: response.targetStatus,
+          ...(response.targetStatus === 'resolved' ? { resolvedAt: now } : {}),
+          ...(inboxItem.knowledgeItem.kind === 'lead' && response.action === 'claim'
+            ? { ownerAgentSessionId: authority.session.id, ownerUserId: authority.session.ownerUserId }
+            : {}),
+          ...(inboxItem.knowledgeItem.kind === 'handoff' && response.action === 'accept'
+            ? { ownerAgentSessionId: authority.session.id, ownerUserId: authority.session.ownerUserId }
+            : {}),
+        },
+      });
+    }
+    const event = await recordEventWithClient(db, authority.session.projectId, {
+      eventType: knowledgeResponseEventType(inboxItem.knowledgeItem.kind, response.action),
+      displayCallsign: authority.session.displayCallsign,
+      actorType: 'agent_session',
+      actorId: authority.session.id,
+      evidenceRefs: response.evidenceRefs,
+      details: {
+        inboxItemId: inboxItem.id,
+        knowledgeItemId: inboxItem.knowledgeItem.id,
+        kind: inboxItem.knowledgeItem.kind,
+        action: response.action,
+        reason: response.reason,
+        targetStatus: response.targetStatus,
+      },
+    }, { syncArtifacts: false });
+    return { nextInbox, nextKnowledge, event };
+  });
+  await syncArtifactsForProject(authority.session.projectId, {
+    reason: 'knowledge_inbox_responded',
+    eventId: updated.event.id,
+  });
+  return {
+    inboxItem: inboxProjection(updated.nextInbox),
+    knowledge: projectKnowledgeRecord({
+      ...inboxItem.knowledgeItem,
+      ...updated.nextKnowledge,
+      references: inboxItem.knowledgeItem.references,
+    }),
+    response,
+    event: eventProjection(updated.event),
+    duplicate: false,
+  };
+}
+
 function nextCallsign(provider) {
   const prefix = String(provider || 'AGENT').replace(/[^a-z0-9]/gi, '').slice(0, 6) || 'AGENT';
   return `${prefix}-${Math.floor(10 + Math.random() * 89)}`;
@@ -1485,6 +3284,65 @@ export async function createExecutionPlan(workspaceSlug, projectId, body = {}, a
     },
   });
   return executionPlanProjection(plan);
+}
+
+export async function createAgentExecutionPlan(workspaceSlug, sessionId, agentAccessToken, body = {}, options = {}) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.plans.write',
+    now: options.now,
+  });
+  const session = authority.session;
+  const requestedSessionId = String(body.agentSessionId || body.agent_session_id || '').trim();
+  if (requestedSessionId && requestedSessionId !== session.id) {
+    throw forbidden('execution_plan_agent_forbidden');
+  }
+  return createExecutionPlan(workspaceSlug, session.projectId, {
+    ...body,
+    agentSessionId: session.id,
+    displayCallsign: session.displayCallsign,
+  }, { internalService: true, bypass: true, agentOwnerUserId: session.ownerUserId });
+}
+
+export async function requestAgentMutationLease(workspaceSlug, sessionId, agentAccessToken, body = {}, options = {}) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.plans.write',
+    now: options.now,
+  });
+  const session = authority.session;
+  const executionPlanId = String(body.executionPlanId || body.execution_plan_id || '').trim();
+  if (!executionPlanId) throw badRequest('execution_plan_required');
+  return requestMutationLease(workspaceSlug, executionPlanId, body, {
+    internalService: true,
+    bypass: true,
+    agentOwnerUserId: session.ownerUserId,
+  });
+}
+
+export async function openAgentTransaction(workspaceSlug, sessionId, agentAccessToken, body = {}, options = {}) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.plans.write',
+    now: options.now,
+  });
+  const session = authority.session;
+  const mutationLeaseId = String(body.mutationLeaseId || body.mutation_lease_id || '').trim();
+  if (!mutationLeaseId) throw badRequest('mutation_lease_required');
+  // §9.5 negative: an agent may only open transactions on leases that belong
+  // to its OWN agent session. Verify ownership explicitly instead of relying
+  // on the blanket bypass actor.
+  const lease = await prisma.codeSiteMutationLease.findFirst({
+    where: {
+      id: mutationLeaseId,
+      project: { workspaceSlug },
+      agentSessionId: session.id,
+    },
+    select: { id: true },
+  });
+  if (!lease) throw forbidden('mutation_lease_agent_forbidden', { mutationLeaseId });
+  return openTransaction(workspaceSlug, mutationLeaseId, body, {
+    internalService: true,
+    bypass: true,
+    agentOwnerUserId: session.ownerUserId,
+  });
 }
 
 function normalizeDurationMs(value) {
@@ -2960,7 +4818,7 @@ async function invalidateAssumptionsForWrite(projectId, { path, semanticDependen
       },
     });
     invalidated.push(assumptionProjection(updated));
-    await recordEvent(projectId, {
+    const invalidationEvent = await recordEvent(projectId, {
       eventType: 'assumption_invalidated',
       displayCallsign: assumption.displayCallsign,
       details: {
@@ -2971,8 +4829,86 @@ async function invalidateAssumptionsForWrite(projectId, { path, semanticDependen
         semanticDependencyRefs,
       },
     });
+    await publishAssumptionInvalidationKnowledge(projectId, {
+      assumption,
+      path,
+      semanticDependencyRefs,
+      invalidatedBy,
+      invalidationEvent,
+    });
   }
   return invalidated;
+}
+
+async function publishAssumptionInvalidationKnowledge(projectId, {
+  assumption,
+  path,
+  semanticDependencyRefs,
+  invalidatedBy,
+  invalidationEvent,
+}) {
+  const [sessions, executionPlans, transactions] = await Promise.all([
+    prisma.codeSiteAgentSession.findMany({
+      where: { projectId, endedAt: null, status: { in: ['attached', 'detached'] } },
+    }),
+    prisma.codeSiteExecutionPlan.findMany({
+      where: { projectId, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
+    }),
+    prisma.codeSiteMutationTransaction.findMany({
+      where: { projectId, status: { in: ['open', 'prepared', 'blocked', 'validated'] } },
+    }),
+  ]);
+  const usedBy = asArray(parseJson(assumption.usedByJson, []));
+  const dependentTransactions = transactions.filter((transaction) => (
+    transaction.agentSessionId === assumption.ownerSessionId
+    || asArray(parseJson(transaction.assumptionRefsJson, [])).includes(assumption.id)
+    || usedBy.includes(transaction.id)
+  ));
+  const contractRefs = unique(asArray(semanticDependencyRefs)
+    .map((reference) => typeof reference === 'string' ? reference : reference?.ref || reference?.raw)
+    .filter(Boolean));
+  const agentSessionIds = unique([
+    assumption.ownerSessionId,
+    ...dependentTransactions.map((transaction) => transaction.agentSessionId),
+  ].filter(Boolean));
+  const references = {
+    paths: path ? [path] : [],
+    contracts: contractRefs,
+    agentSessionIds,
+    transactionIds: dependentTransactions.map((transaction) => transaction.id),
+  };
+  if (!Object.values(references).some((values) => values.length)) return null;
+  const knowledgeInput = {
+    kind: 'discovery',
+    projectId,
+    title: `Assumption invalidated: ${assumption.assumptionKey}`.slice(0, 160),
+    summary: `Assumption ${assumption.assumptionKey} was invalidated by ${invalidatedBy}; affected work must refresh, rebase, or abort.`,
+    status: 'verified',
+    source: { actorType: 'system', actorId: assumption.id },
+    references,
+    evidenceRefs: [`event:${invalidationEvent.id}`],
+    confidence: 1,
+    verification: 'verified',
+    tags: ['assumption', 'invalidation'],
+  };
+  const record = buildKnowledgeRecord(knowledgeInput, { projectId });
+  const existing = await prisma.codeSiteKnowledgeItem.findFirst({
+    where: { projectId, dedupeKey: record.data.dedupeKey },
+    include: { references: true },
+  });
+  if (existing) return { knowledge: projectKnowledgeRecord(existing), duplicate: true, impacts: [] };
+  const deliveryPlan = buildKnowledgeDeliveryPlan({
+    item: { ...record.normalized, id: 'pending-assumption-invalidation' },
+    sessions,
+    executionPlans,
+    transactions: dependentTransactions,
+  });
+  const result = await persistKnowledgeAndImpacts({ session: { projectId } }, record, deliveryPlan);
+  await syncArtifactsForProject(projectId, {
+    reason: 'assumption_invalidation_routed',
+    eventId: result.event?.id,
+  });
+  return { ...result, duplicate: false };
 }
 
 function assumptionMatchesWrite({ dependsOn, usedBy, path, semanticDependencyRefs }) {
@@ -3612,6 +5548,23 @@ async function landTransactionWithClient(db, workspaceSlug, transactionId, body 
       inspectionEvidenceRefs: inspectionDecision.evidenceRefs,
     },
   }, { syncArtifacts: false });
+  await notifySourceChangeImpacts(transaction.projectId, {
+    producerKind: 'codesite_landing',
+    producerEventId: `${transaction.id}:${bundle.bundleDigest}`,
+    occurredAt: committedAt.toISOString(),
+    transactionId: transaction.id,
+    mutationLeaseId: transaction.mutationLeaseId,
+    agentSessionId: transaction.agentSessionId,
+    paths: writeSet,
+    fact: {
+      changeKind: 'landed',
+      proofBundleId: bundle.id,
+      proofBundleDigest: bundle.bundleDigest,
+      repoStateDigest: repoStateDecision.repoState?.evidenceDigest || null,
+      reasonCodes: ['serializable_commit_landed'],
+    },
+    evidenceRefs: inspectionDecision.evidenceRefs,
+  });
   return {
     committed: true,
     projectId: transaction.projectId,
@@ -5036,7 +6989,6 @@ function buildInboxDeliveryPlan(session, deliveryTargets = []) {
       'durable_inbox',
       'sse_stream',
       'mcp_poll',
-      'repo_local_projection',
       ...outboundModes,
     ]),
     targets: deliveryTargets.map(publicDeliveryTarget),
@@ -5045,7 +6997,7 @@ function buildInboxDeliveryPlan(session, deliveryTargets = []) {
       agentSessionId: session.id,
       provider: session.agentProvider || null,
       runtime: session.agentRuntime || null,
-      providerSessionRef: session.providerSessionRef || null,
+      providerSessionBound: Boolean(session.providerSessionRef),
     },
   };
 }
@@ -5155,6 +7107,12 @@ async function dispatchInboxDeliveryTarget(inboxItem, payload, target) {
   if (!target.endpoint) {
     return { ...publicTarget, status: 'skipped', reason: 'endpoint_missing', startedAt, completedAt: new Date().toISOString() };
   }
+  // Workstream F.2: fail-closed origin allowlist. With no allowlist configured,
+  // external delivery is refused entirely.
+  const allowlistCheck = endpointDeliveryAllowed(target.endpoint, deliveryAllowedOrigins());
+  if (!allowlistCheck.ok) {
+    return { ...publicTarget, status: 'skipped', reason: allowlistCheck.reason, startedAt, completedAt: new Date().toISOString() };
+  }
   let parsed;
   try {
     parsed = new URL(target.endpoint);
@@ -5172,22 +7130,27 @@ async function dispatchInboxDeliveryTarget(inboxItem, payload, target) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 1500);
   try {
+    const bodyText = JSON.stringify({
+      deliveryMode: target.mode,
+      inboxItemId: inboxItem.id,
+      projectId: inboxItem.projectId,
+      agentSessionId: inboxItem.agentSessionId,
+      recipientUserId: inboxItem.recipientUserId,
+      eventId: inboxItem.eventId,
+      documentId: inboxItem.documentId,
+      payload,
+    });
+    // Workstream F.2: signed envelope — HMAC over timestamp+nonce+body digest
+    // gives receivers sender authentication and replay protection.
+    const signatureHeaders = signDeliveryEnvelope(bodyText);
     const response = await fetch(target.endpoint, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         'user-agent': 'Synthi-CodeSite/1.0',
+        ...signatureHeaders,
       },
-      body: JSON.stringify({
-        deliveryMode: target.mode,
-        inboxItemId: inboxItem.id,
-        projectId: inboxItem.projectId,
-        agentSessionId: inboxItem.agentSessionId,
-        recipientUserId: inboxItem.recipientUserId,
-        eventId: inboxItem.eventId,
-        documentId: inboxItem.documentId,
-        payload,
-      }),
+      body: bodyText,
       signal: controller.signal,
     });
     return {
@@ -6468,6 +8431,8 @@ function normalizeIncidentReplayEvent(event) {
 }
 
 function replayEventType(eventType) {
+  const knowledgeEventType = canonicalKnowledgeEventType(eventType);
+  if (knowledgeEventType) return knowledgeEventType;
   return {
     transaction_opened: 'transaction.opened',
     assumption_recorded: 'assumption.recorded',
@@ -8629,6 +10594,11 @@ export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}, a
     ?? body.coordination_strategies
     ?? DEFAULT_TOWER_SIMULATION_STRATEGIES,
   );
+  // Workstream E: an explicit empty universes list can never constitute an
+  // executed merge proof — the runner fails it, so reject before dispatch.
+  if (body.universes !== undefined && asArray(body.universes).length === 0) {
+    throw badRequest('shadow_universes_required');
+  }
   const strategies = unique(requestedStrategies
     .map(normalizeTowerStrategyName)
     .filter(Boolean));
@@ -8715,6 +10685,9 @@ export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}, a
   const result = {
     selected: selected.strategy,
     appliedPolicyDeltas: selected.learnedPolicyDeltaRefs || [],
+    // Unified discriminator required by Workstream E: every consumer (UI,
+    // release gate, agents) reads this instead of the three legacy vocabularies.
+    resultKind: shadowExecutionCompleted ? 'executed' : 'forecast',
     reason: {
       reasonCodes: selected.reasonCodes,
       staleAssumptions: selected.staleAssumptions,
@@ -8737,6 +10710,21 @@ export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}, a
       executionMode: shadowExecution.executionMode || shadowExecution.execution_mode || null,
       evidenceRefs: shadowExecutionEvidenceRefs,
       universeCount: asArray(shadowExecution.universes).length,
+      // Workstream E runtime/cost evidence rollup: aggregate wall time across
+      // universes and their validation commands so reviewers can compare the
+      // measured execution cost of each route without parsing raw evidence.
+      runtimeMs: asArray(shadowExecution.universes).reduce((sum, universe) => {
+        const universeMs = Number(universe?.durationMs) || 0;
+        const commandMs = asArray(universe?.commands)
+          .reduce((inner, command) => inner + (Number(command?.durationMs) || 0), 0);
+        return sum + Math.max(universeMs, commandMs);
+      }, 0),
+      commandCount: asArray(shadowExecution.universes)
+        .reduce((sum, universe) => sum + asArray(universe?.commands).length, 0),
+      passedUniverses: asArray(shadowExecution.universes)
+        .filter((universe) => universe?.status === 'passed').length,
+      failedUniverses: asArray(shadowExecution.universes)
+        .filter((universe) => universe?.status === 'failed').length,
       digest: digest(shadowExecution),
     } : null,
     repoSignals: towerSignals.summary,
@@ -10111,6 +12099,7 @@ async function recordEventWithClient(db, projectId, input, options = {}) {
     try {
       const event = await db.codeSiteEvent.create({
         data: {
+          ...(input.id ? { id: input.id } : {}),
           projectId,
           mutationLeaseId: input.mutationLeaseId || null,
           eventType,
@@ -10316,9 +12305,25 @@ function badRequest(code, detail) {
   return error;
 }
 
+function conflict(code, detail) {
+  const error = new Error(code);
+  error.status = 409;
+  error.code = code;
+  error.detail = detail;
+  return error;
+}
+
 function forbidden(code, detail) {
   const error = new Error(code);
   error.status = 403;
+  error.code = code;
+  error.detail = detail;
+  return error;
+}
+
+function serviceUnavailable(code, detail) {
+  const error = new Error(code);
+  error.status = 503;
   error.code = code;
   error.detail = detail;
   return error;
@@ -10346,6 +12351,7 @@ function projectSummary(project) {
   return {
     id: project.id,
     workspaceSlug: project.workspaceSlug,
+    collaborationSessionId: project.collaborationSessionId || null,
     title: project.title,
     request: project.request,
     status: project.status,
@@ -10367,6 +12373,7 @@ function projectSummary(project) {
 }
 
 function projectProjection(project) {
+  const projectionNow = Date.now();
   const mutationTxns = asArray(project.mutationTxns);
   const mutationLeases = asArray(project.mutationLeases);
   const inspectionRuns = asArray(project.inspectionRuns);
@@ -10378,6 +12385,7 @@ function projectProjection(project) {
     controlPlan: parseJson(project.controlPlanJson, {}),
     members: asArray(project.members).map(projectMembershipProjection),
     agentSessions: asArray(project.agentSessions).map(sessionProjection),
+    agentRegistry: asArray(project.agentSessions).map((session) => agentRegistryProjection(session, projectionNow)),
     executionPlans: asArray(project.executionPlans).map(executionPlanProjection),
     mutationLeases: mutationLeases.map(mutationLeaseProjection),
     mutationTxns: mutationTxns.map(transactionProjection),
@@ -10423,6 +12431,40 @@ function projectProjection(project) {
   };
 }
 
+function agentPresence(session, now = Date.now()) {
+  if (session.endedAt) return { presence: 'ended', reason: 'session_ended' };
+  if (session.status === 'detached' || session.detachedAt) return { presence: 'offline', reason: 'session_detached' };
+  if (session.status !== 'attached') return { presence: 'offline', reason: 'session_not_attached' };
+  const heartbeatAt = session.lastHeartbeatAt ? new Date(session.lastHeartbeatAt).getTime() : Number.NaN;
+  if (!Number.isFinite(heartbeatAt)) return { presence: 'offline', reason: 'heartbeat_missing' };
+  return now - heartbeatAt <= AGENT_CONTEXT_HEARTBEAT_MAX_AGE_MS
+    ? { presence: 'online', reason: 'heartbeat_fresh' }
+    : { presence: 'offline', reason: 'heartbeat_stale' };
+}
+
+function agentRegistryProjection(session, now = Date.now()) {
+  const presence = agentPresence(session, now);
+  return {
+    id: session.id,
+    displayCallsign: session.displayCallsign,
+    provider: session.agentProvider,
+    ownerUserId: session.ownerUserId,
+    collaborationUserId: session.collaborationUserId || null,
+    terminalSessionId: session.terminalSessionId || null,
+    runtimeSessionId: session.runtimeSessionId || null,
+    executionHost: parseJson(session.executionHostJson, {}),
+    subscriptions: parseJson(session.subscriptionsJson, []),
+    providerSessionBound: Boolean(session.providerSessionRef),
+    presence: presence.presence,
+    presenceReason: presence.reason,
+    status: session.status,
+    lastHeartbeatAt: session.lastHeartbeatAt || null,
+    attachedAt: session.attachedAt || null,
+    detachedAt: session.detachedAt || null,
+    endedAt: session.endedAt || null,
+  };
+}
+
 function artifactProjectProjection(project) {
   return {
     ...projectProjection(project),
@@ -10435,19 +12477,39 @@ function sessionProjection(session) {
     id: session.id,
     projectId: session.projectId,
     ownerUserId: session.ownerUserId,
+    workspaceSlug: session.workspaceSlug || null,
+    collaborationUserId: session.collaborationUserId || null,
+    effectiveWorkspaceUserId: session.effectiveWorkspaceUserId || null,
+    collaborationSessionId: session.collaborationSessionId || null,
+    terminalSessionId: session.terminalSessionId || null,
+    runtimeSessionId: session.runtimeSessionId || null,
+    runtimeScope: session.runtimeScope || null,
     agentProvider: session.agentProvider,
     agentRuntime: session.agentRuntime,
-    providerSessionRef: session.providerSessionRef,
+    providerSessionBound: Boolean(session.providerSessionRef),
     displayCallsign: session.displayCallsign,
     status: session.status,
     permissions: parseJson(session.permissionsJson, []),
     redactionPolicy: parseJson(session.redactionPolicyJson, {}),
+    capabilities: parseJson(session.capabilitiesJson, parseJson(session.permissionsJson, [])),
+    executionHost: parseJson(session.executionHostJson, {}),
+    subscriptions: parseJson(session.subscriptionsJson, []),
+    deliveryChannel: parseJson(session.deliveryChannelJson, {}),
+    attachSource: session.attachSource || null,
+    bindingVersion: session.bindingVersion || null,
+    agentAccessTokenExpiresAt: session.agentAccessTokenExpiresAt || null,
+    activeMutationLeaseId: session.activeMutationLeaseId || null,
+    activeTransactionId: session.activeTransactionId || null,
     dojoPilotLicenseRef: session.dojoPilotLicenseRef || null,
     dojoProofRef: session.dojoProofRef || null,
     dojoEvidenceRefs: parseJson(session.dojoEvidenceRefsJson, []),
     dojoDecisionDigest: session.dojoDecisionDigest || null,
     pilotLicenseSnapshot: parseJson(session.pilotLicenseSnapshotJson, null),
+    attachedAt: session.attachedAt || null,
+    lastHeartbeatAt: session.lastHeartbeatAt || null,
+    detachedAt: session.detachedAt || null,
     createdAt: session.createdAt,
+    updatedAt: session.updatedAt || session.createdAt,
     endedAt: session.endedAt,
   };
 }
@@ -10901,12 +12963,15 @@ function inboxProjection(item) {
     recipientUserId: item.recipientUserId,
     eventId: item.eventId,
     documentId: item.documentId,
+    knowledgeItemId: item.knowledgeItemId || null,
     kind: item.kind,
     requiresResponse: item.requiresResponse,
     status: item.status,
     redactedPayload: parseJson(item.redactedPayloadJson, {}),
     createdAt: item.createdAt,
     acknowledgedAt: item.acknowledgedAt,
+    responseAction: item.responseAction || null,
+    respondedAt: item.respondedAt || null,
   };
 }
 
@@ -10917,23 +12982,31 @@ function inboxSummaryProjection(item) {
     agentSessionId: item.agentSessionId,
     eventId: item.eventId,
     documentId: item.documentId,
+    knowledgeItemId: item.knowledgeItemId || null,
     kind: item.kind,
     requiresResponse: item.requiresResponse,
     status: item.status,
     payloadAvailable: Boolean(item.redactedPayloadJson),
     createdAt: item.createdAt,
     acknowledgedAt: item.acknowledgedAt,
+    responseAction: item.responseAction || null,
+    respondedAt: item.respondedAt || null,
   };
 }
 
 function counterfactualProjection(run) {
+  const arbiterVerdict = parseJson(run.arbiterVerdictJson, null);
   return {
     id: run.id,
     projectId: run.projectId,
     shadowJobRef: run.shadowJobRef,
     baseSnapshot: run.baseSnapshot,
     universes: parseJson(run.universesJson, []),
-    arbiterVerdict: parseJson(run.arbiterVerdictJson, null),
+    arbiterVerdict,
+    // Unified forecast|executed discriminator (Workstream E): derived from the
+    // persisted verdict when present, otherwise from validityStrength.
+    resultKind: arbiterVerdict?.resultKind
+      || ((run.validityStrength === 'executed') ? 'executed' : 'forecast'),
     userChoice: parseJson(run.userChoiceJson, null),
     laterManualEdits: parseJson(run.laterManualEditsJson, []),
     validityStrength: run.validityStrength,

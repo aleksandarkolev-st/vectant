@@ -39,7 +39,18 @@ const net = require('net');
 const WebSocket = require('ws');
 const { watchWorkspace } = require('./fsWatcherService');
 const { shouldUseRuntimePodTerminal, createRuntimePodPty } = require('./runtimePodTerminal');
-const { shouldUseContainerTerminal, codeSiteTerminalLaunchMode, codeSiteTerminalReattachDecision } = require('./terminalRouting');
+const {
+  shouldUseContainerTerminal,
+  codeSiteTerminalLaunchMode,
+  codeSiteTerminalReattachDecision,
+  agentSessionReattachDecision,
+} = require('./terminalRouting');
+const {
+  agentReattachBindingFromGateway,
+  attachTerminalAgent,
+  finalizeAgentTerminal,
+  startAgentTerminalHeartbeat,
+} = require('./agentTerminalLifecycle');
 const { ensureRuntimeFilesystem, releaseRuntimeFilesystem } = require('./runtimeFilesystem');
 const { normalizedActiveWorkspacePath } = require('./workspaceInstructionProjectionRuntime');
 const { buildPersistentRuntimeEnv, ensurePersistentRuntimeDirs } = require('./runtimePersistence');
@@ -85,6 +96,26 @@ const TERMINAL_REPLAY_BUFFER_CHARS = Math.max(
   10_000,
   Number(process.env.SYNTHI_TERMINAL_REPLAY_BUFFER_CHARS || 100_000),
 );
+
+const CHILD_SECRET_ENV_ALLOWLIST = new Set([
+  'SYNTHI_CODESITE_AGENT_TOKEN',
+]);
+
+function stripSensitiveServerEnvironment(env) {
+  if (!env || typeof env !== 'object') return env;
+  for (const key of Object.keys(env)) {
+    const upper = key.toUpperCase();
+    if (CHILD_SECRET_ENV_ALLOWLIST.has(upper)) continue;
+    const looksSensitive = /SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|PRIVATE|ACCESS_KEY|API_KEY|AUTH_KEY|ENCRYPTION|COOKIE|SESSION_KEY|JWT|DSN/.test(upper)
+      || /^(DATABASE|REDIS|POSTGRES|MONGO|MONGODB|AMQP).*(URL|URI)$/.test(upper)
+      || upper === 'GOOGLE_APPLICATION_CREDENTIALS'
+      || upper === 'GCP_PRIVATE_KEY'
+      || upper === 'GCS_BUCKET'
+      || upper === 'GCS_BUCKET_NAME';
+    if (looksSensitive) delete env[key];
+  }
+  return env;
+}
 
 function appendTerminalOutput(session, data, maxChars = TERMINAL_REPLAY_BUFFER_CHARS) {
   if (!session || typeof data !== 'string') return;
@@ -140,6 +171,11 @@ function disposeTerminalSession(sessionId, reason = 'disposed') {
   const session = activeSessions.get(sessionId);
   if (!session) return;
   clearSessionTimers(session);
+  if (session.codeSiteAgentLifecycle) {
+    finalizeAgentTerminal(session.codeSiteAgentLifecycle, reason).catch(() => {
+      console.warn(`[Terminal] CodeSite agent final detach failed for ${sessionId} (${reason})`);
+    });
+  }
   try { session.stopBuffering?.(); } catch (_) {}
   try { session.dataDisposable?.dispose?.(); } catch (_) {}
   try { session.exitDisposable?.dispose?.(); } catch (_) {}
@@ -1260,10 +1296,7 @@ function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = nul
     }
   }
 
-  // Remove sensitive server-side variables
-  delete ptyEnv.DATABASE_URL;
-  delete ptyEnv.GOOGLE_APPLICATION_CREDENTIALS;
-  delete ptyEnv.GCS_BUCKET;
+  stripSensitiveServerEnvironment(ptyEnv);
 
   const ptyProcess = pty.spawn(shell, shellArgs, {
     name: 'xterm-256color',
@@ -1617,6 +1650,14 @@ function createTerminalWSS({
   enableCodeSiteDockerRuntime = false,
   workspaceRuntime = null,
   flushWorkspaceDocsToDisk = null,
+  agentSessionAttachService = null,
+  agentHeartbeatIntervalMs = undefined,
+  ensureRuntimeFilesystemImpl = ensureRuntimeFilesystem,
+  releaseRuntimeFilesystemImpl = releaseRuntimeFilesystem,
+  resolveWorkspaceCwdImpl = resolveWorkspaceCwd,
+  createTerminalProcessImpl = createTerminalProcess,
+  buildRuntimeLaunchImpl = buildRuntimeLaunch,
+  watchWorkspaceImpl = watchWorkspace,
 } = {}) {
   // PERF: Enable permessage-deflate — terminal output (ANSI sequences, build
   // logs) compresses extremely well.  Level 1 keeps CPU usage minimal.
@@ -1633,7 +1674,7 @@ function createTerminalWSS({
     },
   });
 
-  wss.on('connection', async (ws, req) => {
+  const handleTerminalConnection = async (ws, req) => {
     // ── Parse query parameters ──────────────────────────────────────────
     let parsedUrl;
     try {
@@ -1706,6 +1747,8 @@ function createTerminalWSS({
       return;
     }
 
+    const sessionId = requestedSessionId || crypto.randomUUID();
+
     // ── Check for existing resumable session ────────────────────────────
     const existingSession = requestedSessionId && activeSessions.get(requestedSessionId);
     if (existingSession && existingSession.pty) {
@@ -1721,7 +1764,39 @@ function createTerminalWSS({
         ws.close(1008, 'CodeSite terminal reattach denied');
         return;
       }
-      const sessionId = requestedSessionId;
+      let requestedAgentBinding = null;
+      try {
+        requestedAgentBinding = agentReattachBindingFromGateway({
+          gatewayAuth: req.collabGatewayAuth,
+          existingBinding: existingSession.codeSiteAgentBinding,
+          workspaceSlug,
+          terminalSessionId: sessionId,
+          activeMutationLeaseId: codeSiteContext?.mutationLeaseId || null,
+          activeTransactionId: codeSiteContext?.transactionId || null,
+        });
+      } catch (_) {
+        ws.send(JSON.stringify({
+          type: 'error',
+          code: 'codesite_agent_attach_denied',
+          message: 'CodeSite agent reattach failed closed.',
+        }));
+        ws.close(1008, 'CodeSite agent reattach denied');
+        return;
+      }
+      const agentReattachDecision = agentSessionReattachDecision({
+        requestedBinding: requestedAgentBinding,
+        existingSession,
+      });
+      if (!agentReattachDecision.ok) {
+        ws.send(JSON.stringify({
+          type: 'error',
+          code: agentReattachDecision.code,
+          reason: agentReattachDecision.reason,
+          message: agentReattachDecision.message,
+        }));
+        ws.close(1008, 'CodeSite agent reattach denied');
+        return;
+      }
       const { pty: ptyProcess, shell, cwd } = existingSession;
       const outputBuffer = Array.isArray(existingSession.outputBuffer) ? existingSession.outputBuffer : [];
       const outputBufferLen = Number.isFinite(existingSession.outputBufferLen)
@@ -1744,7 +1819,7 @@ function createTerminalWSS({
       // Start filesystem watcher now that we have a WebSocket
       let unwatchFs = () => {};
       if (workspaceSlug) {
-        unwatchFs = watchWorkspace(workspaceSlug, cwd, (fsMsg) => {
+        unwatchFs = watchWorkspaceImpl(workspaceSlug, cwd, (fsMsg) => {
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify(fsMsg));
           }
@@ -1752,7 +1827,15 @@ function createTerminalWSS({
       }
 
       // Update session: replace headless state with full WebSocket session
+      const codeSiteAgentLifecycle = existingSession.codeSiteAgentLifecycle || null;
+      const agentHeartbeatTimer = existingSession.agentHeartbeatTimer || (codeSiteAgentLifecycle
+        ? startAgentTerminalHeartbeat(codeSiteAgentLifecycle, {
+            intervalMs: agentHeartbeatIntervalMs,
+            onError: () => console.warn(`[Terminal] CodeSite agent heartbeat failed for ${sessionId}`),
+          })
+        : null);
       activeSessions.set(sessionId, {
+        ...existingSession,
         pty: ptyProcess,
         ws,
         cwd,
@@ -1765,6 +1848,9 @@ function createTerminalWSS({
         codesiteContext: existingSession.codesiteContext || codeSiteContext,
         codesiteQuarantine: existingSession.codesiteQuarantine || null,
         codesiteOriginalCwd: existingSession.codesiteOriginalCwd || null,
+        codeSiteAgentBinding: existingSession.codeSiteAgentBinding || null,
+        codeSiteAgentLifecycle,
+        agentHeartbeatTimer,
         releasePort: existingSession.releasePort || (() => {}),
         unwatchFs,
         dataDisposable: null,
@@ -1782,6 +1868,7 @@ function createTerminalWSS({
       // Send ready acknowledgement
       ws.send(JSON.stringify({
         type: 'ready',
+        reattached: true,
         sessionId,
         shell: path.basename(shell),
         cwd,
@@ -1871,13 +1958,37 @@ function createTerminalWSS({
     }
 
     // ── Generate session ID ─────────────────────────────────────────────
-    const sessionId = requestedSessionId || crypto.randomUUID();
+    let terminalAgentAttachment = null;
+    try {
+      terminalAgentAttachment = await attachTerminalAgent({
+        service: agentSessionAttachService,
+        gatewayAuth: req.collabGatewayAuth,
+        workspaceSlug,
+        terminalSessionId: sessionId,
+      });
+    } catch (_) {
+      ws.send(JSON.stringify({
+        type: 'error',
+        code: 'codesite_agent_attach_denied',
+        message: 'CodeSite agent attachment failed closed.',
+      }));
+      ws.close(1008, 'CodeSite agent attach denied');
+      return;
+    }
+    const compensateAgentAttachment = async (reason) => {
+      if (!terminalAgentAttachment?.state) return;
+      try {
+        await finalizeAgentTerminal(terminalAgentAttachment.state, reason);
+      } catch (_) {
+        console.warn(`[Terminal] CodeSite agent attach compensation failed for ${sessionId} (${reason})`);
+      }
+    };
     const instructionProjectionRuntimeScope = `terminal:${sessionId}`;
     let cwd;
     let codeSiteQuarantine = null;
     let codeSiteOriginalCwd = null;
     try {
-      const preparedFilesystem = await ensureRuntimeFilesystem({
+      const preparedFilesystem = await ensureRuntimeFilesystemImpl({
         workspaceSlug,
         filesystemUserId: requestedFilesystemUserId,
         activeWorkspacePath,
@@ -1886,9 +1997,10 @@ function createTerminalWSS({
         reason: 'interactive_terminal',
         codesiteContext: codeSiteContext.active ? codeSiteContext : null,
       });
-      cwd = preparedFilesystem.activeWorkspaceRoot || await resolveWorkspaceCwd(workspaceSlug, requestedFilesystemUserId);
+      cwd = preparedFilesystem.activeWorkspaceRoot || await resolveWorkspaceCwdImpl(workspaceSlug, requestedFilesystemUserId);
     } catch (err) {
-      await releaseRuntimeFilesystem(instructionProjectionRuntimeScope);
+      await releaseRuntimeFilesystemImpl(instructionProjectionRuntimeScope);
+      await compensateAgentAttachment('terminal_filesystem_failed');
       console.error(`[Terminal] Failed to prepare filesystem for session ${sessionId}:`, err.message);
       ws.send(JSON.stringify({ type: 'error', message: 'Failed to prepare workspace filesystem: ' + err.message }));
       ws.close(1011, 'Workspace filesystem preparation failed');
@@ -1911,7 +2023,8 @@ function createTerminalWSS({
             codesite: codeSiteMetadata,
           }));
           ws.close(1008, 'CodeSite terminal flush denied');
-          await releaseRuntimeFilesystem(instructionProjectionRuntimeScope);
+          await releaseRuntimeFilesystemImpl(instructionProjectionRuntimeScope);
+          await compensateAgentAttachment('terminal_flush_failed');
           return;
         }
       }
@@ -1933,7 +2046,8 @@ function createTerminalWSS({
         codesite: codeSiteMetadata,
       }));
       ws.close(1008, 'CodeSite terminal quarantine unavailable');
-      await releaseRuntimeFilesystem(instructionProjectionRuntimeScope);
+      await releaseRuntimeFilesystemImpl(instructionProjectionRuntimeScope);
+      await compensateAgentAttachment('terminal_runtime_unavailable');
       return;
     }
     if (launchMode === 'overlay-runtime') {
@@ -1946,7 +2060,8 @@ function createTerminalWSS({
         console.error(`[Terminal] Failed to prepare CodeSite overlay for session ${sessionId}:`, err.message);
         ws.send(JSON.stringify({ type: 'error', message: 'Failed to prepare CodeSite overlay: ' + err.message }));
         ws.close(1011, 'CodeSite overlay preparation failed');
-        await releaseRuntimeFilesystem(instructionProjectionRuntimeScope);
+        await releaseRuntimeFilesystemImpl(instructionProjectionRuntimeScope);
+        await compensateAgentAttachment('terminal_overlay_failed');
         return;
       }
     }
@@ -1994,7 +2109,7 @@ function createTerminalWSS({
           cols: initialCols,
           rows: initialRows,
           workspaceRelativePath: activeWorkspacePath,
-          env: codeSiteEnv,
+          env: { ...codeSiteEnv, ...(terminalAgentAttachment?.scopedEnv || {}) },
           ...runtimeOptions,
         });
         ptyProcess = handle.ptyProcess;
@@ -2004,26 +2119,27 @@ function createTerminalWSS({
           await finalizeCodeSiteQuarantineWorkspace(codeSiteContext, codeSiteQuarantine).catch(() => {});
           codeSiteQuarantine = null;
         }
-        console.error(`[Terminal] container shell failed for session ${sessionId}:`, err.message);
-        ws.send(JSON.stringify({ type: 'error', message: 'Failed to start container terminal: ' + err.message }));
+        console.error(`[Terminal] container shell failed for session ${sessionId}`);
+        ws.send(JSON.stringify({ type: 'error', message: 'Failed to start container terminal.' }));
         ws.close(1011, 'container shell failed');
-        await releaseRuntimeFilesystem(instructionProjectionRuntimeScope);
+        await releaseRuntimeFilesystemImpl(instructionProjectionRuntimeScope);
+        await compensateAgentAttachment('terminal_spawn_failed');
         return;
       }
     } else {
       try {
-        runtimeLaunch = await buildRuntimeLaunch({
+        runtimeLaunch = await buildRuntimeLaunchImpl({
           runtimeScope,
           workspaceSlug,
           actorUserId: requestedUserId,
           filesystemUserId: requestedFilesystemUserId,
           cwd,
         });
-        ({ ptyProcess, shell } = await createTerminalProcess({
+        ({ ptyProcess, shell } = await createTerminalProcessImpl({
           cwd,
           cols: initialCols,
           rows: initialRows,
-          env: { ...runtimeLaunch.env, ...codeSiteEnv },
+          env: { ...runtimeLaunch.env, ...codeSiteEnv, ...(terminalAgentAttachment?.scopedEnv || {}) },
           shellType: requestedShellType,
           workspaceName,
           workspaceSlug,
@@ -2038,22 +2154,39 @@ function createTerminalWSS({
           await finalizeCodeSiteQuarantineWorkspace(codeSiteContext, codeSiteQuarantine).catch(() => {});
           codeSiteQuarantine = null;
         }
-        console.error(`[Terminal] Failed to spawn PTY for session ${sessionId}:`, err.message);
-        ws.send(JSON.stringify({ type: 'error', message: 'Failed to spawn shell: ' + err.message }));
+        console.error(`[Terminal] Failed to spawn PTY for session ${sessionId}`);
+        ws.send(JSON.stringify({ type: 'error', message: 'Failed to spawn shell.' }));
         ws.close(1011, 'PTY spawn failed');
-        await releaseRuntimeFilesystem(instructionProjectionRuntimeScope);
+        await releaseRuntimeFilesystemImpl(instructionProjectionRuntimeScope);
+        await compensateAgentAttachment('terminal_spawn_failed');
         return;
       }
     }
 
     // ── Start filesystem watcher for this workspace ────────────────────
     let unwatchFs = () => {};
-    if (workspaceSlug) {
-      unwatchFs = watchWorkspace(workspaceSlug, cwd, (fsMsg) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify(fsMsg));
-        }
-      });
+    try {
+      if (workspaceSlug) {
+        unwatchFs = watchWorkspaceImpl(workspaceSlug, cwd, (fsMsg) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify(fsMsg));
+          }
+        });
+      }
+    } catch (_) {
+      try { ptyProcess.kill?.(); } catch (_) {}
+      try { runtimeLaunch?.releasePort?.(); } catch (_) {}
+      if (containerRuntimeOptions && workspaceRuntime) {
+        await Promise.resolve(workspaceRuntime.teardown(workspaceSlug, requestedUserId, containerRuntimeOptions)).catch(() => {});
+      }
+      if (codeSiteQuarantine) {
+        await finalizeCodeSiteQuarantineWorkspace(codeSiteContext, codeSiteQuarantine).catch(() => {});
+      }
+      await releaseRuntimeFilesystemImpl(instructionProjectionRuntimeScope);
+      await compensateAgentAttachment('terminal_watcher_failed');
+      ws.send(JSON.stringify({ type: 'error', message: 'Failed to initialize terminal filesystem observation.' }));
+      ws.close(1011, 'Terminal watcher failed');
+      return;
     }
 
     const sessionRecord = {
@@ -2073,6 +2206,9 @@ function createTerminalWSS({
       runtimeTeardownOnDispose: Boolean(containerRuntimeOptions?.codeSiteOverlayId || containerRuntimeOptions?.codeSiteQuarantineRoot),
       codesite: codeSiteMetadata,
       codesiteContext: codeSiteContext.active ? codeSiteContext : null,
+      codeSiteAgentBinding: terminalAgentAttachment?.binding || null,
+      codeSiteAgentLifecycle: terminalAgentAttachment?.state || null,
+      agentHeartbeatTimer: null,
       codesiteQuarantine: codeSiteQuarantine || null,
       // Property name stays lowercase to match its siblings; the value comes from
       // codeSiteOriginalCwd. The shorthand form referenced an undefined identifier
@@ -2091,6 +2227,7 @@ function createTerminalWSS({
     // ── Send ready acknowledgement ──────────────────────────────────────
     ws.send(JSON.stringify({
       type: 'ready',
+      reattached: false,
       sessionId,
       shell: path.basename(shell),
       cwd,
@@ -2111,6 +2248,12 @@ function createTerminalWSS({
     };
     sessionRecord.dataDisposable = ptyProcess.onData(onPtyData);
     activeSessions.set(sessionId, sessionRecord);
+    if (sessionRecord.codeSiteAgentLifecycle) {
+      sessionRecord.agentHeartbeatTimer = startAgentTerminalHeartbeat(sessionRecord.codeSiteAgentLifecycle, {
+        intervalMs: agentHeartbeatIntervalMs,
+        onError: () => console.warn(`[Terminal] CodeSite agent heartbeat failed for ${sessionId}`),
+      });
+    }
 
     // ── PTY exit ────────────────────────────────────────────────────────
     sessionRecord.exitDisposable = ptyProcess.onExit(({ exitCode, signal }) => {
@@ -2181,6 +2324,14 @@ function createTerminalWSS({
       console.error(`[Terminal] WS error for session ${sessionId}:`, err.message);
       detachTerminalSession(sessionId, 'ws_error', ws);
     });
+  };
+  wss.on('connection', (ws, req) => {
+    void handleTerminalConnection(ws, req).catch(() => {
+      try {
+        ws.send(JSON.stringify({ type: 'error', code: 'terminal_initialization_failed', message: 'Terminal initialization failed.' }));
+        ws.close(1011, 'Terminal initialization failed');
+      } catch (_) {}
+    });
   });
 
   // ── Upgrade handler for the main HTTP server ──────────────────────────
@@ -2190,7 +2341,7 @@ function createTerminalWSS({
     });
   }
 
-  return { wss, handleUpgrade };
+  return { wss, handleUpgrade, handleTerminalConnection };
 }
 
 // ─── Exports ────────────────────────────────────────────────────────────────
@@ -2219,5 +2370,6 @@ module.exports = {
   getAvailableShells,
   resolveShellType,
   resolveWorkspaceCwd,
+  stripSensitiveServerEnvironment,
   SHELL_REGISTRY,
 };
