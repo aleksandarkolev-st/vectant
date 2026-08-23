@@ -1209,6 +1209,9 @@ async function main() {
       // command to have passed; near_miss universes preserve the execution
       // evidence but must not satisfy the mature-proof bar.
       && universe.status === 'passed');
+  if (executionMode === 'git_worktree_patch_execution' && universes.length === 0) {
+    throw new Error('shadow_patch_universes_required');
+  }
   const evidenceRefs = [
     `codesite:shadow-runner:${digest({ selected, universes, executionMode })}`,
     ...universes.flatMap((universe) => universe.evidenceRefs),
