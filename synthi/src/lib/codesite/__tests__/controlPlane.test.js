@@ -54,9 +54,11 @@ const { prisma } = vi.hoisted(() => ({
     codeSiteAgentChannel: {
       create: vi.fn(),
       findFirst: vi.fn(),
+      findUnique: vi.fn(),
       findMany: vi.fn(),
       count: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
     },
     codeSiteAgentInboxItem: {
       create: vi.fn(),
@@ -2966,6 +2968,17 @@ describe('CodeSite control plane transaction validation', () => {
 
     beforeEach(() => {
       prisma.codeSiteProject.findFirst.mockResolvedValue(projectRow);
+      prisma.codeSiteAgentChannel.findUnique.mockImplementation(async ({ where }) => (
+        where?.id === 'channel-9' ? {
+          id: 'channel-9', projectId: 'project-authority-1', workspaceSlug: 'acme',
+          fromSessionId: 'agent-authority-1', toSessionId: 'agent-authority-2',
+          status: 'active', purpose: 'patch_negotiation', transport: 'websocket',
+          fromEndpointRef: 'ws://127.0.0.1:9101/agent-a', toEndpointRef: 'ws://127.0.0.1:9202/agent-b',
+          channelTokenHash: 'sha256:' + 'c'.repeat(64), maxDurationMs: 1_800_000,
+          grantExpiresAt: null, openedAt: new Date(AGENT_AUTHORITY_NOW), closedAt: null,
+          summaryDigest: null, messageCount: 0, createdAt: new Date(AGENT_AUTHORITY_NOW),
+        } : null));
+      prisma.codeSiteAgentChannel.updateMany.mockResolvedValue({ count: 1 });
       prisma.codeSiteAgentChannel.create.mockImplementation(async ({ data }) => ({
         id: 'channel-1', createdAt: new Date(AGENT_AUTHORITY_NOW), messageCount: 0, ...data,
       }));
@@ -3112,7 +3125,7 @@ describe('CodeSite control plane transaction validation', () => {
       expect(result.channelToken).toMatch(/^csc_[A-Za-z0-9_-]+$/);
       expect(result.status).toBe('active');
       expect(result.toEndpointRef).toBe('ws://127.0.0.1:9202/agent-b');
-      const updateData = prisma.codeSiteAgentChannel.update.mock.calls.at(-1)[0].data;
+      const updateData = prisma.codeSiteAgentChannel.updateMany.mock.calls.at(-1)[0].data;
       expect(updateData.channelTokenHash).toMatch(/^sha256:[a-f0-9]{64}$/);
       expect(updateData.channelTokenHash).not.toContain(result.channelToken.slice(4));
       expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({

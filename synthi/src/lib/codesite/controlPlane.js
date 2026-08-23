@@ -13256,8 +13256,11 @@ export async function acceptAgentChannel(workspaceSlug, sessionId, agentAccessTo
   }
   const endpointRef = String(body.endpointRef || body.endpoint_ref || '').trim() || null;
   const token = mintChannelToken();
-  const updated = await prisma.codeSiteAgentChannel.update({
-    where: { id: channel.id },
+  // Design §7: acceptance is single-shot. A conditional update makes a
+  // concurrent double-accept lose deterministically instead of minting two
+  // tokens with last-write-wins.
+  const claim = await prisma.codeSiteAgentChannel.updateMany({
+    where: { id: channel.id, status: 'requested' },
     data: {
       status: 'active',
       toEndpointRef: endpointRef,
@@ -13265,6 +13268,8 @@ export async function acceptAgentChannel(workspaceSlug, sessionId, agentAccessTo
       openedAt: new Date(),
     },
   });
+  if (claim.count !== 1) throw badRequest('channel_already_accepted');
+  const updated = await prisma.codeSiteAgentChannel.findUnique({ where: { id: channel.id } });
   await recordChannelEvent(channel.projectId, {
     eventType: 'channel_accepted',
     actorId: session.id,
