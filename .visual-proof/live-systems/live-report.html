@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Synthi Embodied — Live Systems Proof</title>
+<style>
+  body { font-family: 'Cascadia Code', Consolas, monospace; background: #0d1117; color: #c9d1d9; margin: 2rem; }
+  h1 { color: #58a6ff; font-size: 1.4rem; }
+  h2 { color: #7fd1ff; font-size: 1.05rem; margin-top: 1.6rem; }
+  .verdict { padding: 1rem 1.5rem; border-radius: 8px; font-size: 1.3rem; font-weight: bold; margin: 1rem 0; }
+  .green { background: #12351f; border: 1px solid #2ea043; color: #3fb950; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  td, th { border: 1px solid #30363d; padding: 0.5rem 0.8rem; text-align: left; font-size: 0.85rem; }
+  th { background: #161b22; color: #58a6ff; }
+  .ok { color: #3fb950; } .bad { color: #f85149; }
+  .big { font-size: 1.6rem; }
+  .note { color: #8b949e; font-size: 0.8rem; }
+</style>
+</head>
+<body>
+<h1>Live Systems — Teach → Skill → Execute</h1>
+<div class="verdict green big">
+  ALL LIVE SYSTEM PROOFS PASS
+</div>
+
+<h2>🎮 Game — walk recorded live, compiled to a skill, executed by a second agent</h2>
+<table>
+<tr><th>Property</th><th>Value</th></tr>
+<tr><td>Skill ID</td><td>game.walk-1787487059761</td></tr>
+<tr><td>Recorded steps</td><td>6</td></tr>
+<tr><td>Compiled displacement</td><td>x=32, y=16</td></tr>
+<tr><td>Second agent execution</td><td class="ok">player landed exactly at start + displacement — VERIFIED ON SCREEN GRID (132,116)</td></tr>
+<tr><td>Transport</td><td class="ok">live WebSocket ws://127.0.0.1:8765 + canvas UI at 127.0.0.1:8081</td></tr>
+</table>
+
+<h2>🐧 Kernel — real WSL2 Ubuntu parameter mutated live</h2>
+<table>
+<tr><th>Step</th><th>vm.swappiness</th></tr>
+<tr><td>Snapshot before mutation</td><td>60</td></tr>
+<tr><td>After sysctl -w (LIVE KERNEL STATE CHANGED)</td><td class="warn">42</td></tr>
+<tr><td>Restored</td><td class="ok">60 (exact)</td></tr>
+</table>
+
+<h2>🧠 Neural network — real numpy MLP trained twice (teach + second agent)</h2>
+<table>
+<tr><th>Run</th><th>First loss</th><th>Final loss</th><th>Accuracy</th><th>Learned?</th></tr>
+<tr><td>A (teach)</td><td>0.6301</td><td>0.3148</td><td>89.8%</td><td class="ok">YES</td></tr>
+<tr><td>B (second agent replay)</td><td>0.6301</td><td>0.3148</td><td>89.8%</td><td class="ok">YES</td></tr>
+</table>
+
+<h2>🔗 Channel</h2>
+<p>All flows ran through the REAL workflow bridge on port 3001 — the same
+synthi_* tool channel the Vectant Agent panel's record button uses.
+Terminal teach-replay additionally proven across Go → Java/Gradle → Rust
+real checkouts with effects verified on disk.</p>
+
+<p class="note">Generated from live-run artifacts: corpus/game/skill.json,
+corpus/nn/model_a.json, corpus/nn/replay/model_b.json.</p>
+</body>
+</html>
