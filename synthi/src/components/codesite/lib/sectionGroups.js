@@ -14,7 +14,7 @@ export const SECTION_GROUPS = [
     key: "live",
     label: "Live",
     icon: CodeSiteIcons.liveState,
-    sections: ["overview", "radar", "tower"],
+    sections: ["overview", "radar", "tower", "channels"],
   },
   {
     key: "decisions",

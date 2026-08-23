@@ -13,7 +13,7 @@ import {
 } from "./lib/sectionGroups";
 import { causalReplayHandovers } from "./views/replay/handovers";
 import {
-  ActivityView, EvidenceView, GovernanceView, GraphView, InspectionsView,
+  ActivityView, ChannelsView, EvidenceView, GovernanceView, GraphView, InspectionsView,
   LocksView, OverviewView, QuarantineView, ReplayView, SimulatorView,
 } from "./views";
 import { IconButton, LoadingSkeleton, Pill } from "./ui";
@@ -112,6 +112,7 @@ const VIEWS = {
   overview: OverviewView,
   radar: GraphView,
   tower: ActivityView,
+  channels: ChannelsView,
   governance: GovernanceView,
   runway: LocksView,
   quarantine: QuarantineView,
@@ -1053,6 +1054,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
       { key: "overview", label: "Overview", icon: CodeSiteIcons.liveState },
       { key: "radar", label: "Graph", icon: CodeSiteIcons.workspaceGraph },
       { key: "tower", label: "Activity", icon: CodeSiteIcons.activity },
+      { key: "channels", label: "Channels", icon: CodeSiteIcons.workspaceGraph },
       { key: "governance", label: "Governance", icon: CodeSiteIcons.governance },
       { key: "runway", label: "Locks", icon: CodeSiteIcons.pathLocks },
       { key: "quarantine", label: "Quarantine", icon: CodeSiteIcons.quarantine },
@@ -1091,6 +1093,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
   const viewProps = {
     project: currentProject,
+    workspaceSlug,
     counts: radarState.counts,
     status: latestStatus,
     streamStatus,
