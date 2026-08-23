@@ -14,6 +14,7 @@ from shadow.codesite_agent_workspace import (
     remove_codesite_agent_worktree,
     worktree_base_commit,
 )
+from shadow.runner_base import BaseRunnerAdapter
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -74,6 +75,13 @@ def test_codesite_agent_worktree_requires_configured_existing_root(tmp_path):
             overlay_root=tmp_path / "missing",
             binding=_binding(workspace),
         )
+
+
+def test_runner_diff_reports_untracked_worktree_files(tmp_path):
+    workspace = _workspace(tmp_path)
+    (workspace / "new-file.txt").write_text("new\n", encoding="utf-8")
+    diff = BaseRunnerAdapter().collect_diff(workspace, "base")
+    assert "new-file.txt" in diff["changed_paths"]
 
 
 @pytest.mark.parametrize("field,value", [

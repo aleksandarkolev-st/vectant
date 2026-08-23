@@ -198,13 +198,26 @@ class BaseRunnerAdapter:
                 ["git", "diff", "--name-only", "--", "."], cwd=root, shell=False,
                 capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
             )
+            status = subprocess.run(
+                ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."], cwd=root, shell=False,
+                capture_output=True, text=False, check=False,
+            )
             loc_added = loc_removed = 0
             for row in changed.stdout.splitlines()[:200]:
                 parts = row.split("\t", 2)
                 if len(parts) >= 2:
                     loc_added += int(parts[0]) if parts[0].isdigit() else 0
                     loc_removed += int(parts[1]) if parts[1].isdigit() else 0
-            changed_files = [line[:512] for line in files.stdout.splitlines()[:200] if line]
+            changed_files = {line[:512] for line in files.stdout.splitlines() if line}
+            status_entries = status.stdout.decode("utf-8", errors="replace").split("\0")
+            for entry in status_entries:
+                if len(entry) < 4:
+                    continue
+                # Porcelain v1 is "XY <path>". Rename entries contain a
+                # second NUL-delimited path; retaining both is conservative
+                # and lets policy see every touched pathname.
+                changed_files.add(entry[3:][:512])
+            changed_files = sorted(path for path in changed_files if path)[:200]
         except OSError:
             loc_added = loc_removed = 0
             changed_files = []
