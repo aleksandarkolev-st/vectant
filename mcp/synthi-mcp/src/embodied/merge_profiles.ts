@@ -71,8 +71,9 @@ export function reduceToWindows(
     // the OPEN WINDOW's key when the event has none of its own: an
     // unbroken run of output lines all belongs to the command that opened
     // the window. A null resolved key closes the window.
-    const inherited = openKey !== null && !openKeyClosed ? openKey : null;
-    const key = profile.keyOf(event, previous) ?? inherited;
+    const inherited: string | number | null =
+      openKey !== null && !openKeyClosed ? openKey : null;
+    const key: string | number | null = profile.keyOf(event, previous) ?? inherited;
     const canMerge =
       key !== null &&
       !openKeyClosed &&
