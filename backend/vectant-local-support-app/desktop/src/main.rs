@@ -65,7 +65,12 @@ struct PendingFullAccessEnrollment {
     policy: FullAccessPolicy,
     support_actor: String,
     expires_at: DateTime<Utc>,
+    #[serde(default = "default_full_access_work_session_ttl_seconds")]
+    work_session_ttl_seconds: u32,
 }
+
+const FULL_ACCESS_WORK_SESSION_MAX_SECONDS: u32 = 8 * 60 * 60;
+fn default_full_access_work_session_ttl_seconds() -> u32 { FULL_ACCESS_WORK_SESSION_MAX_SECONDS }
 
 #[derive(Clone, serde::Serialize)]
 struct ProcessVisibilitySnapshot {
@@ -919,6 +924,37 @@ fn clear_mutation_review(runtime: &DesktopRuntime) -> Result<(), String> {
     Ok(())
 }
 
+fn select_linked_project_nodes(
+    workspace: &WorkspacePolicy,
+    selection_mode: &str,
+) -> Result<(Vec<String>, usize), &'static str> {
+    let graph = workspace
+        .build_capability_graph()
+        .map_err(|_| "linked_project_graph_unavailable")?;
+    if selection_mode == "folder" {
+        return Ok((Vec::new(), graph.len()));
+    }
+    let root = std::fs::canonicalize(workspace.root()).map_err(|_| "linked_project_root_unavailable")?;
+    let paths = rfd::FileDialog::new()
+        .set_title("Select the local files Vectant can work with")
+        .set_directory(&root)
+        .pick_files()
+        .ok_or("linked_project_file_selection_cancelled")?;
+    let selected_paths = paths.into_iter().map(|path| {
+        let canonical = std::fs::canonicalize(path).map_err(|_| "linked_project_file_unavailable")?;
+        let relative = canonical.strip_prefix(&root).map_err(|_| "linked_project_file_outside_workspace")?;
+        Ok::<String, &'static str>(relative.to_string_lossy().replace('\\', "/"))
+    }).collect::<Result<BTreeSet<_>, _>>()?;
+    let selected_node_ids = graph.values()
+        .filter(|node| selected_paths.contains(&node.relative_path))
+        .map(|node| node.node_id.clone())
+        .collect::<Vec<_>>();
+    if selected_node_ids.is_empty() || selected_node_ids.len() > 2_000 {
+        return Err("linked_project_file_selection_invalid");
+    }
+    Ok((selected_node_ids.clone(), selected_node_ids.len()))
+}
+
 fn required_safe_id<'a>(payload: &'a serde_json::Value, field: &str) -> Result<&'a str, String> {
     let value = payload
         .get(field)
@@ -1023,6 +1059,8 @@ async fn confirm_full_access_enrollment_proposal(
         .map_err(|_| "Cloud policy lock failed closed.".to_string())? = cloud_policy.clone();
     apply_policy_to_local_state(state, &cloud_policy).await?;
     if proposal.expires_at <= now
+        || proposal.work_session_ttl_seconds < 300
+        || proposal.work_session_ttl_seconds > FULL_ACCESS_WORK_SESSION_MAX_SECONDS
         || !proposal.policy.is_valid_enrollment_policy()
         || !proposal.policy.organization_enabled
         || proposal.policy.emergency_paused
@@ -1063,7 +1101,7 @@ async fn confirm_full_access_enrollment_proposal(
         policy_major: proposal.policy.policy_major,
         reconsent_version: proposal.policy.mandatory_reconsent_version,
         created_at: now,
-        expires_at: proposal.expires_at,
+        expires_at: now + chrono::Duration::seconds(i64::from(proposal.work_session_ttl_seconds)),
         paused_at: None,
         revoked_at: None,
         local_confirmation: "native_button".to_string(),
@@ -1091,7 +1129,7 @@ async fn confirm_full_access_enrollment_proposal(
     let mut full_access = state.full_access.lock().await;
     full_access.policy = proposal.policy.clone();
     full_access.receipt = Some(receipt.clone());
-    full_access.graph = graph;
+    full_access.graph = full_access.scope_graph(graph);
     full_access.budget = Default::default();
     full_access.process_visibility_paused = false;
     full_access
@@ -1466,7 +1504,12 @@ async fn relay_poll_loop(app_handle: tauri::AppHandle) {
                     {
                         if let Ok(expires_at) = DateTime::parse_from_rfc3339(&expires_at) {
                             if let Ok(ttl) = (expires_at.with_timezone(&Utc) - Utc::now()).to_std() {
-                                let _ = app_state.session.lock().await.renew(ttl);
+                                let mut session_guard = app_state.session.lock().await;
+                                if session_guard.renew(ttl).is_ok() {
+                                    // The bearer is loopback-only and never crosses the relay.
+                                    // Retain a short overlap for already-started local requests.
+                                    let _ = session_guard.rotate_connection_token(Duration::from_secs(60));
+                                }
                             }
                         }
                     }
@@ -1823,6 +1866,8 @@ async fn handle_relay_control_command(
             };
             if proposal.request_id.len() < 3
                 || proposal.request_id.len() > 128
+                || proposal.work_session_ttl_seconds < 300
+                || proposal.work_session_ttl_seconds > FULL_ACCESS_WORK_SESSION_MAX_SECONDS
                 || !proposal
                     .request_id
                     .bytes()
@@ -1847,6 +1892,51 @@ async fn handle_relay_control_command(
                     .map_err(|_| "full_access_enrollment_state_lock_failed")? = Some(proposal);
                 Ok("full_access_enrollment_pending_native_confirmation")
             }
+        }
+        "linked_project_activate" => {
+            let proposal = command.proposal.as_ref().ok_or("linked_project_proposal_missing")?;
+            let project_id = proposal.get("project_id").and_then(serde_json::Value::as_str).ok_or("linked_project_id_missing")?;
+            let display_name = proposal.get("display_name").and_then(serde_json::Value::as_str).ok_or("linked_project_name_missing")?;
+            let mode = proposal.get("selection_mode").and_then(serde_json::Value::as_str).ok_or("linked_project_mode_missing")?;
+            let local = state.workspace.summary();
+            if !project_id.starts_with("lproj_") || project_id.len() > 128 || !matches!(mode, "folder" | "file_set") || display_name.is_empty() || display_name.len() > 96 {
+                Err("linked_project_scope_mismatch")
+            } else {
+                let (selected_node_ids, graph_node_count) = select_linked_project_nodes(&state.workspace, mode)?;
+                let scope = if mode == "file_set" {
+                    Some(selected_node_ids.iter().cloned().collect::<BTreeSet<_>>())
+                } else { None };
+                let full_access_expires_at = {
+                    let mut full_access = state.full_access.lock().await;
+                    full_access.apply_linked_project_scope(scope);
+                    full_access.receipt.as_ref().map(|receipt| receipt.expires_at.to_rfc3339())
+                };
+                runtime.relay_client.report_linked_project_status(
+                    &runtime.device_identity,
+                    &session.session_id,
+                    project_id,
+                    &local.root_hash,
+                    mode,
+                    &selected_node_ids,
+                    graph_node_count,
+                    full_access_expires_at.as_deref(),
+                ).await.map_err(|_| "linked_project_status_report_failed")?;
+                append_control_event(state, &command.command_id, "Linked local project activated after local graph validation. No source was uploaded.").await?;
+                Ok("linked_project_activated")
+            }
+        }
+        "linked_project_disconnect" => {
+            let project_id = command.proposal.as_ref()
+                .and_then(|value| value.get("project_id"))
+                .and_then(serde_json::Value::as_str)
+                .ok_or("linked_project_id_missing")?;
+            if !project_id.starts_with("lproj_") || project_id.len() > 128 {
+                return report_control_outcome(runtime, session, &command, "denied", "linked_project_id_invalid").await;
+            }
+            state.full_access.lock().await.revoke();
+            clear_process_visibility_snapshot(runtime)?;
+            clear_mutation_review(runtime)?;
+            Ok("linked_project_disconnected")
         }
         "full_access_pause" => {
             state.full_access.lock().await.pause();

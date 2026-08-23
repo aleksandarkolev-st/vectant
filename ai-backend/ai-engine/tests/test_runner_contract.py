@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import subprocess
+import json
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -82,6 +83,32 @@ def test_runner_executes_explicit_argv_and_stores_raw_artifact_by_reference(tmp_
     trace = adapter.collect_trace(invocation, artifact)
     assert trace.tool_trace_summary["raw_log_ref"] == artifact.raw_log_ref
     assert "runner summary" not in trace.tool_trace_summary["raw_log_ref"]
+
+
+def test_runner_redacts_common_credentials_from_durable_raw_logs(tmp_path):
+    adapter = BaseRunnerAdapter()
+    artifact = adapter.run(
+        workspace_path=tmp_path,
+        invocation=RunnerInvocation(run_id="redact", universe_id="A", runner_id="fixture", direction_id="safe", direction_label="safe", declared_condition="test", start_state_hash="base"),
+        command=[sys.executable, "-c", "print('API_TOKEN=super-secret\\nAuthorization: Bearer abc.def_123')"],
+    )
+
+    logged = json.loads((tmp_path / artifact.raw_log_ref).read_text(encoding="utf-8"))
+    assert "super-secret" not in logged["stdout"]
+    assert "abc.def_123" not in logged["stdout"]
+    assert "[REDACTED]" in logged["stdout"]
+
+
+def test_runner_redacts_credentials_in_recorded_argv(tmp_path):
+    adapter = BaseRunnerAdapter()
+    artifact = adapter.run(
+        workspace_path=tmp_path,
+        invocation=RunnerInvocation(run_id="argv-redact", universe_id="A", runner_id="fixture", direction_id="safe", direction_label="safe", declared_condition="test", start_state_hash="base"),
+        command=[sys.executable, "-c", "print('ok')", "API_TOKEN=super-secret"],
+    )
+
+    logged = json.loads((tmp_path / artifact.raw_log_ref).read_text(encoding="utf-8"))
+    assert "super-secret" not in logged["argv"]
 
 
 def test_collect_diff_reports_bounded_change_statistics(tmp_path):

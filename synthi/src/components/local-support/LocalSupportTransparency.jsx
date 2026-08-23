@@ -57,8 +57,7 @@ function buildOrgRestrictions(policy) {
   const fastSupportTtl = formatMinutes(policy?.mvp?.fast_support_ttl_minutes);
   return [
     ["Browser preview", policy ? (previewDisabled ? "Blocked by policy" : "Allowed by policy") : "Not reported", previewDisabled ? "bad" : policy ? "good" : "neutral", "Local app still requires a loopback approval"],
-    ["Vectant AI page reading", "Blocked in MVP", "bad", "Browser preview never grants AI page access"],
-    ["Support agent page reading", "Blocked in MVP", "bad", "Browser preview never grants support page access"],
+    ["Full Access local-port reads", policy?.full_access?.local_port_use_enabled ? "Receipt-scoped" : "Disabled by policy", policy?.full_access?.local_port_use_enabled ? "warn" : policy ? "neutral" : "neutral", "Browser preview never grants page access. Full Access reads are separately bounded, scanned, identity-bound, and audited."],
     ["Fast Support", policy ? (fastSupportEnabled ? "Enabled by policy" : "Disabled by policy") : "Not reported", policy && fastSupportEnabled ? "warn" : "neutral", `Safe metadata only, with a ${fastSupportTtl === "Not reported" ? "policy-controlled" : fastSupportTtl} session TTL`],
     ["Minimum app version", policy?.min_app_version || "Not reported", policy ? "warn" : "neutral", policy ? "Older versions are denied" : "Cloud policy has not loaded"],
     ["Activity retention", formatRetention(policy), policy ? "warn" : "neutral", "Raw bodies are never stored in cloud audit"],
@@ -96,7 +95,7 @@ function buildPermissionModes({ fastSupportEnabled, connected, liveFastSupport, 
       status: connected ? "Active" : "Available after pairing",
       automatic: "Low-risk metadata only",
       approval: "Source, logs, and loopback preview",
-      blocked: "Secrets, workspace writes, commands, AI/support page reads, persistent approvals",
+      blocked: "Secrets, workspace writes, commands, and persistent approvals",
       tone: connected ? "good" : "neutral",
     },
     {
@@ -104,7 +103,7 @@ function buildPermissionModes({ fastSupportEnabled, connected, liveFastSupport, 
       status: "Available after pairing",
       automatic: "Nothing",
       approval: "Every file, log, and port request",
-      blocked: "Same local security denylist, writes, commands, and page reads",
+      blocked: "Same local security denylist, writes, commands, and persistent approvals",
       tone: "info",
     },
     {
@@ -112,7 +111,7 @@ function buildPermissionModes({ fastSupportEnabled, connected, liveFastSupport, 
       status: !fastSupportEnabled ? "Disabled by policy" : liveFastSupport ? "Active" : "Available after pairing",
       automatic: `Safe metadata only, one workspace, ${fastSupportTtl === "Not reported" ? "policy-controlled TTL" : `max ${fastSupportTtl}`}`,
       approval: "Source, logs, and loopback preview",
-      blocked: "Secrets, writes, commands, response bodies, AI/support page reads, persistent approvals",
+      blocked: "Secrets, writes, commands, response bodies, and persistent approvals",
       tone: !fastSupportEnabled ? "bad" : liveFastSupport ? "warn" : "neutral",
     },
     {
@@ -240,6 +239,8 @@ export default function LocalSupportTransparency() {
   const [revokedPorts, setRevokedPorts] = useState([]);
   const [controlActionStatus, setControlActionStatus] = useState(null);
   const [selectedEnrollmentActor, setSelectedEnrollmentActor] = useState("");
+  const [linkedProjectsState, setLinkedProjectsState] = useState({ status: "loading", projects: [], error: null });
+  const [linkedProjectForm, setLinkedProjectForm] = useState({ displayName: "", selectionMode: "folder" });
   const [testRequestStatus, setTestRequestStatus] = useState(null);
   const [pairingState, setPairingState] = useState({
     status: "idle",
@@ -284,6 +285,22 @@ export default function LocalSupportTransparency() {
       }
     }
     loadPolicy();
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    async function loadLinkedProjects() {
+      try {
+        const response = await fetch("/api/local-support/linked-projects", { cache: "no-store", signal: controller.signal });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.reason || `linked_projects_${response.status}`);
+        if (!controller.signal.aborted) setLinkedProjectsState({ status: "loaded", projects: Array.isArray(body.projects) ? body.projects : [], error: null });
+      } catch (error) {
+        if (!controller.signal.aborted) setLinkedProjectsState({ status: "error", projects: [], error: error instanceof Error ? error.message : "linked_projects_unavailable" });
+      }
+    }
+    loadLinkedProjects();
     return () => controller.abort();
   }, []);
 
@@ -446,6 +463,49 @@ export default function LocalSupportTransparency() {
         text: error instanceof Error ? error.message : "Local control request failed.",
       });
       return null;
+    }
+  }
+
+  async function requestLinkedProject(event) {
+    event.preventDefault();
+    if (!connected || !workspaceSelected) {
+      setControlActionStatus({ tone: "bad", text: "Pair the desktop app and select a workspace before linking a local project." });
+      return;
+    }
+    const displayName = linkedProjectForm.displayName.trim() || workspaceDisplay;
+    setControlActionStatus({ tone: "neutral", text: "Requesting local project confirmation..." });
+    try {
+      const response = await fetch("/api/local-support/linked-projects", {
+        method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: `lproj_${crypto.randomUUID().replaceAll("-", "")}`,
+          selection_mode: linkedProjectForm.selectionMode,
+          display_name: displayName,
+          session_id: liveSession.session_id,
+          workspace_id: liveWorkspace.workspace_id,
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok || result.decision === "denied") throw new Error(result.reason || "linked_project_denied");
+      setLinkedProjectForm((current) => ({ ...current, displayName: "" }));
+      setControlActionStatus({ tone: "good", text: "The desktop app received the request. Confirm the selected folder or choose files locally; no source is uploaded." });
+      const projectsResponse = await fetch("/api/local-support/linked-projects", { cache: "no-store" });
+      const projectsBody = await projectsResponse.json();
+      if (projectsResponse.ok) setLinkedProjectsState({ status: "loaded", projects: Array.isArray(projectsBody.projects) ? projectsBody.projects : [], error: null });
+    } catch (error) {
+      setControlActionStatus({ tone: "bad", text: error instanceof Error ? error.message : "Could not request local project." });
+    }
+  }
+
+  async function disconnectLinkedProject(projectId) {
+    setControlActionStatus({ tone: "neutral", text: "Requesting local project disconnect..." });
+    try {
+      const response = await fetch("/api/local-support/linked-projects", { method: "DELETE", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project_id: projectId }) });
+      const result = await response.json();
+      if (!response.ok || result.decision === "denied") throw new Error(result.reason || "linked_project_disconnect_denied");
+      setControlActionStatus({ tone: "good", text: "The desktop app will revoke the linked project's Full Access scope." });
+    } catch (error) {
+      setControlActionStatus({ tone: "bad", text: error instanceof Error ? error.message : "Could not disconnect local project." });
     }
   }
 
@@ -645,8 +705,8 @@ export default function LocalSupportTransparency() {
                   </span>
                 </div>
                 <div className="flex items-center justify-between rounded-md bg-[var(--bg-surface)] px-3 py-2">
-                  <span className="text-[var(--text-muted)]">AI and support page access</span>
-                  <Pill tone="bad">Blocked in MVP</Pill>
+                  <span className="text-[var(--text-muted)]">Full Access local-port reads</span>
+                  <Pill tone={liveFullAccess.capabilities?.includes("support.full_access.local_port.use") ? "warn" : "neutral"}>{liveFullAccess.capabilities?.includes("support.full_access.local_port.use") ? "Receipt-scoped" : "Not granted"}</Pill>
                 </div>
                 <div className="flex items-center justify-between rounded-md bg-[var(--bg-surface)] px-3 py-2">
                   <span className="text-[var(--text-muted)]">Shell commands</span>
@@ -788,7 +848,7 @@ export default function LocalSupportTransparency() {
 
             <Panel
               title="Organization restrictions"
-              description="Browser preview is available only through an explicit session-scoped loopback grant. AI and support-agent page reads remain blocked in the MVP."
+              description="Browser preview is available only through an explicit session-scoped loopback grant. Full Access local-port reads are a separate receipt-scoped operation and never turn the browser preview into a general proxy."
             >
               <div className="space-y-3">
                 {orgRestrictions.map(([label, value, tone, detail]) => (
@@ -923,7 +983,7 @@ export default function LocalSupportTransparency() {
           </TabsContent>
 
           <TabsContent value="ports" className="mt-4">
-            <Panel title="Local ports" description="Manual approval only. Each port can grant browser, AI, support, interaction, response-body, and state-changing method capabilities for this session.">
+            <Panel title="Local ports" description="Browser preview requires a manual, session-scoped approval. Full Access may separately use policy-scoped loopback responses after receipt, listener-identity, response-size, scanner, and audit checks.">
               <div className="grid gap-4">
                 {ports.length === 0 ? (
                   <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-400">
@@ -1017,7 +1077,7 @@ export default function LocalSupportTransparency() {
           <TabsContent value="full-access" className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
             <Panel
               title="Full Access scope"
-              description="This is a local enforcement record, not a remote-administration grant. Every automatic action still requires a current receipt, policy, budget, scanner result, and durable audit event."
+              description="This is an eight-hour local work-session receipt, not a remote-administration grant. Every automatic action still requires a current receipt, policy, budget, scanner result, and durable audit event."
             >
               {liveFullAccess.enrolled ? (
                 <div className="space-y-4">
@@ -1064,6 +1124,33 @@ export default function LocalSupportTransparency() {
                   ) : null}
                 </div>
               )}
+            </Panel>
+
+            <Panel title="Linked local projects" description="Link the current desktop workspace as a folder, or choose a bounded file set in the native desktop dialog. Vectant records only a scrubbed graph identity and scope metadata; source and local paths are never uploaded.">
+              <form className="grid gap-3" onSubmit={requestLinkedProject}>
+                <label className="grid gap-1 text-xs text-[var(--text-muted)]">
+                  Project name
+                  <input className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-sm text-[var(--text-primary)]" maxLength={96} value={linkedProjectForm.displayName} onChange={(event) => setLinkedProjectForm((current) => ({ ...current, displayName: event.target.value }))} placeholder={workspaceDisplay} />
+                </label>
+                <label className="grid gap-1 text-xs text-[var(--text-muted)]">
+                  Local scope
+                  <select className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-sm text-[var(--text-primary)]" value={linkedProjectForm.selectionMode} onChange={(event) => setLinkedProjectForm((current) => ({ ...current, selectionMode: event.target.value }))}>
+                    <option value="folder">Current selected folder</option>
+                    <option value="file_set">Choose selected files locally</option>
+                  </select>
+                </label>
+                <Button type="submit" variant="outline" disabled={!relayControlsAvailable || !workspaceSelected}>Request local project access</Button>
+              </form>
+              <div className="mt-4 space-y-2">
+                {linkedProjectsState.projects.map((project) => (
+                  <div key={project.project_id} className="flex items-center justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-sm">
+                    <div className="min-w-0"><div className="truncate text-[var(--text-primary)]">{project.display_name}</div><div className="text-xs text-[var(--text-muted)]">{project.selection_mode === "file_set" ? `${project.graph_node_count} selected file nodes` : `${project.graph_node_count} folder graph nodes`} · local-backed</div></div>
+                    <div className="flex items-center gap-2"><Pill tone={project.status === "active" ? "good" : "warn"}>{project.status === "active" ? "Active" : "Awaiting desktop"}</Pill>{project.status === "active" ? <Button type="button" variant="ghost" size="sm" onClick={() => disconnectLinkedProject(project.project_id)}>Disconnect</Button> : null}</div>
+                  </div>
+                ))}
+                {linkedProjectsState.status === "error" ? <p className="text-sm text-[var(--accent-danger)]">Linked project state is unavailable: {linkedProjectsState.error}</p> : null}
+                {linkedProjectsState.status === "loaded" && linkedProjectsState.projects.length === 0 ? <p className="text-sm text-[var(--text-muted)]">No local project is linked yet.</p> : null}
+              </div>
             </Panel>
 
             <Panel title="Immediate local controls" description="Pause stops automatic delivery. Revoke invalidates the Full Access receipt and process visibility. Both are sent as signed desktop control requests, not browser-to-daemon commands.">

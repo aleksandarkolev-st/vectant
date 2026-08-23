@@ -39,6 +39,7 @@ pub struct SessionGuard {
     workspace_id: String,
     device_fingerprint: String,
     token: String,
+    previous_token: Option<(String, Instant)>,
     expires_at: Instant,
     paused: bool,
     fast_support_until: Option<Instant>,
@@ -153,6 +154,7 @@ impl SessionGuard {
             workspace_id: workspace_id.into(),
             device_fingerprint: device_fingerprint.into(),
             token,
+            previous_token: None,
             expires_at: Instant::now() + ttl,
             paused: false,
             fast_support_until: None,
@@ -266,6 +268,16 @@ impl SessionGuard {
         Ok(())
     }
 
+    /// Rotate the bearer used only on the loopback boundary. The previous
+    /// token remains valid briefly so an in-flight local request cannot turn
+    /// a successful signed renewal into an availability failure.
+    pub fn rotate_connection_token(&mut self, overlap: Duration) -> Result<(), SessionError> {
+        if !self.is_active() { return Err(SessionError::Expired); }
+        let replacement: String = rand::thread_rng().sample_iter(&Alphanumeric).take(48).map(char::from).collect();
+        self.previous_token = Some((std::mem::replace(&mut self.token, replacement), Instant::now() + overlap));
+        Ok(())
+    }
+
     pub fn validate(&mut self, token: &str, request_id: &str) -> Result<(), SessionError> {
         self.validate_inner(token, request_id, false)
     }
@@ -283,7 +295,8 @@ impl SessionGuard {
         if Instant::now() > self.expires_at {
             return Err(SessionError::Expired);
         }
-        if !constant_time_eq(token.as_bytes(), self.token.as_bytes()) {
+        let previous_valid = self.previous_token.as_ref().is_some_and(|(value, until)| Instant::now() <= *until && constant_time_eq(token.as_bytes(), value.as_bytes()));
+        if !constant_time_eq(token.as_bytes(), self.token.as_bytes()) && !previous_valid {
             return Err(SessionError::BadToken);
         }
         if !safe_request_id(request_id) {

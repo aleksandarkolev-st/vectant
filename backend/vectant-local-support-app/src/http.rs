@@ -446,6 +446,17 @@ async fn status(
             .collect::<Vec<_>>()
     };
     let audit = state.audit.lock().await;
+    let full_access = state.full_access.lock().await;
+    let receipt = full_access.receipt.as_ref();
+    let full_access_capabilities = receipt
+        .map(|value| {
+            value
+                .capabilities
+                .iter()
+                .map(|capability| capability.wire_name())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     Ok(Json(serde_json::json!({
         "session": session_state,
         "workspace": state.workspace.summary(),
@@ -453,6 +464,20 @@ async fn status(
         "history": {
             "events": audit.events(),
             "consent_receipts": audit.consent_receipts(),
+            "raw_bodies_included": false
+        },
+        // This is deliberately a sanitized status projection. It is the same
+        // scope users see in the desktop shell: no raw paths, command lines,
+        // process details, token material, or file bodies leave the daemon.
+        "full_access": {
+            "enrolled": receipt.is_some_and(|value| value.revoked_at.is_none() && value.paused_at.is_none()),
+            "auto_approval_enabled": receipt.is_some_and(|value| value.auto_approval_enabled),
+            "automatic_delivery_paused": full_access.budget.paused,
+            "process_visibility_paused": full_access.process_visibility_paused,
+            "capabilities": full_access_capabilities,
+            "graph_node_count": full_access.graph.len(),
+            "bytes_sent_this_session": full_access.budget.bytes_sent,
+            "raw_process_fields_included": false,
             "raw_bodies_included": false
         }
     })))
@@ -760,6 +785,7 @@ async fn full_access_graph_node(
         .receipt
         .clone()
         .ok_or_else(|| denied(StatusCode::FORBIDDEN, "full_access_not_enrolled"))?;
+    let current_graph = full_access.scope_graph(current_graph);
     let binding = ReceiptBinding {
         session_id: &session_id,
         account_id: &account_id,
@@ -851,6 +877,7 @@ async fn full_access_mutation(
         .receipt
         .clone()
         .ok_or_else(|| denied(StatusCode::FORBIDDEN, "full_access_not_enrolled"))?;
+    let graph = full_access.scope_graph(graph);
     let binding = ReceiptBinding {
         session_id: &session_id,
         account_id: &account_id,

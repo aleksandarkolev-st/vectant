@@ -258,6 +258,43 @@ impl RelayClient {
         Ok(())
     }
 
+    pub async fn report_linked_project_status(
+        &self,
+        identity: &DeviceIdentity,
+        session_id: &str,
+        project_id: &str,
+        workspace_hash: &str,
+        selection_mode: &str,
+        selected_node_ids: &[String],
+        graph_node_count: usize,
+        full_access_expires_at: Option<&str>,
+    ) -> Result<(), String> {
+        if !project_id.starts_with("lproj_") || !workspace_hash.starts_with("sha256:")
+            || !matches!(selection_mode, "folder" | "file_set")
+            || selected_node_ids.len() > 20_000 || graph_node_count > 20_000
+        {
+            return Err("Linked project status was invalid.".to_string());
+        }
+        let body = serde_json::to_vec(&serde_json::json!({
+            "action": "linked_project_status",
+            "project_id": project_id,
+            "workspace_hash": workspace_hash,
+            "selection_mode": selection_mode,
+            "selected_node_ids": selected_node_ids,
+            "graph_node_count": graph_node_count,
+            "full_access_expires_at": full_access_expires_at,
+        }))
+        .map_err(|_| "Linked project status could not be serialized.".to_string())?;
+        if body.len() > 48 * 1024 {
+            return Err("Linked project status exceeded the relay limit.".to_string());
+        }
+        let response = self.post_signed(identity, session_id, DEVICE_RELAY_PATH, body).await?;
+        if response.get("decision").and_then(Value::as_str) != Some("linked_project_activated") {
+            return Err("Linked project status was not accepted.".to_string());
+        }
+        Ok(())
+    }
+
     pub async fn upload_approved_payload(
         &self,
         identity: &DeviceIdentity,
@@ -439,6 +476,8 @@ impl RelayControlCommand {
                     | "full_access_revoke"
                     | "full_access_enrollment_proposal"
                     | "process_visibility_pause"
+                    | "linked_project_activate"
+                    | "linked_project_disconnect"
             )
             || (self.action == "revoke_port" && !matches!(self.port, Some(1..=65_535)))
             || !self

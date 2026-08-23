@@ -367,6 +367,15 @@ services:
       # and every /code-intel/* call 500. The same applies to OPENAI_API_KEY /
       # OPENAI_BASE_URL (OpenAI-compatible split provider): keep them only in
       # .env.local.
+      # A disposable agent container, not this control-plane process, performs
+      # authorized live edits. It receives no Docker socket or host mounts.
+      SYNTHI_AGENT_RUNNER_IMAGE: "vectant-agent-runner:local"
+      SYNTHI_AGENT_RUNNER_NETWORK: "vectant-ade_agent-egress"
+      SYNTHI_AGENT_WORKSPACE_VOLUME: "vectant-ade_collab-data"
+      SYNTHI_AGENT_WORKSPACE_VOLUME_ROOT: "/data"
+      # Provisioned out-of-band from the runtime's secret manager; never
+      # copied from ai-engine's process environment into an agent container.
+      SYNTHI_AGENT_CREDENTIALS_VOLUME: "vectant-ade_agent-credentials"
       # Tell resolve_workspace_path() where to find slug-rooted repos.
       # The collab-data named volume is shared with collab-server (which
       # writes); we don't need depends_on because the volume is created
@@ -377,6 +386,21 @@ services:
       # accepted; ContainerExecutor also invokes Docker with --pull=never.
       VECTANT_FAILURE_DISTILLER_ALLOWED_IMAGES: "${VECTANT_FAILURE_DISTILLER_ALLOWED_IMAGES:-python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a}"
       VECTANT_FAILURE_DISTILLER_WORKSPACE_VOLUME: "vectant-ade_collab-data"
+    depends_on:
+      # The image-builder exits successfully only after the pinned agent
+      # harness image is available to the Docker daemon.
+      agent-runner-image:
+        condition: service_completed_successfully
+
+  agent-runner-image:
+    build:
+      context: ./ai-backend/agent-runner
+      dockerfile: Dockerfile
+    image: vectant-agent-runner:local
+    command: ["/bin/true"]
+    restart: "no"
+    networks:
+      - agent-egress
 
   ai-gateway:
     build:
@@ -500,3 +524,7 @@ volumes:
   postgres-data:
   collab-data:
   codesite-shadow-scratch:
+  agent-credentials:
+
+networks:
+  agent-egress:

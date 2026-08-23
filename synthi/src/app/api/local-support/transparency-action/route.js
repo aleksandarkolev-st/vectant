@@ -333,6 +333,9 @@ export function buildFullAccessEnrollmentProposal(policy, requestedActor) {
   return {
     request_id: `enroll_${randomUUID().replaceAll("-", "")}`,
     support_actor: requestedActor,
+    // The short command expiry only bounds the time to make a local consent
+    // decision. The consent receipt itself is an eight-hour work session.
+    work_session_ttl_seconds: 8 * 60 * 60,
     policy: {
       organization_enabled: true,
       emergency_paused: false,

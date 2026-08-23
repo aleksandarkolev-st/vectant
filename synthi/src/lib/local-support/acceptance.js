@@ -370,11 +370,11 @@ export const RELEASE_BLOCKERS = [
     evidence: ["synthi:Fast Support bounded mode", "synthi:readLocalSupportPolicy fast_support_enabled with org kill switch"],
   },
   {
-    id: "agent_read_disabled",
+    id: "full_access_port_read_scoped",
     category: "product",
-    label: "Agent read disabled in MVP",
+    label: "Full Access local-port response reads are receipt-scoped",
     status: "partial",
-    evidence: ["synthi:capability_blocked_in_mvp", "synthi:ports capability flags"],
+    evidence: ["rust:full_access_port_use broker", "synthi:live full-access port capability projection"],
   },
   {
     id: "agent_interaction_disabled",
