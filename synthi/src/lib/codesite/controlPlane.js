@@ -13112,7 +13112,12 @@ export async function requestAgentChannel(workspaceSlug, sessionId, agentAccessT
   if (toSessionId === fromSession.id) throw badRequest('channel_self_pairing_forbidden');
   const purpose = String(body.purpose || 'coordination').trim().slice(0, 256);
   const transport = String(body.transport || '').trim().toLowerCase();
-  const endpointRef = String(body.endpointRef || body.endpoint_ref || '').trim() || null;
+  // Design §8: endpoints are advertised as ws:// or wss:// host:port refs.
+  const rawEndpoint = String(body.endpointRef || body.endpoint_ref || '').trim();
+  if (rawEndpoint && !/^wss?:\/\/[^\s]{1,500}$/.test(rawEndpoint)) {
+    throw badRequest('channel_endpoint_invalid');
+  }
+  const endpointRef = rawEndpoint || null;
 
   const project = await prisma.codeSiteProject.findFirst({
     where: { id: fromSession.projectId, workspaceSlug },
@@ -13335,15 +13340,22 @@ export async function closeAgentChannel(workspaceSlug, sessionId, agentAccessTok
   // The summary digest is provided by the closing side; both sides maintain a
   // hash chain over the transcript so digests should match. Store what was
   // reported plus who reported it.
-  const summaryDigest = String(body.summaryDigest || body.summary_digest || '').trim() || null;
+  // The summary digest must look like a real transcript hash — junk defeats
+  // the dispute mechanism (design §7).
+  const rawDigest = String(body.summaryDigest || body.summary_digest || '').trim();
+  if (rawDigest && !/^sha256:[0-9a-f]{64}$/.test(rawDigest)) {
+    throw badRequest('channel_summary_digest_invalid');
+  }
+  const summaryDigest = rawDigest || null;
+  const rawCount = Number(body.messageCount);
   const updated = await prisma.codeSiteAgentChannel.update({
     where: { id: channel.id },
     data: {
       status: 'closed',
       closedAt: new Date(),
       summaryDigest,
-      messageCount: Number.isFinite(Number(body.messageCount))
-        ? Math.max(0, Math.floor(Number(body.messageCount)))
+      messageCount: Number.isFinite(rawCount)
+        ? Math.max(0, Math.min(1_000_000, Math.floor(rawCount)))
         : channel.messageCount,
     },
   });
@@ -13355,6 +13367,41 @@ export async function closeAgentChannel(workspaceSlug, sessionId, agentAccessTok
       closedBySessionId: session.id,
       summaryDigest,
       messageCount: updated.messageCount,
+    },
+  });
+  return agentChannelProjection(updated);
+}
+
+/**
+ * Design §9: transports self-report MAC/replay failures so the control plane
+ * can record channel_violation events. Participant-gated.
+ */
+export async function reportAgentChannelViolation(workspaceSlug, sessionId, agentAccessToken, channelId, body = {}, options = {}) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.channels.open',
+    now: options.now,
+  });
+  const session = authority.session;
+  const channel = await prisma.codeSiteAgentChannel.findFirst({
+    where: { id: String(channelId || ''), workspaceSlug },
+  });
+  if (!channel) throw notFound('channel_not_found');
+  if (channel.fromSessionId !== session.id && channel.toSessionId !== session.id) {
+    throw forbidden('channel_participant_mismatch');
+  }
+  const violationCode = String(body.violationCode || body.violation_code || 'unspecified').slice(0, 128);
+  const updated = await prisma.codeSiteAgentChannel.update({
+    where: { id: channel.id },
+    data: { status: 'violation', closedAt: new Date() },
+  });
+  await recordChannelEvent(channel.projectId, {
+    eventType: 'channel_violation',
+    actorId: session.id,
+    channelId: channel.id,
+    details: {
+      reportedBySessionId: session.id,
+      violationCode,
+      peerSessionId: channel.fromSessionId === session.id ? channel.toSessionId : channel.fromSessionId,
     },
   });
   return agentChannelProjection(updated);

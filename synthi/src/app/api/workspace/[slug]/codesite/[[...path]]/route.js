@@ -400,6 +400,12 @@ export async function POST(request, { params }) {
   }
   if (route[0] === 'agent-sessions' && route[2] === 'channels' && route.length === 3) {
     try {
+      const limitedChannel = enforceRateLimit(
+        { userId: `agent:${route[1]}` },
+        'channels',
+        'channels',
+      );
+      if (limitedChannel) return limitedChannel;
       return okJson({ channel: await requestAgentChannel(
         slug,
         route[1],
@@ -411,8 +417,14 @@ export async function POST(request, { params }) {
     }
   }
   if (route[0] === 'agent-sessions' && route[2] === 'channels' && route.length === 5
-    && (route[4] === 'accept' || route[4] === 'reject' || route[4] === 'close')) {
+    && ['accept', 'reject', 'close', 'violation'].includes(route[4])) {
     try {
+      const limitedChannelAction = enforceRateLimit(
+        { userId: `agent:${route[1]}` },
+        `channels:${route[4]}`,
+        'channels',
+      );
+      if (limitedChannelAction) return limitedChannelAction;
       const body = await readJson(request);
       if (route[4] === 'accept') {
         const result = await acceptAgentChannel(slug, route[1], bearerToken(request), route[3], body);
@@ -420,6 +432,9 @@ export async function POST(request, { params }) {
       }
       if (route[4] === 'reject') {
         return okJson({ channel: await rejectAgentChannel(slug, route[1], bearerToken(request), route[3], body) });
+      }
+      if (route[4] === 'violation') {
+        return okJson({ channel: await reportAgentChannelViolation(slug, route[1], bearerToken(request), route[3], body) });
       }
       return okJson({ channel: await closeAgentChannel(slug, route[1], bearerToken(request), route[3], body) });
     } catch (error) {

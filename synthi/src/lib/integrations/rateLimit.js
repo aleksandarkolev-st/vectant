@@ -44,6 +44,9 @@ export const RATE_LIMITS = {
   audit: { limit: Number(process.env.SYNTHI_RL_AUDIT) || 120, windowMs: 60_000 },
   git: { limit: Number(process.env.SYNTHI_RL_GIT) || 60, windowMs: 60_000 },
   telemetry: { limit: Number(process.env.SYNTHI_RL_TELEMETRY) || 120, windowMs: 60_000 },
+  // Registered direct channels (docs/REGISTERED_DIRECT_CHANNELS_DESIGN.md §9):
+  // tighter than crud — channel setup is rare and must resist hammering.
+  channels: { limit: Number(process.env.SYNTHI_RL_CHANNELS) || 20, windowMs: 60_000 },
 };
 
 /** Test-only: clear all buckets. */
