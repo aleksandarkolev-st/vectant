@@ -3326,6 +3326,18 @@ export async function openAgentTransaction(workspaceSlug, sessionId, agentAccess
   const session = authority.session;
   const mutationLeaseId = String(body.mutationLeaseId || body.mutation_lease_id || '').trim();
   if (!mutationLeaseId) throw badRequest('mutation_lease_required');
+  // §9.5 negative: an agent may only open transactions on leases that belong
+  // to its OWN agent session. Verify ownership explicitly instead of relying
+  // on the blanket bypass actor.
+  const lease = await prisma.codeSiteMutationLease.findFirst({
+    where: {
+      id: mutationLeaseId,
+      project: { workspaceSlug },
+      agentSessionId: session.id,
+    },
+    select: { id: true },
+  });
+  if (!lease) throw forbidden('mutation_lease_agent_forbidden', { mutationLeaseId });
   return openTransaction(workspaceSlug, mutationLeaseId, body, {
     internalService: true,
     bypass: true,
