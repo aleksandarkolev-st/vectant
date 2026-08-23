@@ -56,8 +56,10 @@ not buried in docs.
   after the fact."*
 
 ### Mode 4: `open_local` (development only)
-- For local/dev stacks: no MAC replay windows, generous caps, localhost-only
-  transports permitted without allowlist checks.
+- For local/dev stacks: same frame guards as other modes (MAC verification,
+  replay windows, sequence enforcement stay ON — they cost nothing and keep
+  the protocol honest); what is relaxed is policy: localhost endpoint refs
+  are accepted without allowlist checks, and violation reporting is advisory.
 - Never valid in production: the control plane refuses this mode whenever
   `NODE_ENV=production` (hard gate, not config).
 - **Best for:** hacking on the protocol itself, demos, local proof scripts.
@@ -83,7 +85,19 @@ Additional UI elements at selection time:
   floor; the UI greys out disallowed options rather than letting users pick
   something that will be rejected).
 
-## 5. Where This Appears in the UI (Agent Session Creation)
+## 5. Where This Appears in the UI
+
+**Implemented placement:** the mode is chosen at **project creation time**
+(the "How should agents in this project coordinate?" picker on the CodeSite
+setup card). It is a project-level policy: every agent session attached to
+that project inherits it, and the control plane enforces it at channel
+request time regardless of where the request originates (UI button, agent,
+or API).
+
+The original plan below describes attach-time selection for per-session
+overrides; that remains future work. The project-level picker ships today.
+
+### Original plan (per-session selection)
 
 The selection happens at **agent session attach time** — the moment a user
 connects a Codex/Claude instance to a project. Today that flow collects:
