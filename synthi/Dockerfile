@@ -98,6 +98,10 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
+# git is required by the executable shadow merge runner (worktree add/apply/
+# write-tree evidence capture against a real repo checkout).
+RUN apk add --no-cache git
+
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs
 
@@ -111,6 +115,11 @@ COPY --from=builder /app/synthi/public ./synthi/public
 # Prisma client must be present at runtime for API routes (hoisted to root node_modules).
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder --chown=nextjs:nodejs /app/synthi/prisma ./synthi/prisma
+
+# Workstream E: the executable shadow merge needs its runner script at runtime.
+# The configured external runner (SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON)
+# executes this file against disposable git worktrees of a real repo checkout.
+COPY --from=builder --chown=nextjs:nodejs /app/synthi/scripts ./synthi/scripts
 
 USER nextjs
 
