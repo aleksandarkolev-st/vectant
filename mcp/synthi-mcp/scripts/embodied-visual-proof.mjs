@@ -71,6 +71,8 @@ const suites = [
   "tests/unit/embodied_fixture_rotate_logs.test.ts",
   "tests/unit/embodied_fixture_edit_hmr.test.ts",
   "tests/unit/embodied_fixture_run_tests.test.ts",
+  "tests/unit/embodied_failure_catalog.test.ts",
+  "tests/unit/embodied_merge_profiles.test.ts",
 ].map(runSuite);
 
 const tscOutput = (() => {
