@@ -993,9 +993,10 @@ function runWithClosedStdin(command, args, options = {}) {
 
 async function collectCodexRuntimeEvidence() {
   const locatorCommand = process.platform === 'win32' ? 'where' : 'which';
+  const codex = codexInvocation([]);
   const [locatedCodex, codexVersion] = await Promise.all([
     optionalCommandEvidence(locatorCommand, ['codex']),
-    optionalCommandEvidence('codex', ['--version']),
+    optionalCommandEvidence(codex.command, [...codex.args, '--version']),
   ]);
   const providerSessionRefs = codexProviderSessionRefs();
   return {
@@ -1004,13 +1005,27 @@ async function collectCodexRuntimeEvidence() {
     providerSessionRefs,
     primaryProviderSessionRef: providerSessionRefs[0] || null,
     threadId: process.env.CODESITE_PROOF_CODEX_THREAD_ID || process.env.CODEX_THREAD_ID || null,
-    command: 'codex',
+    command: codex.command,
     cliPath: locatedCodex.ok ? locatedCodex.stdout : null,
     cliVersion: codexVersion.ok ? codexVersion.stdout : null,
     cliEvidenceOk: locatedCodex.ok && codexVersion.ok,
     originator: process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || null,
     ci: process.env.CODEX_CI || null,
   };
+}
+
+function codexInvocation(args) {
+  if (process.platform !== 'win32') return { command: 'codex', args };
+  const configured = String(process.env.CODESITE_PROOF_CODEX_CLI_PATH || '').trim();
+  const npmBin = process.env.APPDATA ? path.join(process.env.APPDATA, 'npm') : '';
+  const discovered = npmBin
+    ? path.join(npmBin, 'node_modules', '@openai', 'codex', 'bin', 'codex.js')
+    : '';
+  const cliPath = [configured, discovered].find((candidate) => candidate && fs.existsSync(candidate));
+  if (!cliPath) {
+    throw new Error('Codex CLI JavaScript entrypoint was not found; set CODESITE_PROOF_CODEX_CLI_PATH to its absolute path');
+  }
+  return { command: process.execPath, args: [cliPath, ...args] };
 }
 
 function codexAgentHome() {
@@ -1862,7 +1877,8 @@ async function generateAgentExecutionEvidence({ dir, slug, projectId, proofRepo,
       prompt,
     ];
     const startedAt = new Date();
-    const result = await runWithClosedStdin('codex', args, {
+    const codex = codexInvocation(args);
+    const result = await runWithClosedStdin(codex.command, codex.args, {
       cwd: repoRoot(),
       timeoutMs: normalizeCodexAgentTimeoutMs(),
       env: {
