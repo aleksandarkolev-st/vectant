@@ -451,6 +451,11 @@ export async function listProjects(workspaceSlug, actor = null) {
 export async function createProject(workspaceSlug, actor, body = {}) {
   const title = String(body.title || body.request || 'CodeSite project').trim();
   const request = String(body.request || title).trim();
+  // Coordination mode (docs/CHANNEL_MODES_TRADEOFFS.md): validated against the
+  // ladder and any workspace floor at creation time — fail closed.
+  const requestedMode = String(body.channelMode || body.channel_mode || 'registered_direct').trim().toLowerCase();
+  const modeCheck = effectiveChannelMode(requestedMode);
+  if (!modeCheck.ok) throw badRequest(modeCheck.reasonCode, modeCheck.detail);
   const zonePolicy = compileProjectZonePolicy(body.zonePolicy || body.zone_policy || {}, body);
   const controlPlan = buildInitialControlPlan({ title, request, body, zonePolicy });
 
@@ -460,6 +465,7 @@ export async function createProject(workspaceSlug, actor, body = {}) {
       title,
       request,
       status: 'active',
+      channelMode: modeCheck.mode,
       zonePolicyJson: stringifyJson(zonePolicy),
       controlPlanJson: stringifyJson(controlPlan),
       createdByUserId: actor?.userId || null,
@@ -12364,6 +12370,8 @@ function projectSummary(project) {
     title: project.title,
     request: project.request,
     status: project.status,
+    // Coordination mode surfaced so agents and UI can see the guarantees.
+    channelMode: project.channelMode || 'registered_direct',
     createdByUserId: project.createdByUserId,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
