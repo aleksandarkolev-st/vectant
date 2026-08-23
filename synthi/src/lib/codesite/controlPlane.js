@@ -13126,7 +13126,7 @@ export async function requestAgentChannel(workspaceSlug, sessionId, agentAccessT
   }
 
   const toSession = await prisma.codeSiteAgentSession.findFirst({
-    where: { id: toSessionId, workspaceSlug, endedAt: null },
+    where: { id: toSessionId, projectId: fromSession.projectId, workspaceSlug, endedAt: null },
   });
   if (!toSession) throw notFound('agent_session_not_found');
 
