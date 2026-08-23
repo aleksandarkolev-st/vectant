@@ -24,6 +24,25 @@ def test_finalizer_rejects_out_of_route_change(tmp_path):
       assert not (source/'blocked.py').exists()
     finally: remove_codesite_agent_worktree(wt)
 
+def test_finalizer_rejects_unrelated_untracked_source_file(tmp_path):
+    source,b,root=setup(tmp_path); wt=create_codesite_agent_worktree(source_workspace=source,overlay_root=root,binding=b)
+    try:
+      (wt.path/'a.txt').write_text('landed\n')
+      (source/'unrelated-local-file.txt').write_text('do not overwrite\n')
+      with pytest.raises(CodeSiteFinalizationError,match='dirty'):
+        finalize_codesite_worktree(source_workspace=source,worktree=wt,binding=b,allowed_paths=('*.txt',),test_command=[sys.executable,'-c','pass'])
+      assert (source/'a.txt').read_text()=='base\n'
+    finally: remove_codesite_agent_worktree(wt)
+
+def test_finalizer_allows_only_controller_runner_artifacts_untracked(tmp_path):
+    source,b,root=setup(tmp_path); wt=create_codesite_agent_worktree(source_workspace=source,overlay_root=root,binding=b)
+    try:
+      (wt.path/'a.txt').write_text('landed\n')
+      artifact=source/'.vectant'/'runner-artifacts'/'run-1'/'artifact.json'; artifact.parent.mkdir(parents=True); artifact.write_text('{}\n')
+      paths=finalize_codesite_worktree(source_workspace=source,worktree=wt,binding=b,allowed_paths=('*.txt',),test_command=[sys.executable,'-c','pass'])
+      assert paths==['a.txt']; assert (source/'a.txt').read_text()=='landed\n'
+    finally: remove_codesite_agent_worktree(wt)
+
 def test_finalizer_rollback_restores_the_shared_checkout(tmp_path):
     source,b,root=setup(tmp_path); wt=create_codesite_agent_worktree(source_workspace=source,overlay_root=root,binding=b)
     try:

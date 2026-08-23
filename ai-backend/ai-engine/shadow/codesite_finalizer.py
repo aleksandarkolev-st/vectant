@@ -20,7 +20,7 @@ def finalize_codesite_worktree(*, source_workspace: Path, worktree: CodeSiteAgen
     source = Path(source_workspace).resolve()
     if worktree.binding != binding or _git(source, ["rev-parse", "HEAD"]).strip() != binding.base_commit:
         raise CodeSiteFinalizationError("CodeSite base changed; overlay must be rebased")
-    if _git(source, ["status", "--porcelain", "--untracked-files=no"]).strip():
+    if _source_workspace_has_untrusted_changes(source):
         raise CodeSiteFinalizationError("shared workspace is dirty; refusing automatic landing")
     _git(worktree.path, ["add", "-N", "."])
     paths = [line for line in _git(worktree.path, ["diff", "--name-only", binding.base_commit, "--"]).splitlines() if line]
@@ -38,7 +38,7 @@ def finalize_codesite_worktree(*, source_workspace: Path, worktree: CodeSiteAgen
             _run(test_command, chamber)
         finally:
             _git(source, ["worktree", "remove", "--force", str(chamber)])
-    if _git(source, ["rev-parse", "HEAD"]).strip() != binding.base_commit or _git(source, ["status", "--porcelain", "--untracked-files=no"]).strip():
+    if _git(source, ["rev-parse", "HEAD"]).strip() != binding.base_commit or _source_workspace_has_untrusted_changes(source):
         raise CodeSiteFinalizationError("shared workspace changed during finalization")
     _git_bytes(source, ["apply", "--check", "--binary", "-"], stdin=patch)
     _git_bytes(source, ["apply", "--binary", "-"], stdin=patch)
@@ -58,6 +58,29 @@ def rollback_codesite_worktree(*, source_workspace: Path, worktree: CodeSiteAgen
 
 def _allowed(path: str, patterns: tuple[str, ...]) -> bool:
     return any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
+
+
+def _source_workspace_has_untrusted_changes(source: Path) -> bool:
+    """Reject source drift, allowing only controller-owned run artifacts.
+
+    The controller writes execution evidence before landing.  Treating every
+    untracked file as safe would let an unrelated local process race a landing,
+    so the exemption is deliberately limited to the controller artifact root.
+    """
+    raw = _git_bytes(source, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+    for entry in raw.split(b"\0"):
+        if not entry:
+            continue
+        status = entry[:2].decode("ascii", errors="replace")
+        path = entry[3:].decode("utf-8", errors="surrogateescape")
+        if status == "??" and _controller_artifact_path(path):
+            continue
+        return True
+    return False
+
+
+def _controller_artifact_path(path: str) -> bool:
+    return path == ".vectant/counterfactual-telemetry.json" or path.startswith(".vectant/runner-artifacts/")
 
 
 def _git(cwd: Path, args: list[str]) -> str:
