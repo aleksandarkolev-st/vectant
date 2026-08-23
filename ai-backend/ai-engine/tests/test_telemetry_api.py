@@ -2,6 +2,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import subprocess
 from contextlib import nullcontext
+from types import SimpleNamespace
+import json
+import sys
 
 from shadow.telemetry_api import router
 from shadow.runner_base import RunnerArtifact
@@ -214,7 +217,7 @@ def test_codesite_overlay_runner_uses_an_isolated_worktree(tmp_path, monkeypatch
         "base_state": {"state_hash": "base"}, "universe_plan": [{"id": "A"}],
     }).json()["counterfactual_run"]["run_id"]
 
-    monkeypatch.setattr("shadow.telemetry_api.verify_codesite_authority", lambda **kwargs: object())
+    monkeypatch.setattr("shadow.telemetry_api.verify_codesite_authority", lambda **kwargs: SimpleNamespace(allowed_paths=("**",)))
     monkeypatch.setattr("shadow.telemetry_api.provision_agent_write_access", lambda *args, **kwargs: None)
     monkeypatch.setattr("shadow.telemetry_api.AgentContainerPolicy.from_environment", lambda: AgentContainerPolicy(
         image="runner", network="isolated", credentials_volume="credentials",
@@ -238,6 +241,15 @@ def test_codesite_overlay_runner_uses_an_isolated_worktree(tmp_path, monkeypatch
     assert response.status_code == 201, response.text
     assert not (workspace / "agent-created.txt").exists()
     assert list(overlay_root.rglob("agent-created.txt")), "the retained CodeSite overlay must contain the agent change"
+    monkeypatch.setenv("SYNTHI_CODESITE_FINALIZER_COMMAND", json.dumps([sys.executable, "-c", "pass"]))
+    finalized = client.post(f"/counterfactual/runs/{run_id}/codesite-finalize", params={"workspace_path": str(workspace)}, json={
+        "codesite_workspace_slug": "demo", "codesite_project_id": "project-1",
+        "codesite_agent_session_id": "agent-1", "codesite_mutation_lease_id": "lease-1",
+        "codesite_transaction_id": "txn-1", "codesite_base_commit": base_commit,
+        "codesite_agent_access_token": "csa_" + "a" * 32,
+    })
+    assert finalized.status_code == 201, finalized.text
+    assert (workspace / "agent-created.txt").read_text(encoding="utf-8") == "isolated\n"
 
 
 def test_choice_scene_and_policy_extraction_require_real_exposure_and_proof(tmp_path):

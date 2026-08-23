@@ -20,7 +20,7 @@ def finalize_codesite_worktree(*, source_workspace: Path, worktree: CodeSiteAgen
     source = Path(source_workspace).resolve()
     if worktree.binding != binding or _git(source, ["rev-parse", "HEAD"]).strip() != binding.base_commit:
         raise CodeSiteFinalizationError("CodeSite base changed; overlay must be rebased")
-    if _git(source, ["status", "--porcelain"]).strip():
+    if _git(source, ["status", "--porcelain", "--untracked-files=no"]).strip():
         raise CodeSiteFinalizationError("shared workspace is dirty; refusing automatic landing")
     _git(worktree.path, ["add", "-N", "."])
     paths = [line for line in _git(worktree.path, ["diff", "--name-only", binding.base_commit, "--"]).splitlines() if line]
@@ -38,7 +38,7 @@ def finalize_codesite_worktree(*, source_workspace: Path, worktree: CodeSiteAgen
             _run(test_command, chamber)
         finally:
             _git(source, ["worktree", "remove", "--force", str(chamber)])
-    if _git(source, ["rev-parse", "HEAD"]).strip() != binding.base_commit or _git(source, ["status", "--porcelain"]).strip():
+    if _git(source, ["rev-parse", "HEAD"]).strip() != binding.base_commit or _git(source, ["status", "--porcelain", "--untracked-files=no"]).strip():
         raise CodeSiteFinalizationError("shared workspace changed during finalization")
     _git_bytes(source, ["apply", "--check", "--binary", "-"], stdin=patch)
     _git_bytes(source, ["apply", "--binary", "-"], stdin=patch)

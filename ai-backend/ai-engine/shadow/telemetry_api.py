@@ -6,6 +6,7 @@ import time
 import uuid
 import json
 import subprocess
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
@@ -31,6 +32,7 @@ from .hermes_runner import HermesRunner
 from .agent_execution import AgentContainerPolicy, docker_command
 from .codesite_agent_workspace import CodeSiteExecutionBinding, create_codesite_agent_worktree, remove_codesite_agent_worktree
 from .codesite_control_plane import verify_codesite_authority
+from .codesite_finalizer import finalize_codesite_worktree
 from .workspace_write_policy import assert_protected_unchanged, protected_snapshot, provision_agent_write_access
 from .live_workspace_lock import live_workspace_lock
 
@@ -158,6 +160,16 @@ class RunnerExecutionRequest(BaseModel):
 
 class MutationTrialExecutionRequest(RunnerExecutionRequest):
     workspace_path: str
+
+
+class CodeSiteFinalizeRequest(BaseModel):
+    codesite_workspace_slug: str
+    codesite_project_id: str
+    codesite_agent_session_id: str
+    codesite_mutation_lease_id: str
+    codesite_transaction_id: str
+    codesite_base_commit: str
+    codesite_agent_access_token: str = Field(min_length=36, max_length=256)
 
 
 def _repo(workspace_path: str) -> TelemetryRepository:
@@ -546,6 +558,51 @@ def execute_external_runner(run_id: str, payload: RunnerExecutionRequest, worksp
     except KeyError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     return {"branch_trace": trace.to_dict(), "detector_inputs": adapter.collect_detector_inputs(artifact)}
+
+
+@router.post("/runs/{run_id}/codesite-finalize", status_code=201)
+def finalize_codesite_runner(run_id: str, payload: CodeSiteFinalizeRequest, workspace_path: str) -> Dict[str, Any]:
+    repo = _repo(workspace_path)
+    if not repo.get_run(run_id):
+        raise HTTPException(status_code=404, detail="counterfactual run not found")
+    binding = _codesite_execution_binding(payload)
+    try:
+        policy = AgentContainerPolicy.from_environment()
+        if not policy.codesite_overlay_root or not policy.codesite_control_plane_url:
+            raise ValueError("CodeSite overlay root and control plane URL must be configured")
+        authority = verify_codesite_authority(
+            control_plane_url=policy.codesite_control_plane_url,
+            agent_access_token=payload.codesite_agent_access_token,
+            binding=binding,
+        )
+        from .codesite_agent_workspace import CodeSiteAgentWorktree
+        worktree = CodeSiteAgentWorktree(Path(policy.codesite_overlay_root).resolve(), repo.repo, binding)
+        if not worktree.path.is_dir():
+            raise ValueError("CodeSite agent overlay is unavailable")
+        command = _codesite_finalizer_command()
+        paths = finalize_codesite_worktree(
+            source_workspace=repo.repo, worktree=worktree, binding=binding,
+            allowed_paths=authority.allowed_paths, test_command=command,
+        )
+        remove_codesite_agent_worktree(worktree)
+        return {"status": "landed", "transaction_id": binding.transaction_id, "changed_paths": paths}
+    except PermissionError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except (RuntimeError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+def _codesite_finalizer_command() -> list[str]:
+    raw = os.environ.get("SYNTHI_CODESITE_FINALIZER_COMMAND", "").strip()
+    if not raw:
+        raise ValueError("SYNTHI_CODESITE_FINALIZER_COMMAND must be configured")
+    try:
+        command = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ValueError("SYNTHI_CODESITE_FINALIZER_COMMAND must be a JSON argv array") from error
+    if not isinstance(command, list) or not command or any(not isinstance(item, str) or not item for item in command):
+        raise ValueError("SYNTHI_CODESITE_FINALIZER_COMMAND must be a non-empty JSON argv array")
+    return command
 
 
 def _codesite_execution_binding(payload: RunnerExecutionRequest) -> CodeSiteExecutionBinding:
