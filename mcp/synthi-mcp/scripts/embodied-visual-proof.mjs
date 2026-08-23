@@ -75,6 +75,8 @@ const suites = [
   "tests/unit/embodied_merge_profiles.test.ts",
   "tests/unit/embodied_world_manifest.test.ts",
   "tests/unit/embodied_browser_repoint.test.ts",
+  "tests/unit/embodied_bridge_dispatch.test.ts",
+  "tests/unit/embodied_game_transport.test.ts",
 ].map(runSuite);
 
 const tscOutput = (() => {
