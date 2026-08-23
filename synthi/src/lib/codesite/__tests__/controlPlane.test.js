@@ -207,6 +207,7 @@ import {
   rejectAgentChannel,
   closeAgentChannel,
   listProjectChannels,
+  reportAgentChannelViolation,
   respondToAgentKnowledgeInbox,
   resumeMaydayIncident,
   reviewDocument,
@@ -3211,6 +3212,92 @@ describe('CodeSite control plane transaction validation', () => {
       } finally {
         delete process.env.SYNTHI_CODESITE_CHANNELS_DISABLED;
       }
+    });
+
+    it('refuses responders on a different project (no cross-project pairing)', async () => {
+      const alice = channelSession();
+      const crossProject = channelSession({ id: 'agent-cross-project', projectId: 'project-OTHER' });
+      prisma.codeSiteAgentSession.findFirst.mockImplementation(async ({ where } = {}) => {
+        if (!where || where.endedAt !== null) return null;
+        if (where.id === alice.id) return alice;
+        // Internal target lookup carries projectId; a session from another
+        // project must not resolve.
+        if (where.id === crossProject.id && (!where.projectId || where.projectId === crossProject.projectId)) {
+          return null;
+        }
+        return null;
+      });
+      await expect(requestAgentChannel('acme', alice.id, AGENT_AUTHORITY_TOKEN, {
+        toSessionId: crossProject.id,
+        transport: 'websocket',
+      }, { now: AGENT_AUTHORITY_NOW })).rejects.toMatchObject({ code: 'agent_session_not_found' });
+    });
+
+    it('expires an active channel past maxDurationMs and records the sweep', async () => {
+      const alice = channelSession();
+      const ben = channelSession({ id: 'agent-authority-2' });
+      bindTwoSessions(alice, ben);
+      const staleOpened = new Date(AGENT_AUTHORITY_NOW.getTime() - 3_600_000);
+      prisma.codeSiteAgentChannel.findFirst.mockResolvedValueOnce({
+        id: 'channel-stale', projectId: 'project-authority-1', workspaceSlug: 'acme',
+        fromSessionId: alice.id, toSessionId: ben.id,
+        status: 'active', purpose: 'patch_negotiation', transport: 'websocket',
+        channelTokenHash: `sha256:${'d'.repeat(64)}`,
+        openedAt: staleOpened, maxDurationMs: 60_000, closedAt: null, messageCount: 3,
+      });
+      prisma.codeSiteAgentChannel.update.mockResolvedValueOnce({
+        id: 'channel-stale', projectId: 'project-authority-1', workspaceSlug: 'acme',
+        fromSessionId: alice.id, toSessionId: ben.id,
+        status: 'expired', transport: 'websocket', messageCount: 3,
+        openedAt: staleOpened, maxDurationMs: 60_000,
+      });
+      const projection = await closeAgentChannel('acme', alice.id, AGENT_AUTHORITY_TOKEN, 'channel-stale', {}, { now: AGENT_AUTHORITY_NOW });
+      expect(projection.status).toBe('expired');
+      expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          eventType: 'channel_closed',
+          detailsJson: expect.stringContaining('channel_duration_expired'),
+        }),
+      }));
+    });
+
+    it('close is idempotent for the second participant', async () => {
+      const alice = channelSession();
+      const ben = channelSession({ id: 'agent-authority-2' });
+      bindTwoSessions(alice, ben);
+      prisma.codeSiteAgentChannel.findFirst.mockResolvedValueOnce({
+        id: 'channel-closed', projectId: 'project-authority-1', workspaceSlug: 'acme',
+        fromSessionId: alice.id, toSessionId: ben.id,
+        status: 'closed', transport: 'websocket', messageCount: 5,
+        summaryDigest: `sha256:${'e'.repeat(64)}`,
+      });
+      const projection = await closeAgentChannel('acme', ben.id, AGENT_AUTHORITY_TOKEN_B, 'channel-closed', {}, { now: AGENT_AUTHORITY_NOW });
+      expect(projection.status).toBe('closed');
+      expect(prisma.codeSiteAgentChannel.update).not.toHaveBeenCalled();
+    });
+
+    it('violation reports flip the channel and record channel_violation', async () => {
+      const alice = channelSession();
+      const ben = channelSession({ id: 'agent-authority-2' });
+      bindTwoSessions(alice, ben);
+      prisma.codeSiteAgentChannel.findFirst.mockResolvedValueOnce({
+        id: 'channel-live', projectId: 'project-authority-1', workspaceSlug: 'acme',
+        fromSessionId: alice.id, toSessionId: ben.id,
+        status: 'active', transport: 'websocket', messageCount: 2,
+      });
+      prisma.codeSiteAgentChannel.update.mockResolvedValueOnce({
+        id: 'channel-live', status: 'violation', messageCount: 2,
+      });
+      const projection = await reportAgentChannelViolation('acme', alice.id, AGENT_AUTHORITY_TOKEN, 'channel-live', {
+        violationCode: 'frame_mac_invalid',
+      }, { now: AGENT_AUTHORITY_NOW });
+      expect(projection.status).toBe('violation');
+      expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          eventType: 'channel_violation',
+          detailsJson: expect.stringContaining('frame_mac_invalid'),
+        }),
+      }));
     });
   });
 

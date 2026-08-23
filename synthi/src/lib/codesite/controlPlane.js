@@ -13341,6 +13341,11 @@ export async function closeAgentChannel(workspaceSlug, sessionId, agentAccessTok
   if (channel.fromSessionId !== session.id && channel.toSessionId !== session.id) {
     throw forbidden('channel_participant_mismatch');
   }
+  // An already-expired channel is terminal — report the sweep result instead
+  // of re-closing (keeps the timeline's expiry record intact).
+  if (channel.status === 'expired') {
+    return agentChannelProjection(channel);
+  }
   if (!['active', 'requested'].includes(channel.status)) {
     throw badRequest('channel_not_closable', { status: channel.status });
   }
