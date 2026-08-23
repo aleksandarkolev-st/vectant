@@ -22,6 +22,7 @@ import type {
   SubstrateAdapterBundle,
   TraceFragmentLike,
 } from "../../substrate.js";
+import { registerSubstrateAdapter } from "../../substrate.js";
 import { scrubSecrets } from "./scrub.js";
 
 export interface TerminalCommandAction {
@@ -211,10 +212,6 @@ export function createTerminalBundle(
 
 /** Register under the canonical "terminal" substrate kind. */
 export function registerTerminalAdapter(): void {
-  // Lazy require keeps registration idempotent per process.
-  const { registerSubstrateAdapter } = require("../../substrate.js") as {
-    registerSubstrateAdapter: (bundle: unknown) => void;
-  };
   registerSubstrateAdapter(createTerminalBundle());
 }
 

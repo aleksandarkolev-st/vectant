@@ -42,6 +42,10 @@ import {
 import type { WorkflowContractV7, WorkflowStepContractV7 } from "../browser/workflow.js";
 import { AUTH_TOOL_NAMES, dispatchAuthTool } from "../tools/auth.js";
 import { BROWSER_TOOL_NAMES, browserWorkflowOverlayAction, dispatchBrowserTool } from "../tools/browser.js";
+import {
+  EMBODIED_TOOL_NAMES,
+  dispatchEmbodied,
+} from "./embodied_dispatch.js";
 import { DOJO_TOOL_NAMES, dispatchDojoTool } from "../tools/dojo.js";
 import { SAFETY_TOOL_NAMES, dispatchSafetyTool } from "../tools/safety.js";
 import { SOURCE_TOOL_NAMES, dispatchSourceTool } from "../tools/source.js";
@@ -179,6 +183,7 @@ const WORKFLOW_BRIDGE_ALLOWED_TOOLS = new Set<string>([
   ...AUTH_TOOL_NAMES,
   ...SOURCE_TOOL_NAMES,
   ...SAFETY_TOOL_NAMES,
+  ...EMBODIED_TOOL_NAMES,
 ]);
 
 const REVIEW_LIMITATIONS = new Set([
@@ -254,6 +259,7 @@ function normalizeToolName(toolName: string): string {
 async function dispatchWorkflowTool(toolName: string, args: unknown): Promise<ToolResponse | null> {
   if (!WORKFLOW_BRIDGE_ALLOWED_TOOLS.has(toolName) && !toolName.startsWith("synthi_app_")) return null;
   return (
+    (await dispatchEmbodied(toolName, args)) ??
     (await dispatchBrowserTool(toolName, args)) ??
     (await dispatchDojoTool(toolName, args)) ??
     (await dispatchSafetyTool(toolName, args)) ??
