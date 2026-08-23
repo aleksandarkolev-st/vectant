@@ -322,6 +322,21 @@ function _defaultWorkspaceDirForSlug(slug) {
   const envRoot = process.env.SYNTHI_WORKSPACE_ROOT || process.env.SYNTHI_REPOS_ROOT;
   const candidates = [];
 
+  // An already-resolved workspace path wins over any <root>/<slug> join: the
+  // runtime pod exports the repo path *including* its per-user segment
+  // (/data/repos/<slug>/<userId>), which joining a root with the slug alone
+  // cannot reproduce. Neither SYNTHI_WORKSPACE_ROOT nor SYNTHI_REPOS_ROOT is
+  // set there, so without this we fell through to the non-container default
+  // below, created that directory empty, and pointed the language server at a
+  // workspace containing no project — tsserver then reported "Could not find
+  // a valid TypeScript installation".
+  const envDir = String(
+    process.env.SYNTHI_WORKSPACE_DIR || process.env.WORKSPACE_DIR || '',
+  ).trim();
+  if (envDir) {
+    candidates.push(envDir);
+  }
+
   if (envRoot) {
     candidates.push(path.join(envRoot, normalizedSlug));
   }
