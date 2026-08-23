@@ -10594,6 +10594,11 @@ export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}, a
     ?? body.coordination_strategies
     ?? DEFAULT_TOWER_SIMULATION_STRATEGIES,
   );
+  // Workstream E: an explicit empty universes list can never constitute an
+  // executed merge proof — the runner fails it, so reject before dispatch.
+  if (body.universes !== undefined && asArray(body.universes).length === 0) {
+    throw badRequest('shadow_universes_required');
+  }
   const strategies = unique(requestedStrategies
     .map(normalizeTowerStrategyName)
     .filter(Boolean));
