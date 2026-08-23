@@ -4290,18 +4290,22 @@ class GitService {
 
                         const fullPath = path.join(repoPath, rel);
 
-                        if (encoding === 'base64') {
-                            const buf = Buffer.from(content, 'base64');
-                            await safeWriteFile(fullPath, buf);
-                        } else {
-                            await safeWriteFile(fullPath, content);
-                        }
+                        // Decode ONCE and reuse for both the disk write and the GCS
+                        // backup. Sending the raw base64 string to GCS made the
+                        // durable copy the *encoded* text, so the next hydration
+                        // from GCS overwrote the repo with base64 and npm failed
+                        // with EJSONPARSE on package.json.
+                        const payload = encoding === 'base64'
+                            ? Buffer.from(content, 'base64')
+                            : content;
 
-                        written.push({ path: rel, bytes: (encoding === 'base64') ? Buffer.byteLength(content, 'base64') : Buffer.byteLength(content, 'utf-8') });
+                        await safeWriteFile(fullPath, payload);
+
+                        written.push({ path: rel, bytes: Buffer.byteLength(payload) });
 
                         if (syncToGcs && gcsSync.isGcsConfigured()) {
                             try {
-                                await gcsSync.syncFileToGcs(slug, rel, content, userId);
+                                await gcsSync.syncFileToGcs(slug, rel, payload, userId);
                             } catch (e) {
                                 // Non-fatal: file is still written to repo, but storage may lag.
                                 errors.push({ path: rel, stage: 'gcs_upload', error: e?.message || String(e) });

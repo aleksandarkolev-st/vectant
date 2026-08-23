@@ -1,7 +1,7 @@
 # PROTOTYPING AI ENGINE WITH PYTHON, LATER SWITCH TO RUST
 from __future__ import annotations
 
-from typing import Any, List, Mapping, Optional, Union, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Union, Tuple
 import re
 import requests
 import json
@@ -3530,6 +3530,12 @@ class AIRuntimeErrorRequest(BaseModel):
     error_output: Optional[str] = None
     auto_apply: Optional[bool] = True  # default True for runtime healing
     module: Optional[str] = None  # HMR module identifier
+
+
+# ``from __future__ import annotations`` defers the nested diagnostic model
+# reference. Rebuild here so FastAPI can generate OpenAPI at runtime instead
+# of failing on the first `/openapi.json` request.
+AIRuntimeErrorRequest.model_rebuild()
 
 
 @app.post("/heal/ai/analyze")

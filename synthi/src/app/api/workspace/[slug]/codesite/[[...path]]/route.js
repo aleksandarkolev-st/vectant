@@ -60,6 +60,8 @@ import {
   recordTransactionQuarantineEvent,
   recordTransactionRead,
   recordTransactionWrite,
+  recordAgentTransactionWrite,
+  commitAgentTransaction,
   proposeRouteRevision,
   requestMutationLease,
   resumeMaydayIncident,
@@ -412,6 +414,9 @@ export async function POST(request, { params }) {
         bearerToken(request),
         await readJson(request),
       ) }, { status: 201 });
+  if (route[0] === 'agent-sessions' && route[2] === 'transactions' && route[4] === 'record-write' && route.length === 5) {
+    try {
+      return okJson(await recordAgentTransactionWrite(slug, route[1], bearerToken(request), route[3], await readJson(request)));
     } catch (error) {
       return handleCodesiteError(error);
     }
@@ -437,6 +442,9 @@ export async function POST(request, { params }) {
         return okJson({ channel: await reportAgentChannelViolation(slug, route[1], bearerToken(request), route[3], body) });
       }
       return okJson({ channel: await closeAgentChannel(slug, route[1], bearerToken(request), route[3], body) });
+  if (route[0] === 'agent-sessions' && route[2] === 'transactions' && route[4] === 'commit' && route.length === 5) {
+    try {
+      return okJson(await commitAgentTransaction(slug, route[1], bearerToken(request), route[3], await readJson(request)));
     } catch (error) {
       return handleCodesiteError(error);
     }

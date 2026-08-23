@@ -3360,6 +3360,34 @@ export async function openAgentTransaction(workspaceSlug, sessionId, agentAccess
   });
 }
 
+export async function recordAgentTransactionWrite(workspaceSlug, sessionId, agentAccessToken, transactionId, body = {}, options = {}) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.plans.write', now: options.now,
+  });
+  const transaction = await prisma.codeSiteMutationTransaction.findFirst({
+    where: { id: transactionId, project: { workspaceSlug }, agentSessionId: authority.session.id },
+    select: { id: true },
+  });
+  if (!transaction) throw forbidden('transaction_agent_forbidden', { transactionId });
+  return recordTransactionWrite(workspaceSlug, transactionId, body, {
+    internalService: true, bypass: true, agentOwnerUserId: authority.session.ownerUserId,
+  });
+}
+
+export async function commitAgentTransaction(workspaceSlug, sessionId, agentAccessToken, transactionId, body = {}, options = {}) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.plans.write', now: options.now,
+  });
+  const transaction = await prisma.codeSiteMutationTransaction.findFirst({
+    where: { id: transactionId, project: { workspaceSlug }, agentSessionId: authority.session.id },
+    select: { id: true },
+  });
+  if (!transaction) throw forbidden('transaction_agent_forbidden', { transactionId });
+  return commitTransaction(workspaceSlug, transactionId, body, {
+    internalService: true, bypass: true, agentOwnerUserId: authority.session.ownerUserId,
+  });
+}
+
 function normalizeDurationMs(value) {
   if (Number.isFinite(value)) return Math.max(0, Math.floor(value));
   if (typeof value !== 'string') return null;

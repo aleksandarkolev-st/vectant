@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 import uuid
 import json
+import subprocess
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
@@ -26,6 +28,13 @@ from .proof_arbiter import adjudicate_proof
 from .runner_base import RunnerInvocation
 from .codex_runner import CodexRunner
 from .claude_code_runner import ClaudeCodeRunner
+from .hermes_runner import HermesRunner
+from .agent_execution import AgentContainerPolicy, docker_command
+from .codesite_agent_workspace import CodeSiteExecutionBinding, create_codesite_agent_worktree, remove_codesite_agent_worktree
+from .codesite_control_plane import verify_codesite_authority, record_codesite_writes, commit_codesite_transaction
+from .codesite_finalizer import finalize_codesite_worktree, rollback_codesite_worktree
+from .workspace_write_policy import assert_protected_unchanged, protected_snapshot, provision_agent_write_access
+from .live_workspace_lock import live_workspace_lock
 
 router = APIRouter(prefix="/counterfactual", tags=["counterfactual"])
 
@@ -130,7 +139,7 @@ class PostSelectionMutationRequest(BaseModel):
 
 
 class RunnerExecutionRequest(BaseModel):
-    runner_kind: Literal["codex", "claude_code"]
+    runner_kind: Literal["codex", "claude_code", "hermes"]
     universe_id: str
     direction_id: str
     direction_label: str
@@ -139,10 +148,28 @@ class RunnerExecutionRequest(BaseModel):
     policy_hints: List[str] = Field(default_factory=list, max_length=5)
     timeout_seconds: int = Field(default=300, ge=1, le=3600)
     budget_usd: float = Field(gt=0, le=1000)
+    workspace_mode: Literal["live", "isolated", "codesite_overlay"] = "live"
+    codesite_workspace_slug: Optional[str] = None
+    codesite_project_id: Optional[str] = None
+    codesite_agent_session_id: Optional[str] = None
+    codesite_mutation_lease_id: Optional[str] = None
+    codesite_transaction_id: Optional[str] = None
+    codesite_base_commit: Optional[str] = None
+    codesite_agent_access_token: Optional[str] = Field(default=None, min_length=36, max_length=256)
 
 
 class MutationTrialExecutionRequest(RunnerExecutionRequest):
     workspace_path: str
+
+
+class CodeSiteFinalizeRequest(BaseModel):
+    codesite_workspace_slug: str
+    codesite_project_id: str
+    codesite_agent_session_id: str
+    codesite_mutation_lease_id: str
+    codesite_transaction_id: str
+    codesite_base_commit: str
+    codesite_agent_access_token: str = Field(min_length=36, max_length=256)
 
 
 def _repo(workspace_path: str) -> TelemetryRepository:
@@ -362,7 +389,7 @@ def execute_mutation_trial(trial_id: str, payload: MutationTrialExecutionRequest
         raise HTTPException(status_code=409, detail="mutation trial is already running or complete")
     if payload.budget_usd > float(trial.get("budget_cap_usd") or 0):
         raise HTTPException(status_code=422, detail="mutation trial budget exceeds its quarantine cap")
-    execution = RunnerExecutionRequest(**payload.model_dump(exclude={"workspace_path"}))
+    execution = RunnerExecutionRequest(**{**payload.model_dump(exclude={"workspace_path"}), "workspace_mode": "isolated"})
     result = execute_external_runner(str(trial["counterfactual_run_id"]), execution, payload.workspace_path)
     data = repo._read()
     data["mutation_trials"][trial_id].update({
@@ -427,27 +454,103 @@ def execute_external_runner(run_id: str, payload: RunnerExecutionRequest, worksp
         task_summary=payload.task_summary, policy_hints=payload.policy_hints,
         timeout_seconds=payload.timeout_seconds, budget_usd=payload.budget_usd,
     )
-    adapter = CodexRunner() if payload.runner_kind == "codex" else ClaudeCodeRunner()
+    adapters = {
+        "codex": CodexRunner,
+        "claude_code": ClaudeCodeRunner,
+        "hermes": HermesRunner,
+    }
+    adapter = adapters[payload.runner_kind]()
     try:
-        # Never execute a third-party runner in the user's source workspace.
-        # The chamber is discarded after collecting its bounded trace.
-        with adapter.isolated_chamber(repo.repo, invocation) as chamber:
-            if payload.runner_kind == "codex":
-                # Codex receives only chamber-local schema/output paths. This
-                # keeps workspace-write sandboxing inside the disposable
-                # chamber while the base adapter separately captures a bounded
-                # raw log by reference in the source workspace.
-                schema_path = chamber / ".vectant-branch-summary.schema.json"
-                output_path = chamber / ".vectant-branch-summary.json"
-                schema_path.write_text(json.dumps(_codex_output_schema()), encoding="utf-8")
-                command = adapter.command_for(invocation=invocation, output_schema=schema_path, output_path=output_path)
-            else:
-                command = adapter.command_for(invocation=invocation)
-            artifact = adapter.run(workspace_path=chamber, artifact_root=repo.repo, invocation=invocation, command=command)
-            # The server-created invocation remains the authoritative budget
-            # record even if an adapter has no provider usage report yet.
-            artifact.cost_estimated_usd = payload.budget_usd
-            diff = adapter.collect_diff(chamber, invocation.start_state_hash)
+        if payload.workspace_mode == "live":
+            with live_workspace_lock(repo.repo):
+                before_protected = protected_snapshot(repo.repo)
+                container_policy = AgentContainerPolicy.from_environment()
+                provision_agent_write_access(repo.repo, shared_gid=container_policy.shared_workspace_gid)
+                if payload.runner_kind == "codex":
+                    runner_command = adapter.live_command_for(invocation=invocation)
+                else:
+                    runner_command = adapter.command_for(invocation=invocation)
+                command = docker_command(
+                    workspace=repo.repo, run_id=invocation.run_id,
+                    runner_command=runner_command, policy=container_policy,
+                )
+                artifact = adapter.run(workspace_path=repo.repo, artifact_root=repo.repo, invocation=invocation, command=command)
+                assert_protected_unchanged(
+                    before_protected,
+                    repo.repo,
+                    allowed_paths=[f".vectant/runner-artifacts/{invocation.run_id}/{adapter.runner_kind}-{invocation.universe_id}.json"],
+                )
+                diff = adapter.collect_diff(repo.repo, invocation.start_state_hash)
+        elif payload.workspace_mode == "codesite_overlay":
+            binding = _codesite_execution_binding(payload)
+            container_policy = AgentContainerPolicy.from_environment()
+            if not container_policy.codesite_overlay_root:
+                raise ValueError("SYNTHI_CODESITE_AGENT_OVERLAY_ROOT must be configured for CodeSite execution")
+            if not container_policy.codesite_control_plane_url:
+                raise ValueError("SYNTHI_CODESITE_CONTROL_PLANE_URL must be configured for CodeSite execution")
+            if _git_head(repo.repo) != binding.base_commit:
+                raise PermissionError("CodeSite base commit is stale; open a new transaction before execution")
+            verify_codesite_authority(
+                control_plane_url=container_policy.codesite_control_plane_url,
+                agent_access_token=str(payload.codesite_agent_access_token or ""),
+                binding=binding,
+            )
+            worktree = create_codesite_agent_worktree(
+                source_workspace=repo.repo,
+                overlay_root=Path(container_policy.codesite_overlay_root),
+                binding=binding,
+            )
+            try:
+                before_protected = protected_snapshot(worktree.path)
+                provision_agent_write_access(worktree.path, shared_gid=container_policy.shared_workspace_gid)
+                runner_command = adapter.live_command_for(invocation=invocation) if payload.runner_kind == "codex" else adapter.command_for(invocation=invocation)
+                command = docker_command(
+                    workspace=worktree.path, run_id=invocation.run_id,
+                    runner_command=runner_command, policy=container_policy,
+                    codesite_binding=binding,
+                )
+                artifact = adapter.run(workspace_path=worktree.path, artifact_root=repo.repo, invocation=invocation, command=command)
+                assert_protected_unchanged(before_protected, worktree.path)
+                diff = adapter.collect_diff(worktree.path, binding.base_commit)
+                record_codesite_writes(
+                    control_plane_url=container_policy.codesite_control_plane_url,
+                    agent_access_token=str(payload.codesite_agent_access_token or ""),
+                    binding=binding, paths=diff["changed_paths"],
+                )
+                artifact.tool_summary["codesite"] = {
+                    "workspace_slug": binding.workspace_slug,
+                    "project_id": binding.project_id,
+                    "agent_session_id": binding.agent_session_id,
+                    "mutation_lease_id": binding.mutation_lease_id,
+                    "transaction_id": binding.transaction_id,
+                    "overlay_id": binding.overlay_id,
+                    "base_commit": binding.base_commit,
+                }
+            except Exception:
+                remove_codesite_agent_worktree(worktree)
+                raise
+        else:
+            # Isolated execution remains available for counterfactual trials.
+            with adapter.isolated_chamber(repo.repo, invocation) as chamber:
+                if payload.runner_kind == "codex":
+                    # Codex receives only chamber-local schema/output paths.
+                    # This keeps workspace-write sandboxing inside the
+                    # disposable chamber while the base adapter separately
+                    # captures a bounded raw log by reference in the source
+                    # workspace.
+                    schema_path = chamber / ".vectant-branch-summary.schema.json"
+                    output_path = chamber / ".vectant-branch-summary.json"
+                    schema_path.write_text(json.dumps(_codex_output_schema()), encoding="utf-8")
+                    command = adapter.command_for(invocation=invocation, output_schema=schema_path, output_path=output_path)
+                else:
+                    command = adapter.command_for(invocation=invocation)
+                artifact = adapter.run(workspace_path=chamber, artifact_root=repo.repo, invocation=invocation, command=command)
+                diff = adapter.collect_diff(chamber, invocation.start_state_hash)
+        # The server-created invocation remains the authoritative budget
+        # record even if an adapter has no provider usage report yet.
+        artifact.cost_estimated_usd = payload.budget_usd
+    except PermissionError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except OSError as error:
         raise HTTPException(status_code=503, detail=f"{payload.runner_kind} runner is unavailable: {error}") from error
     except (RuntimeError, ValueError) as error:
@@ -460,6 +563,88 @@ def execute_external_runner(run_id: str, payload: RunnerExecutionRequest, worksp
     except KeyError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     return {"branch_trace": trace.to_dict(), "detector_inputs": adapter.collect_detector_inputs(artifact)}
+
+
+@router.post("/runs/{run_id}/codesite-finalize", status_code=201)
+def finalize_codesite_runner(run_id: str, payload: CodeSiteFinalizeRequest, workspace_path: str) -> Dict[str, Any]:
+    repo = _repo(workspace_path)
+    if not repo.get_run(run_id):
+        raise HTTPException(status_code=404, detail="counterfactual run not found")
+    binding = _codesite_execution_binding(payload)
+    try:
+        policy = AgentContainerPolicy.from_environment()
+        if not policy.codesite_overlay_root or not policy.codesite_control_plane_url:
+            raise ValueError("CodeSite overlay root and control plane URL must be configured")
+        authority = verify_codesite_authority(
+            control_plane_url=policy.codesite_control_plane_url,
+            agent_access_token=payload.codesite_agent_access_token,
+            binding=binding,
+        )
+        from .codesite_agent_workspace import CodeSiteAgentWorktree
+        worktree = CodeSiteAgentWorktree(Path(policy.codesite_overlay_root).resolve(), repo.repo, binding)
+        if not worktree.path.is_dir():
+            raise ValueError("CodeSite agent overlay is unavailable")
+        command = _codesite_finalizer_command()
+        # Agent execution is concurrent; only the final source-workspace
+        # promotion is serialized.  Re-checks inside the finalizer make a
+        # stale overlay fail closed after it waits for an earlier landing.
+        with live_workspace_lock(repo.repo):
+            paths = finalize_codesite_worktree(
+                source_workspace=repo.repo, worktree=worktree, binding=binding,
+                allowed_paths=authority.allowed_paths, test_command=command,
+            )
+            try:
+                commit_codesite_transaction(
+                    control_plane_url=policy.codesite_control_plane_url,
+                    agent_access_token=payload.codesite_agent_access_token,
+                    binding=binding,
+                )
+            except Exception:
+                rollback_codesite_worktree(source_workspace=repo.repo, worktree=worktree, binding=binding)
+                raise
+        remove_codesite_agent_worktree(worktree)
+        return {"status": "landed", "transaction_id": binding.transaction_id, "changed_paths": paths}
+    except PermissionError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except (RuntimeError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+def _codesite_finalizer_command() -> list[str]:
+    raw = os.environ.get("SYNTHI_CODESITE_FINALIZER_COMMAND", "").strip()
+    if not raw:
+        raise ValueError("SYNTHI_CODESITE_FINALIZER_COMMAND must be configured")
+    try:
+        command = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ValueError("SYNTHI_CODESITE_FINALIZER_COMMAND must be a JSON argv array") from error
+    if not isinstance(command, list) or not command or any(not isinstance(item, str) or not item for item in command):
+        raise ValueError("SYNTHI_CODESITE_FINALIZER_COMMAND must be a non-empty JSON argv array")
+    return command
+
+
+def _codesite_execution_binding(payload: RunnerExecutionRequest) -> CodeSiteExecutionBinding:
+    fields = {
+        "workspace_slug": payload.codesite_workspace_slug,
+        "project_id": payload.codesite_project_id,
+        "agent_session_id": payload.codesite_agent_session_id,
+        "mutation_lease_id": payload.codesite_mutation_lease_id,
+        "transaction_id": payload.codesite_transaction_id,
+        "base_commit": payload.codesite_base_commit,
+    }
+    if any(not isinstance(value, str) or not value.strip() for value in fields.values()):
+        raise ValueError("complete CodeSite execution binding is required")
+    return CodeSiteExecutionBinding(**{key: str(value).strip() for key, value in fields.items()})
+
+
+def _git_head(workspace: Path) -> str:
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=workspace, shell=False, check=False,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+    )
+    if completed.returncode != 0:
+        raise ValueError("CodeSite execution requires a committed Git base")
+    return completed.stdout.strip()
 
 
 def _trace_from_payload(run_id: str, payload: BranchRequest) -> BranchTrace:

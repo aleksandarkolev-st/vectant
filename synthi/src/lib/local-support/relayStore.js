@@ -19,6 +19,8 @@ export const LOCAL_CONTROL_COMMAND_ACTIONS = new Set([
   "full_access_pause",
   "full_access_revoke",
   "process_visibility_pause",
+  "linked_project_activate",
+  "linked_project_disconnect",
 ]);
 
 export async function enqueueLocalControlCommand(
@@ -144,6 +146,14 @@ export async function recordLocalControlOutcome(
     });
     if (updated.count !== 1) return null;
     const sessionRevoked = safeDecision === "applied" && command?.action === "disconnect_session";
+    const linkedProjectDisconnected = safeDecision === "applied" && command?.action === "linked_project_disconnect"
+      ? linkedProjectIdFromProposal(command?.proposalJson) : null;
+    if (linkedProjectDisconnected) {
+      await tx.localSupportLinkedProject.updateMany({
+        where: { projectId: linkedProjectDisconnected, sessionId, deviceFingerprint, status: { not: "disconnected" } },
+        data: { status: "disconnected", disconnectedAt: now, fullAccessExpiresAt: null },
+      });
+    }
     if (sessionRevoked) {
       await tx.localSupportSession.updateMany({
         where: {
@@ -197,6 +207,12 @@ export async function recordLocalControlOutcome(
       session_revoked: sessionRevoked,
     };
   });
+}
+
+function linkedProjectIdFromProposal(value) {
+  const proposal = parseControlProposal(value);
+  const projectId = proposal?.project_id;
+  return typeof projectId === "string" && /^lproj_[A-Za-z0-9_-]{12,128}$/.test(projectId) ? projectId : null;
 }
 
 function scrubControlReason(value) {
