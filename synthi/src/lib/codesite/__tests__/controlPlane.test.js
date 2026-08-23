@@ -5592,6 +5592,8 @@ describe('CodeSite control plane transaction validation', () => {
   it('records outbound inbox delivery attempts for configured webhook, A2A, and provider callback targets', async () => {
     const fetchMock = vi.fn(async () => new Response('{}', { status: 202 }));
     vi.stubGlobal('fetch', fetchMock);
+    const previousAllowedOrigins = process.env.SYNTHI_CODESITE_DELIVERY_ALLOWED_ORIGINS;
+    process.env.SYNTHI_CODESITE_DELIVERY_ALLOWED_ORIGINS = 'https://hooks.example.test, https://a2a.example.test, https://provider.example.test';
     prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([{
       id: 'agent-2',
       projectId: 'project-1',
@@ -5624,10 +5626,20 @@ describe('CodeSite control plane transaction validation', () => {
       }, { userId: 'user-1' });
     } finally {
       vi.unstubAllGlobals();
+      if (previousAllowedOrigins === undefined) {
+        delete process.env.SYNTHI_CODESITE_DELIVERY_ALLOWED_ORIGINS;
+      } else {
+        process.env.SYNTHI_CODESITE_DELIVERY_ALLOWED_ORIGINS = previousAllowedOrigins;
+      }
     }
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
     const postedPayload = JSON.parse(fetchMock.mock.calls[0][1].body);
+    // Workstream F.2: every outbound request carries a signed envelope.
+    const firstHeaders = fetchMock.mock.calls[0][1].headers;
+    expect(firstHeaders['x-codesite-signature']).toMatch(/^sha256=[a-f0-9]{64}$/);
+    expect(firstHeaders['x-codesite-nonce']).toBeTruthy();
+    expect(firstHeaders['x-codesite-timestamp']).toMatch(/^\d+$/);
     expect(postedPayload.deliveryMode).toBe('webhook');
     expect(postedPayload.payload.body.privatePrompt).toBe('[redacted]');
     expect(postedPayload.payload.delivery.modes).toEqual(expect.arrayContaining([
@@ -5657,6 +5669,51 @@ describe('CodeSite control plane transaction validation', () => {
       expect.objectContaining({ mode: 'a2a', status: 'delivered', httpStatus: 202 }),
       expect.objectContaining({ mode: 'provider_callback', status: 'delivered', httpStatus: 202 }),
     ]));
+  });
+
+  it('refuses external delivery entirely when no origin allowlist is configured (fail-closed)', async () => {
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 202 }));
+    vi.stubGlobal('fetch', fetchMock);
+    delete process.env.SYNTHI_CODESITE_DELIVERY_ALLOWED_ORIGINS;
+    delete process.env.SYNTHI_CODESITE_DELIVERY_ALLOWED_ORIGINS_JSON;
+    prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([{
+      id: 'agent-2',
+      projectId: 'project-1',
+      ownerUserId: 'user-2',
+      agentProvider: 'codex',
+      displayCallsign: 'BETA-2',
+      redactionPolicyJson: JSON.stringify({
+        allowedDocumentKinds: ['rfi'],
+        deliveryTargets: [
+          { mode: 'webhook', endpoint: 'https://unreviewed.example.test/hook' },
+        ],
+      }),
+    }]);
+
+    try {
+      await createDocument('acme', 'project-1', {
+        kind: 'rfi',
+        title: 'Unreviewed webhook blocked',
+        fromSessionId: 'agent-1',
+        toSessionId: 'agent-2',
+        executionPlanId: 'plan-1',
+        body: { question: 'Still delivered durably?' },
+      }, { userId: 'user-1' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    // The durable inbox item is still created, but the external adapter is
+    // skipped and no outbound HTTP happens.
+    expect(fetchMock).not.toHaveBeenCalled();
+    const payloadUpdate = prisma.codeSiteAgentInboxItem.update.mock.calls.at(-1)[0];
+    const storedPayload = JSON.parse(payloadUpdate.data.redactedPayloadJson);
+    expect(storedPayload.delivery.adapterStatus).toBe('attempted');
+    expect(storedPayload.delivery.attempts[0]).toMatchObject({
+      mode: 'webhook',
+      status: 'skipped',
+      reason: 'delivery_allowlist_not_configured',
+    });
   });
 
   it('rejects cross-agent documents without sender ownership or project references', async () => {

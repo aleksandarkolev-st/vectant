@@ -51,6 +51,11 @@ import {
 } from './knowledgeRecords';
 import { buildKnowledgeDeliveryPlan } from './knowledgeRouting';
 import { validateKnowledgeResponse } from './knowledgeResponses';
+import {
+  deliveryAllowedOrigins,
+  endpointDeliveryAllowed,
+  signDeliveryEnvelope,
+} from './deliverySecurity';
 import { createProjectCoordinationBus, ProjectCoordinationBusError } from './projectCoordinationBus';
 import { canonicalKnowledgeEventType } from './knowledgeEvents';
 import {
@@ -7050,6 +7055,12 @@ async function dispatchInboxDeliveryTarget(inboxItem, payload, target) {
   if (!target.endpoint) {
     return { ...publicTarget, status: 'skipped', reason: 'endpoint_missing', startedAt, completedAt: new Date().toISOString() };
   }
+  // Workstream F.2: fail-closed origin allowlist. With no allowlist configured,
+  // external delivery is refused entirely.
+  const allowlistCheck = endpointDeliveryAllowed(target.endpoint, deliveryAllowedOrigins());
+  if (!allowlistCheck.ok) {
+    return { ...publicTarget, status: 'skipped', reason: allowlistCheck.reason, startedAt, completedAt: new Date().toISOString() };
+  }
   let parsed;
   try {
     parsed = new URL(target.endpoint);
@@ -7067,22 +7078,27 @@ async function dispatchInboxDeliveryTarget(inboxItem, payload, target) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 1500);
   try {
+    const bodyText = JSON.stringify({
+      deliveryMode: target.mode,
+      inboxItemId: inboxItem.id,
+      projectId: inboxItem.projectId,
+      agentSessionId: inboxItem.agentSessionId,
+      recipientUserId: inboxItem.recipientUserId,
+      eventId: inboxItem.eventId,
+      documentId: inboxItem.documentId,
+      payload,
+    });
+    // Workstream F.2: signed envelope — HMAC over timestamp+nonce+body digest
+    // gives receivers sender authentication and replay protection.
+    const signatureHeaders = signDeliveryEnvelope(bodyText);
     const response = await fetch(target.endpoint, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         'user-agent': 'Synthi-CodeSite/1.0',
+        ...signatureHeaders,
       },
-      body: JSON.stringify({
-        deliveryMode: target.mode,
-        inboxItemId: inboxItem.id,
-        projectId: inboxItem.projectId,
-        agentSessionId: inboxItem.agentSessionId,
-        recipientUserId: inboxItem.recipientUserId,
-        eventId: inboxItem.eventId,
-        documentId: inboxItem.documentId,
-        payload,
-      }),
+      body: bodyText,
       signal: controller.signal,
     });
     return {
