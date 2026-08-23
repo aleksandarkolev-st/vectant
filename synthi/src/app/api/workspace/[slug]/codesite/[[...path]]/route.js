@@ -37,6 +37,11 @@ import {
   requestAgentMutationLease,
   openAgentTransaction,
   recordRuntimeProjectObservation,
+  requestAgentChannel,
+  acceptAgentChannel,
+  rejectAgentChannel,
+  closeAgentChannel,
+  listProjectChannels,
   getSchemas,
   getSourceStateSince,
   getTransaction,
@@ -212,6 +217,13 @@ export async function GET(request, { params }) {
       return okJson(await getAgentManifest(slug, route[1], access.actor));
     }
 
+    if (route[0] === 'projects' && route[2] === 'channels') {
+      const params = new URL(request.url).searchParams;
+      return okJson(await listProjectChannels(slug, route[1], access.actor, {
+        status: params.get('status'),
+      }));
+    }
+
     if (route[0] === 'projects' && route[2] === 'schemas') {
       return okJson(await getSchemas());
     }
@@ -382,6 +394,34 @@ export async function POST(request, { params }) {
         transactionId: transaction.id,
       }).catch(() => {});
       return okJson({ transaction }, { status: 201 });
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
+  if (route[0] === 'agent-sessions' && route[2] === 'channels' && route.length === 3) {
+    try {
+      return okJson({ channel: await requestAgentChannel(
+        slug,
+        route[1],
+        bearerToken(request),
+        await readJson(request),
+      ) }, { status: 201 });
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
+  if (route[0] === 'agent-sessions' && route[2] === 'channels' && route.length === 5
+    && (route[4] === 'accept' || route[4] === 'reject' || route[4] === 'close')) {
+    try {
+      const body = await readJson(request);
+      if (route[4] === 'accept') {
+        const result = await acceptAgentChannel(slug, route[1], bearerToken(request), route[3], body);
+        return okJson({ channel: result }, { status: 200 });
+      }
+      if (route[4] === 'reject') {
+        return okJson({ channel: await rejectAgentChannel(slug, route[1], bearerToken(request), route[3], body) });
+      }
+      return okJson({ channel: await closeAgentChannel(slug, route[1], bearerToken(request), route[3], body) });
     } catch (error) {
       return handleCodesiteError(error);
     }
