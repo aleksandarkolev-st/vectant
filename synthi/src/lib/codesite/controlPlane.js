@@ -13202,6 +13202,33 @@ export async function requestAgentChannel(workspaceSlug, sessionId, agentAccessT
 }
 
 /**
+ * Design §7: tokens/channels expire at openedAt + maxDurationMs. Enforced
+ * lazily whenever a channel is touched — an expired active channel is flipped
+ * to 'expired' before any other logic runs.
+ */
+async function sweepExpiredChannel(channel) {
+  if (
+    channel?.status === 'active'
+    && channel.openedAt
+    && channel.maxDurationMs
+    && Date.now() - new Date(channel.openedAt).getTime() > channel.maxDurationMs
+  ) {
+    const expired = await prisma.codeSiteAgentChannel.update({
+      where: { id: channel.id },
+      data: { status: 'expired', closedAt: new Date() },
+    });
+    await recordChannelEvent(channel.projectId, {
+      eventType: 'channel_closed',
+      actorId: null,
+      channelId: channel.id,
+      details: { reasonCode: 'channel_duration_expired' },
+    });
+    return expired;
+  }
+  return channel;
+}
+
+/**
  * Responder accepts a requested channel. Mints the channel token, stores only
  * its hash, and returns it once — inside this authenticated response. Also
  * records the responder's endpoint and activates the channel.
@@ -13213,9 +13240,10 @@ export async function acceptAgentChannel(workspaceSlug, sessionId, agentAccessTo
     now: options.now,
   });
   const session = authority.session;
-  const channel = await prisma.codeSiteAgentChannel.findFirst({
+  const found = await prisma.codeSiteAgentChannel.findFirst({
     where: { id: String(channelId || ''), workspaceSlug },
   });
+  const channel = await sweepExpiredChannel(found);
   if (!channel) throw notFound('channel_not_found');
   if (channel.toSessionId !== session.id) throw forbidden('channel_responder_mismatch');
   if (channel.status !== 'requested') throw badRequest('channel_not_requestable', { status: channel.status });
@@ -13284,9 +13312,14 @@ export async function closeAgentChannel(workspaceSlug, sessionId, agentAccessTok
     now: options.now,
   });
   const session = authority.session;
-  const channel = await prisma.codeSiteAgentChannel.findFirst({
+  // Design §8: close is idempotent — if the channel is already closed,
+  // return the record unchanged so both participants can call this.
+  const existing = await prisma.codeSiteAgentChannel.findFirst({
     where: { id: String(channelId || ''), workspaceSlug },
   });
+  if (existing?.status === 'closed') return agentChannelProjection(existing);
+  const found = await sweepExpiredChannel(existing);
+  const channel = found ?? existing;
   if (!channel) throw notFound('channel_not_found');
   if (channel.fromSessionId !== session.id && channel.toSessionId !== session.id) {
     throw forbidden('channel_participant_mismatch');
