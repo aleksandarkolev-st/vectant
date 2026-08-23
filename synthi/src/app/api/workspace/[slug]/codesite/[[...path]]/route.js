@@ -35,6 +35,7 @@ import {
   recordAgentProjectObservation,
   createAgentExecutionPlan,
   requestAgentMutationLease,
+  openAgentTransaction,
   recordRuntimeProjectObservation,
   getSchemas,
   getSourceStateSince,
@@ -364,6 +365,23 @@ export async function POST(request, { params }) {
         bearerToken(request),
         await readJson(request),
       ) }, { status: 201 });
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
+  if (route[0] === 'agent-sessions' && route[2] === 'transactions' && route.length === 3) {
+    try {
+      const transaction = await openAgentTransaction(
+        slug,
+        route[1],
+        bearerToken(request),
+        await readJson(request),
+      );
+      await notifyCollabCodeSiteActivity(request, slug, {
+        event: 'transaction_opened',
+        transactionId: transaction.id,
+      }).catch(() => {});
+      return okJson({ transaction }, { status: 201 });
     } catch (error) {
       return handleCodesiteError(error);
     }

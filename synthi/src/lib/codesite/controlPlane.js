@@ -3308,6 +3308,21 @@ export async function requestAgentMutationLease(workspaceSlug, sessionId, agentA
   });
 }
 
+export async function openAgentTransaction(workspaceSlug, sessionId, agentAccessToken, body = {}, options = {}) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.plans.write',
+    now: options.now,
+  });
+  const session = authority.session;
+  const mutationLeaseId = String(body.mutationLeaseId || body.mutation_lease_id || '').trim();
+  if (!mutationLeaseId) throw badRequest('mutation_lease_required');
+  return openTransaction(workspaceSlug, mutationLeaseId, body, {
+    internalService: true,
+    bypass: true,
+    agentOwnerUserId: session.ownerUserId,
+  });
+}
+
 function normalizeDurationMs(value) {
   if (Number.isFinite(value)) return Math.max(0, Math.floor(value));
   if (typeof value !== 'string') return null;
