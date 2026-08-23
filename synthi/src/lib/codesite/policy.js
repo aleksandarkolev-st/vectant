@@ -128,6 +128,11 @@ export const CODE_SITE_EVENT_TYPES = [
   'source_changed_observed',
   'runtime_observed',
   'inspection_failed',
+  'channel_requested',
+  'channel_accepted',
+  'channel_rejected',
+  'channel_closed',
+  'channel_violation',
 ];
 
 const CODE_SITE_EVENT_TYPE_SET = new Set(CODE_SITE_EVENT_TYPES);
