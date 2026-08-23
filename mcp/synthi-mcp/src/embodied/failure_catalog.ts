@@ -7,26 +7,9 @@
  * registry; adapters map their raw outcomes through `classifyFailure` so
  * trunk + subclass always travel together.
  */
-import { registerSubstrateClasses } from "./classifier.js";
+import { registerSubstrateClasses, type SubstrateFailureClass } from "./classifier.js";
 
-export interface SubstrateClassDef {
-  id: string;
-  trunk:
-    | "perception_drift"
-    | "identity_lost"
-    | "consent_missing"
-    | "auth"
-    | "mutation_blocked"
-    | "unsafe_environment"
-    | "test_data_missing"
-    | "world_changed"
-    | "load_delay"
-    | "network_failure"
-    | "app_validation_error"
-    | "substrate_limitation"
-    | "unknown";
-  description: string;
-}
+export type SubstrateClassDef = SubstrateFailureClass;
 
 const GAME: SubstrateClassDef[] = [
   { id: "game.physics_blocked", trunk: "mutation_blocked", description: "the world's physics prevented the movement" },
