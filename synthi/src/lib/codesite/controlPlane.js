@@ -4,6 +4,15 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import prisma from '@/lib/prisma';
+import {
+  channelsDisabled,
+  channelMaxDurationMs,
+  effectiveChannelMode,
+  hashChannelToken,
+  mintChannelToken,
+  modeTransports,
+  CHANNEL_GRANT_WINDOW_MS,
+} from './channelSecurity';
 import { buildArtifactProjection, CODESITE_MCP_TOOLS, codesiteSchemas, quarantineReviewRecords, writeArtifactProjection } from './artifacts';
 import { buildFilesystemBoundaryProofRecords } from './filesystemBoundaryProof';
 import { asArray, parseJson, stringifyJson, stableJson } from './json';
@@ -13030,4 +13039,286 @@ function policyDeltaProjection(delta) {
     createdAt: delta.createdAt,
     promotedAt: delta.promotedAt,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Registered direct channels (docs/REGISTERED_DIRECT_CHANNELS_DESIGN.md)
+// ---------------------------------------------------------------------------
+
+function agentChannelProjection(channel) {
+  return {
+    id: channel.id,
+    projectId: channel.projectId,
+    workspaceSlug: channel.workspaceSlug,
+    fromSessionId: channel.fromSessionId,
+    toSessionId: channel.toSessionId,
+    status: channel.status,
+    purpose: channel.purpose || null,
+    transport: channel.transport || null,
+    fromEndpointRef: channel.fromEndpointRef || null,
+    // The responder's endpoint is only revealed after acceptance — exposing
+    // it is the responder's choice, made in /accept.
+    toEndpointRef: channel.status === 'requested' ? null : (channel.toEndpointRef || null),
+    maxDurationMs: channel.maxDurationMs ?? null,
+    grantExpiresAt: channel.grantExpiresAt ?? null,
+    openedAt: channel.openedAt ?? null,
+    closedAt: channel.closedAt ?? null,
+    summaryDigest: channel.summaryDigest || null,
+    messageCount: channel.messageCount ?? 0,
+    createdAt: channel.createdAt,
+  };
+}
+
+async function recordChannelEvent(projectId, {
+  eventType,
+  actorType = 'agent_session',
+  actorId = null,
+  channelId = null,
+  evidenceRefs = [],
+  details = {},
+}) {
+  return recordEvent(projectId, {
+    eventType,
+    actorType,
+    actorId,
+    evidenceRefs: unique([...asArray(evidenceRefs)]),
+    details: { channelId, ...details },
+  });
+}
+
+/**
+ * Initiate a registered direct channel. Gates (all fail-closed):
+ * kill switch, project mode ladder, workspace floor, transport allowed by
+ * mode, capability `codesite.channels.open` on BOTH sessions, liveness of
+ * both sessions, self-pairing, duplicate active pair, per-session cap.
+ */
+export async function requestAgentChannel(workspaceSlug, sessionId, agentAccessToken, body = {}, options = {}) {
+  if (channelsDisabled()) throw forbidden('codesite_channels_disabled');
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.channels.open',
+    now: options.now,
+  });
+  const fromSession = authority.session;
+  const toSessionId = String(body.toSessionId || body.to_session_id || '').trim();
+  if (!toSessionId) throw badRequest('channel_target_required');
+  if (toSessionId === fromSession.id) throw badRequest('channel_self_pairing_forbidden');
+  const purpose = String(body.purpose || 'coordination').trim().slice(0, 256);
+  const transport = String(body.transport || '').trim().toLowerCase();
+  const endpointRef = String(body.endpointRef || body.endpoint_ref || '').trim() || null;
+
+  const project = await prisma.codeSiteProject.findFirst({
+    where: { id: fromSession.projectId, workspaceSlug },
+  });
+  if (!project) throw notFound('codesite_project_not_found');
+
+  const modeCheck = effectiveChannelMode(project.channelMode);
+  if (!modeCheck.ok) throw forbidden(modeCheck.reasonCode, modeCheck.detail);
+  if (!modeTransports(modeCheck.mode).includes(transport)) {
+    throw badRequest('channel_transport_not_allowed_in_mode', { mode: modeCheck.mode });
+  }
+
+  const toSession = await prisma.codeSiteAgentSession.findFirst({
+    where: { id: toSessionId, projectId: project.id, endedAt: null },
+  });
+  if (!toSession) throw notFound('agent_session_not_found');
+
+  // Both sides must hold the channels capability; the initiator's was checked
+  // by requireAgentTokenAuthority, the responder's is verified here.
+  const toCapabilities = unique(asArray(parseJson(toSession.capabilitiesJson, []))
+    .map((capability) => String(capability || '').trim())
+    .filter(Boolean));
+  if (!toCapabilities.includes('codesite.channels.open')) {
+    throw forbidden('channel_responder_capability_missing', { requiredCapabilities: ['codesite.channels.open'] });
+  }
+
+  const existingActive = await prisma.codeSiteAgentChannel.findFirst({
+    where: {
+      projectId: project.id,
+      status: 'active',
+      OR: [
+        { fromSessionId: fromSession.id, toSessionId: toSession.id },
+        { fromSessionId: toSession.id, toSessionId: fromSession.id },
+      ],
+    },
+  });
+  if (existingActive) throw badRequest('channel_already_active', { channelId: existingActive.id });
+
+  const activeCount = await prisma.codeSiteAgentChannel.count({
+    where: {
+      projectId: project.id,
+      status: 'active',
+      OR: [{ fromSessionId: fromSession.id }, { toSessionId: fromSession.id }],
+    },
+  });
+  const capRaw = Number(process.env.SYNTHI_CODESITE_MAX_ACTIVE_CHANNELS);
+  const maxActive = Number.isFinite(capRaw) && capRaw > 0 ? Math.floor(capRaw) : 3;
+  if (activeCount >= maxActive) {
+    throw forbidden('channel_concurrency_cap_reached', { activeCount, maxActive });
+  }
+
+  const durationMs = channelMaxDurationMs(body.maxDurationMs ?? body.max_duration_ms);
+  const channel = await prisma.codeSiteAgentChannel.create({
+    data: {
+      projectId: project.id,
+      workspaceSlug,
+      fromSessionId: fromSession.id,
+      toSessionId: toSession.id,
+      status: 'requested',
+      purpose,
+      transport,
+      fromEndpointRef: endpointRef,
+      maxDurationMs: durationMs,
+      grantExpiresAt: new Date(Date.now() + CHANNEL_GRANT_WINDOW_MS),
+    },
+  });
+  await recordChannelEvent(project.id, {
+    eventType: 'channel_requested',
+    actorId: fromSession.id,
+    channelId: channel.id,
+    details: {
+      toSessionId: toSession.id,
+      transport,
+      purpose,
+      mode: modeCheck.mode,
+    },
+  });
+  return agentChannelProjection(channel);
+}
+
+/**
+ * Responder accepts a requested channel. Mints the channel token, stores only
+ * its hash, and returns it once — inside this authenticated response. Also
+ * records the responder's endpoint and activates the channel.
+ */
+export async function acceptAgentChannel(workspaceSlug, sessionId, agentAccessToken, channelId, body = {}, options = {}) {
+  if (channelsDisabled()) throw forbidden('codesite_channels_disabled');
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.channels.open',
+    now: options.now,
+  });
+  const session = authority.session;
+  const channel = await prisma.codeSiteAgentChannel.findFirst({
+    where: { id: String(channelId || ''), workspaceSlug },
+  });
+  if (!channel) throw notFound('channel_not_found');
+  if (channel.toSessionId !== session.id) throw forbidden('channel_responder_mismatch');
+  if (channel.status !== 'requested') throw badRequest('channel_not_requestable', { status: channel.status });
+  if (channel.grantExpiresAt && new Date(channel.grantExpiresAt).getTime() < Date.now()) {
+    await prisma.codeSiteAgentChannel.update({
+      where: { id: channel.id },
+      data: { status: 'expired' },
+    });
+    throw badRequest('channel_grant_expired');
+  }
+  const endpointRef = String(body.endpointRef || body.endpoint_ref || '').trim() || null;
+  const token = mintChannelToken();
+  const updated = await prisma.codeSiteAgentChannel.update({
+    where: { id: channel.id },
+    data: {
+      status: 'active',
+      toEndpointRef: endpointRef,
+      channelTokenHash: hashChannelToken(token),
+      openedAt: new Date(),
+    },
+  });
+  await recordChannelEvent(channel.projectId, {
+    eventType: 'channel_accepted',
+    actorId: session.id,
+    channelId: channel.id,
+    details: { fromSessionId: channel.fromSessionId, transport: channel.transport },
+  });
+  return { ...agentChannelProjection(updated), channelToken: token };
+}
+
+/** Responder declines a requested channel with an optional reason code. */
+export async function rejectAgentChannel(workspaceSlug, sessionId, agentAccessToken, channelId, body = {}, options = {}) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.channels.open',
+    now: options.now,
+  });
+  const session = authority.session;
+  const channel = await prisma.codeSiteAgentChannel.findFirst({
+    where: { id: String(channelId || ''), workspaceSlug },
+  });
+  if (!channel) throw notFound('channel_not_found');
+  if (channel.toSessionId !== session.id) throw forbidden('channel_responder_mismatch');
+  if (channel.status !== 'requested') throw badRequest('channel_not_requestable', { status: channel.status });
+  const reasonCode = String(body.reasonCode || body.reason_code || 'declined').slice(0, 128);
+  const updated = await prisma.codeSiteAgentChannel.update({
+    where: { id: channel.id },
+    data: { status: 'rejected' },
+  });
+  await recordChannelEvent(channel.projectId, {
+    eventType: 'channel_rejected',
+    actorId: session.id,
+    channelId: channel.id,
+    details: { fromSessionId: channel.fromSessionId, reasonCode },
+  });
+  return agentChannelProjection(updated);
+}
+
+/**
+ * Close an active channel (either side). Records the transcript summary
+ * digest both sides maintained — disputes can later be checked against it
+ * without storing payloads.
+ */
+export async function closeAgentChannel(workspaceSlug, sessionId, agentAccessToken, channelId, body = {}, options = {}) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.channels.open',
+    now: options.now,
+  });
+  const session = authority.session;
+  const channel = await prisma.codeSiteAgentChannel.findFirst({
+    where: { id: String(channelId || ''), workspaceSlug },
+  });
+  if (!channel) throw notFound('channel_not_found');
+  if (channel.fromSessionId !== session.id && channel.toSessionId !== session.id) {
+    throw forbidden('channel_participant_mismatch');
+  }
+  if (!['active', 'requested'].includes(channel.status)) {
+    throw badRequest('channel_not_closable', { status: channel.status });
+  }
+  // The summary digest is provided by the closing side; both sides maintain a
+  // hash chain over the transcript so digests should match. Store what was
+  // reported plus who reported it.
+  const summaryDigest = String(body.summaryDigest || body.summary_digest || '').trim() || null;
+  const updated = await prisma.codeSiteAgentChannel.update({
+    where: { id: channel.id },
+    data: {
+      status: 'closed',
+      closedAt: new Date(),
+      summaryDigest,
+      messageCount: Number.isFinite(Number(body.messageCount))
+        ? Math.max(0, Math.floor(Number(body.messageCount)))
+        : channel.messageCount,
+    },
+  });
+  await recordChannelEvent(channel.projectId, {
+    eventType: 'channel_closed',
+    actorId: session.id,
+    channelId: channel.id,
+    details: {
+      closedBySessionId: session.id,
+      summaryDigest,
+      messageCount: updated.messageCount,
+    },
+  });
+  return agentChannelProjection(updated);
+}
+
+/** Audit view of channels for a project. Members only; no tokens ever. */
+export async function listProjectChannels(workspaceSlug, projectId, actor = null, query = {}) {
+  const project = await prisma.codeSiteProject.findFirst({
+    where: { id: String(projectId || ''), workspaceSlug },
+    include: { members: true },
+  });
+  if (!project) throw notFound('project_not_found');
+  await requireProjectAccess(project, actor, 'read');
+  const status = String(query.status || '').trim() || undefined;
+  const channels = await prisma.codeSiteAgentChannel.findMany({
+    where: { projectId: project.id, ...(status ? { status } : {}) },
+    orderBy: { createdAt: 'desc' },
+    take: 100,
+  });
+  return { channels: channels.map(agentChannelProjection) };
 }
