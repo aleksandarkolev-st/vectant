@@ -56,6 +56,7 @@ import {
   recordTransactionRead,
   recordTransactionWrite,
   recordAgentTransactionWrite,
+  commitAgentTransaction,
   proposeRouteRevision,
   requestMutationLease,
   resumeMaydayIncident,
@@ -390,6 +391,13 @@ export async function POST(request, { params }) {
   if (route[0] === 'agent-sessions' && route[2] === 'transactions' && route[4] === 'record-write' && route.length === 5) {
     try {
       return okJson(await recordAgentTransactionWrite(slug, route[1], bearerToken(request), route[3], await readJson(request)));
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
+  if (route[0] === 'agent-sessions' && route[2] === 'transactions' && route[4] === 'commit' && route.length === 5) {
+    try {
+      return okJson(await commitAgentTransaction(slug, route[1], bearerToken(request), route[3], await readJson(request)));
     } catch (error) {
       return handleCodesiteError(error);
     }
