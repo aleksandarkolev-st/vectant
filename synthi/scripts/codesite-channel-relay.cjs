@@ -77,6 +77,12 @@ function verifyFrame({ frame, channelToken, lastSeq = 0, nowMs = Date.now(), rep
   if (!Number.isFinite(tsMs)) {
     return { ok: false, violation: { code: 'frame_timestamp_invalid', detail: { ts: frame.ts } } };
   }
+  // Review fix #16: a small forward skew is tolerated (clock drift), but
+  // significantly future-dated frames are refused so replay can't be armed
+  // with a timestamp that only becomes valid later.
+  if (tsMs - nowMs > REPLAY_WINDOW_MS_DEFAULT) {
+    return { ok: false, violation: { code: 'frame_timestamp_future', detail: { tsMs, nowMs } } };
+  }
   if (Math.abs(nowMs - tsMs) > replayWindowMs) {
     return { ok: false, violation: { code: 'frame_replay_window_exceeded', detail: { ageMs: nowMs - tsMs, windowMs: replayWindowMs } } };
   }
@@ -170,12 +176,39 @@ function createLoopbackPair({ tokenAtoB, tokenBtoA }) {
   };
 }
 
+/**
+ * Stateful receiver (design §9 review fix): owns the per-direction lastSeq so
+ * transports don't have to persist replay state themselves. Wrap a raw
+ * verifyFrame call — violations are returned, never thrown.
+ */
+function createReceiver({ channelToken, nowMs = () => Date.now(), replayWindowMs = REPLAY_WINDOW_MS_DEFAULT }) {
+  let lastSeq = 0;
+  return {
+    /** Verify one inbound frame; advances internal seq on success. */
+    receive(frame) {
+      const verdict = verifyFrame({
+        frame,
+        channelToken,
+        lastSeq,
+        nowMs: nowMs(),
+        replayWindowMs,
+      });
+      if (verdict.ok) lastSeq = verdict.frame.seq;
+      return verdict;
+    },
+    get lastSeq() {
+      return lastSeq;
+    },
+  };
+}
+
 module.exports = {
   FRAME_VERSION,
   REPLAY_WINDOW_MS_DEFAULT,
   TranscriptChain,
   buildFrame,
   createLoopbackPair,
+  createReceiver,
   sha256Hex,
   verifyFrame,
 };
