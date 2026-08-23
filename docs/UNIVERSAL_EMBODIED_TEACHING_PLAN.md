@@ -1,10 +1,20 @@
 # Universal Embodied Teaching Plan
 
-Status: v2 implemented through Phase 0 + Phase 1 core on branch feat/embodied-universal-teaching. Verified substrate-neutral to date: five ontologies (spatial grid, activation network, key-value store, terminal filesystem, kernel unit namespace) pass the same substrate-blind conformance harness (12 randomized seeds each), plus a teach-everything e2e covering attach/observe/teach/compile/license/run/explain across all five and a cross-substrate workflow with per-node licensing. Shared CV primitives (dHash, HSV bands, NCC template match, block delta) are implemented and tested. Anti-hardcoding is enforced by a whole-tree gate test (import boundary + scenario-noun grep + fixture-kind grep). Visual proof: .visual-proof/embodied-core/conformance-report.html (ALL WORLDS CONFORM) generated from live runs and verified in Firefox on the desktop via accessibility-tree capture.
-Scope: generalize Teach Mode from a browser-only recorder into a substrate-neutral embodied teaching system covering browsers, runtimes, terminals, game worlds, kernels, desktops, and APIs.
-Principle: teach everything a human can demonstrate through an interface, not just what a human can click in a tab.
+Status: v2 implemented through Phase 0, 0b, 1, 2 (experimental), 3, 4 and 5 on branch feat/embodied-universal-teaching.
 
-Not yet implemented from this plan: MCP tool surface changes, UI panel work, browser adapter wrapper refactor onto the capability interfaces, production engine plugins for real game engines, and the governance integration with the existing dojo license kernel.
+Verified to date:
+- Five randomized fixture ontologies (spatial grid, activation network, key-value store, terminal filesystem, kernel unit namespace) pass the same substrate-blind conformance harness, 12 seeds each; teach-everything e2e walks attach/observe/teach/compile/license/run/explain across all five plus a cross-substrate workflow with per-node licensing.
+- P0b mutation verification: an injected scenario shortcut into the core is DETECTED by the whole-tree gate (scripts/verify-mutation-gate.mjs), core restored byte-exact.
+- P1 terminal adapter executes real processes: secret scrubbing asserted, allowlist-as-policy, golden write-verify flow replayed into a fresh workspace.
+- P2 game adapter: transport-agnostic scene-graph protocol, HSV-band appearance predicates from shared CV primitives, continuous-action quantization captured at record time, randomized door-inspection fixture across 10 seeds with repainted-twin discrimination.
+- P3 kernel adapter: snapshot-before-mutation enforced by injected safety policy (conservative default = always snapshot), host attempts refused AND audited.
+- P4 API adapter: HTTP capture with header/body scrubbing -> deterministic MCP tool emission -> recipe replay.
+- P5 governance unification: case law caps violated substrates at observe-only until re-verified; mixed-substrate proof capsules validated against single licenses; entrustment dial promotes only on discrimination-proven evidence.
+- Semantic-quality metrics implemented per the Metrics section: contract precision/recall probes, counterfactual discrimination, causal false-positive rate, affordance degradation tracking.
+- MCP tool surface: all seven synthi_* handlers proven over a real user journey (list/attach/observe/teach/compile/run/explain).
+- Visual proof: .visual-proof/embodied-core/conformance-report.html regenerated from live runs (18 suites GREEN, ALL WORLDS CONFORM) and verified in Firefox on the desktop via accessibility-tree capture.
+
+Not yet implemented from this plan: production engine plugins for real game engines behind the WS protocol (Godot/Unity), the runtime/pod adapter, UI panel work wiring the Observe substrate picker, and integration of the dojo stack's world_manifest. The browser adapter wrapper exists but the legacy browser tools have not been internally re-pointed onto it.
 
 ---
 

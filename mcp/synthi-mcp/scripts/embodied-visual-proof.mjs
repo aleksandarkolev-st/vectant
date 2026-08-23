@@ -56,6 +56,14 @@ const suites = [
   "tests/unit/embodied_cv.test.ts",
   "tests/unit/embodied_depth_invariants.test.ts",
   "tests/unit/embodied_browser_wrapper.test.ts",
+  "tests/unit/embodied_terminal_scrub.test.ts",
+  "tests/unit/embodied_terminal_adapter.test.ts",
+  "tests/unit/embodied_kernel_adapter.test.ts",
+  "tests/unit/embodied_game_adapter.test.ts",
+  "tests/unit/embodied_api_adapter.test.ts",
+  "tests/unit/embodied_case_law.test.ts",
+  "tests/unit/embodied_metrics.test.ts",
+  "tests/unit/embodied_tools.test.ts",
 ].map(runSuite);
 
 const tscOutput = (() => {
