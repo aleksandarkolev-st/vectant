@@ -901,6 +901,36 @@ function codexProviderSessionRefs() {
   ].filter(Boolean));
 }
 
+async function provisionCodexProviderSessions({ proofRepo, callsigns }) {
+  const supplied = String(process.env.CODESITE_PROOF_CODEX_PROVIDER_SESSION_REFS || '')
+    .split(',')
+    .map(normalizeProviderSessionRef)
+    .filter(Boolean);
+  if (supplied.length >= callsigns.length) return supplied.slice(0, callsigns.length);
+  if (supplied.length) {
+    throw new Error(`CODESITE_PROOF_CODEX_PROVIDER_SESSION_REFS must provide all ${callsigns.length} sessions or be omitted`);
+  }
+  const codexHome = codexAgentHome();
+  assertProof(fs.existsSync(path.join(codexHome, 'auth.json')), 'Codex proof authentication is required to establish provider sessions');
+  const sessions = [];
+  for (const callsign of callsigns) {
+    const codex = codexInvocation([
+      'exec', '--json', '--ignore-user-config', '--ignore-rules', '--sandbox', 'read-only',
+      `Establish this persisted CodeSite proof session for ${callsign}. Do not run commands or modify files. Reply with a short readiness acknowledgement.`,
+    ]);
+    const result = await runWithClosedStdin(codex.command, codex.args, {
+      cwd: proofRepo.hostRoot,
+      timeoutMs: normalizeCodexAgentTimeoutMs(),
+      env: { ...process.env, CODEX_HOME: codexHome },
+    });
+    const threadId = parseCodexJsonEvents(result.stdout, result.stderr)
+      .find((event) => event.type === 'thread.started')?.thread_id;
+    assertProof(threadId, `Codex did not issue a persisted provider session for ${callsign}`);
+    sessions.push(normalizeProviderSessionRef(threadId));
+  }
+  return sessions;
+}
+
 async function run(command, args, options = {}) {
   const result = await execFileAsync(command, args, {
     maxBuffer: 8 * 1024 * 1024,
@@ -1337,10 +1367,8 @@ function codexAgentOutputSchema() {
 }
 
 function codexAgentPrompt({ spec, registration, slug, projectId, proofRepo, actorCommands, actorProjection }) {
-  const hostRepoRoot = repoRoot();
+  const hostRepoRoot = proofRepo.hostRoot;
   const repoPath = (absolutePath) => path.relative(hostRepoRoot, absolutePath).split(path.sep).join('/');
-  const planPath = 'docs/CODESITE_CONSTRUCTION_COORDINATION_PLAN.md';
-  const proofScriptPath = 'synthi/scripts/codesite-full-workflow-proof.mjs';
   const proofRepoPath = repoPath(proofRepo.hostRoot);
   const proofRepoPackagePath = `${proofRepoPath}/package.json`;
   const proofRepoSchemaPath = `${proofRepoPath}/synthi/prisma/schema.prisma`;
@@ -1349,28 +1377,24 @@ function codexAgentPrompt({ spec, registration, slug, projectId, proofRepo, acto
   const projectionPath = repoPath(actorProjection.controlStatePath);
   const actionScriptPath = repoPath(actorProjection.actionScriptPath);
   const actionContract = actorProjection.actionContracts[spec.callsign] || [];
-  const expectedRefsText = [
-    'Expected CodeSite providerSessionRefs for this proof:',
-    ...agentFlightSpecsForPrompt(spec).map((entry) => `- ${entry.callsign}: ${entry.providerSessionRef}`),
-  ].join('\n');
   const roleChecks = {
     schema: [
       `Read the CodeSite projection at ${projectionPath}; it contains your registered agent session, execution plan, clearance, transaction, assumption, and write proposal contract.`,
       `Use ${actionScriptPath} to emit actor receipts for control-state read, execution-plan filing, mutation lease, transaction open, assumption, controlled-write proposal, inspection request, and commit request.`,
       `Run cd ${proofRepoPath} && npm run typecheck after the action receipts and report that command in commandsRun.`,
-      `You may inspect ${proofRepoSchemaPath}, ${proofRepoPackagePath}, ${planPath}, or ${proofScriptPath} only as supporting context.`,
+      `You may inspect ${proofRepoSchemaPath} and ${proofRepoPackagePath} only as supporting context.`,
     ],
     backend: [
       `Read the CodeSite projection at ${projectionPath}; it contains your held dependent API flight, RFI inbox item, change-order response, stale assumption, and aborted API transaction.`,
       `Use ${actionScriptPath} to emit actor receipts for control-state read, execution-plan filing, inbox read, inbox acknowledgement, change-order filing, and stale transaction abort.`,
       'Confirm API-02 has a distinct providerSessionRef from SCHEMA-01 and TEST-03 from the projection already read and the listed dependency check; do not run an extra provider-session command.',
-      `You may inspect ${planPath}, ${proofScriptPath}, and ${projectionPath} only as supporting context.`,
+      `You may inspect ${projectionPath} only as supporting context.`,
     ],
     inspection: [
       `Read the CodeSite projection at ${projectionPath}; it contains the landing radar inspection, metrics summary, proof bundle inputs, black-box replay refs, and causal line-inspector evidence.`,
       `Use ${actionScriptPath} to emit actor receipts for control-state read, execution-plan filing, landing request, and metrics read.`,
       `Run cd ${proofRepoPath} && npm test after the action receipts and report that command in commandsRun.`,
-      `You may inspect ${proofRepoPackagePath}, ${proofRepoTypecheckPath}, ${proofRepoContractTestPath}, ${planPath}, or ${proofScriptPath} only as supporting context.`,
+      `You may inspect ${proofRepoPackagePath}, ${proofRepoTypecheckPath}, and ${proofRepoContractTestPath} only as supporting context.`,
     ],
   };
   return [
@@ -1379,11 +1403,10 @@ function codexAgentPrompt({ spec, registration, slug, projectId, proofRepo, acto
     `Registered CodeSite agent session id: ${registration?.agentSession?.id || 'unknown'}.`,
     `Execution plan id: ${registration?.executionPlan?.id || 'unknown'}.`,
     `Project id: ${projectId}.`,
-    expectedRefsText,
     '',
     'You must execute shell commands; do not answer from memory or from this prompt alone.',
     `Use exact repo-relative paths from this prompt. The working directory is ${hostRepoRoot}.`,
-    'Do not substitute /workspace paths; this Codex proof session runs on the host with the repo as its working directory.',
+    'Do not access paths outside the generated proof repository.',
     'Do not run broad find commands over the repo root, node_modules, .git, or tmp trees.',
     'Prefer bounded commands such as pwd, sed -n, rg -n on an exact file, ls on an exact directory, and npm scripts in the proof repo.',
     'Only run commands that should exit 0; the workflow proof rejects failed command_execution transcript entries.',
@@ -1401,17 +1424,6 @@ function codexAgentPrompt({ spec, registration, slug, projectId, proofRepo, acto
     '',
     `Return only JSON matching the provided schema immediately after the last listed command. The role field must be "${spec.domain}". The callsign and providerSessionRef fields must exactly match the values above.`,
   ].join('\n');
-}
-
-function agentFlightSpecsForPrompt(currentSpec) {
-  return [
-    { callsign: 'SCHEMA-01', providerSessionRef: process.env.CODESITE_PROOF_CODEX_PROVIDER_SESSION_REFS?.split(',')?.[0] || currentSpec.providerSessionRef },
-    { callsign: 'API-02', providerSessionRef: process.env.CODESITE_PROOF_CODEX_PROVIDER_SESSION_REFS?.split(',')?.[1] || currentSpec.providerSessionRef },
-    { callsign: 'TEST-03', providerSessionRef: process.env.CODESITE_PROOF_CODEX_PROVIDER_SESSION_REFS?.split(',')?.[2] || currentSpec.providerSessionRef },
-  ].map((entry) => ({
-    ...entry,
-    providerSessionRef: normalizeProviderSessionRef(entry.providerSessionRef),
-  }));
 }
 
 function proofProjectRedactionPolicy() {
@@ -1720,7 +1732,7 @@ async function prepareCodexActorProjection({ evidenceDir, slug, projectId, proof
 }
 
 function codexAgentCommands({ spec, proofRepo, projectId, actorProjection }) {
-  const repoPath = (absolutePath) => path.relative(repoRoot(), absolutePath).split(path.sep).join('/');
+  const repoPath = (absolutePath) => path.relative(proofRepo.hostRoot, absolutePath).split(path.sep).join('/');
   const scriptPath = repoPath(actorProjection.actionScriptPath);
   const actionCommand = (action) => `node ${scriptPath} --project ${projectId} --callsign ${spec.callsign} ${action}`;
   const contractCommands = (actorProjection.actionContracts[spec.callsign] || []).map((entry) => actionCommand(entry.action));
@@ -1728,14 +1740,14 @@ function codexAgentCommands({ spec, proofRepo, projectId, actorProjection }) {
   if (spec.domain === 'schema') {
     return [
       ...contractCommands.slice(0, 6),
-      `cd ${proofRepoPath} && npm run typecheck`,
+      `cd ${proofRepoPath || '.'} && npm run typecheck`,
       ...contractCommands.slice(6),
     ];
   }
   if (spec.domain === 'inspection') {
     return [
       ...contractCommands,
-      `cd ${proofRepoPath} && npm test`,
+      `cd ${proofRepoPath || '.'} && npm test`,
     ];
   }
   return [
@@ -1860,26 +1872,20 @@ async function generateAgentExecutionEvidence({ dir, slug, projectId, proofRepo,
     const actorCommands = codexAgentCommands({ spec, proofRepo, projectId, actorProjection });
     const prompt = codexAgentPrompt({ spec, registration, slug, projectId, proofRepo, actorCommands, actorProjection });
     const args = [
-      '-a',
-      'never',
-      'exec',
+      'exec', 'resume', spec.providerSessionRef.replace(/^codex-session:/, ''),
       '--json',
-      '--ephemeral',
       '--ignore-user-config',
       '--ignore-rules',
-      '--dangerously-bypass-approvals-and-sandbox',
       '--output-schema',
       schemaPath,
       '--output-last-message',
       finalPath,
-      '-C',
-      repoRoot(),
       prompt,
     ];
     const startedAt = new Date();
     const codex = codexInvocation(args);
     const result = await runWithClosedStdin(codex.command, codex.args, {
-      cwd: repoRoot(),
+      cwd: proofRepo.hostRoot,
       timeoutMs: normalizeCodexAgentTimeoutMs(),
       env: {
         ...process.env,
@@ -3044,6 +3050,10 @@ async function main() {
   const changedPath = 'synthi/prisma/schema.prisma';
   const readPath = 'synthi/prisma/schema-contract-read.txt';
   const proofRepo = await prepareProofRepo({ dir, slug, changedPath, readPath });
+  const codexProviderSessions = await provisionCodexProviderSessions({
+    proofRepo,
+    callsigns: ['SCHEMA-01', 'API-02', 'TEST-03'],
+  });
   const actorProof = await proofActors(baseUrl, slug);
   const ownerApi = createApi(baseUrl, slug, { authCookie: actorProof.actors.owner.authCookie });
   const schemaApi = createApi(baseUrl, slug, { authCookie: actorProof.actors.schema.authCookie });
@@ -3058,6 +3068,7 @@ async function main() {
   let projectPolicySourceDigest = proofPolicySourceDigest;
   const codexRuntime = await collectCodexRuntimeEvidence();
   assertProof(codexRuntime.cliEvidenceOk, 'Codex CLI runtime evidence is required for the full workflow proof');
+  codexRuntime.providerSessionRefs = codexProviderSessions;
   assertProof(codexRuntime.providerSessionRefs.length >= 3, 'three real Codex provider session refs are required for the multi-agent proof');
   const agentFlightSpecs = [
     {
