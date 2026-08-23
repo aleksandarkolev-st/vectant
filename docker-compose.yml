@@ -111,6 +111,12 @@ services:
       # Read-only workspace mirror for server-side CodeSite snapshot validation.
       # Runtime mutation surfaces still use managed overlays/quarantine paths.
       - .:/workspace:ro
+      # Writable shadow-merge scratch space. The executable runner copies the
+      # repo checkout here before applying patches (source stays untouched);
+      # the allowed root covers both the read-only mirror and this scratch.
+      # Ownership is fixed at startup because named volumes inherit the image
+      # directory's owner only on first mount, and nextjs (uid 1001) needs it.
+      - codesite-shadow-scratch:/workspace-shadow
       # Writable CodeSite artifact projection root. Release proofs verify these
       # files from tmp/codesite-dojo-proof/app-artifacts/<workspace-slug>/...
       - ./tmp/codesite-dojo-proof/app-artifacts:/codesite-app-artifacts
@@ -141,9 +147,11 @@ services:
       SYNTHI_CODESITE_ARTIFACT_ROOT: "/codesite-app-artifacts"
       # Mature CodeSite shadow proofs execute isolated repo-command universes.
       # The runner reads from the read-only /workspace mirror and copies each
-      # universe to /tmp before applying patches or running checks.
+      # universe to /tmp before applying patches or running checks. Repo
+      # checkouts for executed merges live under the writable scratch volume,
+      # which is also the runner's single contained allowed root.
       SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON: '["node","/workspace/synthi/scripts/codesite-shadow-runner.mjs"]'
-      SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_ROOT: "/workspace"
+      SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_ROOT: "/workspace-shadow"
       SYNTHI_CODESITE_SHADOW_RUNNER_ALLOW_INLINE_COMMANDS: "1"
       # GCP / Storage metadata
       GCP_PROJECT_ID: "overview-synti"
@@ -356,8 +364,9 @@ services:
       # above. Do NOT redeclare them here as "${VAR:-}" — an empty interpolated
       # value in `environment:` overrides the env_file and silently strips the
       # key, which makes the embedder raise "Embedding API key is not configured"
-      # and every /code-intel/* call 500.
-      OPENAI_API_KEY: "dummy"
+      # and every /code-intel/* call 500. The same applies to OPENAI_API_KEY /
+      # OPENAI_BASE_URL (OpenAI-compatible split provider): keep them only in
+      # .env.local.
       # Tell resolve_workspace_path() where to find slug-rooted repos.
       # The collab-data named volume is shared with collab-server (which
       # writes); we don't need depends_on because the volume is created
@@ -490,3 +499,4 @@ volumes:
   ysweet-data:
   postgres-data:
   collab-data:
+  codesite-shadow-scratch:

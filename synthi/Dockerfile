@@ -99,11 +99,15 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
 # git is required by the executable shadow merge runner (worktree add/apply/
-# write-tree evidence capture against a real repo checkout).
+# write-tree evidence capture against a real repo checkout). The scratch dir
+# is pre-created with nextjs ownership so the named-volume first mount
+# inherits it and the runner (uid 1001) can create repo checkouts there.
 RUN apk add --no-cache git
 
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs
+
+RUN install -d -o nextjs -g nodejs /workspace-shadow
 
 # With outputFileTracingRoot = repo root, the standalone output is rooted at the
 # monorepo: it contains synthi/server.js, a hoisted node_modules, and the traced
