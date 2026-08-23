@@ -466,9 +466,11 @@ describe('CodeSite executable shadow runner Git foundation', () => {
 
     // Patches applied cleanly but the validation command failed: executed
     // stays true (real work happened), status becomes near_miss with the
-    // command's exit code surfaced.
+    // command's exit code surfaced. The runner's top-level status is 'failed'
+    // because a completed executed proof requires every command to pass.
     expect(result).toMatchObject({
       executionMode: 'git_worktree_patch_execution',
+      executed: false,
       universes: [{
         status: 'near_miss',
         executed: true,
@@ -481,7 +483,7 @@ describe('CodeSite executable shadow runner Git foundation', () => {
         ]),
       }],
     });
-    expect(result.status).toBe('completed');
+    expect(result.status).toBe('failed');
     await expectSourceCheckoutUntouched(repo.repoRoot);
   });
 });
