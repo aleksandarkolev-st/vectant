@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from shadow.codesite_agent_workspace import CodeSiteExecutionBinding, create_codesite_agent_worktree, remove_codesite_agent_worktree
-from shadow.codesite_finalizer import CodeSiteFinalizationError, finalize_codesite_worktree
+from shadow.codesite_finalizer import CodeSiteFinalizationError, finalize_codesite_worktree, rollback_codesite_worktree
 
 def git(cwd, *args): return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
 def setup(tmp_path):
@@ -22,4 +22,14 @@ def test_finalizer_rejects_out_of_route_change(tmp_path):
       (wt.path/'blocked.py').write_text('x\n')
       with pytest.raises(CodeSiteFinalizationError,match='outside'): finalize_codesite_worktree(source_workspace=source,worktree=wt,binding=b,allowed_paths=('src/**',),test_command=[sys.executable,'-c','pass'])
       assert not (source/'blocked.py').exists()
+    finally: remove_codesite_agent_worktree(wt)
+
+def test_finalizer_rollback_restores_the_shared_checkout(tmp_path):
+    source,b,root=setup(tmp_path); wt=create_codesite_agent_worktree(source_workspace=source,overlay_root=root,binding=b)
+    try:
+      (wt.path/'a.txt').write_text('landed\n')
+      finalize_codesite_worktree(source_workspace=source,worktree=wt,binding=b,allowed_paths=('*.txt',),test_command=[sys.executable,'-c','pass'])
+      rollback_codesite_worktree(source_workspace=source,worktree=wt,binding=b)
+      assert (source/'a.txt').read_text()=='base\n'
+      assert git(source,'status','--porcelain')==''
     finally: remove_codesite_agent_worktree(wt)
