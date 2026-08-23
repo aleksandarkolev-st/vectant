@@ -31,7 +31,7 @@ from .claude_code_runner import ClaudeCodeRunner
 from .hermes_runner import HermesRunner
 from .agent_execution import AgentContainerPolicy, docker_command
 from .codesite_agent_workspace import CodeSiteExecutionBinding, create_codesite_agent_worktree, remove_codesite_agent_worktree
-from .codesite_control_plane import verify_codesite_authority
+from .codesite_control_plane import verify_codesite_authority, record_codesite_writes
 from .codesite_finalizer import finalize_codesite_worktree
 from .workspace_write_policy import assert_protected_unchanged, protected_snapshot, provision_agent_write_access
 from .live_workspace_lock import live_workspace_lock
@@ -512,6 +512,11 @@ def execute_external_runner(run_id: str, payload: RunnerExecutionRequest, worksp
                 artifact = adapter.run(workspace_path=worktree.path, artifact_root=repo.repo, invocation=invocation, command=command)
                 assert_protected_unchanged(before_protected, worktree.path)
                 diff = adapter.collect_diff(worktree.path, binding.base_commit)
+                record_codesite_writes(
+                    control_plane_url=container_policy.codesite_control_plane_url,
+                    agent_access_token=str(payload.codesite_agent_access_token or ""),
+                    binding=binding, paths=diff["changed_paths"],
+                )
                 artifact.tool_summary["codesite"] = {
                     "workspace_slug": binding.workspace_slug,
                     "project_id": binding.project_id,

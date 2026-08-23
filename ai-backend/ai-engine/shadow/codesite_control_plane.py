@@ -78,6 +78,24 @@ def verify_codesite_authority(
     return CodeSiteAuthority(binding=binding, allowed_paths=allowed_paths)
 
 
+def record_codesite_writes(*, control_plane_url: str, agent_access_token: str,
+                           binding: CodeSiteExecutionBinding, paths: list[str]) -> None:
+    base = _trusted_base_url(control_plane_url)
+    for path in paths:
+        request = Request(
+            f"{base}/api/workspace/{quote(binding.workspace_slug, safe='')}/codesite/agent-sessions/"
+            f"{quote(binding.agent_session_id, safe='')}/transactions/{quote(binding.transaction_id, safe='')}/record-write",
+            data=json.dumps({"path": path, "tool": "agent_overlay"}).encode("utf-8"),
+            headers={"Accept": "application/json", "Content-Type": "application/json", "Authorization": f"Bearer {agent_access_token}"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=10, context=ssl.create_default_context()) as response:
+                if response.status not in {200, 201}: raise PermissionError("CodeSite rejected overlay write evidence")
+        except PermissionError: raise
+        except Exception as error: raise PermissionError("CodeSite write evidence recording failed") from error
+
+
 def _trusted_base_url(value: str) -> str:
     parsed = urlparse(str(value or "").strip())
     if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment:
