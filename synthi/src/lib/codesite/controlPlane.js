@@ -13179,6 +13179,14 @@ export async function requestAgentChannel(workspaceSlug, sessionId, agentAccessT
       grantExpiresAt: new Date(Date.now() + CHANNEL_GRANT_WINDOW_MS),
     },
   });
+  // Design §7: the initiator receives its direction's token immediately —
+  // frames it sends are keyed with this; the responder gets the other
+  // direction's token only upon acceptance. Stored hash covers both.
+  const initiatorToken = mintChannelToken();
+  await prisma.codeSiteAgentChannel.update({
+    where: { id: channel.id },
+    data: { channelTokenHash: hashChannelToken(`${initiatorToken}:${initiatorToken}`) },
+  });
   await recordChannelEvent(project.id, {
     eventType: 'channel_requested',
     actorId: fromSession.id,
@@ -13190,7 +13198,7 @@ export async function requestAgentChannel(workspaceSlug, sessionId, agentAccessT
       mode: modeCheck.mode,
     },
   });
-  return agentChannelProjection(channel);
+  return { ...agentChannelProjection(channel), channelToken: initiatorToken };
 }
 
 /**
