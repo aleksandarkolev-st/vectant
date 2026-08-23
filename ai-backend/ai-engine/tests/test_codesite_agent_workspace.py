@@ -84,6 +84,30 @@ def test_runner_diff_reports_untracked_worktree_files(tmp_path):
     assert "new-file.txt" in diff["changed_paths"]
 
 
+def test_two_codesite_agents_can_write_concurrently_without_sharing_a_workspace(tmp_path):
+    workspace = _workspace(tmp_path)
+    overlay_root = tmp_path / "codesite-overlays"
+    overlay_root.mkdir()
+    first = _binding(workspace)
+    second = CodeSiteExecutionBinding(
+        workspace_slug="demo", project_id="project-1", agent_session_id="agent-2",
+        mutation_lease_id="lease-2", transaction_id="txn-2", base_commit=first.base_commit,
+    )
+    left = create_codesite_agent_worktree(source_workspace=workspace, overlay_root=overlay_root, binding=first)
+    right = create_codesite_agent_worktree(source_workspace=workspace, overlay_root=overlay_root, binding=second)
+    try:
+        (left.path / "left.txt").write_text("left\n", encoding="utf-8")
+        (right.path / "right.txt").write_text("right\n", encoding="utf-8")
+        assert not (left.path / "right.txt").exists()
+        assert not (right.path / "left.txt").exists()
+        assert not (workspace / "left.txt").exists()
+        assert not (workspace / "right.txt").exists()
+        assert left.path != right.path
+    finally:
+        remove_codesite_agent_worktree(left)
+        remove_codesite_agent_worktree(right)
+
+
 @pytest.mark.parametrize("field,value", [
     ("workspace_slug", "../escape"),
     ("transaction_id", "bad/path"),
