@@ -2815,11 +2815,21 @@ export async function recordRuntimeProjectObservation(workspaceSlug, projectId, 
   });
   if (!project) throw notFound('codesite_project_not_found');
   if (project.status !== 'active') throw forbidden('codesite_project_inactive');
-  const normalized = normalizeRuntimeObservedObservation({
-    eventType: 'runtime_observed',
-    ...body,
-    projectId: project.id,
-  });
+  // Workstream F: the internal adapter endpoint accepts both runtime and
+  // source-change observations; the event type in the body decides which
+  // normalizer validates it (runtime facts vs source-change facts).
+  const requestedEventType = body.eventType === 'source_changed' ? 'source_changed' : 'runtime_observed';
+  const normalized = requestedEventType === 'source_changed'
+    ? normalizeSourceChangedObservation({
+      eventType: 'source_changed',
+      ...body,
+      projectId: project.id,
+    })
+    : normalizeRuntimeObservedObservation({
+      eventType: 'runtime_observed',
+      ...body,
+      projectId: project.id,
+    });
   const coordinationInput = buildObservationCoordinationInput(normalized, {
     actorId: typeof body.adapterSessionId === 'string' ? body.adapterSessionId : null,
   });
