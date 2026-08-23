@@ -4,6 +4,7 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import prisma from '@/lib/prisma';
+import { autoOpenDirectChannels } from './autoChannels';
 import {
   channelsDisabled,
   channelMaxDurationMs,
@@ -3311,6 +3312,12 @@ export async function createAgentExecutionPlan(workspaceSlug, sessionId, agentAc
   if (requestedSessionId && requestedSessionId !== session.id) {
     throw forbidden('execution_plan_agent_forbidden');
   }
+  // direct_preferred fast lane: filing a plan auto-opens channels to peers in
+  // the same shared session (docs/CHANNEL_MODES_TRADEOFFS.md Mode 3). Failures
+  // here never block the plan itself — channels are an optimization.
+  try {
+    await autoOpenDirectChannels(workspaceSlug, session);
+  } catch (_) {}
   return createExecutionPlan(workspaceSlug, session.projectId, {
     ...body,
     agentSessionId: session.id,
