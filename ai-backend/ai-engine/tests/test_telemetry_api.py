@@ -219,6 +219,7 @@ def test_codesite_overlay_runner_uses_an_isolated_worktree(tmp_path, monkeypatch
 
     monkeypatch.setattr("shadow.telemetry_api.verify_codesite_authority", lambda **kwargs: SimpleNamespace(allowed_paths=("**",)))
     monkeypatch.setattr("shadow.telemetry_api.record_codesite_writes", lambda **kwargs: None)
+    monkeypatch.setattr("shadow.telemetry_api.live_workspace_lock", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr("shadow.telemetry_api.provision_agent_write_access", lambda *args, **kwargs: None)
     monkeypatch.setattr("shadow.telemetry_api.AgentContainerPolicy.from_environment", lambda: AgentContainerPolicy(
         image="runner", network="isolated", credentials_volume="credentials",

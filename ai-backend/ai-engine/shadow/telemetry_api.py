@@ -585,10 +585,14 @@ def finalize_codesite_runner(run_id: str, payload: CodeSiteFinalizeRequest, work
         if not worktree.path.is_dir():
             raise ValueError("CodeSite agent overlay is unavailable")
         command = _codesite_finalizer_command()
-        paths = finalize_codesite_worktree(
-            source_workspace=repo.repo, worktree=worktree, binding=binding,
-            allowed_paths=authority.allowed_paths, test_command=command,
-        )
+        # Agent execution is concurrent; only the final source-workspace
+        # promotion is serialized.  Re-checks inside the finalizer make a
+        # stale overlay fail closed after it waits for an earlier landing.
+        with live_workspace_lock(repo.repo):
+            paths = finalize_codesite_worktree(
+                source_workspace=repo.repo, worktree=worktree, binding=binding,
+                allowed_paths=authority.allowed_paths, test_command=command,
+            )
         remove_codesite_agent_worktree(worktree)
         return {"status": "landed", "transaction_id": binding.transaction_id, "changed_paths": paths}
     except PermissionError as error:
