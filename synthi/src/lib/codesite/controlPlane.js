@@ -3293,6 +3293,21 @@ export async function createAgentExecutionPlan(workspaceSlug, sessionId, agentAc
   }, { internalService: true, bypass: true, agentOwnerUserId: session.ownerUserId });
 }
 
+export async function requestAgentMutationLease(workspaceSlug, sessionId, agentAccessToken, body = {}, options = {}) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.plans.write',
+    now: options.now,
+  });
+  const session = authority.session;
+  const executionPlanId = String(body.executionPlanId || body.execution_plan_id || '').trim();
+  if (!executionPlanId) throw badRequest('execution_plan_required');
+  return requestMutationLease(workspaceSlug, executionPlanId, body, {
+    internalService: true,
+    bypass: true,
+    agentOwnerUserId: session.ownerUserId,
+  });
+}
+
 function normalizeDurationMs(value) {
   if (Number.isFinite(value)) return Math.max(0, Math.floor(value));
   if (typeof value !== 'string') return null;

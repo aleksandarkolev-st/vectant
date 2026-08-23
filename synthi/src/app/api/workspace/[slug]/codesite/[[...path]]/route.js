@@ -34,6 +34,7 @@ import {
   getRelevantAgentContext,
   recordAgentProjectObservation,
   createAgentExecutionPlan,
+  requestAgentMutationLease,
   recordRuntimeProjectObservation,
   getSchemas,
   getSourceStateSince,
@@ -346,6 +347,18 @@ export async function POST(request, { params }) {
   if (route[0] === 'agent-sessions' && route[2] === 'execution-plans' && route.length === 3) {
     try {
       return okJson({ executionPlan: await createAgentExecutionPlan(
+        slug,
+        route[1],
+        bearerToken(request),
+        await readJson(request),
+      ) }, { status: 201 });
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
+  if (route[0] === 'agent-sessions' && route[2] === 'mutation-leases' && route.length === 3) {
+    try {
+      return okJson({ mutationLease: await requestAgentMutationLease(
         slug,
         route[1],
         bearerToken(request),
