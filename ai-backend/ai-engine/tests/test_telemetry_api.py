@@ -115,7 +115,7 @@ def test_control_plane_records_post_apply_retention_without_storing_source(tmp_p
         "abstraction_removed": True,
     })
 
-    assert response.status_code == 201
+    assert response.status_code == 201, response.text
     mutation = response.json()["post_selection_mutation"]
     assert mutation["retention_score"] == 0
     assert "class Generated" not in str(mutation)
@@ -192,6 +192,52 @@ def test_live_runner_allows_only_its_controller_artifact(tmp_path, monkeypatch):
     })
 
     assert response.status_code == 201
+
+
+def test_codesite_overlay_runner_uses_an_isolated_worktree(tmp_path, monkeypatch):
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    subprocess.run(["git", "init"], cwd=workspace, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.name", "Vectant Tests"], cwd=workspace, check=True)
+    (workspace / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-m", "fixture"], cwd=workspace, check=True, capture_output=True)
+    base_commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=workspace, check=True, capture_output=True, text=True).stdout.strip()
+    overlay_root = tmp_path / "overlays"
+    overlay_root.mkdir()
+    run_id = client.post("/counterfactual/runs", json={
+        "workspace_path": str(workspace), "request_id": "codesite-runner", "task_class": "fix",
+        "base_state": {"state_hash": "base"}, "universe_plan": [{"id": "A"}],
+    }).json()["counterfactual_run"]["run_id"]
+
+    monkeypatch.setattr("shadow.telemetry_api.verify_codesite_authority", lambda **kwargs: object())
+    monkeypatch.setattr("shadow.telemetry_api.provision_agent_write_access", lambda *args, **kwargs: None)
+    monkeypatch.setattr("shadow.telemetry_api.AgentContainerPolicy.from_environment", lambda: AgentContainerPolicy(
+        image="runner", network="isolated", credentials_volume="credentials",
+        codesite_overlay_root=str(overlay_root), codesite_control_plane_url="https://codesite.example.test",
+    ))
+
+    def fake_run(self, *, workspace_path, invocation, command, artifact_root=None):
+        (workspace_path / "agent-created.txt").write_text("isolated\n", encoding="utf-8")
+        return RunnerArtifact(artifact_summary="runner completed", raw_log_ref="runner-artifacts/log.json")
+
+    monkeypatch.setattr("shadow.telemetry_api.CodexRunner.run", fake_run)
+    response = client.post(f"/counterfactual/runs/{run_id}/execute", params={"workspace_path": str(workspace)}, json={
+        "runner_kind": "codex", "universe_id": "A", "direction_id": "safe", "direction_label": "safe",
+        "declared_condition": "repair", "task_summary": "fix", "budget_usd": 0.1,
+        "workspace_mode": "codesite_overlay", "codesite_workspace_slug": "demo",
+        "codesite_project_id": "project-1", "codesite_agent_session_id": "agent-1",
+        "codesite_mutation_lease_id": "lease-1", "codesite_transaction_id": "txn-1",
+        "codesite_base_commit": base_commit, "codesite_agent_access_token": "csa_" + "a" * 32,
+    })
+
+    assert response.status_code == 201, response.text
+    assert not (workspace / "agent-created.txt").exists()
+    assert list(overlay_root.rglob("agent-created.txt")), "the retained CodeSite overlay must contain the agent change"
 
 
 def test_choice_scene_and_policy_extraction_require_real_exposure_and_proof(tmp_path):

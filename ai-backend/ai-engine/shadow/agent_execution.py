@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 
+from .codesite_agent_workspace import CodeSiteExecutionBinding
 from .workspace_write_policy import protected_paths
 
 
@@ -30,6 +31,8 @@ class AgentContainerPolicy:
     cpus: str = "2"
     pids_limit: int = 512
     timeout_seconds: int = 300
+    codesite_overlay_root: str = ""
+    codesite_control_plane_url: str = ""
 
     @classmethod
     def from_environment(cls) -> "AgentContainerPolicy":
@@ -54,10 +57,12 @@ class AgentContainerPolicy:
             memory=os.environ.get("SYNTHI_AGENT_MEMORY", "2g").strip(),
             cpus=os.environ.get("SYNTHI_AGENT_CPUS", "2").strip(),
             pids_limit=int(os.environ.get("SYNTHI_AGENT_PIDS_LIMIT", "512")),
+            codesite_overlay_root=os.environ.get("SYNTHI_CODESITE_AGENT_OVERLAY_ROOT", "").strip(),
+            codesite_control_plane_url=os.environ.get("SYNTHI_CODESITE_CONTROL_PLANE_URL", "").strip(),
         )
 
 
-def docker_command(*, workspace: Path, run_id: str, runner_command: List[str], policy: AgentContainerPolicy, volume_mountpoint: Path | None = None) -> List[str]:
+def docker_command(*, workspace: Path, run_id: str, runner_command: List[str], policy: AgentContainerPolicy, volume_mountpoint: Path | None = None, codesite_binding: CodeSiteExecutionBinding | None = None) -> List[str]:
     """Build a fail-closed, unprivileged live-write harness invocation."""
     root = Path(workspace).resolve()
     if not root.is_dir():
@@ -83,6 +88,16 @@ def docker_command(*, workspace: Path, run_id: str, runner_command: List[str], p
         "--env", "CLAUDE_CONFIG_DIR=/tmp/claude",
         "--env", "HERMES_HOME=/tmp/hermes",
     ]
+    if codesite_binding:
+        command.extend([
+            "--env", "SYNTHI_CODESITE_MANAGED_AGENT=1",
+            "--env", f"CODESITE_WORKSPACE_SLUG={codesite_binding.workspace_slug}",
+            "--env", f"CODESITE_PROJECT_ID={codesite_binding.project_id}",
+            "--env", f"CODESITE_AGENT_SESSION_ID={codesite_binding.agent_session_id}",
+            "--env", f"CODESITE_MUTATION_LEASE_ID={codesite_binding.mutation_lease_id}",
+            "--env", f"CODESITE_TRANSACTION_ID={codesite_binding.transaction_id}",
+            "--env", f"CODESITE_BASE_COMMIT={codesite_binding.base_commit}",
+        ])
     daemon_root = _daemon_workspace_path(root, policy, volume_mountpoint=volume_mountpoint)
     command.extend(_workspace_mount_args(daemon_root))
     command.extend(_protected_mount_args(root, daemon_root))
