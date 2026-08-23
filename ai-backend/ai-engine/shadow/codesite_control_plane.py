@@ -96,6 +96,25 @@ def record_codesite_writes(*, control_plane_url: str, agent_access_token: str,
         except Exception as error: raise PermissionError("CodeSite write evidence recording failed") from error
 
 
+def commit_codesite_transaction(*, control_plane_url: str, agent_access_token: str,
+                                binding: CodeSiteExecutionBinding) -> None:
+    base = _trusted_base_url(control_plane_url)
+    request = Request(
+        f"{base}/api/workspace/{quote(binding.workspace_slug, safe='')}/codesite/agent-sessions/"
+        f"{quote(binding.agent_session_id, safe='')}/transactions/{quote(binding.transaction_id, safe='')}/commit",
+        data=b"{}", headers={"Accept": "application/json", "Content-Type": "application/json", "Authorization": f"Bearer {agent_access_token}"}, method="POST",
+    )
+    try:
+        with urlopen(request, timeout=30, context=ssl.create_default_context()) as response:
+            if response.status not in {200, 201}: raise PermissionError("CodeSite transaction commit rejected")
+            payload = json.loads(response.read().decode("utf-8"))
+    except PermissionError: raise
+    except Exception as error: raise PermissionError("CodeSite transaction commit failed") from error
+    transaction = payload.get("transaction", payload.get("result", {}).get("transaction", {}))
+    if transaction.get("status") != "committed":
+        raise PermissionError("CodeSite transaction did not reach committed state")
+
+
 def _trusted_base_url(value: str) -> str:
     parsed = urlparse(str(value or "").strip())
     if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment:

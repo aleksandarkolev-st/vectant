@@ -45,6 +45,17 @@ def finalize_codesite_worktree(*, source_workspace: Path, worktree: CodeSiteAgen
     return paths
 
 
+def rollback_codesite_worktree(*, source_workspace: Path, worktree: CodeSiteAgentWorktree,
+                               binding: CodeSiteExecutionBinding) -> None:
+    """Reverse the exact retained overlay patch after a rejected landing gate."""
+    source = Path(source_workspace).resolve()
+    if _git(source, ["rev-parse", "HEAD"]).strip() != binding.base_commit:
+        raise CodeSiteFinalizationError("cannot roll back a CodeSite overlay after base movement")
+    patch = _git_bytes(worktree.path, ["diff", "--binary", binding.base_commit, "--"])
+    _git_bytes(source, ["apply", "--check", "--reverse", "--binary", "-"], stdin=patch)
+    _git_bytes(source, ["apply", "--reverse", "--binary", "-"], stdin=patch)
+
+
 def _allowed(path: str, patterns: tuple[str, ...]) -> bool:
     return any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
 

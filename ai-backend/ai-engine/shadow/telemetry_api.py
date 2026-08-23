@@ -31,8 +31,8 @@ from .claude_code_runner import ClaudeCodeRunner
 from .hermes_runner import HermesRunner
 from .agent_execution import AgentContainerPolicy, docker_command
 from .codesite_agent_workspace import CodeSiteExecutionBinding, create_codesite_agent_worktree, remove_codesite_agent_worktree
-from .codesite_control_plane import verify_codesite_authority, record_codesite_writes
-from .codesite_finalizer import finalize_codesite_worktree
+from .codesite_control_plane import verify_codesite_authority, record_codesite_writes, commit_codesite_transaction
+from .codesite_finalizer import finalize_codesite_worktree, rollback_codesite_worktree
 from .workspace_write_policy import assert_protected_unchanged, protected_snapshot, provision_agent_write_access
 from .live_workspace_lock import live_workspace_lock
 
@@ -593,6 +593,15 @@ def finalize_codesite_runner(run_id: str, payload: CodeSiteFinalizeRequest, work
                 source_workspace=repo.repo, worktree=worktree, binding=binding,
                 allowed_paths=authority.allowed_paths, test_command=command,
             )
+            try:
+                commit_codesite_transaction(
+                    control_plane_url=policy.codesite_control_plane_url,
+                    agent_access_token=payload.codesite_agent_access_token,
+                    binding=binding,
+                )
+            except Exception:
+                rollback_codesite_worktree(source_workspace=repo.repo, worktree=worktree, binding=binding)
+                raise
         remove_codesite_agent_worktree(worktree)
         return {"status": "landed", "transaction_id": binding.transaction_id, "changed_paths": paths}
     except PermissionError as error:
