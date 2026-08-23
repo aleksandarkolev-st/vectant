@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -991,8 +992,9 @@ function runWithClosedStdin(command, args, options = {}) {
 }
 
 async function collectCodexRuntimeEvidence() {
-  const [whichCodex, codexVersion] = await Promise.all([
-    optionalCommandEvidence('which', ['codex']),
+  const locatorCommand = process.platform === 'win32' ? 'where' : 'which';
+  const [locatedCodex, codexVersion] = await Promise.all([
+    optionalCommandEvidence(locatorCommand, ['codex']),
     optionalCommandEvidence('codex', ['--version']),
   ]);
   const providerSessionRefs = codexProviderSessionRefs();
@@ -1003,12 +1005,17 @@ async function collectCodexRuntimeEvidence() {
     primaryProviderSessionRef: providerSessionRefs[0] || null,
     threadId: process.env.CODESITE_PROOF_CODEX_THREAD_ID || process.env.CODEX_THREAD_ID || null,
     command: 'codex',
-    cliPath: whichCodex.ok ? whichCodex.stdout : null,
+    cliPath: locatedCodex.ok ? locatedCodex.stdout : null,
     cliVersion: codexVersion.ok ? codexVersion.stdout : null,
-    cliEvidenceOk: whichCodex.ok && codexVersion.ok,
+    cliEvidenceOk: locatedCodex.ok && codexVersion.ok,
     originator: process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || null,
     ci: process.env.CODEX_CI || null,
   };
+}
+
+function codexAgentHome() {
+  const configured = String(process.env.CODESITE_PROOF_CODEX_AGENT_HOME || process.env.CODEX_HOME || '').trim();
+  return configured || path.join(os.homedir(), '.codex');
 }
 
 function agentExecutionEvidenceDir(dir, slug) {
@@ -1812,7 +1819,7 @@ function codexCommandEvidence(events, { transcriptDigest, finalMessageDigest }) 
 }
 
 async function generateAgentExecutionEvidence({ dir, slug, projectId, proofRepo, agentFlightSpecs, agentRegistrations, workflowContext }) {
-  const codexHome = process.env.CODESITE_PROOF_CODEX_AGENT_HOME || '/tmp/codesite-codex-agent-home';
+  const codexHome = codexAgentHome();
   assertProof(fs.existsSync(codexHome), `Codex agent proof home does not exist: ${codexHome}`);
   assertProof(fs.existsSync(path.join(codexHome, 'auth.json')), `Codex agent proof home is missing auth.json: ${codexHome}`);
   const evidenceDir = agentExecutionEvidenceDir(dir, slug);
