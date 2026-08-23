@@ -1202,7 +1202,13 @@ async function main() {
       : 'risk_budget_evaluation';
   const gitPatchExecutionComplete = executionMode === 'git_worktree_patch_execution'
     && universes.length > 0
-    && universes.every((universe) => universe.executed === true && universe.materialized === true && universe.applied === true);
+    && universes.every((universe) => universe.executed === true
+      && universe.materialized === true
+      && universe.applied === true
+      // Workstream E: a completed executed proof requires every validation
+      // command to have passed; near_miss universes preserve the execution
+      // evidence but must not satisfy the mature-proof bar.
+      && universe.status === 'passed');
   const evidenceRefs = [
     `codesite:shadow-runner:${digest({ selected, universes, executionMode })}`,
     ...universes.flatMap((universe) => universe.evidenceRefs),
