@@ -59,6 +59,40 @@ function parseLeadBinary(command: string): string {
   return lead;
 }
 
+/**
+ * Quote-aware argument splitting for replay execution. Commands arrive
+ * post-shell (the recording captured what the human's shell had already
+ * parsed), so inner quote characters are part of the payload - e.g.
+ * `node -e require('fs').writeFileSync(...)` needs those single quotes
+ * intact or the JS breaks. Rule: quoted spans prevent whitespace splits,
+ * but the quote characters themselves are PRESERVED VERBATIM.
+ */
+function splitArgs(command: string): string[] {
+  const args: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  for (const char of command.trim()) {
+    if (quote) {
+      current += char;
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current) args.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  if (current) args.push(current);
+  return args;
+}
+
 function safeListDir(root: string): Record<string, string> {
   const listing: Record<string, string> = {};
   if (!existsSync(root)) return listing;
@@ -185,7 +219,7 @@ export function createTerminalBundle(
             };
           }
           try {
-            execFileSync(lead, action.run.trim().split(/\s+/).slice(1), {
+            execFileSync(lead, splitArgs(action.run).slice(1), {
               cwd: world.root,
               timeout: Math.min(30, Math.max(1, action.timeout_s ?? 10)) * 1000,
               stdio: "pipe",
