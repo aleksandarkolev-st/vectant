@@ -8,7 +8,7 @@ import {
   canonicalDojoProofPayload,
   createEd25519DojoProofSigner,
   generateEd25519DojoProofKeyPair,
-} from '../../../../../mcp/synthi-mcp/dist/dojo/proof/signing.js';
+} from 'C:/Users/polek/Desktop/vectant-ade/mcp/synthi-mcp/dist/dojo/proof/signing.js';
 
 const { prisma } = vi.hoisted(() => ({
   prisma: {
@@ -208,6 +208,8 @@ import {
   closeAgentChannel,
   listProjectChannels,
   reportAgentChannelViolation,
+  agentChannelRateLimitKey,
+  requireAgentChannelRateAuthority,
   respondToAgentKnowledgeInbox,
   resumeMaydayIncident,
   reviewDocument,
@@ -216,6 +218,7 @@ import {
   updateZonePolicy,
   validateTransaction,
 } from '../controlPlane.js';
+import { __resetRateLimits } from '@/lib/integrations/rateLimit';
 import { CODESITE_MCP_TOOLS } from '../artifacts.js';
 import { digest } from '../policy.js';
 import { buildProofBundle, proofCommitTrailers } from '../proof.js';
@@ -2968,6 +2971,7 @@ describe('CodeSite control plane transaction validation', () => {
     };
 
     beforeEach(() => {
+      __resetRateLimits();
       prisma.codeSiteProject.findFirst.mockResolvedValue(projectRow);
       prisma.codeSiteAgentChannel.findUnique.mockImplementation(async ({ where }) => (
         where?.id === 'channel-9' ? {
@@ -2992,6 +2996,19 @@ describe('CodeSite control plane transaction validation', () => {
         summaryDigest: null, createdAt: new Date(AGENT_AUTHORITY_NOW),
         ...data,
       }));
+    });
+
+    it('rate limits channel requests by verified stable identity after token validation', async () => {
+      // The URL session id and the stored id must agree for verification to
+      // succeed (fail-closed). The anti-rotation property this test proves is
+      // that the rate-limit BUCKET key derives from the verified session's
+      // stable identity (id + owner), not from any caller-supplied string.
+      const session = channelSession();
+      bindTwoSessions(session, channelSession({ id: 'agent-authority-2' }));
+
+      await expect(requireAgentChannelRateAuthority('acme', 'rotated-id-1', AGENT_AUTHORITY_TOKEN))
+        .rejects.toMatchObject({ status: 403, code: 'agent_access_token_invalid' });
+      expect(agentChannelRateLimitKey(session)).toBe(`${session.id}:${session.ownerUserId}`);
     });
 
     it('requests a channel inside the mode ladder and records the event', async () => {

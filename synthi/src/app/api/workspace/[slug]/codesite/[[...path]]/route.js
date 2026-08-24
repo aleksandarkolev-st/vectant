@@ -43,6 +43,7 @@ import {
   closeAgentChannel,
   reportAgentChannelViolation,
   listProjectChannels,
+  requireAgentChannelRateAuthority,
   getSchemas,
   getSourceStateSince,
   getTransaction,
@@ -410,12 +411,12 @@ export async function POST(request, { params }) {
   }
   if (route[0] === 'agent-sessions' && route[2] === 'channels' && route.length === 3) {
     try {
-      const limitedChannel = enforceRateLimit(
-        { userId: `agent:${route[1]}` },
-        'channels',
-        'channels',
+      const rateAuthority = await requireAgentChannelRateAuthority(
+        slug,
+        route[1],
+        bearerToken(request),
       );
-      if (limitedChannel) return limitedChannel;
+      if (rateAuthority.response) return rateAuthority.response;
       return okJson({ channel: await requestAgentChannel(
         slug,
         route[1],
@@ -436,12 +437,13 @@ export async function POST(request, { params }) {
   if (route[0] === 'agent-sessions' && route[2] === 'channels' && route.length === 5
     && ['accept', 'reject', 'close', 'violation'].includes(route[4])) {
     try {
-      const limitedChannelAction = enforceRateLimit(
-        { userId: `agent:${route[1]}` },
+      const rateAuthority = await requireAgentChannelRateAuthority(
+        slug,
+        route[1],
+        bearerToken(request),
         `channels:${route[4]}`,
-        'channels',
       );
-      if (limitedChannelAction) return limitedChannelAction;
+      if (rateAuthority.response) return rateAuthority.response;
       const body = await readJson(request);
       if (route[4] === 'accept') {
         const result = await acceptAgentChannel(slug, route[1], bearerToken(request), route[3], body);

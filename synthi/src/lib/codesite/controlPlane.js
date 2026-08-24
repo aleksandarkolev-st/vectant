@@ -5,6 +5,7 @@ import os from 'os';
 import path from 'path';
 import prisma from '@/lib/prisma';
 import { autoOpenDirectChannels } from './autoChannels';
+import { enforceRateLimit } from './routeHelpers';
 import {
   channelsDisabled,
   channelMaxDurationMs,
@@ -2057,6 +2058,25 @@ export async function requireAgentTokenAuthority(
     capabilities,
     authorizedAt,
   };
+}
+
+export function agentChannelRateLimitKey(session) {
+  return `${session.id}:${session.ownerUserId}`;
+}
+
+export async function requireAgentChannelRateAuthority(
+  workspaceSlug,
+  sessionId,
+  agentAccessToken,
+  action = 'channels',
+) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken);
+  const response = enforceRateLimit(
+    { userId: agentChannelRateLimitKey(authority.session) },
+    action,
+    'channels',
+  );
+  return response ? { response } : { authority };
 }
 
 export async function getRelevantAgentContext(workspaceSlug, sessionId, agentAccessToken) {
