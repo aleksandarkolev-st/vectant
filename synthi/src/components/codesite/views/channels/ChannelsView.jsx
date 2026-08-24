@@ -133,11 +133,15 @@ export default function ChannelsView({
       if (!viewerSessionId || busyChannelId || targetSessionId === viewerSessionId) return;
       setBusyChannelId(targetSessionId);
       try {
+        // Advertise the real origin the UI is served from (Design §8 requires
+        // a ws(s):// host:port ref). The browser page's own origin is the
+        // truthful endpoint for this viewer's side of the channel.
+        const uiEndpoint = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}`;
         await requestCodeSiteChannel(workspaceSlug, viewerSessionId, {
           toSessionId: targetSessionId,
           transport: "websocket",
           purpose: "ui_open_channel",
-          endpointRef: `ws://127.0.0.1:${Math.floor(Math.random() * 40000) + 10000}/ui`,
+          endpointRef: uiEndpoint,
         });
         await loadChannels();
         setError(null);
