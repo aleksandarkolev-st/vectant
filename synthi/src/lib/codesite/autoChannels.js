@@ -5,7 +5,13 @@ import {
   modeTransports,
 } from './channelSecurity';
 import { hashChannelToken } from './channelSecurity';
-import { asArray, parseJson, unique } from './json';
+import { asArray, parseJson } from './json';
+
+// Local copy of controlPlane's unique() — autoChannels must not import the
+// 13k-line controlPlane module just for this helper.
+function unique(values) {
+  return [...new Set(asArray(values))];
+}
 
 /**
  * direct_preferred auto-open (docs/CHANNEL_MODES_TRADEOFFS.md Mode 3):
@@ -76,14 +82,15 @@ export async function autoOpenDirectChannels(workspaceSlug, session) {
     await prisma.codeSiteEvent.create({
       data: {
         projectId: project.id,
-        workspaceSlug,
         // Not 'channel_accepted' — nothing was accepted. The auto-open is its
         // own audit event type so the causal timeline stays truthful.
         eventType: 'channel_auto_opened',
         actorType: 'agent_session',
         actorId: session.id,
+        displayCallsign: session.displayCallsign || null,
         detailsJson: JSON.stringify({
           channelId: created.id,
+          workspaceSlug,
           fromSessionId: session.id,
           toSessionId: peer.id,
           transport: 'websocket',
