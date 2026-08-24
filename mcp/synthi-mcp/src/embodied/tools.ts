@@ -16,6 +16,7 @@ import { EmbodiedTeacher } from "./teacher.js";
 import type { AttachedSession, ConsentDecisionInput, TeachResult } from "./teacher.js";
 import { getAdapter, listRegisteredSubstrates } from "./substrate.js";
 import { authorizeRun, type CompetencyLicense, type EntrustmentLevel } from "./governance.js";
+import { createHash } from "node:crypto";
 import type { EmbodiedWorkflowContract } from "./contract.js";
 
 type Json = Record<string, unknown>;
@@ -196,22 +197,76 @@ export function handleExplainFailure(
 // Skill library: agents hand competencies to other agents
 // ---------------------------------------------------------------------------
 
+/** Deterministic deep canonicalization: object keys sorted at every level so
+ *  a digest depends on CONTENT, never on property insertion order. */
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((entry) => canonicalize(entry));
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([key, entry]) => [key, canonicalize(entry)]),
+    );
+  }
+  return value;
+}
+
+/**
+ * Integrity digest for a skill artifact: sha256 over the canonical
+ * sorted-key JSON of everything an importing agent relies on (format,
+ * id, substrate, contract, recorded steps). The digest travels WITH the
+ * skill so truncation or in-flight tampering is detected BEFORE the
+ * skill is licensed or executed - not after it misbehaves.
+ */
+export function skillIntegrityDigest(
+  skill: {
+    skill_format?: string;
+    skill_id?: string;
+    substrate_kind?: string;
+    contract: EmbodiedWorkflowContract;
+    steps?: Array<{ event: unknown }>;
+  },
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify(
+        canonicalize({
+          skill_format: skill.skill_format,
+          ...(skill.skill_id !== undefined ? { skill_id: skill.skill_id } : {}),
+          substrate_kind: skill.substrate_kind,
+          contract: skill.contract,
+          steps: skill.steps ?? [],
+        }),
+      ),
+    )
+    .digest("hex");
+}
+
 /** Serialize a stored competency into a portable skill file. Steps ride
  *  along: a contract alone describes, steps enable execution. */
 export function handleExportSkill(context: ToolContext, input: { competency_id: string }): Json {
   const record = context.competencies.get(input.competency_id);
   if (!record) return { error: "unknown_competency", human_hint: "Teach the flow first." };
-  return {
+  const artifact = {
     skill_format: "synthi.skill.v1",
     skill_id: input.competency_id,
     substrate_kind: record.substrate_kind,
     contract: record.contract,
     steps: record.demonstration.steps,
+  };
+  return {
+    ...artifact,
+    integrity_digest: skillIntegrityDigest(artifact),
     exported_at: new Date().toISOString(),
   };
 }
 
-/** Import a skill file produced by another agent; returns a runnable id. */
+/** Import a skill file produced by another agent; returns a runnable id.
+ *  Tamper-evident: when the artifact carries an integrity digest it is
+ *  re-computed over the received content and mismatches REFUSE import
+ *  (plain-language reason, nothing is stored). Artifacts without a digest
+ *  still import but are flagged `integrity_verified: false` so downstream
+ *  surfaces can say "unverified" instead of pretending. */
 export function handleImportSkill(
   context: ToolContext,
   input: {
@@ -221,6 +276,7 @@ export function handleImportSkill(
       substrate_kind?: string;
       contract: EmbodiedWorkflowContract;
       steps?: Array<{ event: unknown }>;
+      integrity_digest?: string;
     } | null;
   },
 ): Json {
@@ -234,6 +290,20 @@ export function handleImportSkill(
   if (!inner.contract || !inner.substrate_kind) {
     return { error: "incomplete_skill", human_hint: "The skill file is missing its workflow or world type." };
   }
+  let integrityVerified = false;
+  if (typeof inner.integrity_digest === "string" && inner.integrity_digest.length > 0) {
+    const expected = skillIntegrityDigest(inner);
+    if (expected !== inner.integrity_digest) {
+      return {
+        error: "integrity_check_failed",
+        human_hint:
+          "This skill was changed after it was exported, so it cannot be trusted. Ask the sender for a fresh copy.",
+        expected_digest: expected,
+        received_digest: inner.integrity_digest,
+      };
+    }
+    integrityVerified = true;
+  }
   const id = inner.skill_id ?? `imported-${context.competencies.size + 1}`;
   context.competencies.set(id, {
     demonstration: {
@@ -244,7 +314,7 @@ export function handleImportSkill(
     contract: inner.contract,
     substrate_kind: inner.substrate_kind,
   });
-  return { imported_as: id, runnable: (inner.steps?.length ?? 0) > 0 };
+  return { imported_as: id, runnable: (inner.steps?.length ?? 0) > 0, integrity_verified: integrityVerified };
 }
 
 /** List every teachable competence this agent holds (for agent-to-agent offers). */
