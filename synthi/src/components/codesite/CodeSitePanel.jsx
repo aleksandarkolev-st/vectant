@@ -13,7 +13,7 @@ import {
 } from "./lib/sectionGroups";
 import { causalReplayHandovers } from "./views/replay/handovers";
 import {
-  ActivityView, EvidenceView, GovernanceView, GraphView, InspectionsView,
+  ActivityView, ChannelsView, EvidenceView, GovernanceView, GraphView, InspectionsView,
   LocksView, OverviewView, QuarantineView, ReplayView, SimulatorView,
 } from "./views";
 import { IconButton, LoadingSkeleton, Pill } from "./ui";
@@ -26,6 +26,39 @@ import { resolveGovernanceReviewTarget } from "./lib/governanceActions";
 import {
   mergeQuarantineRecords, quarantineRecordsFromEvents, selectedPathKey,
 } from "./lib/quarantine";
+
+// Coordination modes (docs/CHANNEL_MODES_TRADEOFFS.md). Speed/audit are
+// relative 1-4 ratings rendered as dot meters in the picker.
+const CHANNEL_MODE_OPTIONS = [
+  {
+    value: "mediated_only",
+    label: "🛡️ Mediated only",
+    speed: 1,
+    audit: 4,
+    hint: "Every agent message is recorded and auditable. Slowest. For regulated/compliance workloads.",
+  },
+  {
+    value: "registered_direct",
+    label: "⚖️ Registered direct",
+    speed: 3,
+    audit: 3,
+    hint: "Agents negotiate directly after a governed handshake. Who-talked-to-whom is audited; contents are not stored.",
+  },
+  {
+    value: "direct_preferred",
+    label: "⚡ Direct preferred",
+    speed: 4,
+    audit: 2,
+    hint: "Fastest collaboration; agents open channels automatically on overlapping routes. Lighter audit trail.",
+  },
+  {
+    value: "open_local",
+    label: "🧪 Open local (dev)",
+    speed: 4,
+    audit: 1,
+    hint: "Dev only. Minimal guards for protocol experiments. Refused in production builds.",
+  },
+];
 
 
 /**
@@ -79,6 +112,7 @@ const VIEWS = {
   overview: OverviewView,
   radar: GraphView,
   tower: ActivityView,
+  channels: ChannelsView,
   governance: GovernanceView,
   runway: LocksView,
   quarantine: QuarantineView,
@@ -145,6 +179,9 @@ export default function CodeSitePanel({ workspaceSlug }) {
   const [acting, setActing] = useState(false);
   const [error, setError] = useState(null);
   const [newProjectTitle, setNewProjectTitle] = useState("");
+  const [newProjectChannelMode, setNewProjectChannelMode] = useState(
+    "registered_direct",
+  );
   const [exportResult, setExportResult] = useState(null);
   const [lineInspector, setLineInspector] = useState({
     status: "idle",
@@ -397,6 +434,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
         const project = await createCodeSiteProject(workspaceSlug, {
           title,
           request: title,
+          channelMode: newProjectChannelMode,
           zonePolicy: {
             zones: [],
             noFlyZones: [],
@@ -415,7 +453,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
         setActing(false);
       }
     },
-    [acting, loadRadar, newProjectTitle, workspaceSlug],
+    [acting, loadRadar, newProjectTitle, newProjectChannelMode, workspaceSlug],
   );
 
   const handleExportArtifacts = useCallback(async () => {
@@ -1016,6 +1054,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
       { key: "overview", label: "Overview", icon: CodeSiteIcons.liveState },
       { key: "radar", label: "Graph", icon: CodeSiteIcons.workspaceGraph },
       { key: "tower", label: "Activity", icon: CodeSiteIcons.activity },
+      { key: "channels", label: "Channels", icon: CodeSiteIcons.workspaceGraph },
       { key: "governance", label: "Governance", icon: CodeSiteIcons.governance },
       { key: "runway", label: "Locks", icon: CodeSiteIcons.pathLocks },
       { key: "quarantine", label: "Quarantine", icon: CodeSiteIcons.quarantine },
@@ -1054,6 +1093,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
 
   const viewProps = {
     project: currentProject,
+    workspaceSlug,
     counts: radarState.counts,
     status: latestStatus,
     streamStatus,
@@ -1389,6 +1429,73 @@ export default function CodeSitePanel({ workspaceSlug }) {
                       }}
                     />
                   </div>
+                </div>
+                <div className="mt-2">
+                  <div
+                    className="mb-1 text-[11px] font-medium"
+                    style={{ color: "var(--text-primary)" }}
+                  >
+                    How should agents in this project coordinate?
+                  </div>
+                  <div
+                    className="mb-2 text-[11px]"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    This trades speed against auditability. It applies to every
+                    agent session attached to this project.
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {CHANNEL_MODE_OPTIONS.map((option) => {
+                      const selected =
+                        newProjectChannelMode === option.value;
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          aria-pressed={selected}
+                          onClick={() => setNewProjectChannelMode(option.value)}
+                          className="rounded border p-2 text-left transition-colors"
+                          style={{
+                            borderColor: selected
+                              ? "var(--attention-purple)"
+                              : "var(--border-subtle)",
+                            background: selected
+                              ? "var(--bg-hover)"
+                              : "var(--bg-editor)",
+                            color: "var(--text-primary)",
+                          }}
+                        >
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="text-[11px] font-medium">
+                              {option.label}
+                            </span>
+                            <span
+                              className="text-[10px]"
+                              title={`Speed ${option.speed}/4 · Audit ${option.audit}/4`}
+                            >
+                              {"●".repeat(option.speed)}
+                              <span style={{ color: "var(--text-muted)" }}>
+                                {"○".repeat(4 - option.speed)}
+                              </span>
+                              {" / "}
+                              {"●".repeat(option.audit)}
+                              <span style={{ color: "var(--text-muted)" }}>
+                                {"○".repeat(4 - option.audit)}
+                              </span>
+                            </span>
+                          </div>
+                          <div
+                            className="mt-0.5 text-[10px] leading-snug"
+                            style={{ color: "var(--text-muted)" }}
+                          >
+                            {option.hint}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                  <div className="flex items-end gap-2">
                   <IconButton
                     title="Create project"
                     variant="primary"

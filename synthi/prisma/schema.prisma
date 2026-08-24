@@ -350,6 +350,9 @@ model CodeSiteProject {
   status                 String
   zonePolicyJson         String
   controlPlanJson        String
+  // Coordination mode from docs/CHANNEL_MODES_TRADEOFFS.md:
+  // mediated_only | registered_direct | direct_preferred | open_local
+  channelMode            String   @default("registered_direct")
   createdByUserId        String?
   createdAt              DateTime @default(now())
   updatedAt              DateTime @updatedAt
@@ -375,6 +378,7 @@ model CodeSiteProject {
   inboxItems         CodeSiteAgentInboxItem[]
   knowledgeItems     CodeSiteKnowledgeItem[]
   knowledgeReferences CodeSiteKnowledgeReference[]
+  agentChannels      CodeSiteAgentChannel[]
 
   @@index([workspaceSlug])
   @@index([collaborationSessionId])
@@ -1331,3 +1335,37 @@ model PaymentWebhookEvent {
 
   @@index([reference])
 }
+
+// Registered direct channel between two attached agent sessions.
+// See docs/REGISTERED_DIRECT_CHANNELS_DESIGN.md — the control plane
+// authorizes and logs lifecycle; the data plane runs directly between the
+// agents with HMAC-signed frames. Message payloads are never persisted here.
+model CodeSiteAgentChannel {
+  id               String    @id @default(cuid())
+  projectId        String
+  workspaceSlug    String
+  fromSessionId    String
+  toSessionId      String
+  status           String    @default("requested") // requested | active | closed | rejected | expired | violation
+  purpose          String
+  transport        String // websocket | sse
+  fromEndpointRef  String?
+  toEndpointRef    String?
+  channelTokenHash String?
+  maxDurationMs    Int?
+  grantExpiresAt   DateTime?
+  openedAt         DateTime?
+  closedAt         DateTime?
+  summaryDigest    String?
+  messageCount     Int       @default(0)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, status])
+  @@index([workspaceSlug, status])
+  @@index([fromSessionId])
+  @@index([toSessionId])
+}
+

@@ -56,8 +56,10 @@ not buried in docs.
   after the fact."*
 
 ### Mode 4: `open_local` (development only)
-- For local/dev stacks: no MAC replay windows, generous caps, localhost-only
-  transports permitted without allowlist checks.
+- For local/dev stacks: same frame guards as other modes (MAC verification,
+  replay windows, sequence enforcement stay ON — they cost nothing and keep
+  the protocol honest); what is relaxed is policy: localhost endpoint refs
+  are accepted without allowlist checks, and violation reporting is advisory.
 - Never valid in production: the control plane refuses this mode whenever
   `NODE_ENV=production` (hard gate, not config).
 - **Best for:** hacking on the protocol itself, demos, local proof scripts.
@@ -83,7 +85,80 @@ Additional UI elements at selection time:
   floor; the UI greys out disallowed options rather than letting users pick
   something that will be rejected).
 
-## 4. Interaction With Existing Gates
+## 5. Where This Appears in the UI
+
+**Implemented placement:** the mode is chosen at **project creation time**
+(the "How should agents in this project coordinate?" picker on the CodeSite
+setup card). It is a project-level policy: every agent session attached to
+that project inherits it, and the control plane enforces it at channel
+request time regardless of where the request originates (UI button, agent,
+or API).
+
+The original plan below describes attach-time selection for per-session
+overrides; that remains future work. The project-level picker ships today.
+
+### Original plan (per-session selection)
+
+The selection happens at **agent session attach time** — the moment a user
+connects a Codex/Claude instance to a project. Today that flow collects:
+owner, collaboration session, terminal session, provider, provider session
+ref, callsign, capabilities, and subscriptions
+(`backend/collab-server/agentSessionAttachService.js` → control-plane
+`attachAgentSession`). The channel mode choice joins this exact step.
+
+### 5.1 Placement
+
+In the attach form/flow, immediately after the agent-type/provider picker and
+before the capability list, render a **"Coordination mode"** radio group with
+the four modes from §2. Default: `registered_direct`.
+
+### 5.2 Per-option explainer card (what the user sees)
+
+Each radio option renders as an expandable card containing:
+
+| Element | Content |
+|---|---|
+| Mode name + icon | e.g. 🛡️ Mediated only / ⚖️ Registered direct / ⚡ Direct preferred / 🧪 Open local |
+| One-liner | The §2 hint text verbatim ("Every agent message is recorded…") |
+| Speed meter | 1–4 dots visualizing relative latency (mediated=1 … direct_preferred=4) |
+| Audit meter | 1–4 dots visualizing relative auditability (mediated=4 … direct=1) |
+| "Best for" line | The §2 best-for sentence, personalized where possible |
+
+**Personalization rule:** if the project's zone policy contains class-A/B
+zones, the cards for modes below `mediated_only` additionally render:
+*"⚠️ This project includes restricted airspace. Messages in these zones are
+governed regardless of mode; mediated_only gives full message audit."* If the
+workspace has fewer than 3 members, append to fast modes: *"Small team —
+speed-focused mode fits."*
+
+### 5.3 Presets by team profile (quick-pick chips)
+
+Above the radios, three one-click presets set expectations by audience:
+
+| Chip | Sets mode | Caption |
+|---|---|---|
+| 🏢 Enterprise | `mediated_only` | "Full message audit. Compliance-first. Slowest." |
+| 👥 Team (default) | `registered_direct` | "Fast negotiation, governed handshake." |
+| 🚀 Solo / Prototype | `direct_preferred` | "Maximum speed. Lightest audit."
+
+### 5.4 Enforcement surfacing
+
+- If a workspace floor (`SYNTHI_CODESITE_MIN_CHANNEL_MODE`) forbids the
+  selected mode, the weaker options render greyed-out with the reason
+  ("Pinned by workspace policy") rather than letting the user pick something
+  that will be rejected server-side.
+- After attach, the chosen mode is displayed on the session card in the Live
+  tab (small badge next to callsign), so operators can see at a glance what
+  guarantees each connected agent operates under.
+
+### 5.5 Copy deck (exact strings for implementation)
+
+- Section title: **"How should agents in this project coordinate?"**
+- Subtitle: *"This trades speed against auditability. You can change it per
+  project later; existing channels keep their guarantees."*
+- Learn-more link target: this document.
+
+## 6. Interaction With Existing Gates
 
 - Mode never bypasses identity/capability/membership checks — those apply in
   all modes.
@@ -91,7 +166,7 @@ Additional UI elements at selection time:
   `direct_preferred`.
 - The kill switch (`SYNTHI_CODESITE_CHANNELS_DISABLED`) overrides everything.
 
-## 5. Rollout
+## 7. Rollout
 
 Phase 1 of the channels design ships with mode plumbing: the project record
 gains a `channelMode` field (default `registered_direct`), the API validates

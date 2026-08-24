@@ -37,6 +37,11 @@ import {
   requestAgentMutationLease,
   openAgentTransaction,
   recordRuntimeProjectObservation,
+  requestAgentChannel,
+  acceptAgentChannel,
+  rejectAgentChannel,
+  closeAgentChannel,
+  listProjectChannels,
   getSchemas,
   getSourceStateSince,
   getTransaction,
@@ -212,6 +217,13 @@ export async function GET(request, { params }) {
 
     if (route[0] === 'projects' && route[2] === 'agent-manifest') {
       return okJson(await getAgentManifest(slug, route[1], access.actor));
+    }
+
+    if (route[0] === 'projects' && route[2] === 'channels') {
+      const params = new URL(request.url).searchParams;
+      return okJson(await listProjectChannels(slug, route[1], access.actor, {
+        status: params.get('status'),
+      }));
     }
 
     if (route[0] === 'projects' && route[2] === 'schemas') {
@@ -395,9 +407,52 @@ export async function POST(request, { params }) {
       return handleCodesiteError(error);
     }
   }
+  if (route[0] === 'agent-sessions' && route[2] === 'channels' && route.length === 3) {
+    try {
+      const limitedChannel = enforceRateLimit(
+        { userId: `agent:${route[1]}` },
+        'channels',
+        'channels',
+      );
+      if (limitedChannel) return limitedChannel;
+      return okJson({ channel: await requestAgentChannel(
+        slug,
+        route[1],
+        bearerToken(request),
+        await readJson(request),
+      ) }, { status: 201 });
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
   if (route[0] === 'agent-sessions' && route[2] === 'transactions' && route[4] === 'commit' && route.length === 5) {
     try {
       return okJson(await commitAgentTransaction(slug, route[1], bearerToken(request), route[3], await readJson(request)));
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
+  if (route[0] === 'agent-sessions' && route[2] === 'channels' && route.length === 5
+    && ['accept', 'reject', 'close', 'violation'].includes(route[4])) {
+    try {
+      const limitedChannelAction = enforceRateLimit(
+        { userId: `agent:${route[1]}` },
+        `channels:${route[4]}`,
+        'channels',
+      );
+      if (limitedChannelAction) return limitedChannelAction;
+      const body = await readJson(request);
+      if (route[4] === 'accept') {
+        const result = await acceptAgentChannel(slug, route[1], bearerToken(request), route[3], body);
+        return okJson({ channel: result }, { status: 200 });
+      }
+      if (route[4] === 'reject') {
+        return okJson({ channel: await rejectAgentChannel(slug, route[1], bearerToken(request), route[3], body) });
+      }
+      if (route[4] === 'violation') {
+        return okJson({ channel: await reportAgentChannelViolation(slug, route[1], bearerToken(request), route[3], body) });
+      }
+      return okJson({ channel: await closeAgentChannel(slug, route[1], bearerToken(request), route[3], body) });
     } catch (error) {
       return handleCodesiteError(error);
     }

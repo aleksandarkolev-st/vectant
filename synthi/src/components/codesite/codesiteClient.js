@@ -379,6 +379,35 @@ export async function createCodeSiteProject(workspaceSlug, payload = {}) {
   return body.project || null;
 }
 
+// ---- Registered direct channels (docs/REGISTERED_DIRECT_CHANNELS_DESIGN.md) ----
+
+export async function fetchCodeSiteChannels(workspaceSlug, projectId, status = null) {
+  if (!workspaceSlug || !projectId) return [];
+  const query = status ? `?status=${encodeURIComponent(status)}` : '';
+  const body = await request(`${projectBase(workspaceSlug, projectId)}/channels${query}`);
+  return body.channels || [];
+}
+
+export async function requestCodeSiteChannel(workspaceSlug, sessionId, payload = {}) {
+  const body = await request(`${agentSessionBase(workspaceSlug, sessionId)}/channels`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  return body.channel || null;
+}
+
+export async function respondCodeSiteChannel(workspaceSlug, sessionId, channelId, action, payload = {}) {
+  const body = await request(
+    `${agentSessionBase(workspaceSlug, sessionId)}/channels/${encodeURIComponent(channelId)}/${action}`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+  return body.channel || null;
+}
+
+function agentSessionBase(workspaceSlug, sessionId) {
+  return `${codeSiteBase(workspaceSlug)}/agent-sessions/${encodeURIComponent(sessionId)}`;
+}
+
 export async function exportCodeSiteArtifacts(workspaceSlug, projectId) {
   if (!workspaceSlug || !projectId) return null;
   return request(`${projectBase(workspaceSlug, projectId)}/artifacts/export`, {
