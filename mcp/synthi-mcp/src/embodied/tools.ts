@@ -85,6 +85,30 @@ export async function handleBeginTeach(context: ToolContext, input: { session_id
   return { status: "recording" };
 }
 
+/**
+ * Perform ONE action inside a recording session — this is the human's
+ * hand (or the game client) during teach mode. Goes through the session's
+ * substrate actor under the attach consent, so the recorder journals it.
+ */
+export async function handlePerformAction(
+  context: ToolContext,
+  input: { session_id: string; action: unknown },
+): Promise<Json> {
+  const session = context.sessions.get(input.session_id);
+  if (!session) return { error: "unknown_session", human_hint: "Attach to a world first." };
+  const bundle = getAdapter(session.substrate_kind);
+  if (!bundle.actor) {
+    return { error: "not_actionable", human_hint: "This world cannot be acted on." };
+  }
+  const result = await bundle.actor.act(session.handle as never, input.action as never, {
+    lease_id: "teach-mode",
+    realm: session.handle.realm,
+    capability: "act" as const,
+    expires_at_ms: Date.now() + 60_000,
+  });
+  return { ok: result.ok, ...(result.refusal_reason ? { refusal_reason: result.refusal_reason } : {}) };
+}
+
 export async function handleEndTeach(
   context: ToolContext,
   input: {

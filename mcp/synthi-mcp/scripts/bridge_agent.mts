@@ -1,0 +1,71 @@
+/**
+ * Standalone bridge process for AGENT B (the learner).
+ * Usage: npx tsx scripts/bridge_agent.mts <port> <gameWsUrl>
+ * Registers ONLY the game substrate bound to its own WS transport.
+ */
+import { startBrowserWorkflowBridge } from "../src/browser_workflow_bridge/server.js";
+import { embodiedBridgeContext } from "../src/browser_workflow_bridge/embodied_dispatch.js";
+import { registerSubstrateAdapter, unregisterAllSubstrateAdapters } from "../src/embodied/substrate.js";
+import { createGameBundle } from "../src/embodied/adapters/game/protocol.js";
+import { readFileSync, existsSync } from "node:fs";
+import { createRequire } from "node:module";
+// ws is hoisted at the repo root; resolve it explicitly for this script.
+const wsRequire = createRequire("C:/Users/dev/Downloads/synthi-test/synthi-ide/node_modules/playwright-core/package.json");
+const WebSocket = wsRequire("ws");
+
+const port = Number(process.argv[2] ?? 3002);
+const gameUrl = process.argv[3];
+
+if (gameUrl) {
+  unregisterAllSubstrateAdapters();
+  let socket: import("ws").WebSocket | null = null;
+  const queue: unknown[] = [];
+  const waiters: Array<(v: unknown) => void> = [];
+  async function ensure(): Promise<void> {
+    if (socket) return;
+    await new Promise<void>((resolveOpen, rejectOpen) => {
+      const s = new WebSocket(gameUrl);
+      s.on("message", (raw: Buffer) => {
+        const parsed = JSON.parse(raw.toString()) as unknown;
+        const waiter = waiters.shift();
+        if (waiter) waiter(parsed);
+        else queue.push(parsed);
+      });
+      s.once("open", () => {
+        socket = s;
+        resolveOpen();
+      });
+      s.once("error", rejectOpen);
+    });
+  }
+  registerSubstrateAdapter(
+    createGameBundle(() => ({
+      async send(message: unknown) {
+        await ensure();
+        socket!.send(JSON.stringify(message));
+      },
+      async receive<T = unknown>(): Promise<T> {
+        await ensure();
+        const queued = queue.shift();
+        if (queued !== undefined) return queued as T;
+        return new Promise<T>((r) => waiters.push(r as (v: unknown) => void));
+      },
+    })),
+  );
+}
+
+// Terminal adapter comes from embodiedBridgeContext; game (if any) above.
+const context = embodiedBridgeContext();
+
+// Deployments seed licenses for imported competencies from disk. The test
+// writes synthi_licenses.json next to the skill before starting agent B.
+const licenseFile = process.argv[4];
+if (licenseFile && existsSync(licenseFile)) {
+  const parsed = JSON.parse(readFileSync(licenseFile, "utf8")) as Array<unknown>;
+  (context.licenses as unknown[]).push(...parsed);
+  console.log(`seeded ${parsed.length} license(s)`);
+}
+
+const bridge = startBrowserWorkflowBridge({ port, host: "127.0.0.1" });
+await bridge.ready;
+console.log(`AGENT BRIDGE LIVE on port ${port}`);

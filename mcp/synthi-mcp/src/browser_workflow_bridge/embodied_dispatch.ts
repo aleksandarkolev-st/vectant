@@ -13,6 +13,7 @@ import {
   handleAttachSubstrate,
   handleObserve,
   handleBeginTeach,
+  handlePerformAction,
   handleEndTeach,
   handleCompileWorkflow,
   handleRunWorkflow,
@@ -52,6 +53,7 @@ export const EMBODIED_TOOL_NAMES: readonly string[] = [
   "synthi_attach_substrate",
   "synthi_observe",
   "synthi_begin_teach",
+  "synthi_perform_action",
   "synthi_end_teach",
   "synthi_compile_workflow",
   "synthi_run_workflow",
@@ -80,6 +82,8 @@ export async function dispatchEmbodied(toolName: string, args: unknown): Promise
       return jsonResponse(await handleObserve(ctx, input as never));
     case "synthi_begin_teach":
       return jsonResponse(await handleBeginTeach(ctx, input as never));
+    case "synthi_perform_action":
+      return jsonResponse(await handlePerformAction(ctx, input as never));
     case "synthi_end_teach":
       return jsonResponse(await handleEndTeach(ctx, input as never));
     case "synthi_compile_workflow":
