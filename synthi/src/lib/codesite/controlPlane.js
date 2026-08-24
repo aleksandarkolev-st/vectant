@@ -3317,7 +3317,9 @@ export async function createAgentExecutionPlan(workspaceSlug, sessionId, agentAc
   // here never block the plan itself — channels are an optimization.
   try {
     await autoOpenDirectChannels(workspaceSlug, session);
-  } catch (_) {}
+  } catch (err) {
+    console.error('[codesite] auto-open failed', err);
+  }
   return createExecutionPlan(workspaceSlug, session.projectId, {
     ...body,
     agentSessionId: session.id,
