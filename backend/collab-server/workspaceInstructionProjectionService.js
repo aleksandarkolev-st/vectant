@@ -217,7 +217,15 @@ class WorkspaceInstructionProjectionService {
       current = path.join(current, segments[index]);
       let stat = await this._lstatOrNull(current);
       if (!isTarget && !stat && createParent) {
-        await this.fs.mkdir(current, { recursive: false, mode: 0o700 });
+        try {
+          await this.fs.mkdir(current, { recursive: false, mode: 0o700 });
+        } catch (error) {
+          // Multiple runtime preparations can reconcile the same workspace at
+          // once after a browser reconnect. A competing request may create the
+          // parent after the lstat above but before this mkdir. Re-read it below
+          // and keep the normal symlink/directory safety checks authoritative.
+          if (!error || error.code !== 'EEXIST') throw error;
+        }
         stat = await this._lstatOrNull(current);
       }
       if (!stat) {

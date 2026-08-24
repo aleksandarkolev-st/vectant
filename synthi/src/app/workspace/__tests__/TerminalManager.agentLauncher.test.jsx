@@ -186,6 +186,27 @@ describe('TerminalManager generic agent launcher', () => {
     expect(h.paneProps.has('stored-terminal:split')).toBe(true);
   });
 
+  it('refreshes authorized projects after CodeSite creates one', async () => {
+    h.fetchCodeSiteProjects
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([{ id: 'project-new', title: 'New coordination run' }]);
+    await mount();
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('codesite-projects-changed', {
+        detail: { workspaceSlug: 'team' },
+      }));
+    });
+    await flush();
+
+    await act(async () => {
+      container.querySelector('[data-testid="terminal-agent-launcher-toggle"]').click();
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="terminal-agent-project"]').value).toBe('project-new');
+    expect(container.textContent).toContain('New coordination run');
+  });
+
   it('keeps ordinary, AI, and managed program terminals unbound', async () => {
     await mount();
     expect(h.paneProps.get('term-1:main').agentBinding).toBeNull();
