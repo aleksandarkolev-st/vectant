@@ -1195,10 +1195,37 @@ model LocalSupportSession {
   updatedAt           DateTime @updatedAt
 
   deviceNonces LocalSupportDeviceNonce[]
+  linkedProjects LocalSupportLinkedProject[]
 
   @@index([deviceFingerprint, status, expiresAt])
   @@index([accountId, orgId, status])
   @@index([expiresAt])
+}
+
+// A linked project is a cloud-visible, local-backed collaboration identity.
+// It contains graph metadata and selection hashes only, never paths or source.
+model LocalSupportLinkedProject {
+  projectId             String   @id
+  sessionId             String
+  accountId             String
+  orgId                 String
+  deviceFingerprint     String
+  workspaceHash         String
+  selectionMode         String
+  selectedNodeIdsJson   String   @default("[]")
+  displayName           String
+  graphNodeCount        Int      @default(0)
+  status                String   @default("pending_local_confirmation")
+  fullAccessExpiresAt   DateTime?
+  disconnectedAt        DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  session LocalSupportSession @relation(fields: [sessionId], references: [sessionId], onDelete: Cascade)
+
+  @@index([accountId, status, updatedAt])
+  @@index([sessionId, status])
+  @@index([deviceFingerprint, status])
 }
 
 model LocalSupportDeviceNonce {

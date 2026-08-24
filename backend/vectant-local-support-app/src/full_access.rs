@@ -307,6 +307,9 @@ pub struct FullAccessState {
     pub policy: FullAccessPolicy,
     pub receipt: Option<FullAccessConsentReceipt>,
     pub graph: HashMap<String, GraphNode>,
+    /// `Some` means this linked project is a deliberately selected file set;
+    /// `None` represents the locally selected folder scope.
+    pub selected_node_ids: Option<BTreeSet<String>>,
     pub budget: FullAccessBudget,
     pub process_visibility_paused: bool,
     pub command_cancel: Arc<AtomicBool>,
@@ -319,6 +322,7 @@ impl FullAccessState {
             receipt.revoked_at = Some(Utc::now());
         }
         self.graph.clear();
+        self.selected_node_ids = None;
         self.budget.paused = true;
         self.process_visibility_paused = true;
     }
@@ -330,6 +334,20 @@ impl FullAccessState {
         }
         self.budget.paused = true;
         self.process_visibility_paused = true;
+    }
+
+    pub fn apply_linked_project_scope(&mut self, selected_node_ids: Option<BTreeSet<String>>) {
+        self.selected_node_ids = selected_node_ids;
+        if let Some(ids) = &self.selected_node_ids {
+            self.graph.retain(|node_id, _| ids.contains(node_id));
+        }
+    }
+
+    pub fn scope_graph(&self, graph: HashMap<String, GraphNode>) -> HashMap<String, GraphNode> {
+        match &self.selected_node_ids {
+            Some(ids) => graph.into_iter().filter(|(node_id, _)| ids.contains(node_id)).collect(),
+            None => graph,
+        }
     }
 }
 impl FullAccessBudget {
@@ -714,6 +732,23 @@ mod tests {
             validate_graph_request(&nodes, &request, &policy()),
             Err(FullAccessDenied::SensitiveTarget)
         );
+    }
+
+    #[test]
+    fn selected_file_scope_filters_every_graph_refresh() {
+        let mut state = FullAccessState::default();
+        state.apply_linked_project_scope(Some(["node_allowed".to_string()].into_iter().collect()));
+        let graph = HashMap::from([
+            ("node_allowed".to_string(), GraphNode {
+                node_id: "node_allowed".to_string(), relative_path: "src/lib.rs".to_string(), content_hash: "sha256:a".to_string(), size: 1, classification: RiskClass::B, state: GraphNodeState::AutoRequestable,
+            }),
+            ("node_outside".to_string(), GraphNode {
+                node_id: "node_outside".to_string(), relative_path: "env.local".to_string(), content_hash: "sha256:b".to_string(), size: 1, classification: RiskClass::B, state: GraphNodeState::AutoRequestable,
+            }),
+        ]);
+        let scoped = state.scope_graph(graph);
+        assert!(scoped.contains_key("node_allowed"));
+        assert!(!scoped.contains_key("node_outside"));
     }
 
     #[test]

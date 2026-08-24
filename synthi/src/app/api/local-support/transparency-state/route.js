@@ -117,6 +117,13 @@ function mapLocalDaemonStatus(status) {
   const receipts = Array.isArray(history.consent_receipts) ? history.consent_receipts : [];
   const ports = Array.isArray(status?.ports) ? status.ports : [];
   const fullAccess = status?.full_access && typeof status.full_access === "object" ? status.full_access : {};
+  const fullAccessCapabilities = Array.isArray(fullAccess.capabilities)
+    ? fullAccess.capabilities.filter((capability) => typeof capability === "string" && capability.length <= 128)
+    : [];
+  const fullAccessPortRead = fullAccess.enrolled === true
+    && fullAccess.auto_approval_enabled === true
+    && fullAccess.automatic_delivery_paused !== true
+    && fullAccessCapabilities.includes("support.full_access.local_port.use");
 
   return {
     scanner_version: workspace.scanner_version,
@@ -164,8 +171,11 @@ function mapLocalDaemonStatus(status) {
       process_hash: port.process_identity_hash,
       ttl: port.expires_at,
       browser: port.browser_preview_allowed,
-      aiRead: false,
-      supportRead: false,
+      // Browser preview remains browser-only. These flags describe the
+      // separate Full Access response-read broker, which requires a scoped
+      // receipt, listener identity check, response cap, scan, and audit.
+      aiRead: fullAccessPortRead,
+      supportRead: fullAccessPortRead,
       aiInteract: false,
       responseBodies: false,
       screenshots: false,
@@ -179,9 +189,7 @@ function mapLocalDaemonStatus(status) {
       auto_approval_enabled: fullAccess.auto_approval_enabled === true,
       automatic_delivery_paused: fullAccess.automatic_delivery_paused === true,
       process_visibility_paused: fullAccess.process_visibility_paused === true,
-      capabilities: Array.isArray(fullAccess.capabilities)
-        ? fullAccess.capabilities.filter((capability) => typeof capability === "string" && capability.length <= 128)
-        : [],
+      capabilities: fullAccessCapabilities,
       graph_node_count: Number.isInteger(fullAccess.graph_node_count) && fullAccess.graph_node_count >= 0
         ? fullAccess.graph_node_count
         : 0,

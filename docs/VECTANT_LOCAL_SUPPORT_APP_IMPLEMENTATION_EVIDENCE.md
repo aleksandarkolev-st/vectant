@@ -2,6 +2,15 @@
 
 Last local verification: 2026-07-13 on Windows.
 
+## Current implementation verification, 2026-08-21
+
+- The local daemon's status endpoint now projects the active Full Access receipt, capability set, graph count, bounded session byte count, and local pause state as a sanitized status object. It excludes tokens, raw paths, file bodies, command lines, environment values, and process details.
+- The browser transparency page derives its Full Access local-port read state from that live daemon receipt, not a demo constant. The browser preview gateway remains browser-only; receipt-scoped Full Access requests use the separate loopback broker, which revalidates listener identity, caps the response, scans content, and records an audit event before release.
+- Native verification passed: `cargo test --manifest-path backend/vectant-local-support-app/Cargo.toml` (107 tests). Focused cloud/UI verification passed: `npm.cmd run test --workspace synthi -- src/lib/local-support/acceptance.test.js src/app/api/local-support/transparency-state/route.test.js src/lib/local-support/controlPlane.test.js` (29 tests).
+- Docker workflow verification passed against the rebuilt `frontend` service with PostgreSQL, Redis, and Y-Sweet healthy. The local Chromium suite was rerun against `http://127.0.0.1:3000`; its Full Access UI assertion is part of the focused workflow suite. Visual proof is saved at `screenshots/local-support-full-access-live-docker.png`.
+
+The last command has to be re-run after a new UI change because the proof is intentionally taken from the built Docker image, rather than a development-only browser bundle.
+
 This file indexes executable evidence. It does not make static acceptance mappings count as completion, and it does not authorize public beta. Re-run every command from the reviewed commit and attach immutable CI/deployment evidence before release.
 
 ## Repository implementation
