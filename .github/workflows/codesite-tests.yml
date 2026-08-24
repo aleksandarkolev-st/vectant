@@ -75,7 +75,8 @@ jobs:
                __tests__/agentSessionAttachService.test.js \
                __tests__/terminalServiceAgentLifecycle.test.js \
                __tests__/runtimeObservationPublisher.test.js \
-               __tests__/programRuntimeManager.test.js
+               __tests__/programRuntimeManager.test.js \
+               __tests__/sessionWorkspaceAccess.test.js
 
   mcp-tools:
     name: synthi-mcp codesite tools

@@ -62,7 +62,24 @@ async function requireAuthorizedWorkspace(workspaceId) {
     return {
         ok: true,
         workspaceSlug: access.workspace?.slug || workspaceId,
+        membership: access.membership,
     };
+}
+
+/**
+ * Real Prisma workspace members (owner/admin/member) can already do anything
+ * this route allows — this only narrows a live collab-session guest down to
+ * whatever the host actually granted them (canEdit for content writes,
+ * canFileOps for create/rename/delete). See requireWorkspaceAccess() /
+ * collabGuestAccess.js for where `membership.role === 'collab-guest'` and
+ * `collabPermissions` come from.
+ */
+function requireCollabPermission(workspace, requiredPermission) {
+    if (workspace.membership?.role !== 'collab-guest') return null;
+    if (workspace.membership.collabPermissions?.[requiredPermission] === true) return null;
+    const error = new Error(`Forbidden: missing ${requiredPermission} permission`);
+    error.status = 403;
+    return error;
 }
 
 export async function GET(request, { params }) {
@@ -136,7 +153,10 @@ export async function POST(request, { params }) {
 
         const formData = await request.formData();
         const filePath = normalizeWorkspaceItemPath(formData.get('filePath'));
-        const fileContent = formData.get('file'); 
+        const fileContent = formData.get('file');
+
+        const permissionError = requireCollabPermission(workspace, filePath.endsWith('/') ? 'canFileOps' : 'canEdit');
+        if (permissionError) throw permissionError;
 
         const gcsFilePath = `workspaces/${workspace.workspaceSlug}/${filePath}`;
         const file = storage.bucket(BUCKET_NAME).file(gcsFilePath);
@@ -229,7 +249,10 @@ export async function PUT(request, { params }) {
         const body = await request.json();
         const itemPath = normalizeWorkspaceItemPath(body.itemPath);
         const newPath = body.newPath ? normalizeWorkspaceItemPath(body.newPath) : '';
-        
+
+        const permissionError = requireCollabPermission(workspace, newPath ? 'canFileOps' : 'canEdit');
+        if (permissionError) throw permissionError;
+
         if (newPath) {
             
             if (itemPath.endsWith('/') !== newPath.endsWith('/')) {
@@ -345,6 +368,9 @@ export async function DELETE(request, { params }) {
 
         const body = await request.json();
         const itemPath = normalizeWorkspaceItemPath(body.itemPath);
+
+        const permissionError = requireCollabPermission(workspace, 'canFileOps');
+        if (permissionError) throw permissionError;
 
         const gcsFilePath = `workspaces/${workspace.workspaceSlug}/${itemPath}`;
 
