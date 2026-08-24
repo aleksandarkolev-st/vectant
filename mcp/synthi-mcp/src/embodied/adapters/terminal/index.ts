@@ -67,7 +67,7 @@ function parseLeadBinary(command: string): string {
  * intact or the JS breaks. Rule: quoted spans prevent whitespace splits,
  * but the quote characters themselves are PRESERVED VERBATIM.
  */
-function splitArgs(command: string): string[] {
+export function splitArgs(command: string): string[] {
   const args: string[] = [];
   let current = "";
   let quote: '"' | "'" | null = null;
@@ -167,7 +167,7 @@ export function createTerminalBundle(
         const timeoutMs = Math.min(30, Math.max(1, action.timeout_s ?? 10)) * 1000;
         let exit = 0;
         try {
-          execFileSync(lead, action.run.trim().split(/\s+/).slice(1), {
+      execFileSync(lead, splitArgs(action.run).slice(1), {
             cwd: handle.environment.root,
             timeout: timeoutMs,
             stdio: "pipe",
@@ -248,5 +248,4 @@ export function createTerminalBundle(
 export function registerTerminalAdapter(): void {
   registerSubstrateAdapter(createTerminalBundle());
 }
-
 
