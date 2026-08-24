@@ -1,170 +1,424 @@
 /**
- * LIVE END-TO-END: Record -> Perform -> Stop -> Skill -> Executed by
- * another agent, over the REAL workflow bridge (port 3001), for three
- * substrates:
+ * LIVE END-TO-END systems matrix — fully SELF-CONTAINED.
  *
- *   GAME   - real canvas game at 127.0.0.1:8081; walking journals moves
- *            over WS 8765; the recorded move sequence becomes a skill;
- *            a second "agent" executes it and the player ends at the
- *            SAME position (verified via observe).
- *   KERNEL - real WSL2 Ubuntu kernel: snapshot /proc/sys/vm/swappiness,
- *            sysctl -w mutate, verify kernel state actually changed,
- *            restore. Snapshot-before-mutation enforced.
- *   NN     - real numpy MLP training run in a real Python process with
- *            decreasing loss; the taught flow trains + verifies the
- *            artifact; replayed against a fresh seed dir.
+ * Everything these tests need, they start themselves on ephemeral ports:
+ *   - the real workflow bridge (startBrowserWorkflowBridge, port 0),
+ *   - a real game world behind the scene-graph protocol (own WS server;
+ *     THE WORLD is authoritative: positions are kept server-side and
+ *     proven by reading them back, never by echoing client input),
+ *   - a second agent brain (fresh ToolContext, own transport, own
+ *     license) that imports the exported skill and executes it.
  *
- * Everything goes through the bridge HTTP API exactly like the panel:
- *   POST /browser-workflows/tool {tool, arguments}
+ * Legs that need machine capabilities this repo cannot ship are probed
+ * first and SKIPPED WITH A LOUD REASON when absent (never faked):
+ *   KERNEL - real WSL2 Ubuntu (vm.swappiness snapshot -> mutate ->
+ *            verify changed -> restore -> verify equal).
+ *   NN     - real Python + numpy MLP training with decreasing loss,
+ *            replayed into a fresh directory.
  */
-import { test, expect } from "vitest";
+import { test, expect, beforeAll, afterAll } from "vitest";
 import { execSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { WebSocketServer, WebSocket } from "ws";
+import { startBrowserWorkflowBridge } from "../../src/browser_workflow_bridge/server.js";
+import { embodiedBridgeContext } from "../../src/browser_workflow_bridge/embodied_dispatch.js";
+import {
+  registerSubstrateAdapter,
+  unregisterAllSubstrateAdapters,
+} from "../../src/embodied/substrate.js";
+import { createGameBundle } from "../../src/embodied/adapters/game/protocol.js";
+import {
+  createToolContext,
+  handleAttachSubstrate,
+  handleBeginTeach,
+  handleEndTeach,
+  handleExportSkill,
+  handleImportSkill,
+  handleListSkills,
+  handleObserve,
+  handleRunWorkflow,
+} from "../../src/embodied/tools.js";
+import type { CompetencyLicense } from "../../src/embodied/governance.js";
 
-const BRIDGE = "http://127.0.0.1:3001/browser-workflows/tool";
-const GAME_WS_PORT = 8765;
+// ---------------------------------------------------------------------------
+// Self-hosted live game world: authoritative state, protocol-faithful.
+// ---------------------------------------------------------------------------
+let px = 320;
+let py = 240;
+let tick = 0;
 
-async function call(tool: string, args: unknown): Promise<Record<string, unknown>> {
-  const res = await fetch(BRIDGE, {
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+function makeGameWorld(): Promise<{ url: string; close: () => Promise<void> }> {
+  return new Promise((resolveServer) => {
+    const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 }, () => {
+      const address = wss.address() as { port: number };
+      resolveServer({
+        url: `ws://127.0.0.1:${address.port}`,
+        close: () =>
+          Promise.allSettled(
+            [...wss.clients].map(
+              (c) => new Promise<void>((r) => c.close(() => r())),
+            ),
+          ).then(() => new Promise<void>((r) => wss.close(() => r()))),
+      });
+    });
+    wss.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const msg = JSON.parse(raw.toString()) as {
+          op: string;
+          action?: { move?: { dx: number; dy: number } };
+        };
+        if (msg.op === "act" && msg.action?.move) {
+          // The WORLD decides the new position (bounds included).
+          px = clamp(px + msg.action.move.dx, 12, 628);
+          py = clamp(py + msg.action.move.dy, 12, 468);
+          tick += 1;
+          socket.send(JSON.stringify({ ok: true, tick }));
+        } else if (msg.op === "observe") {
+          socket.send(
+            JSON.stringify({
+              tick,
+              entities: [{ id: "player", position: { x: px, y: py }, color: { h: 210, s: 0.6, v: 0.8 }, kind: "player" }],
+              hidden: [],
+            }),
+          );
+        }
+      });
+    });
+  });
+}
+
+/** One request/response round trip over a dedicated connection. */
+async function withWorldSocket<T>(
+  url: string,
+  fn: (
+    send: (m: unknown) => void,
+    receive: <U = unknown>() => Promise<U>,
+  ) => Promise<T>,
+): Promise<T> {
+  const socket = new WebSocket(url);
+  const queue: unknown[] = [];
+  const waiters: Array<(v: unknown) => void> = [];
+  socket.on("message", (raw: Buffer) => {
+    const parsed = JSON.parse(raw.toString()) as unknown;
+    const waiter = waiters.shift();
+    if (waiter) waiter(parsed);
+    else queue.push(parsed);
+  });
+  await new Promise<void>((resolveOpen, rejectOpen) => {
+    socket.once("open", () => resolveOpen());
+    socket.once("error", rejectOpen);
+  });
+  try {
+    return await fn(
+      (m) => socket.send(JSON.stringify(m)),
+      () => {
+        const queued = queue.shift();
+        if (queued !== undefined) return Promise.resolve(queued);
+        return new Promise((r) => waiters.push(r));
+      },
+    );
+  } finally {
+    await new Promise<void>((r) => {
+      socket.once("close", () => r());
+      socket.close();
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Capability probes for legs this machine may or may not have.
+// ---------------------------------------------------------------------------
+function probeWslUbuntu(): boolean {
+  try {
+    execSync('wsl -d Ubuntu -- sysctl -n vm.swappiness', {
+      encoding: "utf8",
+      timeout: 20_000,
+      stdio: "pipe",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function probePythonNumpy(): boolean {
+  try {
+    execSync('python -c "import numpy"', { encoding: "utf8", timeout: 30_000, stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const HAS_WSL = await probeWslUbuntu();
+const HAS_PYTHON_NUMPY = await probePythonNumpy();
+if (!HAS_WSL) console.warn("[live-systems] KERNEL leg skipped: WSL2 Ubuntu not reachable on this machine.");
+if (!HAS_PYTHON_NUMPY)
+  console.warn("[live-systems] NN leg skipped: python with numpy not reachable on this machine.");
+
+// ---------------------------------------------------------------------------
+// Shared live fixtures: one bridge + one game world for the whole file.
+// ---------------------------------------------------------------------------
+const closers: Array<() => Promise<void>> = [];
+let gameUrl = "";
+let bridgePort = 0;
+
+async function bridgeCall(tool: string, args: unknown): Promise<Record<string, unknown>> {
+  const res = await fetch(`http://127.0.0.1:${bridgePort}/browser-workflows/tool`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ tool, arguments: args }),
   });
-  const body = (await res.json()) as { ok?: boolean; result?: Record<string, unknown> };
-  return { ...(body.result ?? {}), _bridge_ok: body.ok };
+  const body = (await res.json()) as { result?: Record<string, unknown> };
+  return body.result ?? {};
 }
 
-// Minimal WebSocket client for the game journal (ws resolved from repo root).
-async function gameSocket(): Promise<{
-  send(data: string): void;
-  close(): void;
-  messages(): Promise<unknown[]>;
-}> {
-  const { createRequire } = await import("node:module");
-  const req = createRequire("C:/Users/dev/Downloads/synthi-test/synthi-ide/node_modules/playwright-core/package.json");
-  const WebSocket = req("ws");
-  const socket = new WebSocket(`ws://127.0.0.1:${GAME_WS_PORT}`);
-  const received: unknown[] = [];
-  socket.on("message", (raw: Buffer) => received.push(JSON.parse(raw.toString())));
-  await new Promise((resolveOpen, rejectOpen) => {
-    socket.once("open", resolveOpen);
-    socket.once("error", rejectOpen);
-  });
-  return {
-    send: (data: string) => socket.send(data),
-    close: () => socket.close(),
-    messages: async () => {
-      await new Promise((r) => setTimeout(r, 400));
-      return received;
-    },
-  };
-}
+beforeAll(async () => {
+  unregisterAllSubstrateAdapters();
+  const world = await makeGameWorld();
+  gameUrl = world.url;
+  closers.push(world.close);
 
+  registerSubstrateAdapter(createGameBundle(() => {
+    // Every session gets its OWN connection to the same authoritative world.
+    let socket: WebSocket | null = null;
+    const queue: unknown[] = [];
+    const waiters: Array<(v: unknown) => void> = [];
+    return {
+      async send(message: unknown) {
+        if (!socket) {
+          await new Promise<void>((resolveOpen, rejectOpen) => {
+            const s = new WebSocket(gameUrl);
+            s.on("message", (raw: Buffer) => {
+              const parsed = JSON.parse(raw.toString()) as unknown;
+              const waiter = waiters.shift();
+              if (waiter) waiter(parsed);
+              else queue.push(parsed);
+            });
+            s.once("open", () => {
+              socket = s;
+              resolveOpen();
+            });
+            s.once("error", rejectOpen);
+          });
+        }
+        socket!.send(JSON.stringify(message));
+      },
+      async receive<T = unknown>(): Promise<T> {
+        if (!socket) throw new Error("transport used before send");
+        const queued = queue.shift();
+        if (queued !== undefined) return queued as T;
+        return new Promise<T>((r) => waiters.push(r as (v: unknown) => void));
+      },
+    };
+  }));
+
+  embodiedBridgeContext();
+  const bridge = startBrowserWorkflowBridge({ port: 0, host: "127.0.0.1" });
+  await bridge.ready;
+  bridgePort = (bridge.server.address() as { port: number }).port;
+  closers.push(bridge.close);
+});
+
+afterAll(async () => {
+  for (const close of closers.splice(0).reverse()) {
+    await Promise.race([
+      close(),
+      new Promise((r) => {
+        setTimeout(r, 5_000);
+      }),
+    ]);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GAME: human walks over the REAL bridge; skill artifact exported; a SECOND
+// agent (fresh context, own transport, own license) imports and EXECUTES it;
+// the world's authoritative position proves both walks happened.
+// ---------------------------------------------------------------------------
 test(
   "LIVE GAME: record walk -> stop -> skill artifact -> second agent executes",
   { timeout: 120_000 },
   async () => {
-    // Sanity: game bridge reachable.
-    const ws = await gameSocket();
-    ws.send(JSON.stringify({ op: "observe", x: 320, y: 240 }));
-    const scene = (await ws.messages())[0] as { tick: number };
+    // Sanity: the world is reachable, observable, and authoritative.
+    const scene = await withWorldSocket<{ tick: number }>(gameUrl, async (send, receive) => {
+      send({ op: "observe" });
+      return receive<{ tick: number }>();
+    });
     expect(scene.tick).toBeGreaterThanOrEqual(0);
+    px = 320;
+    py = 240;
+    tick = 0;
 
-    // The human walks RIGHT then DOWN then RIGHT again (like clicking
-    // record in the panel and moving). We journal these as they happen.
-    const walked = [
-      { dx: 8, dy: 0 },
-      { dx: 8, dy: 0 },
-      { dx: 8, dy: 0 },
-      { dx: 0, dy: 8 },
-      { dx: 0, dy: 8 },
-      { dx: 8, dy: 0 },
-    ];
-    for (const move of walked) {
-      ws.send(JSON.stringify({ op: "move", ...move }));
-      await new Promise((r) => setTimeout(r, 120)); // human-paced
-    }
-
-    // STOP: compile the recording into a skill artifact (the panel's
-    // end_teach step), stored via skill_save on the bridge.
-    const skill = {
-      skill_id: `game.walk-${Date.now()}`,
-      substrate: "game",
-      steps: walked,
-      expected_displacement: {
-        x: walked.reduce((a, m) => a + m.dx, 0),
-        y: walked.reduce((a, m) => a + m.dy, 0),
+    // ---- AGENT A: teach through the real workflow bridge. ----
+    const attachA = await bridgeCall("synthi_attach_substrate", {
+      substrate_kind: "game",
+      consent: {
+        subject: "player",
+        realm: { realm_kind: "arena", realm_id: "live-arena-a" },
+        allow: ["observe", "record", "act"],
       },
-      compiled_at: new Date().toISOString(),
-    };
-    ws.send(JSON.stringify({ op: "skill_save", skill }));
-    const allMessages = await ws.messages();
-    const saved = allMessages.find((m) => (m as { saved?: boolean }).saved) as { ok?: boolean } | undefined;
-    expect(saved?.ok).toBe(true);
-    expect(existsSync("C:/Users/dev/Downloads/synthi-test/corpus/game/skill.json")).toBe(true);
-    console.log("SKILL ARTIFACT SAVED:", skill.skill_id, `${walked.length} steps`);
+    });
+    expect(attachA.session_id).toBeTruthy();
 
-    // A SECOND AGENT picks up the artifact and EXECUTES it: it replays the
-    // recorded displacement from origin and verifies the landing position
-    // by asking the game to observe.
-    const agentStart = { x: 100, y: 100 };
-    for (const move of skill.steps) {
-      agentStart.x = Math.max(12, Math.min(628, agentStart.x + move.dx));
-      agentStart.y = Math.max(12, Math.min(468, agentStart.y + move.dy));
+    await bridgeCall("synthi_begin_teach", { session_id: attachA.session_id });
+
+    // The HUMAN performs the walk through A's teach channel; each action is
+    // journaled by A's recorder while the WORLD applies it authoritatively.
+    const walked = [
+      { move: { dx: 16, dy: 0 } },
+      { move: { dx: 16, dy: 0 } },
+      { move: { dx: 0, dy: 24 } },
+      { move: { dx: -8, dy: 8 } },
+    ];
+    for (const action of walked) {
+      const performed = await bridgeCall("synthi_perform_action", {
+        session_id: attachA.session_id,
+        action,
+      });
+      expect(performed.ok).toBe(true);
     }
-    ws.send(JSON.stringify({ op: "observe", x: agentStart.x, y: agentStart.y }));
-    const verify = (await ws.messages()).at(-1) as { entities: Array<{ id: string; x: number; y: number }> };
-    const player = verify.entities.find((e) => e.id === "player")!;
-    // Landing = start + the skill's own expected displacement (the compiled
-    // contract), clamped to arena bounds - exactly what execution produces.
-    const expectedX = Math.max(12, Math.min(628, 100 + skill.expected_displacement.x));
-    const expectedY = Math.max(12, Math.min(468, 100 + skill.expected_displacement.y));
-    expect(player.x).toBe(expectedX);
-    expect(player.y).toBe(expectedY);
-    console.log(`SECOND AGENT EXECUTED SKILL: player verified at (${player.x}, ${player.y})`);
-    ws.close();
+
+    // World proof of A's walk: authoritative position moved by the total.
+    expect(px).toBe(320 + 24);
+    expect(py).toBe(240 + 32);
+
+    // STOP -> contract compiles from the recording.
+    const taught = await bridgeCall("synthi_end_teach", {
+      session_id: attachA.session_id,
+      intent: "walk right-right-down-diagonal",
+      changed_values: [
+        { path: "entities.player.position", semantic_class: "", after: "moved", changed_at_tick: 4 },
+      ],
+      control_diffs: [{ source_id: "ctrl", changed: [] }],
+    });
+    expect(taught.contract_id).toBeTruthy();
+    expect(taught.steps_recorded).toBe(4);
+
+    const exported = await bridgeCall("synthi_export_skill", {
+      competency_id: taught.contract_id,
+    });
+    expect(exported.skill_format).toBe("synthi.skill.v1");
+    expect(Array.isArray(exported.steps)).toBe(true);
+    expect((exported.steps as unknown[]).length).toBe(4);
+
+    // Persist the artifact exactly as an agent-to-agent handoff would.
+    const artifactDir = join(tmpdir(), "synthi-live-systems-game");
+    mkdirSync(artifactDir, { recursive: true });
+    const skillPath = join(artifactDir, "skill.json");
+    writeFileSync(skillPath, JSON.stringify(exported, null, 1));
+    expect(JSON.parse(readFileSync(skillPath, "utf8")).skill_format).toBe("synthi.skill.v1");
+
+    // ---- AGENT B: a completely fresh brain imports from the FILE and
+    // executes through its OWN transport + session. ----
+    const ctxB = createToolContext([]);
+    expect((handleListSkills(ctxB) as { count: number }).count).toBe(0);
+    const imported = handleImportSkill(ctxB, {
+      skill: JSON.parse(readFileSync(skillPath, "utf8")),
+    }) as { imported_as: string; runnable: boolean };
+    expect(imported.runnable).toBe(true);
+
+    const attachB = (await handleAttachSubstrate(ctxB, {
+      substrate_kind: "game",
+      consent: {
+        subject: "agent-b",
+        realm: { realm_kind: "arena", realm_id: "live-arena-b" },
+        allow: ["observe", "act"],
+      },
+    })) as { session_id: string };
+    expect(attachB.session_id).toBeTruthy();
+
+    (ctxB.licenses as CompetencyLicense[]).push({
+      license_id: "lic-b-live",
+      competency_id: imported.imported_as,
+      substrate_scope: ["game"],
+      realm_scopes: [{ realm_kind: "arena", realm_id: "live-arena-b" }],
+      entrustment: "E2_supervised",
+      issued_at_ms: 0,
+      expires_at_ms: Number.MAX_SAFE_INTEGER,
+    });
+
+    const run = (await handleRunWorkflow(ctxB, {
+      competency_id: imported.imported_as,
+      session_id: attachB.session_id,
+      mode: "fresh_state",
+      required_level: "E2_supervised",
+    })) as { ok: boolean; step_results: Array<{ ok: boolean }> };
+    expect(run.ok, `agent B execution failed: ${JSON.stringify(run).slice(0, 300)}`).toBe(true);
+    expect(run.step_results.every((s) => s.ok)).toBe(true);
+
+    // THE WORLD PROVES B's EXECUTION: the same four moves applied AGAIN.
+    expect(px).toBe(320 + 48);
+    expect(py).toBe(240 + 64);
+
+    // And B sees the authoritative scene through its own observation.
+    const observed = (await handleObserve(ctxB, { session_id: attachB.session_id })) as {
+      observation: { entities: Array<{ id: string; position: { x: number; y: number } }> };
+    };
+    const player = observed.observation.entities.find((e) => e.id === "player")!;
+    expect(player.position.x).toBe(320 + 48);
+    expect(player.position.y).toBe(240 + 64);
+    console.log(`LIVE GAME VERIFIED: world-authoritative double walk to (${px}, ${py})`);
   },
 );
 
-test(
+// ---------------------------------------------------------------------------
+// KERNEL: real WSL2 Ubuntu. Snapshot BEFORE mutation (P3 invariant), mutate,
+// prove the kernel REALLY changed, restore, prove exact restoration.
+// ---------------------------------------------------------------------------
+test.skipIf(!HAS_WSL)(
   "LIVE KERNEL: snapshot -> mutate swappiness -> kernel really changed -> restore",
   { timeout: 120_000 },
-  async () => {
-    // Real WSL2 Ubuntu kernel. Snapshot BEFORE mutation (P3 invariant).
-    const before = execSync('wsl -d Ubuntu -- sysctl -n vm.swappiness', { encoding: "utf8" }).trim();
-    console.log("KERNEL vm.swappiness before:", before);
+  () => {
+    const readSwappiness = () =>
+      execSync("wsl -d Ubuntu -- sysctl -n vm.swappiness", { encoding: "utf8", timeout: 30_000 }).trim();
 
-    // Mutate the LIVE kernel parameter.
-    execSync('wsl -d Ubuntu -u root -- sysctl -w vm.swappiness=42', { encoding: "utf8", timeout: 30_000 });
-    const during = execSync('wsl -d Ubuntu -- sysctl -n vm.swappiness', { encoding: "utf8" }).trim();
-    expect(during).toBe("42"); // the kernel REALLY changed
+    // Snapshot BEFORE mutation (the P3 invariant), and choose a mutation
+    // value that is GUARANTEED different from the current one so "the
+    // kernel really changed" can never pass vacuously.
+    const before = readSwappiness();
+    console.log("KERNEL vm.swappiness before:", before);
+    const mutation = before === "42" ? 41 : 42;
+    expect(mutation, "mutation value must differ from snapshot").not.toBe(before);
+
+    execSync(`wsl -d Ubuntu -u root -- sysctl -w vm.swappiness=${mutation}`, {
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    const during = readSwappiness();
+    expect(during).toBe(String(mutation)); // the kernel REALLY changed
+    expect(during).not.toBe(before);
     console.log("KERNEL mutated live: vm.swappiness =", during);
 
-    // Teach the restore step through the bridge's terminal substrate
-    // (recorded competence), then execute it.
-    const attach = await call("synthi_attach_substrate", {
-      substrate_kind: "terminal",
-      consent: { subject: "live", realm: { realm_kind: "workspace", realm_id: process.env.USERPROFILE ?? "C:/Users/dev" }, allow: ["observe", "record", "act"] },
+    execSync(`wsl -d Ubuntu -u root -- sysctl -w vm.swappiness=${before}`, {
+      encoding: "utf8",
+      timeout: 30_000,
     });
-    expect(attach.session_id).toBeTruthy();
-
-    // Restore the original value on the live kernel.
-    execSync(`wsl -d Ubuntu -u root -- sysctl -w vm.swappiness=${before}`, { encoding: "utf8", timeout: 30_000 });
-    const after = execSync('wsl -d Ubuntu -- sysctl -n vm.swappiness', { encoding: "utf8" }).trim();
+    const after = readSwappiness();
     expect(after).toBe(before); // restored exactly
     console.log("KERNEL restored:", after);
   },
 );
 
-test(
+// ---------------------------------------------------------------------------
+// NEURAL NET: real numpy MLP trained in a real Python process with a
+// decreasing-loss acceptance gate; replayed into a FRESH directory where the
+// same gate must hold (second-agent replay).
+// ---------------------------------------------------------------------------
+test.skipIf(!HAS_PYTHON_NUMPY)(
   "LIVE NEURAL NET: train real numpy MLP - loss decreases - replay trains another",
   { timeout: 300_000 },
-  async () => {
-    const work = "C:/Users/dev/Downloads/synthi-test/corpus/nn";
+  () => {
+    const work = join(tmpdir(), `synthi-live-systems-nn-${Date.now()}`);
     mkdirSync(work, { recursive: true });
-
-    const script = `
+    try {
+      const script = `
 import numpy as np, json, sys
 rng = np.random.default_rng(7)
 X = rng.normal(size=(256, 3))
@@ -188,23 +442,41 @@ for epoch in range(400):
 acc = float((( (1/(1+np.exp(-(np.tanh(X@W1+b1)@W2+b2)))) > 0.5 ).astype(float) == y).mean())
 json.dump({"first_loss": losses[0], "final_loss": losses[-1], "accuracy": acc}, open(sys.argv[1], "w"))
 print("trained")`;
-    writeFileSync(join(work, "train.py"), script);
+      writeFileSync(join(work, "train.py"), script);
 
-    // TEACH phase: run training for real; the workflow's acceptance gate is
-    // final_loss < first_loss (the network genuinely learned).
-    execSync(`python "${join(work, "train.py")}" "${join(work, "model_a.json")}"`, { cwd: work, timeout: 180_000 });
-    const modelA = JSON.parse(readFileSync(join(work, "model_a.json"), "utf8"));
-    console.log(`NN RUN A: loss ${modelA.first_loss.toFixed(4)} -> ${modelA.final_loss.toFixed(4)}, acc ${modelA.accuracy}`);
-    expect(modelA.final_loss, "network did not learn").toBeLessThan(modelA.first_loss);
-    expect(modelA.accuracy).toBeGreaterThan(0.85);
+      // TEACH phase: train for real; the gate is final_loss < first_loss.
+      execSync(`python "${join(work, "train.py")}" "${join(work, "model_a.json")}"`, {
+        cwd: work,
+        timeout: 180_000,
+        stdio: "pipe",
+      });
+      const modelA = JSON.parse(readFileSync(join(work, "model_a.json"), "utf8")) as {
+        first_loss: number;
+        final_loss: number;
+        accuracy: number;
+      };
+      console.log(`NN RUN A: loss ${modelA.first_loss.toFixed(4)} -> ${modelA.final_loss.toFixed(4)}, acc ${modelA.accuracy}`);
+      expect(modelA.final_loss, "network did not learn").toBeLessThan(modelA.first_loss);
+      expect(modelA.accuracy).toBeGreaterThan(0.85);
 
-    // REPLAY phase: a second agent runs the SAME taught workflow into a
-    // fresh directory and verifies the learning gate holds there too.
-    mkdirSync(join(work, "replay"), { recursive: true });
-    execSync(`python "${join(work, "train.py")}" "${join(work, "replay", "model_b.json")}"`, { cwd: work, timeout: 180_000 });
-    const modelB = JSON.parse(readFileSync(join(work, "replay", "model_b.json"), "utf8"));
-    console.log(`NN RUN B (second agent): loss ${modelB.first_loss.toFixed(4)} -> ${modelB.final_loss.toFixed(4)}, acc ${modelB.accuracy}`);
-    expect(modelB.final_loss).toBeLessThan(modelB.first_loss);
-    expect(modelB.accuracy).toBeGreaterThan(0.85);
+      // REPLAY phase: the SAME taught workflow into a FRESH directory.
+      mkdirSync(join(work, "replay"), { recursive: true });
+      execSync(`python "${join(work, "train.py")}" "${join(work, "replay/model_b.json")}"`, {
+        cwd: work,
+        timeout: 180_000,
+        stdio: "pipe",
+      });
+      const modelB = JSON.parse(readFileSync(join(work, "replay/model_b.json"), "utf8")) as {
+        first_loss: number;
+        final_loss: number;
+        accuracy: number;
+      };
+      console.log(`NN RUN B (fresh directory): loss ${modelB.first_loss.toFixed(4)} -> ${modelB.final_loss.toFixed(4)}, acc ${modelB.accuracy}`);
+      expect(modelB.final_loss).toBeLessThan(modelB.first_loss);
+      expect(modelB.accuracy).toBeGreaterThan(0.85);
+      console.log("LIVE NN VERIFIED: learning gate held on teach and fresh replay");
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
   },
 );
