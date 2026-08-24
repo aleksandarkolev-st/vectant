@@ -7,6 +7,7 @@ import { startBrowserWorkflowBridge } from "../src/browser_workflow_bridge/serve
 import { embodiedBridgeContext } from "../src/browser_workflow_bridge/embodied_dispatch.js";
 import { registerSubstrateAdapter, unregisterAllSubstrateAdapters } from "../src/embodied/substrate.js";
 import { createGameBundle } from "../src/embodied/adapters/game/protocol.js";
+import { createKernelBundle } from "../src/embodied/adapters/kernel/index.js";
 import { readFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
 // Resolve ws from THIS package upward (works wherever it is hoisted).
@@ -15,6 +16,37 @@ const WebSocket = wsRequire("ws");
 
 const port = Number(process.argv[2] ?? 3002);
 const gameUrl = process.argv[3];
+// Kernel agent mode: SYNTHI_KERNEL_AGENT=1 registers the real WSL executor.
+const kernelMode = process.env.SYNTHI_KERNEL_AGENT === "b";
+
+if (kernelMode) {
+  const { execFileSync } = await import("node:child_process");
+  unregisterAllSubstrateAdapters();
+  registerSubstrateAdapter(
+    createKernelBundle({
+      async snapshot(namespace: string) {
+        try {
+          execFileSync("wsl", ["-d", "Ubuntu", "--", "sysctl", "-n", `kernel.${namespace}`], {
+            encoding: "utf8",
+            timeout: 30_000,
+          });
+        } catch {}
+      },
+      async exec(_namespace: string, command: string) {
+        try {
+          const out = execFileSync("wsl", ["-d", "Ubuntu", "--", ...command.split(/\s+/)], {
+            encoding: "utf8",
+            timeout: 30_000,
+          });
+          return { exit: 0, output: out };
+        } catch (error) {
+          const status = (error as { status?: number }).status ?? 1;
+          return { exit: status === 0 ? 1 : status, output: "" };
+        }
+      },
+    }),
+  );
+}
 
 if (gameUrl) {
   unregisterAllSubstrateAdapters();
