@@ -10,11 +10,12 @@ import {
 import { unregisterAllSubstrateAdapters } from "../../src/embodied/substrate.js";
 
 describe("workflow bridge serves the substrate-neutral embodied tools", () => {
-  it("exposes all ten tools under their synthi_* names", () => {
+  it("exposes all eleven tools under their synthi_* names", () => {
     expect(EMBODIED_TOOL_NAMES).toEqual([
       "synthi_attach_substrate",
       "synthi_observe",
       "synthi_begin_teach",
+      "synthi_perform_action",
       "synthi_end_teach",
       "synthi_compile_workflow",
       "synthi_run_workflow",
