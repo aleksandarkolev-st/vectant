@@ -24,7 +24,7 @@ export async function autoOpenDirectChannels(workspaceSlug, session) {
   // Only the fast lane auto-opens. registered_direct keeps the governed
   // request/accept handshake; mediated_only has no direct channels at all.
   const modeCheck = effectiveChannelMode(project.channelMode || 'registered_direct');
-  if (!modeCheck.ok) return [];
+  if (!modeCheck.ok || modeCheck.mode !== 'direct_preferred') return [];
   const transports = modeTransports(modeCheck.mode, process.env.NODE_ENV);
   if (!transports.includes('websocket')) return [];
 
