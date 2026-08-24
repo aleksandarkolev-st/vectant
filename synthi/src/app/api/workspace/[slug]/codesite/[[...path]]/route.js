@@ -41,6 +41,7 @@ import {
   acceptAgentChannel,
   rejectAgentChannel,
   closeAgentChannel,
+  reportAgentChannelViolation,
   listProjectChannels,
   getSchemas,
   getSourceStateSince,
