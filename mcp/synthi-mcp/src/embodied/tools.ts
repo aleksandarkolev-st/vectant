@@ -197,10 +197,13 @@ export function handleImportSkill(
       substrate_kind?: string;
       contract: EmbodiedWorkflowContract;
       steps?: Array<{ event: unknown }>;
-    };
+    } | null;
   },
 ): Json {
-  const inner = input.skill ?? ({} as typeof input.skill);
+  const inner = input.skill ?? undefined;
+  if (!inner) {
+    return { error: "incomplete_skill", human_hint: "No skill file was provided." };
+  }
   if (inner.skill_format !== "synthi.skill.v1") {
     return { error: "unsupported_skill_format", human_hint: "This skill file is not a synthi skill." };
   }
