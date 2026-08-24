@@ -13225,7 +13225,16 @@ export async function requestAgentChannel(workspaceSlug, sessionId, agentAccessT
   const initiatorToken = mintChannelToken();
   await prisma.codeSiteAgentChannel.update({
     where: { id: channel.id },
-    data: { channelTokenHash: hashChannelToken(`${initiatorToken}:${initiatorToken}`) },
+    // Both directions' token hashes are stored as `fromHash|toHash` (pipe —
+    // a hex digest never contains one). The initiator's half is written now;
+    // the responder's half replaces the toHalf slot at accept time. Either
+    // side verifies its own token against its half via verifyChannelToken.
+    data: {
+      channelTokenHash: [
+        hashChannelToken(initiatorToken),
+        hashChannelToken(''),
+      ].join('|'),
+    },
   });
   await recordChannelEvent(project.id, {
     eventType: 'channel_requested',
@@ -13304,7 +13313,13 @@ export async function acceptAgentChannel(workspaceSlug, sessionId, agentAccessTo
     data: {
       status: 'active',
       toEndpointRef: endpointRef,
-      channelTokenHash: hashChannelToken(token),
+      // Replace only the responder (toHalf) of `fromHash|toHash`, so the
+      // initiator's request-time hash survives activation and both sides can
+      // verify their own tokens via verifyChannelToken.
+      channelTokenHash: [
+        String(channel.channelTokenHash || `${hashChannelToken('')}|${hashChannelToken('')}`).split('|')[0],
+        hashChannelToken(token),
+      ].join('|'),
       openedAt: new Date(),
     },
   });

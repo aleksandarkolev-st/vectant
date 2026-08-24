@@ -3127,7 +3127,12 @@ describe('CodeSite control plane transaction validation', () => {
       expect(result.status).toBe('active');
       expect(result.toEndpointRef).toBe('ws://127.0.0.1:9202/agent-b');
       const updateData = prisma.codeSiteAgentChannel.updateMany.mock.calls.at(-1)[0].data;
-      expect(updateData.channelTokenHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+      // `fromHash|toHash` — the mock row has no request-time hash so the
+      // from-half is the empty-string hash; the to-half must hash the minted
+      // token. The raw token never appears in the stored value.
+      const [fromHash, toHash] = updateData.channelTokenHash.split('|');
+      expect(fromHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+      expect(toHash).toBe(`sha256:${createHash('sha256').update(result.channelToken).digest('hex')}`);
       expect(updateData.channelTokenHash).not.toContain(result.channelToken.slice(4));
       expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
         data: expect.objectContaining({ eventType: 'channel_accepted' }),
