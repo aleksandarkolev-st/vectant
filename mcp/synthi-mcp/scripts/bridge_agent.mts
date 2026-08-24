@@ -9,8 +9,8 @@ import { registerSubstrateAdapter, unregisterAllSubstrateAdapters } from "../src
 import { createGameBundle } from "../src/embodied/adapters/game/protocol.js";
 import { readFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
-// ws is hoisted at the repo root; resolve it explicitly for this script.
-const wsRequire = createRequire("C:/Users/dev/Downloads/synthi-test/synthi-ide/node_modules/playwright-core/package.json");
+// Resolve ws from THIS package upward (works wherever it is hoisted).
+const wsRequire = createRequire(import.meta.url);
 const WebSocket = wsRequire("ws");
 
 const port = Number(process.argv[2] ?? 3002);
@@ -68,4 +68,7 @@ if (licenseFile && existsSync(licenseFile)) {
 
 const bridge = startBrowserWorkflowBridge({ port, host: "127.0.0.1" });
 await bridge.ready;
-console.log(`AGENT BRIDGE LIVE on port ${port}`);
+const resolvedPort = (bridge.server.address() as { port: number }).port;
+// The banner is the contract with whoever spawned us: the ACTUAL listening
+// port (argv "0" means the OS picked one).
+console.log(`AGENT BRIDGE LIVE on port ${resolvedPort}`);
