@@ -5,6 +5,7 @@
  * No curl required: open/accept/reject/close all happen from buttons here.
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useSession } from "next-auth/react";
 import { ArrowLeftRight, Check, X } from "lucide-react";
 import {
   fetchCodeSiteChannels,
@@ -35,6 +36,23 @@ export default function ChannelsView({
   const [channels, setChannels] = useState([]);
   const [busyChannelId, setBusyChannelId] = useState(null);
   const [error, setError] = useState(null);
+  const { data: authSession } = useSession();
+
+  // The signed-in human's workspace identity (same value the IDE uses). A
+  // channel is actionable when the viewer owns one of its two sessions —
+  // matched via ownerUserId, never by positional fallback.
+  const viewerWorkspaceUserId = authSession?.user?.id || authSession?.user?.email || null;
+  const mySessions = useMemo(
+    () => sessions.filter((s) => s.ownerUserId === viewerWorkspaceUserId),
+    [sessions, viewerWorkspaceUserId],
+  );
+  const viewerSessionId = useMemo(() => {
+    // Prefer an attached session the viewer actually owns. If several, pick
+    // deterministically (most recent) rather than silently grabbing any.
+    return [...mySessions].sort((a, b) =>
+      String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")),
+    )[0]?.id || null;
+  }, [mySessions]);
 
   const projectId = project?.id || null;
   const sessions = useMemo(
@@ -73,11 +91,11 @@ export default function ChannelsView({
     return () => clearInterval(timer);
   }, [loadChannels]);
 
-  // A channel is actionable for the current viewer when the viewer's session
-  // id is passed via data attribute on the card (set by CodeSitePanel).
+  // A channel is actionable for the current viewer when the viewer owns one
+  // of its two sessions (identity from the NextAuth session, see above).
   const handleAction = useCallback(
     async (channelId, action) => {
-      const sessionId = window.__codesiteViewerSessionId;
+      const sessionId = viewerSessionId;
       if (!sessionId || busyChannelId) return;
       setBusyChannelId(channelId);
       try {
@@ -90,11 +108,9 @@ export default function ChannelsView({
         setBusyChannelId(null);
       }
     },
-    [busyChannelId, loadChannels, workspaceSlug],
+    [busyChannelId, loadChannels, viewerSessionId, workspaceSlug],
   );
 
-  // Open a channel from the viewer's session to another agent — one click.
-  const viewerSessionId = useMemo(() => window.__codesiteViewerSessionId || sessions[0]?.id || null, [sessions]);
   const openChannelTo = useCallback(
     async (targetSessionId) => {
       if (!viewerSessionId || busyChannelId || targetSessionId === viewerSessionId) return;
