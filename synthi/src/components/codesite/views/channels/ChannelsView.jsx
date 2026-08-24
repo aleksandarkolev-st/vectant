@@ -43,6 +43,20 @@ export default function ChannelsView({
   );
   const mode = project?.channelMode || "registered_direct";
 
+  // Session id → callsign map so channel rows read "SUBAGENT-A ↔ SUBAGENT-B"
+  // instead of raw cuids. Falls back to the id for sessions already detached.
+  const callsigns = useMemo(() => {
+    const map = {};
+    for (const s of sessions) {
+      if (s.displayCallsign) map[s.id] = s.displayCallsign;
+    }
+    return map;
+  }, [sessions]);
+  const labelFor = useCallback(
+    (sessionId) => callsigns[sessionId] || (sessionId ? `${sessionId.slice(0, 8)}…` : "?"),
+    [callsigns],
+  );
+
   const loadChannels = useCallback(async () => {
     if (!workspaceSlug || !projectId) return;
     try {
@@ -169,9 +183,9 @@ export default function ChannelsView({
         <div key={channel.id} className="rounded border p-3" style={{ borderColor: "var(--border-subtle)" }} data-channel-id={channel.id} data-to-session={channel.toSessionId}>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="text-xs">
-              <span className="font-medium">{channel.fromCallsign || channel.fromSessionId}</span>
+              <span className="font-medium">{labelFor(channel.fromSessionId)}</span>
               {" → "}
-              <span className="font-medium">{channel.toCallsign || channel.toSessionId}</span>
+              <span className="font-medium">{labelFor(channel.toSessionId)}</span>
               {" · "}
               <span style={{ color: "var(--text-muted)" }}>{channel.purpose}</span>
               {" · "}
@@ -204,10 +218,13 @@ export default function ChannelsView({
           {channels.map((channel) => (
             <div key={channel.id} className="flex flex-wrap items-center justify-between gap-2 rounded border px-3 py-2 text-xs" style={{ borderColor: "var(--border-subtle)" }}>
               <span>
-                {channel.fromCallsign || channel.fromSessionId}
+                {labelFor(channel.fromSessionId)}
                 {" ↔ "}
-                {channel.toCallsign || channel.toSessionId}
+                {labelFor(channel.toSessionId)}
                 <span style={{ color: "var(--text-muted)" }}> · {channel.transport}{channel.messageCount ? ` · ${channel.messageCount} msgs` : ""}</span>
+                {channel.purpose === "auto_open_direct_preferred" && (
+                  <Pill tone="default">auto-opened</Pill>
+                )}
               </span>
               <span className="flex items-center gap-2">
                 <Pill tone={toneForStatus(channel.status)}>{channel.status}</Pill>
