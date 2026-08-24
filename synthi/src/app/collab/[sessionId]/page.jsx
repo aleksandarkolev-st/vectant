@@ -1,10 +1,10 @@
 "use client";
 
-import React, { useEffect, useState, Suspense } from 'react';
-import { useSearchParams } from 'next/navigation';
+import React, { useCallback, useEffect, useRef, useState, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import collabSessionService from '@/services/collabSessionService';
-import { Users, Loader2, AlertTriangle, CheckCircle2, XCircle } from 'lucide-react';
+import { Users, Loader2, AlertTriangle, CheckCircle2, XCircle, LogIn } from 'lucide-react';
 
 /**
  * /collab/[sessionId] — Guest invite landing page.
@@ -19,8 +19,10 @@ import { Users, Loader2, AlertTriangle, CheckCircle2, XCircle } from 'lucide-rea
 
 function CollabJoinContent({ params }) {
   const searchParams = useSearchParams();
+  const router = useRouter();
   const token = searchParams.get('token');
   const sessionId = params?.sessionId;
+  const autoJoinRequested = searchParams.get('join') === '1';
 
   const { data: authSession, status: authStatus } = useSession();
   const [state, setState] = useState('validating'); // validating | valid | knocking | admitted | denied | error
@@ -28,6 +30,7 @@ function CollabJoinContent({ params }) {
   const [guestName, setGuestName] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const autoJoinAttemptedRef = useRef(false);
 
   // Sync auth state from next-auth session
   useEffect(() => {
@@ -80,6 +83,7 @@ function CollabJoinContent({ params }) {
             slug: hostSlug,
             hostName: resolvedHostName,
             permissions: resolvedPermissions,
+            displayName: collabSessionService.displayName || null,
           }));
         } catch (_) {}
         // Redirect to the host's workspace after short delay
@@ -95,7 +99,7 @@ function CollabJoinContent({ params }) {
   }, [sessionInfo, sessionId]);
 
   // Handle knock
-  const handleJoin = async () => {
+  const handleJoin = useCallback(async () => {
     if (!guestName.trim() && !isAuthenticated) return;
     setState('knocking');
 
@@ -112,8 +116,6 @@ function CollabJoinContent({ params }) {
         // Generate a simple guest id
         guestId = `guest-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         displayName = guestName.trim();
-        localStorage.setItem('synthi-user-id', guestId);
-        localStorage.setItem('synthi-user-name', displayName);
       }
 
       await collabSessionService.knock(sessionInfo.sessionId, {
@@ -125,7 +127,23 @@ function CollabJoinContent({ params }) {
       setState('error');
       setErrorMsg(e.message);
     }
-  };
+  }, [authSession, guestName, isAuthenticated, sessionInfo]);
+
+  // The login path returns to this same invite URL.  Automatically resume the
+  // approved intent so an OAuth redirect never turns a valid invitation into a
+  // second invitation request.
+  useEffect(() => {
+    if (!autoJoinRequested || !isAuthenticated || !sessionInfo || state !== 'valid' || autoJoinAttemptedRef.current) return;
+    autoJoinAttemptedRef.current = true;
+    handleJoin();
+  }, [autoJoinRequested, handleJoin, isAuthenticated, sessionInfo, state]);
+
+  const handleLoginToJoin = useCallback(() => {
+    const next = new URLSearchParams(searchParams.toString());
+    next.set('join', '1');
+    const invitePath = `/collab/${encodeURIComponent(sessionId || '')}?${next.toString()}`;
+    router.push(`/login?callbackUrl=${encodeURIComponent(invitePath)}`);
+  }, [router, searchParams, sessionId]);
 
   return (
     <div className="vt-workbench-shell flex min-h-screen items-center justify-center p-4">
@@ -182,14 +200,31 @@ function CollabJoinContent({ params }) {
               />
             </div>
 
-            <button
-              onClick={handleJoin}
-              disabled={!guestName.trim() && !isAuthenticated}
-              className="th-focus-ring th-btn-primary flex w-full items-center justify-center gap-2 py-2.5 font-semibold disabled:opacity-50"
-            >
-              <Users className="w-4 h-4" />
-              Request to Join
-            </button>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <button
+                onClick={handleJoin}
+                disabled={!guestName.trim() && !isAuthenticated}
+                className="th-focus-ring th-btn-primary flex items-center justify-center gap-2 py-2.5 font-semibold disabled:opacity-50"
+              >
+                <Users className="w-4 h-4" />
+                Continue as guest
+              </button>
+              {!isAuthenticated && (
+                <button
+                  type="button"
+                  onClick={handleLoginToJoin}
+                  className="th-focus-ring th-btn-ghost flex items-center justify-center gap-2 rounded-[var(--radius-control)] border px-4 py-2.5 text-sm font-semibold"
+                >
+                  <LogIn className="w-4 h-4" />
+                  Log in to join
+                </button>
+              )}
+            </div>
+            {!isAuthenticated && (
+              <p className="text-xs text-[var(--text-muted)]">
+                Guest access is limited to this shared workspace. Logging in preserves this invitation and resumes joining after sign-in.
+              </p>
+            )}
           </div>
         )}
 
