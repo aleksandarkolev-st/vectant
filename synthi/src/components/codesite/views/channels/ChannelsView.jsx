@@ -61,6 +61,22 @@ export default function ChannelsView({
   );
   const mode = project?.channelMode || "registered_direct";
 
+  // The roster is scoped to the project's ACTUAL collaboration session, not
+  // "every session ever attached". Sessions whose collaborationSessionId is
+  // null (legacy/unbound) are shown only when the project itself has none.
+  const projectCollabId = project?.collaborationSessionId || null;
+  const inScopeSessions = useMemo(() => {
+    if (!projectCollabId) return sessions;
+    return sessions.filter((s) => s.collaborationSessionId === projectCollabId);
+  }, [sessions, projectCollabId]);
+  const rosterHeading = useMemo(() => {
+    if (!projectCollabId) return "Agents attached to this project";
+    const short = String(projectCollabId).length > 24
+      ? `${String(projectCollabId).slice(0, 21)}…`
+      : String(projectCollabId);
+    return `Agents in collaboration session ${short}`;
+  }, [projectCollabId]);
+
   // Session id → callsign map so channel rows read "SUBAGENT-A ↔ SUBAGENT-B"
   // instead of raw cuids. Falls back to the id for sessions already detached.
   const callsigns = useMemo(() => {
@@ -156,14 +172,14 @@ export default function ChannelsView({
         </IconButton>
       </div>
 
-      {sessions.length < 2 ? (
+      {inScopeSessions.length < 2 ? (
         <div className="rounded border p-4 text-xs" style={{ color: "var(--text-muted)", borderColor: "var(--border-subtle)" }}>
           Attach at least two agent sessions to this project — each person attaches their own agent from their terminal. Channel controls appear here once two agents are present.
         </div>
       ) : (
         <div className="grid content-start gap-1">
-          <div className="text-xs font-semibold">Agents in this session</div>
-          {sessions.map((session) => {
+          <div className="text-xs font-semibold">{rosterHeading}</div>
+          {inScopeSessions.map((session) => {
             const pairKey = [viewerSessionId, session.id].sort().join("::");
             const alreadyPaired = activeOrRequestedPairKeys.has(pairKey);
             return (
