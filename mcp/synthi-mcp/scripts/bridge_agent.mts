@@ -86,7 +86,19 @@ if (gameUrl) {
   );
 }
 
-// Terminal adapter comes from embodiedBridgeContext; game (if any) above.
+// Terminal-agent mode: SYNTHI_TERMINAL_AGENT=<comma-separated binaries>
+// registers the terminal adapter with an explicit execution allowlist
+// (deployment config - default remains deny-everything).
+const terminalAllow = process.env.SYNTHI_TERMINAL_AGENT;
+if (terminalAllow) {
+  const { allowlistPolicy, createTerminalBundle } = await import("../src/embodied/adapters/terminal/index.js");
+  const binaries = terminalAllow.split(",").map((b) => b.trim()).filter(Boolean);
+  unregisterAllSubstrateAdapters();
+  registerSubstrateAdapter(createTerminalBundle(allowlistPolicy(binaries)));
+}
+
+// Terminal adapter comes from embodiedBridgeContext when none was registered
+// above; game/kernel modes above replace it entirely.
 const context = embodiedBridgeContext();
 
 // Deployments seed licenses for imported competencies from disk. The test
