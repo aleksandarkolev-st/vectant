@@ -1,0 +1,105 @@
+# Universal Embodied Teaching — Next Milestone Goal (v3)
+
+Branch: feat/embodied-universal-teaching. Builds on the v2 plan
+(docs/UNIVERSAL_EMBODIED_TEACHING_PLAN.md), which is implemented through
+Phase 5. This goal closes the remaining *real* gaps found by auditing the
+tree, prioritized by the user's direction: teachable skills must run in
+production, be verifiable on the actual desktop (computer use, visual
+proof), scale across hundreds of randomized scenarios, contain zero
+hardcoding, and survive an independent subagent review for hallucinated
+claims. One patch = one commit; every commit leaves the suite no worse
+than the recorded baseline.
+
+## Verified baseline (recorded 2026-08-24, this branch, pre-change)
+
+- `npx tsc --noEmit`: PASS (exit 0).
+- `npx vitest run tests/unit`: 2386–2387 passed / 2392 total across runs.
+- Pre-existing failures, NOT introduced by this goal:
+  - tests/unit/dojo_release_gate_verify.test.ts — 3 deterministic
+    failures (dojo release-infra subsystem, unrelated to embodied core;
+    failing before any change on this branch).
+  - tests/unit/embodied_live_systems.test.ts — 2 failures: requires an
+    externally-started workflow bridge on 127.0.0.1:3001 and a game
+    server on ws://127.0.0.1:8765 / canvas on 8081 that nothing in the
+    repo starts (broken as committed).
+  - tests/unit/embodied_game_transfer_live.test.ts — passes solo
+    (~66 s) once stale processes holding port 3002 are killed; its
+    afterAll hook can hang under full-suite load (cleanup robustness).
+
+## Audit findings driving the work items
+
+1. embodied_live_systems.test.ts assumes out-of-repo services. The same
+   repo already contains the pattern for self-contained LIVE proofs
+   (embodied_game_transfer_live.test.ts spawns its own bridge + game WS
+   on ephemeral ports). Fix the harness, don't weaken the assertions.
+2. Plan Phase 0b acceptance says "the conformance fuzz must include at
+   least one pixel-only world variant (schema declares no scene graph)"
+   — no such world exists in tests/unit/embodied_worlds/ (grid, kernel,
+   kv, nn, terminal only). The CV primitives exist (perception/cv.ts:
+   dHash, HSV bands, template match) but no FuzzableAdapter exercises
+   them end-to-end through the substrate-blind harness.
+3. Skill handoff (synthi_export_skill / synthi_import_skill,
+   synthi.skill.v1) has no integrity binding: a transferred artifact
+   cannot be detected as tampered/truncated before an agent executes it.
+4. No visual/desktop proof of the teach→skill→execute loop driving a
+   REAL rendered page via computer use; existing proofs are API-level.
+5. Corpus proof covers 220 repos on one terminal workflow; no scaled
+   cross-substrate randomized scenario matrix (hundreds of worlds)
+   with a machine-generated report.
+
+## Work items (each = one commit)
+
+- WI-1 fix(embodied): self-contained LIVE systems harness.
+  Spawn our own bridge (startBrowserWorkflowBridge, ephemeral port) and
+  our own deterministic game world (WS ephemeral port). Assertions stay
+  identical in strength (world-state proves execution). Kernel leg: run
+  only where WSL2 is present (capability probe, skip with reason
+  otherwise) so the suite is green on any dev machine without lying.
+  Verify: file passes solo AND inside full unit suite; no port 3001/8765
+  external deps remain.
+- WI-2 fix(embodied): deterministic cleanup in the two-agent transfer
+  test (afterAll hang): close sockets/bridges with timeouts, kill child
+  before closing listeners, no orphaned waiters. Verify: 3 consecutive
+  solo passes + included in full-suite run without hanging the run.
+- WI-3 feat(embodied): pixel-only canvas world through the conformance
+  harness. New tests/unit/embodied_worlds/canvas_world.ts: schema
+  declares NO structural channels (frame buffer only); hooks diff via
+  perception/cv.ts primitives (downsample -> dHash identity, HSV-band
+  appearance classes, block-energy change prefilter); predicates carry
+  below-structural confidence flags per plan rules; randomized seeds
+  (12+) pass runConformancePass + runDiscriminationPass including a
+  repainted-twin discrimination probe. Zero scenario nouns; noun gate +
+  import-boundary gate stay green.
+- WI-4 feat(embodied): tamper-evident skill artifacts. Extend
+  synthi.skill.v1 with a canonical-form integrity digest (sha256 over
+  sorted-key JSON of contract+steps+substrate) checked on import;
+  truncated/tampered skills are refused BEFORE licensing/execution with
+  a plain-language reason; backward compatible (missing digest still
+  imports, flagged unverified). Tests: round-trip, bit-flip rejection,
+  cross-agent execution unchanged.
+- WI-5 feat(proof): desktop visual proof — teach a flow on a real
+  rendered page via computer use (Firefox/Chromium on the Windows
+  desktop), export the skill, execute it from a fresh agent context,
+  capture screenshots + AX evidence into .visual-proof/universal-teaching/
+  generated by scripts (never hand-typed). Deliverable includes an HTML
+  report built from the captured artifacts.
+- WI-6 feat(embodied): scaled multi-world scenario matrix. Harness-driven
+  sweep: hundreds of randomized worlds across all registered Fuzzable
+  adapters (varying seeds, sizes, ambient oscillators, twin placements),
+  every world walks attach/observe/teach/compile/run/explain (+ skill
+  export/import/run on a sample), results streamed to JSON, HTML report
+  generated from the raw JSON (pass counts per substrate, failure
+  classifications, discrimination stats). Gate: 100% conform or the run
+  fails loudly with classified reasons.
+- WI-7 docs+review: update plan status header; independent SUBAGENT
+  review pass — a fresh-context subagent re-verifies each claim above
+  against the tree (runs commands itself) and its findings are addressed
+  or rebutted in the final report.
+
+## Verification discipline
+
+Per commit: targeted tests for the touched area, then tsc, then full
+unit suite comparison against the baseline above (no NEW failures; the
+listed pre-existing ones may not get worse). Visual-proof artifacts are
+regenerable from their scripts. No scenario nouns in core; boundary and
+noun gates run with every suite.
