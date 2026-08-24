@@ -38,6 +38,14 @@ export default function ChannelsView({
   const [error, setError] = useState(null);
   const { data: authSession } = useSession();
 
+  const projectId = project?.id || null;
+  // Live sessions on the project — declared BEFORE anything derives from it.
+  const sessions = useMemo(
+    () => (project?.agentSessions || []).filter((s) => !s.endedAt),
+    [project?.agentSessions],
+  );
+  const mode = project?.channelMode || "registered_direct";
+
   // The signed-in human's workspace identity (same value the IDE uses). A
   // channel is actionable when the viewer owns one of its two sessions —
   // matched via ownerUserId, never by positional fallback.
@@ -53,13 +61,6 @@ export default function ChannelsView({
       String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")),
     )[0]?.id || null;
   }, [mySessions]);
-
-  const projectId = project?.id || null;
-  const sessions = useMemo(
-    () => (project?.agentSessions || []).filter((s) => !s.endedAt),
-    [project?.agentSessions],
-  );
-  const mode = project?.channelMode || "registered_direct";
 
   // The roster is scoped to the project's ACTUAL collaboration session, not
   // "every session ever attached". Sessions whose collaborationSessionId is
