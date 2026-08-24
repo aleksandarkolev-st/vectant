@@ -17,6 +17,9 @@ import {
   handleCompileWorkflow,
   handleRunWorkflow,
   handleExplainFailure,
+  handleExportSkill,
+  handleImportSkill,
+  handleListSkills,
   type ToolContext,
 } from "../embodied/tools.js";
 import { registerTerminalAdapter } from "../embodied/adapters/terminal/index.js";
@@ -53,6 +56,9 @@ export const EMBODIED_TOOL_NAMES: readonly string[] = [
   "synthi_compile_workflow",
   "synthi_run_workflow",
   "synthi_explain_failure",
+  "synthi_export_skill",
+  "synthi_import_skill",
+  "synthi_list_skills",
 ];
 
 function jsonResponse(payload: Record<string, unknown>): ToolResponse {
@@ -82,6 +88,12 @@ export async function dispatchEmbodied(toolName: string, args: unknown): Promise
       return jsonResponse(await Promise.resolve(handleRunWorkflow(ctx, input as never)));
     case "synthi_explain_failure":
       return jsonResponse(handleExplainFailure(ctx, input as never));
+    case "synthi_export_skill":
+      return jsonResponse(handleExportSkill(ctx, input as never));
+    case "synthi_import_skill":
+      return jsonResponse(handleImportSkill(ctx, input as never));
+    case "synthi_list_skills":
+      return jsonResponse(handleListSkills(ctx));
     default:
       return null;
   }

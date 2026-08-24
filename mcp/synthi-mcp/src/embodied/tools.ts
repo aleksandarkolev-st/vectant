@@ -167,3 +167,64 @@ export function handleExplainFailure(
   }).explainFailure(input.step_index, input.classifier_trunk);
   return { explanation };
 }
+
+// ---------------------------------------------------------------------------
+// Skill library: agents hand competencies to other agents
+// ---------------------------------------------------------------------------
+
+/** Serialize a stored competency into a portable skill file. Steps ride
+ *  along: a contract alone describes, steps enable execution. */
+export function handleExportSkill(context: ToolContext, input: { competency_id: string }): Json {
+  const record = context.competencies.get(input.competency_id);
+  if (!record) return { error: "unknown_competency", human_hint: "Teach the flow first." };
+  return {
+    skill_format: "synthi.skill.v1",
+    skill_id: input.competency_id,
+    substrate_kind: record.substrate_kind,
+    contract: record.contract,
+    steps: record.demonstration.steps,
+    exported_at: new Date().toISOString(),
+  };
+}
+
+/** Import a skill file produced by another agent; returns a runnable id. */
+export function handleImportSkill(
+  context: ToolContext,
+  input: {
+    skill?: {
+      skill_format?: string;
+      skill_id?: string;
+      substrate_kind?: string;
+      contract: EmbodiedWorkflowContract;
+      steps?: Array<{ event: unknown }>;
+    };
+  },
+): Json {
+  const inner = input.skill ?? ({} as typeof input.skill);
+  if (inner.skill_format !== "synthi.skill.v1") {
+    return { error: "unsupported_skill_format", human_hint: "This skill file is not a synthi skill." };
+  }
+  if (!inner.contract || !inner.substrate_kind) {
+    return { error: "incomplete_skill", human_hint: "The skill file is missing its workflow or world type." };
+  }
+  const id = inner.skill_id ?? `imported-${context.competencies.size + 1}`;
+  context.competencies.set(id, {
+    demonstration: {
+      trace_id: `imported-${id}`,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      steps: (inner.steps ?? []) as any[],
+    },
+    contract: inner.contract,
+    substrate_kind: inner.substrate_kind,
+  });
+  return { imported_as: id, runnable: (inner.steps?.length ?? 0) > 0 };
+}
+
+/** List every teachable competence this agent holds (for agent-to-agent offers). */
+export function handleListSkills(context: ToolContext): Json {
+  const skills = [...context.competencies.entries()].map(([id, record]) => ({
+    skill_id: id,
+    substrate_kind: record.substrate_kind,
+  }));
+  return { count: skills.length, skills };
+}
