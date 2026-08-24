@@ -4,7 +4,8 @@ import {
   effectiveChannelMode,
   modeTransports,
 } from './channelSecurity';
-import { hashChannelToken, mintChannelToken } from './channelSecurity';
+import { hashChannelToken } from './channelSecurity';
+import { asArray, parseJson, unique } from './json';
 
 /**
  * direct_preferred auto-open (docs/CHANNEL_MODES_TRADEOFFS.md Mode 3):
@@ -29,11 +30,17 @@ export async function autoOpenDirectChannels(workspaceSlug, session) {
   if (!transports.includes('websocket')) return [];
 
   const now = new Date();
-  const peers = (project.agentSessions || []).filter((peer) => (
-    peer.id !== session.id
-    && !peer.endedAt
-    && peer.collaborationSessionId === session.collaborationSessionId
-  ));
+  // Mode 3 is a standing agreement, but only between *capable* agents: the
+  // responder must hold codesite.channels.open exactly as the manual
+  // request/accept path requires (fail-closed).
+  const peers = (project.agentSessions || []).filter((peer) => {
+    if (peer.id === session.id || peer.endedAt) return false;
+    if (peer.collaborationSessionId !== session.collaborationSessionId) return false;
+    const peerCapabilities = unique(asArray(parseJson(peer.capabilitiesJson, []))
+      .map((capability) => String(capability || '').trim())
+      .filter(Boolean));
+    return peerCapabilities.includes('codesite.channels.open');
+  });
   const opened = [];
   for (const peer of peers) {
     const duplicate = await prisma.codeSiteAgentChannel.findFirst({
@@ -47,7 +54,10 @@ export async function autoOpenDirectChannels(workspaceSlug, session) {
       },
     });
     if (duplicate) continue;
-    const responderToken = mintChannelToken();
+    // No responder token is minted here — tokens are minted where they can be
+    // delivered. The initiator keeps its own token from plan-filing context;
+    // the peer opens its direction on demand via the manual request path,
+    // which delivers a real token inside an authenticated response.
     const created = await prisma.codeSiteAgentChannel.create({
       data: {
         projectId: project.id,
@@ -57,7 +67,7 @@ export async function autoOpenDirectChannels(workspaceSlug, session) {
         status: 'active',
         purpose: 'auto_open_direct_preferred',
         transport: 'websocket',
-        channelTokenHash: hashChannelToken(responderToken),
+        channelTokenHash: hashChannelToken(''),
         openedAt: now,
         maxDurationMs: 1_800_000,
         messageCount: 0,
@@ -67,7 +77,9 @@ export async function autoOpenDirectChannels(workspaceSlug, session) {
       data: {
         projectId: project.id,
         workspaceSlug,
-        eventType: 'channel_accepted',
+        // Not 'channel_accepted' — nothing was accepted. The auto-open is its
+        // own audit event type so the causal timeline stays truthful.
+        eventType: 'channel_auto_opened',
         actorType: 'agent_session',
         actorId: session.id,
         detailsJson: JSON.stringify({
