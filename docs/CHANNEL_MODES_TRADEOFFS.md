@@ -158,6 +158,10 @@ Above the radios, three one-click presets set expectations by audience:
   project later; existing channels keep their guarantees."*
 - Learn-more link target: this document.
 
+For `direct_preferred`, auto-open is capability-gated on
+`codesite.channels.open` for both peers and records `channel_auto_opened`
+audit events.
+
 ## 6. Interaction With Existing Gates
 
 - Mode never bypasses identity/capability/membership checks — those apply in
