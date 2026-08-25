@@ -3070,6 +3070,7 @@ async fn wire_peer_channels(
                             // targeting another standard report false errors.
                             // For standalone files clangd can derive the host
                             // toolchain defaults through --query-driver below.
+                            remove_legacy_cpp_lsp_flags(&workspace_path);
                             let compile_commands = workspace_path.join("compile_commands.json");
                             let flags_path = workspace_path.join("compile_flags.txt");
                             if !compile_commands.exists() && !flags_path.exists() {
@@ -5336,9 +5337,68 @@ path = "{}"
             // Could provide schema associations via settings.
         }
         // Python: pylsp/pyright works well for standalone files without extra config.
-        // C/C++: compile_flags.txt is created in the cmd match arm below.
+        // C/C++: clangd can derive standalone defaults from its toolchain.
         // Java: jdtls creates .jdtls-data itself.
         // TOML, GraphQL, Dockerfile, Tailwind, ESLint: work without extra config.
         _ => {}
+    }
+}
+
+/// Remove only the obsolete fallback that earlier workers generated for every
+/// C/C++ workspace. Project-owned compile flags must never be changed: the
+/// exact two-line legacy content is the sole migration target.
+fn remove_legacy_cpp_lsp_flags(workspace: &std::path::Path) {
+    let flags_path = workspace.join("compile_flags.txt");
+    let Ok(contents) = std::fs::read_to_string(&flags_path) else {
+        return;
+    };
+
+    let flags: Vec<_> = contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if flags != ["-std=c++26", "-xc++"] {
+        return;
+    }
+
+    match std::fs::remove_file(&flags_path) {
+        Ok(()) => debug_log!(
+            "[LSP-CONFIG] Removed obsolete generated C++ flags from {}",
+            flags_path.display()
+        ),
+        Err(error) => eprintln!(
+            "[LSP-CONFIG] Failed to remove obsolete C++ flags from {}: {}",
+            flags_path.display(),
+            error
+        ),
+    }
+}
+
+#[cfg(test)]
+mod legacy_cpp_lsp_flags_tests {
+    use super::remove_legacy_cpp_lsp_flags;
+
+    #[test]
+    fn removes_only_the_obsolete_generated_cpp_flags() {
+        let temp = tempfile::tempdir().expect("create temporary workspace");
+        let flags_path = temp.path().join("compile_flags.txt");
+        std::fs::write(&flags_path, "-std=c++26\n-xc++\n").expect("write legacy flags");
+
+        remove_legacy_cpp_lsp_flags(temp.path());
+
+        assert!(!flags_path.exists());
+    }
+
+    #[test]
+    fn preserves_project_owned_cpp_flags() {
+        let temp = tempfile::tempdir().expect("create temporary workspace");
+        let flags_path = temp.path().join("compile_flags.txt");
+        let project_flags = "-std=c++20\n-Iinclude\n";
+        std::fs::write(&flags_path, project_flags).expect("write project flags");
+
+        remove_legacy_cpp_lsp_flags(temp.path());
+
+        assert_eq!(std::fs::read_to_string(&flags_path).unwrap(), project_flags);
     }
 }
