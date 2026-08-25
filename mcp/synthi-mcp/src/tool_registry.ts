@@ -12,6 +12,18 @@
 export const ADVERTISED_TOOLS = [
   // Agent orchestration
   "synthi_route_atomic_task",
+  // Embodied teaching / cross-substrate
+  "synthi_attach_substrate",
+  "synthi_observe",
+  "synthi_begin_teach",
+  "synthi_perform_action",
+  "synthi_end_teach",
+  "synthi_compile_workflow",
+  "synthi_run_workflow",
+  "synthi_explain_failure",
+  "synthi_export_skill",
+  "synthi_import_skill",
+  "synthi_list_skills",
   // General browser runtime
   "synthi_browser_attach_current_workspace",
   "synthi_browser_revoke_hosted_runtime_session",

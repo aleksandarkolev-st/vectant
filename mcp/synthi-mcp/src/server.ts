@@ -73,6 +73,7 @@ import { PROGRAM_TOOLS, dispatchProgramTool } from "./tools/programs.js";
 import { JUPYTER_TOOLS, dispatchJupyterTool } from "./tools/jupyter.js";
 import { FAILURE_DISTILLER_TOOLS, dispatchFailureDistillerTool } from "./tools/failure_distiller.js";
 import { CODESITE_TOOLS, dispatchCodeSiteTool } from "./tools/codesite.js";
+import { EMBODIED_TOOLS, dispatchEmbodied } from "./browser_workflow_bridge/embodied_dispatch.js";
 import type { ToolContext } from "./tools/shared.js";
 import { SNAPSHOT_ID_PATTERN_SOURCE } from "./snapshot/index.js";
 import { isExternalToolName, callExternalTool, type ExternalTools } from "./external/index.js";
@@ -99,6 +100,7 @@ export interface SynthiServerOptions {
  * list; inputSchema stays inside MCP registration and dispatch.
  */
 export const STATIC_TOOL_DEFINITIONS = [
+  ...EMBODIED_TOOLS,
   {
     name: "synthi_route_atomic_task",
     description: "Plan an atomic Vectant task using metadata only. Returns a bounded role, selected skill metadata, validation decision, reason, and suggested MCP tools.",
@@ -1337,6 +1339,9 @@ async function dispatchTool(
 
   const codeSiteResponse = await dispatchCodeSiteTool(toolName, args);
   if (codeSiteResponse) return codeSiteResponse as CallToolResult;
+
+  const embodiedResponse = await dispatchEmbodied(toolName, args);
+  if (embodiedResponse) return embodiedResponse as CallToolResult;
 
   // Tool dispatch table — replaces a ~45-case `switch (toolName)` with an object
   // lookup for easier maintenance (adding a tool is one entry). Handlers capture
