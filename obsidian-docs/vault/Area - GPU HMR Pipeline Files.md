@@ -15,12 +15,12 @@ tags: [vectant-ade, area, gpu-hmr, hmr, rocm, hipcc, gfx1201, dual-slot, proof-l
 source-repo: C:/Users/polek/Desktop/hermes-abuse/vectant-ade
 analyzed: 2026-08-26
 status: file-level reference — every file in scope covered
-companion: "[[gpu-hmr]] (system-level analysis)"
+companion: "[[GPU HMR System]] (system-level analysis)"
 ---
 
 **Area — GPU HMR Pipeline (File-Level)**
 
-This note is the **file-level** companion to [[gpu-hmr]]. Where that note explains the
+This note is the **file-level** companion to [[GPU HMR System]]. Where that note explains the
 system, this one walks every file the GPU HMR pipeline touches, grouped by pipeline
 stage, with `path:Lnnn` references and the exact data shapes that cross each boundary.
 
@@ -1097,10 +1097,10 @@ validation-matrix ledger grouping. Severity/blocking flags decide promote vs rej
    off manifests/probes — no architecture-name branching exists in authority paths.
 
 ## Related notes
-- [[gpu-hmr]] — system-level narrative and live-run history.
-- [[area-rust-webrtc]] — worker shell around `src/hmr/`.
-- [[area-ai-engine]] — ai-engine service hosting the split endpoints.
-- [[area-mcp-synthi]] — MCP server hosting the proof tools.
+- [[GPU HMR System]] — system-level narrative and live-run history.
+- [[Area - Rust Worker Modules]] — worker shell around `src/hmr/`.
+- [[Area - AI Engine Endpoints]] — ai-engine service hosting the split endpoints.
+- [[Area - MCP Tool Catalog]] — MCP server hosting the proof tools.
 
 ---
 
