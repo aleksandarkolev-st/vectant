@@ -202,7 +202,26 @@ if (licenseFile && existsSync(licenseFile)) {
   console.log(`seeded ${parsed.length} license(s)`);
 }
 
-const bridge = startBrowserWorkflowBridge({ port, host: "127.0.0.1" });
+// Deployment config layer (WI-PROD): bind host and auth token come from the
+// environment so a production deployment never needs code changes. A bridge
+// reachable beyond this machine REQUIRES a token - refusing to start is the
+// honest failure, not binding wide and hoping.
+const bridgeHost = process.env.SYNTHI_BRIDGE_HOST ?? "127.0.0.1";
+const bridgeToken = process.env.SYNTHI_BRIDGE_TOKEN;
+const isLoopback = /^(localhost|127\.0\.0\.1|::1|\[::1\])$/i.test(bridgeHost.trim());
+if (!isLoopback && !bridgeToken) {
+  console.error("refusing to bind beyond this machine without SYNTHI_BRIDGE_TOKEN set");
+  process.exit(2);
+}
+if (bridgeToken) {
+  console.log(`authenticated bridge mode on ${bridgeHost} (token required for every request)`);
+}
+
+const bridge = startBrowserWorkflowBridge({
+  port,
+  host: bridgeHost,
+  ...(bridgeToken ? { token: bridgeToken } : {}),
+});
 await bridge.ready;
 const resolvedPort = (bridge.server.address() as { port: number }).port;
 // The banner is the contract with whoever spawned us: the ACTUAL listening
