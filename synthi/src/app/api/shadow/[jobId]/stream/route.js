@@ -1,4 +1,6 @@
 import { withInternalAiAuth } from '@/lib/internalAiAuth';
+import { resolveActor } from '@/lib/integrations/session';
+import { NextResponse } from 'next/server';
 
 /**
  * Synthi Genome — GET /api/shadow/[jobId]/stream
@@ -14,6 +16,9 @@ const AI_ENGINE_BASE =
     process.env.CODE_INTEL_URL || process.env.AI_ENGINE_URL || 'http://localhost:8000';
 
 export async function GET(_request, { params }) {
+    const actor = await resolveActor();
+    if (!actor) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
     const { jobId } = await params;
     if (!jobId) {
         return new Response(JSON.stringify({ error: 'missing jobId' }), {

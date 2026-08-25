@@ -6,6 +6,7 @@ import {
   COMPLETION_CLOSE,
 } from '@/lib/completion';
 import { withInternalAiAuth } from '@/lib/internalAiAuth';
+import { resolveActor } from '@/lib/integrations/session';
 import { renderCodeIntelHints } from '@/utils/aiContextBroker';
 import { GoogleGenAI } from "@google/genai";
 
@@ -399,6 +400,9 @@ const buildPrompt = ({ prefix, suffix, language, filePath, references, codeIntel
 };
 
 export async function POST(request) {
+  const actor = await resolveActor();
+  if (!actor) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
   let body;
   try {
     body = await request.json();

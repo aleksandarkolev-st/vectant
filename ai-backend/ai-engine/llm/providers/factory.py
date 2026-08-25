@@ -20,6 +20,7 @@ from .gemini import GeminiProvider
 logger = logging.getLogger("llm.providers.factory")
 
 _KNOWN = {"gemini", "anthropic", "openai"}
+_ALIASES = {"chatgpt": "openai"}
 
 
 def get_provider(provider_name: Optional[str] = None, use_custom: bool = False) -> AiProvider:
@@ -31,6 +32,7 @@ def get_provider(provider_name: Optional[str] = None, use_custom: bool = False) 
     fall back to Gemini so the calling code path doesn't crash.
     """
     name = (provider_name or "gemini").lower().strip()
+    name = _ALIASES.get(name, name)
     if name not in _KNOWN:
         logger.warning("unknown provider %r — falling back to gemini", provider_name)
         return GeminiProvider()
