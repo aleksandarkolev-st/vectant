@@ -379,6 +379,26 @@ function shouldShowDojoSkill(model) {
   return Boolean(model.dojo?.skillId || model.dojo?.status === 'draft' || model.dojo?.status === 'licensed');
 }
 
+// Plain-language names for the kinds of places the agent can watch or work
+// in. The picker never shows internal vocabulary - just where things live.
+const WORLD_PICKER_LABELS = Object.freeze({
+  browser: 'This workspace preview',
+  terminal: 'A terminal here',
+  runtime: 'Programs and notebooks',
+  game: 'A game world',
+  kernel: 'System internals (careful)',
+  notebook: 'Notebooks',
+  api: 'Web services',
+  desktop: 'Apps on this computer',
+});
+
+function worldPickerLabel(item) {
+  if (typeof item !== 'string' || item.length === 0) return 'Somewhere else';
+  return WORLD_PICKER_LABELS[item] || item;
+}
+
+export { worldPickerLabel };
+
 function buildReadinessRows(model) {
   const runtimeReady = isRuntimeAttached(model.runtime);
   const observed = hasObservedPage(model);
@@ -446,12 +466,13 @@ function buildStages(model) {
       title: needsPreview ? 'Preview target' : 'Screenshot consent',
       detail: observed
         ? model.observe?.detail || 'The current workspace view can be inspected.'
-        : model.observe?.detail || 'Pick a world to inspect, then attach. The list comes from synthi_attach_substrate.',
+        : model.observe?.detail || 'Pick where to look, then take a look.',
       tone: observed ? 'ok' : runtimeReady ? 'warn' : 'neutral',
       // Substrate picker: fed by synthi_attach_substrate (plan acceptance).
+      // Labels stay plain-language; users never see adapter vocabulary.
       picker: {
         action: WORKFLOW_ACTIONS.LIST_SUBSTRATES,
-        placeholder: 'Which world should I work in?',
+        placeholder: 'Where should I watch?',
         items: Array.isArray(model.substrates) ? model.substrates : [],
       },
       action: WORKFLOW_ACTIONS.OBSERVE,
@@ -1131,7 +1152,7 @@ function WorkflowStage({ stage, onAction, isBusy = false, selected = false, onSe
         >
           <option value="" disabled>{stage.picker.placeholder}</option>
           {(stage.picker.items ?? []).map((item) => (
-            <option key={item} value={item}>{item}</option>
+            <option key={item} value={item}>{worldPickerLabel(item)}</option>
           ))}
         </select>
       ) : null}
