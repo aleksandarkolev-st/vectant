@@ -3147,7 +3147,7 @@ describe('CodeSite control plane transaction validation', () => {
       expect(result.status).toBe('active');
       expect(result.toEndpointRef).toBe('ws://127.0.0.1:9202/agent-b');
       const updateData = prisma.codeSiteAgentChannel.updateMany.mock.calls.at(-1)[0].data;
-      // `fromHash|toHash` â€” the mock row has no request-time hash so the
+      // `fromHash|toHash` - the mock row has no request-time hash so the
       // from-half is the empty-string hash; the to-half must hash the minted
       // token. The raw token never appears in the stored value.
       const [fromHash, toHash] = updateData.channelTokenHash.split('|');
@@ -9408,5 +9408,134 @@ describe('agent-token inbox access', () => {
       .rejects.toMatchObject({ status: 404, code: 'inbox_item_not_found' });
     expect(prisma.codeSiteAgentInboxItem.update).not.toHaveBeenCalled();
     expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+
+describe('listProjectChannels keyset pagination', () => {
+  const baseTime = new Date('2026-06-30T12:00:00.000Z');
+
+  function channelFixture(id, createdAt, status = 'active') {
+    return {
+      id,
+      projectId: 'project-pagination',
+      workspaceSlug: 'acme',
+      fromSessionId: `${id}-from`,
+      toSessionId: `${id}-to`,
+      status,
+      transport: 'websocket',
+      messageCount: 0,
+      createdAt,
+    };
+  }
+
+  function makeKeysetFindMany(rows) {
+    return vi.fn(async ({ where = {}, take = 100 } = {}) => {
+      const statusFilter = Object.hasOwn(where, 'status') ? { status: where.status } : null;
+      const keyset = Array.isArray(where?.OR) ? { OR: where.OR } : null;
+      return rows
+        .filter((row) => !statusFilter || row.status === statusFilter.status)
+        .filter((row) => {
+          if (!keyset) return true;
+          const [beforeDate, sameDateBeforeId] = keyset.OR;
+          return row.createdAt < beforeDate.lt
+            || (row.createdAt.getTime() === beforeDate.lt.getTime() && row.id < sameDateBeforeId.id.lt);
+        })
+        .sort((left, right) => right.createdAt - left.createdAt || right.id.localeCompare(left.id))
+        .slice(0, take);
+    });
+  }
+
+  beforeEach(() => {
+    prisma.codeSiteProject.findFirst.mockResolvedValue({
+      id: 'project-pagination',
+      workspaceSlug: 'acme',
+      members: [],
+    });
+  });
+
+  it('pages beyond the first page without overlap and omits the final cursor', async () => {
+    const rows = [
+      channelFixture('channel-5', new Date(baseTime.getTime() + 4000)),
+      channelFixture('channel-4', new Date(baseTime.getTime() + 3000)),
+      channelFixture('channel-3', new Date(baseTime.getTime() + 2000)),
+      channelFixture('channel-2', new Date(baseTime.getTime() + 1000)),
+      channelFixture('channel-1', baseTime),
+    ];
+    prisma.codeSiteAgentChannel.findMany = makeKeysetFindMany(rows);
+
+    const firstPage = await listProjectChannels('acme', 'project-pagination', null, { limit: '2' });
+    expect(firstPage.channels.map((channel) => channel.id)).toEqual(['channel-5', 'channel-4']);
+    expect(firstPage.nextCursor).toBeTruthy();
+
+    const secondPage = await listProjectChannels('acme', 'project-pagination', null, {
+      cursor: firstPage.nextCursor,
+      limit: '2',
+    });
+    expect(secondPage.channels.map((channel) => channel.id)).toEqual(['channel-3', 'channel-2']);
+    expect(secondPage.nextCursor).toBeTruthy();
+
+    const thirdPage = await listProjectChannels('acme', 'project-pagination', null, {
+      cursor: secondPage.nextCursor,
+      limit: '2',
+    });
+    expect(thirdPage.channels.map((channel) => channel.id)).toEqual(['channel-1']);
+    expect(thirdPage).not.toHaveProperty('nextCursor');
+
+    const allIds = [...firstPage.channels, ...secondPage.channels, ...thirdPage.channels].map((c) => c.id);
+    expect(new Set(allIds)).toHaveLength(5);
+    expect(prisma.codeSiteAgentChannel.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: 3,
+    }));
+  });
+
+  it('rejects an unreadable cursor as a clean codesite bad request', async () => {
+    prisma.codeSiteAgentChannel.findMany = makeKeysetFindMany([channelFixture('channel-1', baseTime)]);
+
+    await expect(listProjectChannels('acme', 'project-pagination', null, { cursor: 'tampered' }))
+      .rejects.toMatchObject({ status: 400, code: 'invalid_cursor' });
+    expect(prisma.codeSiteAgentChannel.findMany).not.toHaveBeenCalled();
+  });
+
+  it('composes the status filter with the cursor keyset', async () => {
+    const rows = [
+      channelFixture('requested-latest', new Date(baseTime.getTime() + 3000), 'requested'),
+      channelFixture('active-2', new Date(baseTime.getTime() + 2000), 'active'),
+      channelFixture('active-1', new Date(baseTime.getTime() + 1000), 'active'),
+      channelFixture('other-requested', baseTime, 'requested'),
+    ];
+    prisma.codeSiteAgentChannel.findMany = makeKeysetFindMany(rows);
+
+    const firstPage = await listProjectChannels('acme', 'project-pagination', null, {
+      status: 'active',
+      limit: '1',
+    });
+    expect(firstPage.channels.map((channel) => channel.status)).toEqual(['active']);
+
+    const secondPage = await listProjectChannels('acme', 'project-pagination', null, {
+      status: 'active',
+      limit: '1',
+      cursor: firstPage.nextCursor,
+    });
+    expect(secondPage.channels.map((channel) => channel.id)).toEqual(['active-1']);
+    expect(secondPage).not.toHaveProperty('nextCursor');
+    expect(prisma.codeSiteAgentChannel.findMany.mock.calls.at(-1)[0].where.AND)
+      .toContainEqual({ status: 'active' });
+  });
+
+  it('uses the id tiebreak deterministically when creation times match', async () => {
+    const rows = [
+      channelFixture('channel-z', baseTime),
+      channelFixture('channel-a', baseTime),
+      channelFixture('channel-m', baseTime),
+    ];
+    prisma.codeSiteAgentChannel.findMany = makeKeysetFindMany(rows);
+
+    const firstPage = await listProjectChannels('acme', 'project-pagination', null, { limit: '2' });
+    expect(firstPage.channels.map((channel) => channel.id)).toEqual(['channel-z', 'channel-m']);
+
+    const secondPage = await listProjectChannels('acme', 'project-pagination', null, {
+      limit: '2',
+      cursor: firstPage.nextCursor,
+    });
+    expect(secondPage.channels.map((channel) => channel.id)).toEqual(['channel-a']);
   });
 });
