@@ -13254,8 +13254,7 @@ export async function requestAgentChannel(workspaceSlug, sessionId, agentAccessT
       OR: [{ fromSessionId: fromSession.id }, { toSessionId: fromSession.id }],
     },
   });
-  const capRaw = Number(process.env.SYNTHI_CODESITE_MAX_ACTIVE_CHANNELS);
-  const maxActive = Number.isFinite(capRaw) && capRaw > 0 ? Math.floor(capRaw) : 3;
+  const maxActive = getCodeSiteRuntimeConfig().maxActiveChannels;
   if (activeCount >= maxActive) {
     throw forbidden('channel_concurrency_cap_reached', { activeCount, maxActive });
   }
