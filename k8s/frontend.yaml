@@ -106,6 +106,14 @@ spec:
                 secretKeyRef:
                   name: synthi-secrets
                   key: COLLAB_INTERNAL_TOKEN
+            # Proof bundles must use an explicit authority in production.
+            - name: SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET
+            - name: SYNTHI_CODESITE_PROOF_REQUIRE_TRUSTED_AUTHORITY
+              value: "1"
             # ── Database (Prisma) ───────────────────────────────────────────
             - name: DATABASE_URL
               valueFrom:

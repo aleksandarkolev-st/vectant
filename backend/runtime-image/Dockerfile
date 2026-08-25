@@ -45,8 +45,11 @@ RUN npm install -g http-server
 # The in-app terminal runs as `bash -l` inside this container, so it must match
 # the collab-server terminal's tooling.
 
-# Claude Code CLI — exposed in the terminal (lands in /usr/local/bin, on PATH).
-RUN npm install -g @anthropic-ai/claude-code
+# Agent CLIs — exposed in the terminal (land in /usr/local/bin, on PATH).
+# The explicit Codex version keeps attributed-agent shells reproducible while
+# allowing an intentional runtime-image build override.
+ARG CODEX_CLI_VERSION=0.149.1
+RUN npm install -g @anthropic-ai/claude-code @openai/codex@${CODEX_CLI_VERSION}
 
 # ── Container + k8s orchestration toolchain (Sysbox runtime — Slice 1) ─────────
 # The workspace's OWN daemon drives real `docker build/run/compose`,

@@ -69,6 +69,7 @@ import {
 } from './deliverySecurity';
 import { createProjectCoordinationBus, ProjectCoordinationBusError } from './projectCoordinationBus';
 import { canonicalKnowledgeEventType } from './knowledgeEvents';
+import { getCodeSiteRuntimeConfig } from './runtimeConfig';
 import {
   buildObservationCoordinationInput,
   normalizeProjectObservation,
@@ -7198,7 +7199,7 @@ async function dispatchInboxDeliveryTarget(inboxItem, payload, target) {
     return { ...publicTarget, status: 'skipped', reason: 'fetch_unavailable', startedAt, completedAt: new Date().toISOString() };
   }
 
-  const timeoutMs = Number(process.env.SYNTHI_CODESITE_INBOX_DELIVERY_TIMEOUT_MS || 1500);
+  const timeoutMs = getCodeSiteRuntimeConfig().inboxDeliveryTimeoutMs;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 1500);
   try {
@@ -9238,11 +9239,10 @@ function resolveInspectionCwd(repoRoot, cwd) {
 }
 
 function normalizeInspectionTimeout(value) {
-  const max = Number(process.env.SYNTHI_CODESITE_INSPECTION_MAX_TIMEOUT_MS || 120000);
-  const fallback = Number(process.env.SYNTHI_CODESITE_INSPECTION_TIMEOUT_MS || 30000);
+  const { inspectionMaxTimeoutMs: max, inspectionTimeoutMs: fallback } = getCodeSiteRuntimeConfig();
   const requested = Number(value || fallback);
   const timeout = Number.isFinite(requested) && requested > 0 ? requested : fallback;
-  return Math.min(timeout, Number.isFinite(max) && max > 0 ? max : 120000);
+  return Math.min(timeout, max);
 }
 
 function parseOptionalNumber(value) {
@@ -11145,8 +11145,7 @@ function configuredShadowRunnerCommand() {
 }
 
 function normalizeShadowRunnerTimeout() {
-  const requested = Number(process.env.SYNTHI_CODESITE_SHADOW_RUNNER_TIMEOUT_MS || 120000);
-  return Number.isFinite(requested) && requested > 0 ? Math.min(requested, 600000) : 120000;
+  return getCodeSiteRuntimeConfig().shadowRunnerTimeoutMs;
 }
 
 function mergeExecutedShadowUniverses(simulatedUniverses, executedUniverses) {
@@ -13255,8 +13254,7 @@ export async function requestAgentChannel(workspaceSlug, sessionId, agentAccessT
       OR: [{ fromSessionId: fromSession.id }, { toSessionId: fromSession.id }],
     },
   });
-  const capRaw = Number(process.env.SYNTHI_CODESITE_MAX_ACTIVE_CHANNELS);
-  const maxActive = Number.isFinite(capRaw) && capRaw > 0 ? Math.floor(capRaw) : 3;
+  const maxActive = getCodeSiteRuntimeConfig().maxActiveChannels;
   if (activeCount >= maxActive) {
     throw forbidden('channel_concurrency_cap_reached', { activeCount, maxActive });
   }

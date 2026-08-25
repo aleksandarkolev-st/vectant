@@ -23,7 +23,8 @@ ENV NODE_ENV=production
 # Claude Code CLI — exposed inside the in-app terminal. Installed globally
 # so it lands in /usr/local/bin (already on PATH, owned by root, readable
 # by the unprivileged synthi user that runs the server).
-RUN npm install -g @anthropic-ai/claude-code
+ARG CODEX_CLI_VERSION=0.149.1
+RUN npm install -g @anthropic-ai/claude-code @openai/codex@${CODEX_CLI_VERSION}
 
 # Non-root runtime user. --create-home gives terminalService's
 # GIT_CONFIG_GLOBAL / NPM_CONFIG_USERCONFIG / CLAUDE_CONFIG_DIR overrides a

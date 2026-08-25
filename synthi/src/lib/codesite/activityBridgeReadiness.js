@@ -1,15 +1,13 @@
+import { getCodeSiteRuntimeConfig } from './runtimeConfig';
+
 const READINESS_WORKSPACE_SLUG = '__codesite_readiness__';
 
 function configuredCollabHttpUrl() {
-  const value = process.env.COLLAB_SERVER_URL
-    || process.env.SYNTHI_COLLAB_SERVER_URL
-    || process.env.NEXT_PUBLIC_COLLAB_SERVER_URL
-    || process.env.COLLAB_URL;
-  return value ? String(value).replace(/\/+$/, '').replace(/^ws/i, 'http') : '';
+  return getCodeSiteRuntimeConfig().collabServerUrl;
 }
 
 function collabInternalToken() {
-  return process.env.COLLAB_INTERNAL_TOKEN || process.env.SYNTHI_COLLAB_INTERNAL_TOKEN || '';
+  return getCodeSiteRuntimeConfig().collabInternalToken;
 }
 
 function controlPlaneUrlFor(request, workspaceSlug) {
@@ -52,7 +50,7 @@ export async function probeCodeSiteActivityBridge(request, options = {}) {
   const transactionId = options.transactionId || `readiness-${crypto.randomUUID()}`;
   const collabUrl = configuredCollabHttpUrl();
   const token = collabInternalToken();
-  const timeoutMs = Number(options.timeoutMs || process.env.SYNTHI_CODESITE_READINESS_TIMEOUT_MS || 3_000);
+  const timeoutMs = Number(options.timeoutMs || getCodeSiteRuntimeConfig().readinessTimeoutMs);
 
   if (!collabUrl || !token || typeof fetchImpl !== 'function') {
     return {
@@ -137,7 +135,7 @@ async function probeCollabDeploymentCapabilities(options = {}) {
   const fetchImpl = options.fetch || globalThis.fetch;
   const collabUrl = configuredCollabHttpUrl();
   const token = collabInternalToken();
-  const timeoutMs = Number(options.timeoutMs || process.env.SYNTHI_CODESITE_READINESS_TIMEOUT_MS || 3_000);
+  const timeoutMs = Number(options.timeoutMs || getCodeSiteRuntimeConfig().readinessTimeoutMs);
   if (!collabUrl || !token || typeof fetchImpl !== 'function') {
     return {
       ok: false,

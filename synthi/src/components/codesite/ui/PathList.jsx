@@ -1,8 +1,10 @@
+import { useState } from "react";
 import { asArray } from "../lib/format";
 
 export default function PathList({ paths, empty = "none", maxVisible = 4 }) {
   const list = asArray(paths);
-  const visible = list.slice(0, maxVisible);
+  const [expanded, setExpanded] = useState(false);
+  const visible = expanded ? list : list.slice(0, maxVisible);
   if (visible.length === 0) {
     return <span style={{ color: "var(--text-muted)" }}>{empty}</span>;
   }
@@ -25,9 +27,13 @@ export default function PathList({ paths, empty = "none", maxVisible = 4 }) {
         </code>
       ))}
       {list.length > visible.length ? (
-        <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-          +{list.length - visible.length}
-        </span>
+        <button type="button" className="th-focus-ring text-[10px]" onClick={() => setExpanded(true)} style={{ color: "var(--accent-primary)" }}>
+          Show {list.length - visible.length} more
+        </button>
+      ) : expanded && list.length > maxVisible ? (
+        <button type="button" className="th-focus-ring text-[10px]" onClick={() => setExpanded(false)} style={{ color: "var(--accent-primary)" }}>
+          Show less
+        </button>
       ) : null}
     </div>
   );

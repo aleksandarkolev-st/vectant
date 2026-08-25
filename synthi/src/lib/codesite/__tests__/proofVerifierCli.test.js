@@ -292,34 +292,9 @@ describe('CodeSite proof verifier CLI', () => {
     });
   });
 
-  it('rejects development HMAC proof authority when trusted authority is required', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codesite-proof-cli-'));
-    roots.push(root);
-    const bundle = withProofAuthorityEnvCleared(() => makeBundle());
-    const bundlePath = path.join(root, 'txn-1.dev-hmac.proof.json');
-    fs.writeFileSync(bundlePath, JSON.stringify(bundle, null, 2));
-
-    const result = runVerifier(['--bundle', bundlePath, '--require-trusted-authority'], {
-      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET: null,
-      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM: null,
-      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM: null,
-      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON: null,
-      AUTH_SECRET: null,
-      NEXTAUTH_SECRET: null,
-      NODE_ENV: 'development',
-    });
-
-    expect(result.status).toBe(1);
-    expect(result.json).toMatchObject({
-      ok: false,
-      reasonCodes: expect.arrayContaining([
-        'proof_bundle_signature_trusted_authority_required',
-        'proof_bundle_verification_failed',
-      ]),
-      errors: expect.arrayContaining([
-        expect.stringContaining('trusted proof authority is required'),
-      ]),
-    });
+  it('refuses to sign when no proof authority is configured', () => {
+    expect(() => withProofAuthorityEnvCleared(() => makeBundle()))
+      .toThrow(/CodeSite proof authority is unconfigured/);
   });
 
   it('refuses to sign a trusted proof bundle with application auth secret fallback', () => {
