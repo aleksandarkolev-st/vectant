@@ -225,6 +225,8 @@ export async function GET(request, { params }) {
       const params = new URL(request.url).searchParams;
       return okJson(await listProjectChannels(slug, route[1], access.actor, {
         status: params.get('status'),
+        cursor: params.get('cursor'),
+        limit: params.get('limit'),
       }));
     }
 

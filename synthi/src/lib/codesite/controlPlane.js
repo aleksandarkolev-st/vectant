@@ -13484,6 +13484,34 @@ export async function reportAgentChannelViolation(workspaceSlug, sessionId, agen
   return agentChannelProjection(updated);
 }
 
+const CHANNEL_PAGE_DEFAULT_LIMIT = 100;
+const CHANNEL_PAGE_MAX_LIMIT = 200;
+const CHANNEL_CURSOR_VERSION = 'v1';
+
+function encodeChannelPageCursor(channel) {
+  return Buffer.from(JSON.stringify({
+    v: CHANNEL_CURSOR_VERSION,
+    createdAt: channel.createdAt.toISOString(),
+    id: channel.id,
+  })).toString('base64url');
+}
+
+function decodeChannelPageCursor(cursor) {
+  try {
+    const parsed = JSON.parse(Buffer.from(String(cursor), 'base64url').toString('utf8'));
+    if (parsed?.v !== CHANNEL_CURSOR_VERSION || typeof parsed.createdAt !== 'string' || typeof parsed.id !== 'string') {
+      throw new Error('cursor_shape_invalid');
+    }
+    const createdAt = new Date(parsed.createdAt);
+    if (Number.isNaN(createdAt.getTime()) || !parsed.id.trim()) {
+      throw new Error('cursor_value_invalid');
+    }
+    return { createdAt, id: parsed.id };
+  } catch (error) {
+    throw badRequest('invalid_cursor', 'channels_cursor_unreadable');
+  }
+}
+
 /** Audit view of channels for a project. Members only; no tokens ever. */
 export async function listProjectChannels(workspaceSlug, projectId, actor = null, query = {}) {
   const project = await prisma.codeSiteProject.findFirst({
@@ -13492,11 +13520,33 @@ export async function listProjectChannels(workspaceSlug, projectId, actor = null
   });
   if (!project) throw notFound('project_not_found');
   await requireProjectAccess(project, actor, 'read');
+  const requestedLimit = query.limit == null || query.limit === ''
+    ? Number.NaN
+    : Number(query.limit);
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.min(Math.max(Math.trunc(requestedLimit), 1), CHANNEL_PAGE_MAX_LIMIT)
+    : CHANNEL_PAGE_DEFAULT_LIMIT;
   const status = String(query.status || '').trim() || undefined;
+  const cursor = query.cursor ? decodeChannelPageCursor(query.cursor) : null;
+  const createdAtFilter = cursor?.createdAt instanceof Date ? cursor.createdAt.toISOString() : null;
   const channels = await prisma.codeSiteAgentChannel.findMany({
-    where: { projectId: project.id, ...(status ? { status } : {}) },
-    orderBy: { createdAt: 'desc' },
-    take: 100,
+    where: {
+      projectId: project.id,
+      ...(status ? { status } : {}),
+      ...(cursor ? {
+        OR: [
+          { createdAt: { lt: cursor.createdAt } },
+          { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+        ],
+      } : {}),
+    },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    take: limit + 1,
   });
-  return { channels: channels.map(agentChannelProjection) };
+  const hasMore = channels.length > limit;
+  const page = hasMore ? channels.slice(0, limit) : channels;
+  return {
+    channels: page.map(agentChannelProjection),
+    ...(hasMore && page.length ? { nextCursor: encodeChannelPageCursor(page.at(-1)) } : {}),
+  };
 }

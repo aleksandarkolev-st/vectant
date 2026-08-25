@@ -4,7 +4,7 @@
  * Channels view — registered direct channels with one-click actions.
  * No curl required: open/accept/reject/close all happen from buttons here.
  */
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import { ArrowLeftRight, Check, X } from "lucide-react";
 import {
@@ -34,6 +34,8 @@ export default function ChannelsView({
   acting = false,
 }) {
   const [channels, setChannels] = useState([]);
+  const [channelsCursor, setChannelsCursor] = useState(null);
+  const channelsCursorRef = useRef(channelsCursor);
   const [busyChannelId, setBusyChannelId] = useState(null);
   const [error, setError] = useState(null);
   const { data: authSession } = useSession();
@@ -92,21 +94,47 @@ export default function ChannelsView({
     [callsigns],
   );
 
-  const loadChannels = useCallback(async () => {
+  const refreshChannels = useCallback(async () => {
     if (!workspaceSlug || !projectId) return;
     try {
-      setChannels(await fetchCodeSiteChannels(workspaceSlug, projectId));
+      const body = await fetchCodeSiteChannels(workspaceSlug, projectId, null, { cursor: null });
+      setChannels(body.channels);
+      setChannelsCursor(body.nextCursor || null);
       setError(null);
     } catch (err) {
       setError(err.message || "channels_fetch_failed");
     }
   }, [projectId, workspaceSlug]);
 
+  const loadMoreChannels = useCallback(async () => {
+    if (!workspaceSlug || !projectId) return;
+    try {
+      const body = await fetchCodeSiteChannels(workspaceSlug, projectId, null, {
+        cursor: channelsCursor,
+      });
+      setChannels((current) => {
+        const channelIds = new Set(current.map((channel) => channel.id));
+        return [...current, ...body.channels.filter((channel) => !channelIds.has(channel.id))];
+      });
+      setChannelsCursor(body.nextCursor || null);
+      setError(null);
+    } catch (err) {
+      setError(err.message || "channels_fetch_failed");
+    }
+  }, [channelsCursor, projectId, workspaceSlug]);
+
   useEffect(() => {
-    loadChannels();
-    const timer = setInterval(loadChannels, 5000);
+    channelsCursorRef.current = channelsCursor;
+  }, [channelsCursor]);
+
+  useEffect(() => {
+    refreshChannels();
+    const timer = setInterval(() => {
+      if (channelsCursorRef.current) return;
+      refreshChannels();
+    }, 5000);
     return () => clearInterval(timer);
-  }, [loadChannels]);
+  }, [refreshChannels]);
 
   // A channel is actionable for the current viewer when the viewer owns one
   // of its two sessions (identity from the NextAuth session, see above).
@@ -117,7 +145,7 @@ export default function ChannelsView({
       setBusyChannelId(channelId);
       try {
         await respondCodeSiteChannel(workspaceSlug, sessionId, channelId, action, {});
-        await loadChannels();
+        await refreshChannels();
         setError(null);
       } catch (err) {
         setError(err.message || `channel_${action}_failed`);
@@ -125,7 +153,7 @@ export default function ChannelsView({
         setBusyChannelId(null);
       }
     },
-    [busyChannelId, loadChannels, viewerSessionId, workspaceSlug],
+    [busyChannelId, refreshChannels, viewerSessionId, workspaceSlug],
   );
 
   const openChannelTo = useCallback(
@@ -143,7 +171,7 @@ export default function ChannelsView({
           purpose: "ui_open_channel",
           endpointRef: uiEndpoint,
         });
-        await loadChannels();
+        await refreshChannels();
         setError(null);
       } catch (err) {
         setError(err.message || "channel_request_failed");
@@ -151,7 +179,7 @@ export default function ChannelsView({
         setBusyChannelId(null);
       }
     },
-    [busyChannelId, loadChannels, viewerSessionId, workspaceSlug],
+    [busyChannelId, refreshChannels, viewerSessionId, workspaceSlug],
   );
 
   const activeOrRequestedPairKeys = useMemo(() => {
@@ -172,7 +200,7 @@ export default function ChannelsView({
         <span className="text-xs font-semibold">Direct channels</span>
         <Pill tone="default">{MODE_LABELS[mode] || mode}</Pill>
         {error ? <Pill tone="blocked">{String(error)}</Pill> : null}
-        <IconButton title="Refresh channels" onClick={loadChannels}>
+        <IconButton title="Refresh channels" onClick={refreshChannels}>
           <ArrowLeftRight className="h-3.5 w-3.5" />
         </IconButton>
       </div>
@@ -249,6 +277,15 @@ export default function ChannelsView({
         </div>
       ))}
 
+      {channelsCursor ? (
+        <IconButton
+          title="Load more channels"
+          data-testid="codesite-channels-load-more"
+          onClick={loadMoreChannels}
+        >
+          Load more
+        </IconButton>
+      ) : null}
       {/* All channels audit list */}
       {channels.length ? (
         <div className="grid content-start gap-1">
