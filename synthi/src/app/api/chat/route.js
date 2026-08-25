@@ -62,6 +62,7 @@ function waitForCommandApproval(id, command) {
                 clearTimeout(timeout);
                 resolve(approved);
             },
+            userId,
             command,
             timestamp: Date.now(),
         });
