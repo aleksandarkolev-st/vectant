@@ -27,7 +27,7 @@ if (kernelMode) {
     createKernelBundle({
       async snapshot(namespace: string) {
         try {
-          execFileSync("wsl", ["-d", "Ubuntu", "--", "sysctl", "-n", `kernel.${namespace}`], {
+          execFileSync("wsl", ["-d", "Ubuntu", "-u", "root", "--", "sysctl", "-n", `kernel.${namespace}`], {
             encoding: "utf8",
             timeout: 30_000,
           });
@@ -35,7 +35,9 @@ if (kernelMode) {
       },
       async exec(_namespace: string, command: string) {
         try {
-          const out = execFileSync("wsl", ["-d", "Ubuntu", "--", ...command.split(/\s+/)], {
+          // Kernel tuning requires privilege; a deployment grants the agent
+          // a root-capable WSL identity exactly like an SRE account.
+          const out = execFileSync("wsl", ["-d", "Ubuntu", "-u", "root", "--", ...command.split(/\s+/)], {
             encoding: "utf8",
             timeout: 30_000,
           });

@@ -277,10 +277,16 @@ export async function startEngineRuntime(wobbleMs = 0): Promise<EngineRuntime> {
   const slots = new Map<string, EngineWorld>();
   let forkCounter = 0;
   let renderedTicks = 0;
+  const lastKeyRef = { key: '', boot: Promise.resolve() as Promise<unknown> };
 
   async function render(world: EngineWorld): Promise<void> {
     if (wobbleMs > 0) await page.waitForTimeout(Math.random() * wobbleMs);
-    await page.evaluate((state: EngineState) => window.__engine.render(state), world.state);
+    try {
+      await page.evaluate((state: EngineState) => window.__engine.render(state), world.state);
+    } catch (error) {
+      console.error('[web_engine_world] render failed:', error instanceof Error ? error.message : error);
+      throw error;
+    }
     renderedTicks = world.state.tick;
   }
 
@@ -326,12 +332,15 @@ export async function startEngineRuntime(wobbleMs = 0): Promise<EngineRuntime> {
         currentKey = key;
         world = slots.get(key) ?? makeWorld(key);
         slots.set(key, world);
+        lastKeyRef.key = key;
+        await render(world).catch(() => {});
         await render(world).catch(() => {});
         socket.send(JSON.stringify({ ok: true }));
         return;
       }
       if (message.op === 'adopt') {
         currentKey = message.adopt ?? '';
+        lastKeyRef.key = currentKey;
         world = slots.get(currentKey) ?? null;
         socket.send(JSON.stringify({ ok: world !== null }));
         return;
@@ -389,14 +398,13 @@ export async function startEngineRuntime(wobbleMs = 0): Promise<EngineRuntime> {
 
   /** A per-realm transport with strict one-in-flight request/response
    *  ordering; performs the init (or adopt) handshake on first use. */
-  function transportFor(initKey: string, adoptKey?: string): WsTransport {
+  function transportFor(initKey: string, adoptKey?: string, bootRef?: { boot: Promise<unknown> }): WsTransport {
     const handshakeOp = adoptKey !== undefined
       ? () => JSON.stringify({ op: 'adopt', adopt: adoptKey })
       : () => JSON.stringify({ op: 'init', init: initKey });
     const socket = new (require('ws').WebSocket)(`ws://127.0.0.1:${wsPort}`) as WebSocket;
     const queue: unknown[] = [];
     const waiters: Array<(v: unknown) => void> = [];
-    let chain: Promise<unknown> = Promise.resolve();
 
     socket.on('message', (raw: Buffer) => {
       const parsed = JSON.parse(raw.toString()) as unknown;
@@ -416,16 +424,21 @@ export async function startEngineRuntime(wobbleMs = 0): Promise<EngineRuntime> {
         else waiters.push(resolveWait);
       });
 
+    // Eager handshake: the session's world is created and rendered as soon
+    // as the transport exists, not lazily on the first operation.
+    const boot = opened.then(
+      () =>
+        new Promise<void>((resolveBoot) => {
+          socket.send(handshakeOp());
+          void next().then(() => resolveBoot());
+        }),
+    );
+    if (bootRef) bootRef.boot = boot;
+    let chain: Promise<unknown> = boot;
+
     return {
       async send(message: unknown): Promise<unknown> {
-        const run = chain.then(async () => {
-          await opened;
-          let socketHasInit = false;
-          if (!socketHasInit) {
-            socketHasInit = true;
-            socket.send(handshakeOp());
-            await next();
-          }
+        const run = chain.then(() => {
           socket.send(JSON.stringify(message));
           return next();
         });
@@ -489,19 +502,25 @@ export async function startEngineRuntime(wobbleMs = 0): Promise<EngineRuntime> {
         },
       },
 
-      attach: async (request) => ({
-        handle_id: `canvas-${request.realm.realm_id}`,
-        environment: {
-          world: {
-            state: makeWorld(request.realm.realm_id).state,
-            inspectionVerdicts: new Map<string, number>(),
-            journal: [],
+      attach: async (request) => {
+        const bootRef: { boot: Promise<unknown> } = { boot: Promise.resolve() };
+        const handle: CanvasHandle = {
+          handle_id: `canvas-${request.realm.realm_id}`,
+          environment: {
+            world: {
+              state: makeWorld(request.realm.realm_id).state,
+              inspectionVerdicts: new Map<string, number>(),
+              journal: [],
+            },
           },
-        },
-        realm: request.realm,
-        transport: transportFor(request.realm.realm_id),
-        recording: null,
-      }),
+          realm: request.realm,
+          transport: transportFor(request.realm.realm_id, undefined, bootRef),
+          recording: null,
+        };
+        lastKeyRef.key = request.realm.realm_id;
+        lastKeyRef.boot = bootRef.boot;
+        return handle;
+      },
 
       replay_provider: {
         replay: async (fragment, options) => {
@@ -655,6 +674,11 @@ export async function startEngineRuntime(wobbleMs = 0): Promise<EngineRuntime> {
   }
 
   async function readFrame(): Promise<{ width: number; height: number; data: Uint32Array }> {
+    // The session must exist (handshake done) and the live world must be
+    // re-rendered before capture so a frame is never stale or early.
+    await lastKeyRef.boot.catch(() => undefined);
+    const latest = slots.get(lastKeyRef.key);
+    if (latest) await render(latest);
     const dataUrl = (await page.evaluate(() => window.__engine.dataUrl())) as string;
     const png = Buffer.from(dataUrl.replace(/^data:image\/png;base64,/, ''), 'base64');
     // Decode via sharp (IO), perceive via the shared cv primitives.

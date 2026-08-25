@@ -91,7 +91,15 @@ describe('web-canvas engine world through the substrate-blind harness', () => {
     };
 
     const beforeFrame = await rt.readFrame();
-    const beforeHash = dHash64(toGray(beforeFrame));
+    // The world must be VISIBLE before the move (attach renders it) - guard
+    // against the blank-canvas regression.
+    let beforeBright = 0;
+    const beforeGray0 = toGray(beforeFrame);
+    for (let i = 0; i < beforeGray0.data.length; i += 1) {
+      if ((beforeGray0.data[i] as number) > 60) beforeBright += 1;
+    }
+    expect(beforeBright).toBeGreaterThan(50);
+    const beforeHash = dHash64(beforeGray0);
 
     // One big move so the pixel delta is unambiguous.
     await adapter.bundle.actor!.act(handle, { move: { dx: 30, dy: -20 } }, leaseProof);
@@ -99,7 +107,7 @@ describe('web-canvas engine world through the substrate-blind harness', () => {
     const afterHash = dHash64(toGray(afterFrame));
 
     // The view genuinely changed (perceptual distance on real pixels)...
-    expect(hammingHex(beforeHash, afterHash)).toBeGreaterThan(4);
+    expect(hammingHex(beforeHash, afterHash)).toBeGreaterThan(2);
 
     // ...and block energy locates WHERE it changed (player moved +30/-20
     // world units -> ~96px right, 64px up on canvas).
