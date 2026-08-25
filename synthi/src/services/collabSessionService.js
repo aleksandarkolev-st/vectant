@@ -90,6 +90,9 @@ class CollabSessionService extends EventTarget {
     /** @type {string|null} */
     this._userId = null;
 
+    /** @type {string|null} Guest display name, scoped to the active collab session. */
+    this._displayName = null;
+
     /** @type {string|null} Host's userId — set when guest joins a session */
     this._hostId = null;
 
@@ -127,6 +130,7 @@ class CollabSessionService extends EventTarget {
   get permissions() { return { ...this._permissions }; }
   get sessionId() { return this._sessionId; }
   get hostId() { return this._hostId; }
+  get displayName() { return this._displayName; }
   get sessionSlug() { return this._sessionSlug; }
   /**
    * Returns the userId that should be used for repo/room scoping.
@@ -291,6 +295,7 @@ class CollabSessionService extends EventTarget {
     this._role = 'knocking';
     this._sessionId = sessionId;
     this._userId = guestId;
+    this._displayName = displayName || null;
 
     try {
       await fetchWithTimeout(`${COLLAB_URL}/session/knock/${sessionId}`, {
@@ -322,11 +327,12 @@ class CollabSessionService extends EventTarget {
    * @param {string} hostId
    * @param {string} slug  — the host's workspace slug
    */
-  joinAsGuest(sessionId, guestId, hostId, slug, { hostName = null, permissions = null } = {}) {
+  joinAsGuest(sessionId, guestId, hostId, slug, { hostName = null, permissions = null, displayName = null } = {}) {
     if (this._role === 'guest' && this._sessionId === sessionId) return; // already set
     this._role = 'guest';
     this._sessionId = sessionId;
     this._userId = guestId;
+    this._displayName = displayName || null;
     this._hostId = hostId;
     this._sessionSlug = slug;
     // Use stored permissions if available, otherwise fall back to defaults.
@@ -1138,6 +1144,7 @@ class CollabSessionService extends EventTarget {
     this._role = 'idle';
     this._session = null;
     this._sessionId = null;
+    this._displayName = null;
     this._hostId = null;
     this._sessionSlug = null;
     this._permissions = { ...HOST_PERMISSIONS };

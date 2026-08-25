@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { signIn, useSession } from "next-auth/react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import {
   PiArrowRight as ArrowRight,
@@ -48,18 +48,23 @@ const auditLines = [
   ["repo.token", "provider scoped"],
 ];
 
-export default function LoginPage() {
+function LoginContent() {
   const { data: session, status } = useSession();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [signingIn, setSigningIn] = useState(null);
+  const requestedCallbackUrl = searchParams.get("callbackUrl");
+  const callbackUrl = requestedCallbackUrl && requestedCallbackUrl.startsWith("/") && !requestedCallbackUrl.startsWith("//")
+    ? requestedCallbackUrl
+    : "/";
 
   useEffect(() => {
-    if (session) router.push("/");
-  }, [session, router]);
+    if (session) router.push(callbackUrl);
+  }, [session, router, callbackUrl]);
 
   const handleSignIn = (provider) => {
     setSigningIn(provider);
-    signIn(provider, { callbackUrl: "/" });
+    signIn(provider, { callbackUrl });
   };
 
   if (status === "loading") {
@@ -237,5 +242,20 @@ export default function LoginPage() {
         </motion.aside>
       </section>
     </main>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex min-h-[100dvh] items-center justify-center bg-[var(--bg-app)] text-[var(--text-secondary)]">
+        <div className="flex items-center gap-3 text-sm">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading sign-in
+        </div>
+      </div>
+    }>
+      <LoginContent />
+    </Suspense>
   );
 }

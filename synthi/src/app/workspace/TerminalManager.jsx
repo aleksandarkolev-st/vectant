@@ -123,6 +123,7 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
   const dragRef = useRef(null);
   const dispatch = useDispatch();
   const fsRefreshTimer = useRef(null);
+  const codeSiteProjectsRequestId = useRef(0);
   const defaultShellPrefRef = useRef(defaultShellPref);
   const { role: collaborationRole, permissions: collaborationPermissions } = useCollabSession();
   const collaborationActive = collaborationRole === 'hosting' || collaborationRole === 'guest';
@@ -148,17 +149,18 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
     });
   }, [workspaceSlug, terminals, activeId, selectedCodeSiteProjectId]);
 
-  useEffect(() => {
-    let cancelled = false;
+  const refreshCodeSiteProjects = useCallback(async () => {
+    const requestId = ++codeSiteProjectsRequestId.current;
     setCodeSiteProjects([]);
     setAgentLauncherError('');
     if (!workspaceSlug) {
       setAgentLauncherStatus('idle');
-      return () => { cancelled = true; };
+      return;
     }
     setAgentLauncherStatus('loading');
-    fetchCodeSiteProjects(workspaceSlug).then((projects) => {
-      if (cancelled) return;
+    try {
+      const projects = await fetchCodeSiteProjects(workspaceSlug);
+      if (requestId !== codeSiteProjectsRequestId.current) return;
       const authorizedProjects = Array.isArray(projects) ? projects : [];
       setCodeSiteProjects(authorizedProjects);
       setSelectedCodeSiteProjectId((current) => (
@@ -167,15 +169,28 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
           : authorizedProjects[0]?.id || ''
       ));
       setAgentLauncherStatus('ready');
-    }).catch(() => {
-      if (cancelled) return;
+    } catch (_) {
+      if (requestId !== codeSiteProjectsRequestId.current) return;
       setCodeSiteProjects([]);
       setSelectedCodeSiteProjectId('');
       setAgentLauncherStatus('error');
       setAgentLauncherError('Authorized CodeSite projects could not be loaded.');
-    });
-    return () => { cancelled = true; };
+    }
   }, [workspaceSlug]);
+
+  useEffect(() => {
+    void refreshCodeSiteProjects();
+  }, [refreshCodeSiteProjects]);
+
+  useEffect(() => {
+    const onCodeSiteProjectsChanged = (event) => {
+      if (event?.detail?.workspaceSlug === workspaceSlug) {
+        void refreshCodeSiteProjects();
+      }
+    };
+    window.addEventListener('codesite-projects-changed', onCodeSiteProjectsChanged);
+    return () => window.removeEventListener('codesite-projects-changed', onCodeSiteProjectsChanged);
+  }, [refreshCodeSiteProjects, workspaceSlug]);
 
   // ── Debounced file tree refresh on filesystem changes ────────────────
   const handleFsChange = useCallback(() => {
@@ -549,6 +564,7 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
             onClick={() => {
               setAgentLauncherOpen((open) => !open);
               setAgentLauncherError('');
+              void refreshCodeSiteProjects();
             }}
             title="Launch a project agent"
             aria-expanded={agentLauncherOpen}

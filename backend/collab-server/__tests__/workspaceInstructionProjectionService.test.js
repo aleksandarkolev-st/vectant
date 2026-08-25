@@ -249,6 +249,32 @@ test('reconciliation retries a concurrent terminal write and merges it instead o
   assert.equal(targetReadCount >= 3, true);
 });
 
+test('reconciliation tolerates a competing runtime creating the projection state directory', async (t) => {
+  const root = await temporaryWorkspace(t);
+  const stateDirectory = path.join(root, '.synthi');
+  let raced = false;
+  const fsApi = {
+    ...fs.promises,
+    async mkdir(directory, options) {
+      if (!raced && path.resolve(directory) === stateDirectory) {
+        raced = true;
+        await fs.promises.mkdir(directory, options);
+        const error = new Error('directory created by concurrent runtime preparation');
+        error.code = 'EEXIST';
+        throw error;
+      }
+      return fs.promises.mkdir(directory, options);
+    },
+  };
+
+  await createService({ fsApi }).reconcileWorkspace(workspace(root));
+
+  assert.equal(raced, true);
+  assert.equal((await fs.promises.lstat(stateDirectory)).isDirectory(), true);
+  const statePath = path.join(root, ...WORKSPACE_INSTRUCTION_PROJECTION_STATE_PATH.split('/'));
+  assert.equal(JSON.parse(await fs.promises.readFile(statePath, 'utf8')).schemaVersion, 1);
+});
+
 test('explicit feature gating leaves the terminal filesystem untouched', async (t) => {
   const root = await temporaryWorkspace(t);
   const service = createService({ featureEnabled: false });

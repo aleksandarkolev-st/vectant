@@ -443,6 +443,9 @@ export default function CodeSitePanel({ workspaceSlug }) {
         });
         setNewProjectTitle("");
         setSelectedProjectId(project?.id || null);
+        window.dispatchEvent(new CustomEvent("codesite-projects-changed", {
+          detail: { workspaceSlug },
+        }));
         await loadRadar({ projectId: project?.id || null });
       } catch (nextError) {
         setError({
