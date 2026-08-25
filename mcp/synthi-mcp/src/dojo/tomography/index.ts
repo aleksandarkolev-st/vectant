@@ -3634,7 +3634,7 @@ function replayedProofChaosControl(
 }
 
 function leakyProbeChaosControl(trace: TherapeuticTrace, evidenceRefs: string[]): TherapeuticChaosControlResult {
-  const contract = therapeuticProbeContractsForTaskClass(trace.task_class)[0] ?? THERAPEUTIC_ML_QUALITY_DROP_PROBES[0];
+  const contract = therapeuticProbeContractsForTaskClass(trace.task_class)[0] ?? THERAPEUTIC_GENERIC_TASK_PROBE_TEMPLATES[0];
   if (!contract) return chaosControlResult(trace, "leaky_probe", "failed", "No probe contract exists to leak-test.", ["probe_contract_missing"], evidenceRefs);
   const leakyOutput = Object.fromEntries(contract.allowed_output_shape.map((key) => [key, defaultValueForProbeSchema(contract.allowed_output_schema[key])]));
   leakyOutput[contract.forbidden_outputs[0] ?? "raw_prod_logs"] = [{ id: "leak" }];

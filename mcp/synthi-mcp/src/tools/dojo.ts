@@ -2563,7 +2563,7 @@ function dojoTherapeuticInitTraceTool(args: unknown): ToolResponse {
       blocked_by: ["task_id_required", "user_goal_required"],
     });
   }
-  const taskClass = stringOpt(a["task_class"]) ?? "ml_quality_drop";
+  const taskClass = stringOpt(a["task_class"]) ?? "generic_task";
   const currentDose = therapeuticAuthorityLevelOpt(a["current_authority_dose"]) ?? 0;
   const now = stringOpt(a["now"]) ?? new Date().toISOString();
   const trace = boolOpt(a["demo_fixture"])
