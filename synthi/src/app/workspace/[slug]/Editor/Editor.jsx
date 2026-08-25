@@ -25,7 +25,7 @@ import {
 import { selectAutoCompletionEnabled, toggleAutoCompletion, selectPresenceGranularity, startCreate, setCursorPosition, selectAutoSaveEnabled } from '@/redux/uiSlice';
 import { fetchGitStatus, closeConflictResolver } from '@/redux/gitSlice';
 import { setFocusedTabGroup } from '@/components/docking-wm/state/layout-slice';
-import { Circle, Save, Sparkles, Loader2, X, Plus, TerminalSquare, Users } from 'lucide-react';
+import { AlertCircle, Circle, Save, Sparkles, Loader2, X, Plus, TerminalSquare, Users } from 'lucide-react';
 import { getFileIcon } from '@/utils/fileIcons';
 import {
     ResizableHandle,
@@ -108,7 +108,7 @@ const SUPPORTED_LANGUAGES = [
     { id: 'python', extensions: ['.py', '.pyw', '.pyx'], aliases: ['Python'] },
     { id: 'go', extensions: ['.go'], aliases: ['Go'] },
     { id: 'rust', extensions: ['.rs'], aliases: ['Rust'] },
-    { id: 'cpp', extensions: ['.cpp', '.cc', '.cxx', '.hpp'], aliases: ['C++'] },
+    { id: 'cpp', extensions: ['.cpp', '.cc', '.cxx', '.c++', '.hpp', '.hh', '.hxx', '.ipp', '.inl'], aliases: ['C++'] },
     { id: 'c', extensions: ['.c', '.h'], aliases: ['C'] },
     { id: 'csharp', extensions: ['.cs'], aliases: ['C#'] },
     { id: 'kotlin', extensions: ['.kt', '.kts'], aliases: ['Kotlin'] },
@@ -372,6 +372,7 @@ const EditorPanel = ({
     const [servicesReady, setServicesReady] = useState(false);
     const editorViewportRef = useRef(null);
     const slug = useAppSelector(state => state.workspace.slug);
+    const lspTransportUnavailable = lspStatus === 'Compiler Disconnected' || lspStatus === 'Channel Error';
 
     // Refs for file cache data — used during async service init to pre-populate
     // the virtual filesystem BEFORE servicesReady is set, preventing the
@@ -4607,6 +4608,23 @@ const EditorPanel = ({
 
                         {/* Editor Container */}
                         <div ref={editorViewportRef} className="flex-1 overflow-hidden relative group">
+                            {lspTransportUnavailable && activeFile && (
+                                <div
+                                    className="absolute bottom-3 right-3 z-30 flex max-w-[min(30rem,calc(100%-1.5rem))] items-start gap-2 rounded-md border px-3 py-2 text-xs shadow-sm"
+                                    role="status"
+                                    aria-live="polite"
+                                    style={{
+                                        background: 'var(--bg-panel)',
+                                        borderColor: 'var(--border-subtle)',
+                                        color: 'var(--text-secondary)',
+                                    }}
+                                >
+                                    <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" style={{ color: 'var(--warning, #b7791f)' }} />
+                                    <span className="min-w-0 leading-5">
+                                        Code intelligence is reconnecting. Editing and saving remain available; suggestions, diagnostics, and navigation resume automatically when the workspace service reconnects.
+                                    </span>
+                                </div>
+                            )}
                             <ContextMenu>
                                 <ContextMenuTrigger asChild>
                                     <div className="h-full w-full">
