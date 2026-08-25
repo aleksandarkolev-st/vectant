@@ -1,6 +1,7 @@
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/app/auth';
 import prisma from '@/lib/prisma';
+import { resolveCollabGuestAccess } from '@/lib/collabGuestAccess';
 
 export const WORKSPACE_MANAGE_ROLES = new Set(['owner', 'admin']);
 
@@ -99,11 +100,29 @@ export async function requireWorkspaceAccess(workspaceSlug) {
   }
 
   const membership = workspace.memberships?.[0] || null;
-  if (!membership) {
-    return { ok: false, status: 404, error: 'Workspace not found' };
+  if (membership) {
+    return { ok: true, session, email, workspace, membership };
   }
 
-  return { ok: true, session, email, workspace, membership };
+  // Not a workspace member — but an active collab guest (or the host,
+  // reconnecting under an identity Prisma doesn't know about) still needs
+  // real access, scoped to what the host actually granted them. Checked
+  // live against the collab-server on every call, so it's automatically
+  // revoked the instant a guest is kicked or the session ends — see
+  // collabGuestAccess.js.
+  const workspaceUserId = session?.user?.id || email;
+  const collabAccess = await resolveCollabGuestAccess(workspaceSlug, workspaceUserId);
+  if (collabAccess) {
+    return {
+      ok: true,
+      session,
+      email,
+      workspace,
+      membership: { role: 'collab-guest', collabPermissions: collabAccess.permissions },
+    };
+  }
+
+  return { ok: false, status: 404, error: 'Workspace not found' };
 }
 
 export async function requireWorkspaceAccessById(workspaceId) {

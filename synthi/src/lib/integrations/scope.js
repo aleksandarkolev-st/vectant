@@ -1,4 +1,5 @@
 import prisma from '@/lib/prisma';
+import { resolveCollabGuestAccess } from '@/lib/collabGuestAccess';
 
 // Roles permitted to mutate a workspace connection (R1-9). Plain 'member' is read-only.
 const WRITE_ROLES = new Set(['owner', 'admin']);
@@ -32,7 +33,12 @@ export async function canReadScope(actor, target) {
   if (!actor?.userId || !target) return false;
   if (target.scope === 'personal') return target.ownerUserId === actor.userId;
   if (target.scope === 'workspace') {
-    return (await workspaceMembership(actor, target.workspaceSlug)) !== null;
+    if ((await workspaceMembership(actor, target.workspaceSlug)) !== null) return true;
+    // Not a workspace member — fall back to live collab-session guest/host
+    // access (see collabGuestAccess.js). Any admitted role can read; write
+    // access is gated separately in canWriteScope by the host's canEdit grant.
+    const collabAccess = await resolveCollabGuestAccess(target.workspaceSlug, actor.workspaceUserId);
+    return collabAccess !== null;
   }
   return false;
 }
@@ -51,7 +57,12 @@ export async function canWriteScope(actor, target) {
   if (target.scope === 'personal') return target.ownerUserId === actor.userId;
   if (target.scope === 'workspace') {
     const m = await workspaceMembership(actor, target.workspaceSlug);
-    return !!m && WRITE_ROLES.has(m.role);
+    if (m) return WRITE_ROLES.has(m.role);
+    // Not a workspace member — a collab guest can write only if the host
+    // granted them canEdit; the host themself always can (see
+    // collabGuestAccess.js / SessionManager's HOST_PERMISSIONS).
+    const collabAccess = await resolveCollabGuestAccess(target.workspaceSlug, actor.workspaceUserId);
+    return collabAccess?.permissions?.canEdit === true;
   }
   return false;
 }

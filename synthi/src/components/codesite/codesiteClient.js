@@ -381,11 +381,15 @@ export async function createCodeSiteProject(workspaceSlug, payload = {}) {
 
 // ---- Registered direct channels (docs/REGISTERED_DIRECT_CHANNELS_DESIGN.md) ----
 
-export async function fetchCodeSiteChannels(workspaceSlug, projectId, status = null) {
-  if (!workspaceSlug || !projectId) return [];
-  const query = status ? `?status=${encodeURIComponent(status)}` : '';
-  const body = await request(`${projectBase(workspaceSlug, projectId)}/channels${query}`);
-  return body.channels || [];
+export async function fetchCodeSiteChannels(workspaceSlug, projectId, status = null, options = {}) {
+  if (!workspaceSlug || !projectId) return { channels: [] };
+  const search = new URLSearchParams();
+  if (status) search.set('status', status);
+  if (options.cursor) search.set('cursor', options.cursor);
+  if (options.limit != null) search.set('limit', String(options.limit));
+  const query = search.toString();
+  const body = await request(`${projectBase(workspaceSlug, projectId)}/channels${query ? `?${query}` : ''}`);
+  return { channels: body.channels || [], nextCursor: body.nextCursor || null };
 }
 
 export async function requestCodeSiteChannel(workspaceSlug, sessionId, payload = {}) {

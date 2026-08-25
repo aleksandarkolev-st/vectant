@@ -1,6 +1,7 @@
-import {
+﻿import {
   abortTransaction,
   acknowledgeInboxItem,
+  acknowledgeInboxItemForAgent,
   attachAgentSession,
   attachProofBundleCommit,
   collisionPredict,
@@ -22,6 +23,7 @@ import {
   eventCursor,
   exportArtifacts,
   getAgentInbox,
+  getAgentInboxForAgent,
   getAgentManifest,
   getAgentSharedKnowledge,
   getControlState,
@@ -43,6 +45,7 @@ import {
   closeAgentChannel,
   reportAgentChannelViolation,
   listProjectChannels,
+  requireAgentChannelRateAuthority,
   getSchemas,
   getSourceStateSince,
   getTransaction,
@@ -119,6 +122,14 @@ export async function GET(request, { params }) {
           requestQuery(request),
         ),
       });
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
+  if (route[0] === 'agent-sessions' && route[2] === 'inbox' && route.length === 3
+    && bearerToken(request)) {
+    try {
+      return okJson({ inbox: await getAgentInboxForAgent(slug, route[1], bearerToken(request)) });
     } catch (error) {
       return handleCodesiteError(error);
     }
@@ -224,6 +235,8 @@ export async function GET(request, { params }) {
       const params = new URL(request.url).searchParams;
       return okJson(await listProjectChannels(slug, route[1], access.actor, {
         status: params.get('status'),
+        cursor: params.get('cursor'),
+        limit: params.get('limit'),
       }));
     }
 
@@ -410,12 +423,12 @@ export async function POST(request, { params }) {
   }
   if (route[0] === 'agent-sessions' && route[2] === 'channels' && route.length === 3) {
     try {
-      const limitedChannel = enforceRateLimit(
-        { userId: `agent:${route[1]}` },
-        'channels',
-        'channels',
+      const rateAuthority = await requireAgentChannelRateAuthority(
+        slug,
+        route[1],
+        bearerToken(request),
       );
-      if (limitedChannel) return limitedChannel;
+      if (rateAuthority.response) return rateAuthority.response;
       return okJson({ channel: await requestAgentChannel(
         slug,
         route[1],
@@ -436,12 +449,13 @@ export async function POST(request, { params }) {
   if (route[0] === 'agent-sessions' && route[2] === 'channels' && route.length === 5
     && ['accept', 'reject', 'close', 'violation'].includes(route[4])) {
     try {
-      const limitedChannelAction = enforceRateLimit(
-        { userId: `agent:${route[1]}` },
+      const rateAuthority = await requireAgentChannelRateAuthority(
+        slug,
+        route[1],
+        bearerToken(request),
         `channels:${route[4]}`,
-        'channels',
       );
-      if (limitedChannelAction) return limitedChannelAction;
+      if (rateAuthority.response) return rateAuthority.response;
       const body = await readJson(request);
       if (route[4] === 'accept') {
         const result = await acceptAgentChannel(slug, route[1], bearerToken(request), route[3], body);
@@ -454,6 +468,26 @@ export async function POST(request, { params }) {
         return okJson({ channel: await reportAgentChannelViolation(slug, route[1], bearerToken(request), route[3], body) });
       }
       return okJson({ channel: await closeAgentChannel(slug, route[1], bearerToken(request), route[3], body) });
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
+  if (route[0] === 'agent-sessions'
+    && route[2] === 'inbox'
+    && route[3]
+    && route[3] !== 'stream'
+    && route[4] !== 'respond'
+    && route.length === 4
+    && bearerToken(request)) {
+    try {
+      return okJson({
+        inboxItem: await acknowledgeInboxItemForAgent(
+          slug,
+          route[1],
+          route[3],
+          bearerToken(request),
+        ),
+      });
     } catch (error) {
       return handleCodesiteError(error);
     }

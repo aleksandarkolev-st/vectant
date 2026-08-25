@@ -1,4 +1,4 @@
-import fs from 'fs/promises';
+﻿import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -8,7 +8,7 @@ import {
   canonicalDojoProofPayload,
   createEd25519DojoProofSigner,
   generateEd25519DojoProofKeyPair,
-} from '../../../../../mcp/synthi-mcp/dist/dojo/proof/signing.js';
+} from 'C:/Users/polek/Desktop/vectant-ade/mcp/synthi-mcp/dist/dojo/proof/signing.js';
 
 const { prisma } = vi.hoisted(() => ({
   prisma: {
@@ -163,6 +163,7 @@ import {
   attachProofBundleCommit,
   commitTransaction,
   acknowledgeInboxItem,
+  acknowledgeInboxItemForAgent,
   collisionPredict,
   applyRouteRevision,
   createAgentSession,
@@ -178,6 +179,7 @@ import {
   dryRunTransactionWrites,
   detachAgentSession,
   getAgentInbox,
+  getAgentInboxForAgent,
   getAgentManifest,
   getControlState,
   getEvents,
@@ -208,6 +210,8 @@ import {
   closeAgentChannel,
   listProjectChannels,
   reportAgentChannelViolation,
+  agentChannelRateLimitKey,
+  requireAgentChannelRateAuthority,
   respondToAgentKnowledgeInbox,
   resumeMaydayIncident,
   reviewDocument,
@@ -216,6 +220,7 @@ import {
   updateZonePolicy,
   validateTransaction,
 } from '../controlPlane.js';
+import { __resetRateLimits } from '@/lib/integrations/rateLimit';
 import { CODESITE_MCP_TOOLS } from '../artifacts.js';
 import { digest } from '../policy.js';
 import { buildProofBundle, proofCommitTrailers } from '../proof.js';
@@ -260,6 +265,7 @@ async function withEnv(values, callback) {
 }
 
 const AGENT_AUTHORITY_NOW = new Date('2026-08-22T12:00:00.000Z');
+const AGENT_INBOX_NOW = new Date(AGENT_AUTHORITY_NOW.getTime() + 60_000);
 const AGENT_AUTHORITY_TOKEN = `csa_${'z'.repeat(43)}`;
 const AGENT_AUTHORITY_TOKEN_HASH = createHash('sha256').update(AGENT_AUTHORITY_TOKEN, 'utf8').digest('hex');
 const AGENT_AUTHORITY_TOKEN_B = `csa_${'q'.repeat(43)}`;
@@ -282,8 +288,8 @@ function agentAuthoritySession(overrides = {}) {
     agentProvider: 'custom-provider',
     status: 'attached',
     capabilitiesJson: JSON.stringify(['codesite.context.read', 'codesite.knowledge.read']),
-    agentAccessTokenExpiresAt: new Date(AGENT_AUTHORITY_NOW.getTime() + 60_000),
-    lastHeartbeatAt: new Date(AGENT_AUTHORITY_NOW.getTime() - 1_000),
+    agentAccessTokenExpiresAt: new Date(Date.now() + 60_000),
+    lastHeartbeatAt: new Date(Date.now() - 1_000),
     endedAt: null,
     project: {
       id: 'project-authority-1',
@@ -2968,6 +2974,7 @@ describe('CodeSite control plane transaction validation', () => {
     };
 
     beforeEach(() => {
+      __resetRateLimits();
       prisma.codeSiteProject.findFirst.mockResolvedValue(projectRow);
       prisma.codeSiteAgentChannel.findUnique.mockImplementation(async ({ where }) => (
         where?.id === 'channel-9' ? {
@@ -2992,6 +2999,19 @@ describe('CodeSite control plane transaction validation', () => {
         summaryDigest: null, createdAt: new Date(AGENT_AUTHORITY_NOW),
         ...data,
       }));
+    });
+
+    it('rate limits channel requests by verified stable identity after token validation', async () => {
+      // The URL session id and the stored id must agree for verification to
+      // succeed (fail-closed). The anti-rotation property this test proves is
+      // that the rate-limit BUCKET key derives from the verified session's
+      // stable identity (id + owner), not from any caller-supplied string.
+      const session = channelSession();
+      bindTwoSessions(session, channelSession({ id: 'agent-authority-2' }));
+
+      await expect(requireAgentChannelRateAuthority('acme', 'rotated-id-1', AGENT_AUTHORITY_TOKEN))
+        .rejects.toMatchObject({ status: 403, code: 'agent_access_token_invalid' });
+      expect(agentChannelRateLimitKey(session)).toBe(`${session.id}:${session.ownerUserId}`);
     });
 
     it('requests a channel inside the mode ladder and records the event', async () => {
@@ -3127,7 +3147,7 @@ describe('CodeSite control plane transaction validation', () => {
       expect(result.status).toBe('active');
       expect(result.toEndpointRef).toBe('ws://127.0.0.1:9202/agent-b');
       const updateData = prisma.codeSiteAgentChannel.updateMany.mock.calls.at(-1)[0].data;
-      // `fromHash|toHash` — the mock row has no request-time hash so the
+      // `fromHash|toHash` - the mock row has no request-time hash so the
       // from-half is the empty-string hash; the to-half must hash the minted
       // token. The raw token never appears in the stored value.
       const [fromHash, toHash] = updateData.channelTokenHash.split('|');
@@ -9252,5 +9272,270 @@ describe('CodeSite control plane transaction validation', () => {
       }),
     ]));
     expect(replay.completeness.observedEventTypes).toEqual(expect.arrayContaining(['write.allowed']));
+  });
+});
+describe('agent-token inbox access', () => {
+  const inboxItem = {
+    id: 'agent-inbox-1',
+    projectId: 'project-authority-1',
+    agentSessionId: 'agent-authority-1',
+    recipientUserId: 'user-agent-owner',
+    eventId: 'evt-agent-1',
+    documentId: 'document-authority-1',
+    knowledgeItemId: null,
+    kind: 'impact_notice',
+    requiresResponse: false,
+    status: 'pending',
+    redactedPayloadJson: JSON.stringify({ summary: 'Contract changed' }),
+    createdAt: new Date('2026-08-22T11:59:00.000Z'),
+    acknowledgedAt: null,
+    responseAction: null,
+    respondedAt: null,
+  };
+
+  function mockInboxStores() {
+    prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([inboxItem]);
+    prisma.codeSiteAgentInboxItem.findFirst.mockResolvedValue(inboxItem);
+    prisma.codeSiteAgentInboxItem.update.mockImplementation(async ({ data }) => ({
+      ...inboxItem,
+      ...data,
+    }));
+    prisma.codeSiteEvent.create.mockImplementation(async ({ data }) => ({
+      ...data,
+      createdAt: new Date('2026-08-22T12:00:01.000Z'),
+    }));
+  }
+
+  beforeEach(() => {
+      vi.clearAllMocks();
+      prisma.codeSiteProjectMember.findUnique.mockResolvedValue(null);
+      prisma.codeSiteProjectMember.findFirst.mockResolvedValue(null);
+    });
+
+    it('authorizes its own session to read projected inbox items', async () => {
+    const session = agentAuthoritySession();
+    mockBoundAgentAuthoritySession(session);
+    mockInboxStores();
+
+    await expect(getAgentInboxForAgent('acme', session.id, AGENT_AUTHORITY_TOKEN))
+      .resolves.toEqual([
+        expect.objectContaining({
+          id: inboxItem.id,
+          agentSessionId: session.id,
+          eventId: inboxItem.eventId,
+          status: 'pending',
+          redactedPayload: { summary: 'Contract changed' },
+        }),
+      ]);
+    expect(prisma.codeSiteAgentInboxItem.findMany).toHaveBeenCalledWith({
+      where: { agentSessionId: session.id },
+      orderBy: { createdAt: 'asc' },
+    });
+  });
+
+  it.each(['wrong-token', '', `csa_${'x'.repeat(43)}`])(
+    'rejects %j before reading another session inbox',
+    async (token) => {
+      const session = agentAuthoritySession({ id: 'agent-inbox-target' });
+      mockBoundAgentAuthoritySession(session);
+      prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([]);
+
+      await expect(getAgentInboxForAgent('acme', session.id, token)).rejects.toMatchObject({
+        status: 403,
+        code: 'agent_access_token_invalid',
+      });
+      expect(prisma.codeSiteAgentInboxItem.findMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not let session A read session B with A token', async () => {
+    const session = agentAuthoritySession();
+    const otherSession = agentAuthoritySession({ id: 'agent-inbox-b', projectId: 'project-authority-b' });
+    prisma.codeSiteAgentSession.findFirst.mockImplementation(async ({ where } = {}) => (
+      where?.id === session.id
+        && where?.workspaceSlug === session.workspaceSlug
+        && where?.agentAccessTokenHash === AGENT_AUTHORITY_TOKEN_HASH
+        ? session
+        : null
+    ));
+    prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([{ ...inboxItem, agentSessionId: otherSession.id }]);
+
+    await expect(getAgentInboxForAgent('acme', otherSession.id, AGENT_AUTHORITY_TOKEN)).rejects.toMatchObject({
+      status: 403,
+      code: 'agent_access_token_invalid',
+    });
+    expect(prisma.codeSiteAgentInboxItem.findMany).not.toHaveBeenCalled();
+  });
+
+  it('acknowledges its own inbox item and records the causal event', async () => {
+    const session = agentAuthoritySession();
+    mockBoundAgentAuthoritySession(session);
+    mockInboxStores();
+
+    await expect(acknowledgeInboxItemForAgent(
+      'acme',
+      session.id,
+      inboxItem.eventId,
+      AGENT_AUTHORITY_TOKEN,
+    )).resolves.toMatchObject({
+      id: inboxItem.id,
+      eventId: inboxItem.eventId,
+      status: 'acknowledged',
+    });
+
+    expect(prisma.codeSiteAgentInboxItem.update).toHaveBeenCalledWith({
+      where: { id: inboxItem.id },
+      data: expect.objectContaining({ status: 'acknowledged', acknowledgedAt: expect.any(Date) }),
+    });
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        projectId: session.projectId,
+        eventType: 'transponder_update',
+        actorType: 'agent_session',
+        actorId: session.id,
+        detailsJson: expect.stringContaining('inbox_acknowledged'),
+      }),
+    }));
+  });
+
+  it('returns a clean not-found error for an unknown inbox event id', async () => {
+    const session = agentAuthoritySession();
+    mockBoundAgentAuthoritySession(session);
+    mockInboxStores();
+    prisma.codeSiteAgentInboxItem.findFirst.mockResolvedValue(null);
+
+    await expect(acknowledgeInboxItemForAgent('acme', session.id, 'missing-event', AGENT_AUTHORITY_TOKEN))
+      .rejects.toMatchObject({ status: 404, code: 'inbox_item_not_found' });
+    expect(prisma.codeSiteAgentInboxItem.update).not.toHaveBeenCalled();
+    expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+
+describe('listProjectChannels keyset pagination', () => {
+  const baseTime = new Date('2026-06-30T12:00:00.000Z');
+
+  function channelFixture(id, createdAt, status = 'active') {
+    return {
+      id,
+      projectId: 'project-pagination',
+      workspaceSlug: 'acme',
+      fromSessionId: `${id}-from`,
+      toSessionId: `${id}-to`,
+      status,
+      transport: 'websocket',
+      messageCount: 0,
+      createdAt,
+    };
+  }
+
+  function makeKeysetFindMany(rows) {
+    return vi.fn(async ({ where = {}, take = 100 } = {}) => {
+      const statusFilter = Object.hasOwn(where, 'status') ? { status: where.status } : null;
+      const keyset = Array.isArray(where?.OR) ? { OR: where.OR } : null;
+      return rows
+        .filter((row) => !statusFilter || row.status === statusFilter.status)
+        .filter((row) => {
+          if (!keyset) return true;
+          const [beforeDate, sameDateBeforeId] = keyset.OR;
+          return row.createdAt < beforeDate.lt
+            || (row.createdAt.getTime() === beforeDate.lt.getTime() && row.id < sameDateBeforeId.id.lt);
+        })
+        .sort((left, right) => right.createdAt - left.createdAt || right.id.localeCompare(left.id))
+        .slice(0, take);
+    });
+  }
+
+  beforeEach(() => {
+    prisma.codeSiteProject.findFirst.mockResolvedValue({
+      id: 'project-pagination',
+      workspaceSlug: 'acme',
+      members: [],
+    });
+  });
+
+  it('pages beyond the first page without overlap and omits the final cursor', async () => {
+    const rows = [
+      channelFixture('channel-5', new Date(baseTime.getTime() + 4000)),
+      channelFixture('channel-4', new Date(baseTime.getTime() + 3000)),
+      channelFixture('channel-3', new Date(baseTime.getTime() + 2000)),
+      channelFixture('channel-2', new Date(baseTime.getTime() + 1000)),
+      channelFixture('channel-1', baseTime),
+    ];
+    prisma.codeSiteAgentChannel.findMany = makeKeysetFindMany(rows);
+
+    const firstPage = await listProjectChannels('acme', 'project-pagination', null, { limit: '2' });
+    expect(firstPage.channels.map((channel) => channel.id)).toEqual(['channel-5', 'channel-4']);
+    expect(firstPage.nextCursor).toBeTruthy();
+
+    const secondPage = await listProjectChannels('acme', 'project-pagination', null, {
+      cursor: firstPage.nextCursor,
+      limit: '2',
+    });
+    expect(secondPage.channels.map((channel) => channel.id)).toEqual(['channel-3', 'channel-2']);
+    expect(secondPage.nextCursor).toBeTruthy();
+
+    const thirdPage = await listProjectChannels('acme', 'project-pagination', null, {
+      cursor: secondPage.nextCursor,
+      limit: '2',
+    });
+    expect(thirdPage.channels.map((channel) => channel.id)).toEqual(['channel-1']);
+    expect(thirdPage).not.toHaveProperty('nextCursor');
+
+    const allIds = [...firstPage.channels, ...secondPage.channels, ...thirdPage.channels].map((c) => c.id);
+    expect(new Set(allIds)).toHaveLength(5);
+    expect(prisma.codeSiteAgentChannel.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: 3,
+    }));
+  });
+
+  it('rejects an unreadable cursor as a clean codesite bad request', async () => {
+    prisma.codeSiteAgentChannel.findMany = makeKeysetFindMany([channelFixture('channel-1', baseTime)]);
+
+    await expect(listProjectChannels('acme', 'project-pagination', null, { cursor: 'tampered' }))
+      .rejects.toMatchObject({ status: 400, code: 'invalid_cursor' });
+    expect(prisma.codeSiteAgentChannel.findMany).not.toHaveBeenCalled();
+  });
+
+  it('composes the status filter with the cursor keyset', async () => {
+    const rows = [
+      channelFixture('requested-latest', new Date(baseTime.getTime() + 3000), 'requested'),
+      channelFixture('active-2', new Date(baseTime.getTime() + 2000), 'active'),
+      channelFixture('active-1', new Date(baseTime.getTime() + 1000), 'active'),
+      channelFixture('other-requested', baseTime, 'requested'),
+    ];
+    prisma.codeSiteAgentChannel.findMany = makeKeysetFindMany(rows);
+
+    const firstPage = await listProjectChannels('acme', 'project-pagination', null, {
+      status: 'active',
+      limit: '1',
+    });
+    expect(firstPage.channels.map((channel) => channel.status)).toEqual(['active']);
+
+    const secondPage = await listProjectChannels('acme', 'project-pagination', null, {
+      status: 'active',
+      limit: '1',
+      cursor: firstPage.nextCursor,
+    });
+    expect(secondPage.channels.map((channel) => channel.id)).toEqual(['active-1']);
+    expect(secondPage).not.toHaveProperty('nextCursor');
+    expect(prisma.codeSiteAgentChannel.findMany.mock.calls.at(-1)[0].where.AND)
+      .toContainEqual({ status: 'active' });
+  });
+
+  it('uses the id tiebreak deterministically when creation times match', async () => {
+    const rows = [
+      channelFixture('channel-z', baseTime),
+      channelFixture('channel-a', baseTime),
+      channelFixture('channel-m', baseTime),
+    ];
+    prisma.codeSiteAgentChannel.findMany = makeKeysetFindMany(rows);
+
+    const firstPage = await listProjectChannels('acme', 'project-pagination', null, { limit: '2' });
+    expect(firstPage.channels.map((channel) => channel.id)).toEqual(['channel-z', 'channel-m']);
+
+    const secondPage = await listProjectChannels('acme', 'project-pagination', null, {
+      limit: '2',
+      cursor: firstPage.nextCursor,
+    });
+    expect(secondPage.channels.map((channel) => channel.id)).toEqual(['channel-a']);
   });
 });

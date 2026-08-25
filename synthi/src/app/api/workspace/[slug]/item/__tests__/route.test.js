@@ -162,3 +162,117 @@ describe('/api/workspace/[slug]/item authorization and path safety', () => {
     expect(h.file).not.toHaveBeenCalled();
   });
 });
+
+describe('/api/workspace/[slug]/item collab-guest permission gating', () => {
+  function mockCollabGuest(collabPermissions) {
+    h.requireAccess.mockResolvedValue({
+      ok: true,
+      workspace: { id: 'ws1', slug: 'canonical-slug', name: 'Team' },
+      membership: { role: 'collab-guest', collabPermissions },
+    });
+  }
+
+  it('lets a collab guest read files (GET needs no specific permission)', async () => {
+    mockCollabGuest({ canEdit: false, canFileOps: false, canTerminal: false, canGit: false });
+
+    const res = await GET(request('http://x/api/workspace/route-slug/item?filePath=src/app.js'), ctx());
+
+    expect(res.status).toBe(404); // not found in GCS mock, but not blocked by permissions
+    expect(h.file).toHaveBeenCalledWith('workspaces/canonical-slug/src/app.js');
+  });
+
+  it('blocks a collab guest without canEdit from writing file content', async () => {
+    mockCollabGuest({ canEdit: false, canFileOps: true, canTerminal: false, canGit: false });
+
+    const res = await POST(
+      request('http://x/api/workspace/route-slug/item', {
+        form: form({ filePath: 'src/app.js', file: { stream: vi.fn() } }),
+      }),
+      ctx(),
+    );
+
+    expect(res.status).toBe(403);
+    expect(h.file).not.toHaveBeenCalled();
+  });
+
+  it('allows a collab guest with canEdit to write file content', async () => {
+    mockCollabGuest({ canEdit: true, canFileOps: false, canTerminal: false, canGit: false });
+    // Fake an instantly-successful write stream — the base beforeEach mock
+    // leaves createWriteStream unconfigured since no existing test in this
+    // file exercises the plain content-write branch (only rename/folder).
+    h.createWriteStream.mockReturnValue({
+      write: vi.fn(),
+      end: vi.fn(),
+      destroy: vi.fn(),
+      on: vi.fn((event, cb) => { if (event === 'finish') Promise.resolve().then(cb); }),
+    });
+
+    const res = await PUT(
+      request('http://x/api/workspace/route-slug/item', {
+        body: { itemPath: 'src/app.js' },
+        headers: { 'content-type': 'text/plain' },
+      }),
+      ctx(),
+    );
+
+    expect(res.status).toBe(200);
+    expect(h.file).toHaveBeenCalledWith('workspaces/canonical-slug/src/app.js');
+  });
+
+  it('blocks a collab guest without canFileOps from creating a folder', async () => {
+    mockCollabGuest({ canEdit: true, canFileOps: false, canTerminal: false, canGit: false });
+
+    const res = await POST(
+      request('http://x/api/workspace/route-slug/item', {
+        form: form({ filePath: 'docs/' }),
+      }),
+      ctx(),
+    );
+
+    expect(res.status).toBe(403);
+    expect(h.save).not.toHaveBeenCalled();
+  });
+
+  it('blocks a collab guest without canFileOps from renaming', async () => {
+    mockCollabGuest({ canEdit: true, canFileOps: false, canTerminal: false, canGit: false });
+
+    const res = await PUT(
+      request('http://x/api/workspace/route-slug/item', {
+        body: { itemPath: 'src/old.js', newPath: 'src/new.js' },
+      }),
+      ctx(),
+    );
+
+    expect(res.status).toBe(403);
+    expect(h.move).not.toHaveBeenCalled();
+  });
+
+  it('blocks a collab guest without canFileOps from deleting', async () => {
+    mockCollabGuest({ canEdit: true, canFileOps: false, canTerminal: false, canGit: false });
+
+    const res = await DELETE(
+      request('http://x/api/workspace/route-slug/item', {
+        body: { itemPath: 'src/app.js' },
+      }),
+      ctx(),
+    );
+
+    expect(res.status).toBe(403);
+    expect(h.deleteFile).not.toHaveBeenCalled();
+  });
+
+  it('allows a collab guest with canFileOps to delete', async () => {
+    mockCollabGuest({ canEdit: true, canFileOps: true, canTerminal: false, canGit: false });
+    h.exists.mockResolvedValue([true]);
+
+    const res = await DELETE(
+      request('http://x/api/workspace/route-slug/item', {
+        body: { itemPath: 'src/app.js' },
+      }),
+      ctx(),
+    );
+
+    expect(res.status).toBe(200);
+    expect(h.deleteFile).toHaveBeenCalled();
+  });
+});

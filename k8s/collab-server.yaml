@@ -418,8 +418,19 @@ spec:
               cpu: "2"
               memory: 3Gi
           readinessProbe:
+            # NOT /codesite/readiness: that check round-trips through the
+            # frontend's activity-bridge probe, which calls back into this
+            # pod via the collab-server ClusterIP Service. Gating pod
+            # readiness on it is a deadlock the first time this container
+            # starts with zero existing ready replicas (Recreate strategy,
+            # or a fresh cluster) -- the Service has no endpoints to route
+            # that internal call to until this probe passes, and this probe
+            # can't pass until the Service has endpoints. Use the
+            # self-contained status endpoint instead; /codesite/readiness
+            # remains available as a deep cross-service diagnostic, just not
+            # as the Kubernetes readiness gate.
             httpGet:
-              path: /codesite/readiness
+              path: /debug/status
               port: 1235
             initialDelaySeconds: 5
             periodSeconds: 10

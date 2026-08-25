@@ -381,12 +381,24 @@ export default function EditorPage({ params }) {
     const router = useRouter();
     const devWorkspaceAuthBypass = process.env.NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS === '1';
 
+    const hasPendingGuestSession = useCallback(() => {
+        try {
+            const raw = sessionStorage.getItem('synthi-pending-guest-session');
+            if (!raw) return false;
+            const pending = JSON.parse(raw);
+            return Boolean(pending?.sessionId && pending?.guestId);
+        } catch (_) {
+            return false;
+        }
+    }, []);
+
     // ── Auth guard: redirect unauthenticated users to the home page ─────
     useEffect(() => {
-        if (!devWorkspaceAuthBypass && authStatus === 'unauthenticated') {
+        const admittedGuest = collabSessionService?.isGuest || hasPendingGuestSession();
+        if (!devWorkspaceAuthBypass && authStatus === 'unauthenticated' && !admittedGuest) {
             router.replace('/');
         }
-    }, [authStatus, router, devWorkspaceAuthBypass]);
+    }, [authStatus, router, devWorkspaceAuthBypass, hasPendingGuestSession]);
 
     // ── Persist auth identity into localStorage so getCurrentUser() works ──
     // Guest pages set this for guest users; workspace pages must do the same
@@ -1056,9 +1068,9 @@ export default function EditorPage({ params }) {
             const raw = sessionStorage.getItem('synthi-pending-guest-session');
             if (!raw) return;
             sessionStorage.removeItem('synthi-pending-guest-session');
-            const { sessionId: sId, guestId, hostId, slug: sessionSlug, hostName, permissions } = JSON.parse(raw);
+            const { sessionId: sId, guestId, hostId, slug: sessionSlug, hostName, permissions, displayName } = JSON.parse(raw);
             if (sId && guestId) {
-                collabSessionService.joinAsGuest(sId, guestId, hostId || '', sessionSlug || slug, { hostName: hostName || null, permissions: permissions || null });
+                collabSessionService.joinAsGuest(sId, guestId, hostId || '', sessionSlug || slug, { hostName: hostName || null, permissions: permissions || null, displayName: displayName || null });
             }
         } catch (_) { }
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3025,8 +3037,13 @@ export default function EditorPage({ params }) {
     }, []);
 
     const handleOpenWorkspaceStart = useCallback(() => {
+        if (collabSessionService?.isGuest && authStatus === 'unauthenticated') {
+            const returnToWorkspace = `/workspace/${encodeURIComponent(slug || '')}`;
+            router.push(`/login?callbackUrl=${encodeURIComponent(returnToWorkspace)}`);
+            return;
+        }
         router.push('/');
-    }, [router]);
+    }, [authStatus, router, slug]);
 
     useEffect(() => {
         const handler = (event) => {
