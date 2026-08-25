@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { digest, normalizePath } from './policy';
+import { getCodeSiteRuntimeConfig } from './runtimeConfig';
 
 const SKIP_DIRS = new Set([
   '.git',
@@ -20,8 +21,9 @@ const EXPORT_CONDITION_PRIORITY = ['types', 'import', 'module', 'require', 'node
 export const REPO_POLICY_COMPILER_VERSION = '2026-07-01.1';
 
 export function discoverRepoPolicySignals(options = {}) {
+  const config = getCodeSiteRuntimeConfig();
   const repoRoot = detectRepoRoot(options.root || process.env.SYNTHI_CODESITE_REPO_ROOT || process.cwd());
-  const maxFiles = Number(options.maxFiles || process.env.SYNTHI_CODESITE_REPO_SCAN_MAX_FILES || 12000);
+  const maxFiles = Number(options.maxFiles || config.repoScanMaxFiles);
   const files = listRepoFiles(repoRoot, { maxFiles });
   const truncated = files.length >= maxFiles;
   const fileSet = new Set(files);

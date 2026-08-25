@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
+import { getCodeSiteRuntimeConfig } from './runtimeConfig';
 import { asArray, stableJson } from './json';
 import { detectRepoRoot } from './repoPolicyCompiler';
 import { digest, matchPathPattern, normalizePath, normalizePathList } from './policy';
@@ -516,15 +517,16 @@ function normalizeSkippedPaths(paths) {
 }
 
 function normalizeLimits(options = {}) {
+  const config = getCodeSiteRuntimeConfig();
   return {
-    maxFiles: positiveInt(options.maxFiles || options.max_files || process.env.SYNTHI_CODESITE_SNAPSHOT_MAX_FILES, DEFAULT_MAX_FILES),
+    maxFiles: positiveInt(options.maxFiles || options.max_files, config.snapshotMaxFiles),
     maxFileBytes: positiveInt(
-      options.maxFileBytes || options.max_file_bytes || process.env.SYNTHI_CODESITE_SNAPSHOT_MAX_FILE_BYTES,
-      DEFAULT_MAX_FILE_BYTES,
+      options.maxFileBytes || options.max_file_bytes,
+      config.snapshotMaxFileBytes,
     ),
     maxScanEntries: positiveInt(
-      options.maxScanEntries || options.max_scan_entries || process.env.SYNTHI_CODESITE_SNAPSHOT_MAX_SCAN_ENTRIES,
-      DEFAULT_MAX_SCAN_ENTRIES,
+      options.maxScanEntries || options.max_scan_entries,
+      config.snapshotMaxScanEntries,
     ),
   };
 }
