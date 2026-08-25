@@ -20,7 +20,7 @@ import { useAppSelector } from '@/redux/hooks';
 import { selectFocusedEditorPaneId } from '../state/layout-slice';
 import { SettingsPanelContent } from '@/components/SettingsPanelContent';
 import EditorPaneHeader from '@/components/EditorPaneHeader';
-import { WORKFLOW_ACTIONS } from '@/components/agent-workflows/AgentWorkflowPanel';
+import { WORKFLOW_ACTIONS, worldPickerLabel } from '@/components/agent-workflows/AgentWorkflowPanel';
 import { collectDojoAuditEvidenceRefs } from '@/services/agentWorkflowDojoAudit';
 import { buildAgentWorkflowHandoffFiles, buildDojoArtifactFiles, SYNTHI_WORKFLOW_ROOT } from '@/services/agentWorkflowHandoff';
 import {
@@ -523,14 +523,21 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
 
   const applyBridgeState = useCallback((nextState) => {
     if (!nextState) return;
-    setWorkflowState({
+    setWorkflowState((previous) => ({
       ...nextState,
+      // Registered places (terminal, preview, games...) come from the
+      // bridge's attach tool; keep the freshest list the bridge reported.
+      substrates: Array.isArray(nextState.substrates)
+        ? nextState.substrates
+        : Array.isArray(previous?.substrates)
+          ? previous.substrates
+          : [],
       bridge: {
         ...(nextState.bridge || {}),
         status: nextState.bridge?.status || 'ready',
         url: bridgeConfig.url,
       },
-    });
+    }));
   }, [bridgeConfig.url]);
 
   const refreshWorkflowState = useCallback(async ({ signal } = {}) => {
@@ -636,6 +643,51 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
           break;
         case WORKFLOW_ACTIONS.OBSERVE:
           await ensureObservedWorkspace();
+          break;
+        case WORKFLOW_ACTIONS.LIST_SUBSTRATES:
+          {
+            // The Observe picker asks the bridge what it can reach. With no
+            // arguments the tool lists registered worlds; with a kind plus
+            // observe-only permission it attaches to one.
+            const selected = detail?.payload?.substrate;
+            if (!selected) {
+              const listed = await callWorkflowTool(WORKFLOW_ACTIONS.LIST_SUBSTRATES, {});
+              const available = Array.isArray(listed?.result?.available_substrates)
+                ? listed.result.available_substrates
+                : [];
+              setWorkflowState((prev) => ({ ...(prev || {}), substrates: available }));
+              break;
+            }
+            if (selected === 'browser') {
+              // The workspace preview has its own consent flow.
+              await ensureObservedWorkspace();
+              break;
+            }
+            const attached = await callWorkflowTool(WORKFLOW_ACTIONS.LIST_SUBSTRATES, {
+              substrate_kind: selected,
+              consent: {
+                subject: workflowUserId || 'panel-operator',
+                realm:
+                  selected === 'terminal'
+                    ? { realm_kind: 'workspace', realm_id: ctx?.workspaceSlug || 'current-workspace' }
+                    : { realm_kind: selected, realm_id: ctx?.workspaceSlug || 'current-workspace' },
+                allow: ['observe'],
+              },
+            });
+            const outcome = attached?.result || {};
+            setWorkflowState((prev) => ({
+              ...(prev || {}),
+              observe: {
+                ...(prev?.observe || {}),
+                status: outcome.session_id ? 'ready' : 'needsConsent',
+                label: outcome.session_id ? 'Watching' : 'Needs permission',
+                detail: outcome.session_id
+                  ? `Watching ${worldPickerLabel(selected)}.`
+                  : 'Ask the agent to connect there - it needs your OK first.',
+                chosenWorld: selected,
+              },
+            }));
+          }
           break;
         case WORKFLOW_ACTIONS.BEGIN_TEACH:
           {

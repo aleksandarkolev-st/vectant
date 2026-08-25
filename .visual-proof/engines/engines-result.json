@@ -1,0 +1,7 @@
+{
+  "what": "REAL headless web-canvas game engine behind the WS scene-graph protocol; pixels rendered by Chromium rAF loop",
+  "hamming_before_after": 2,
+  "changed_blocks": 3,
+  "mean_delta": 0.702,
+  "render_deterministic": true
+}

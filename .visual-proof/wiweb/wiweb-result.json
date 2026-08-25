@@ -1,0 +1,13 @@
+{
+  "what": "LIVE website-flow transfer: agent A taught on site A; agent B (separate OS process over CDP) replayed on site B with a different port AND different data",
+  "run_ok": true,
+  "run_detail": "{\"ok\":true,\"step_results\":[{\"step_index\":0,\"ok\":true},{\"step_index\":1,\"ok\":true}]}",
+  "agent_b_log_tail": "seeded 1 license(s)\nAGENT BRIDGE LIVE on port 49742\n",
+  "siteB_choice": "a35355",
+  "siteB_first": "a35355",
+  "siteA_choice": "a59203",
+  "transferred": true,
+  "skill_id": "contract-browser-browser-http://127.0.0.1:56669",
+  "integrity_verified": true,
+  "timestamp": "2026-08-25T10:01:44.547Z"
+}

@@ -24,6 +24,7 @@ import {
 
 export const WORKFLOW_ACTIONS = Object.freeze({
   ATTACH_WORKSPACE: 'synthi_browser_attach_current_workspace',
+  LIST_SUBSTRATES: 'synthi_attach_substrate',
   OBSERVE: 'synthi_browser_observe_preview',
   BEGIN_TEACH: 'synthi_browser_begin_teach',
   END_TEACH: 'synthi_browser_end_teach',
@@ -378,6 +379,26 @@ function shouldShowDojoSkill(model) {
   return Boolean(model.dojo?.skillId || model.dojo?.status === 'draft' || model.dojo?.status === 'licensed');
 }
 
+// Plain-language names for the kinds of places the agent can watch or work
+// in. The picker never shows internal vocabulary - just where things live.
+const WORLD_PICKER_LABELS = Object.freeze({
+  browser: 'This workspace preview',
+  terminal: 'A terminal here',
+  runtime: 'Programs and notebooks',
+  game: 'A game world',
+  kernel: 'System internals (careful)',
+  notebook: 'Notebooks',
+  api: 'Web services',
+  desktop: 'Apps on this computer',
+});
+
+function worldPickerLabel(item) {
+  if (typeof item !== 'string' || item.length === 0) return 'Somewhere else';
+  return WORLD_PICKER_LABELS[item] || item;
+}
+
+export { worldPickerLabel };
+
 function buildReadinessRows(model) {
   const runtimeReady = isRuntimeAttached(model.runtime);
   const observed = hasObservedPage(model);
@@ -445,10 +466,15 @@ function buildStages(model) {
       title: needsPreview ? 'Preview target' : 'Screenshot consent',
       detail: observed
         ? model.observe?.detail || 'The current workspace view can be inspected.'
-        : needsPreview
-          ? model.observe?.detail || 'Start or open a workspace preview, then inspect it from the hosted runtime.'
-          : model.observe?.detail || 'Attach first, then request a screenshot from the hosted runtime.',
+        : model.observe?.detail || 'Pick where to look, then take a look.',
       tone: observed ? 'ok' : runtimeReady ? 'warn' : 'neutral',
+      // Substrate picker: fed by synthi_attach_substrate (plan acceptance).
+      // Labels stay plain-language; users never see adapter vocabulary.
+      picker: {
+        action: WORKFLOW_ACTIONS.LIST_SUBSTRATES,
+        placeholder: 'Where should I watch?',
+        items: Array.isArray(model.substrates) ? model.substrates : [],
+      },
       action: WORKFLOW_ACTIONS.OBSERVE,
       actionLabel: 'Observe',
       actionEnabled: runtimeReady,
@@ -1112,6 +1138,24 @@ function WorkflowStage({ stage, onAction, isBusy = false, selected = false, onSe
           </div>
         </div>
       </button>
+      {stage.picker && !isBusy ? (
+        <select
+          data-workflow-substrate-picker={stage.id}
+          aria-label={stage.picker.placeholder}
+          defaultValue=""
+          onChange={(event) => {
+            const value = event.target.value;
+            if (value) onAction?.(stage.picker.action, { stageId: stage.id, substrate: value });
+          }}
+          className="mr-1 h-7 max-w-32 rounded-md border px-1 text-[11px]"
+          style={{ background: 'var(--bg-panel)', color: 'var(--text-primary)', borderColor: 'var(--border-subtle)' }}
+        >
+          <option value="" disabled>{stage.picker.placeholder}</option>
+          {(stage.picker.items ?? []).map((item) => (
+            <option key={item} value={item}>{worldPickerLabel(item)}</option>
+          ))}
+        </select>
+      ) : null}
       <button
         type="button"
         className="inline-flex h-7 min-w-16 items-center justify-center gap-1.5 rounded-md border px-2 text-[11px] font-semibold transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-55"

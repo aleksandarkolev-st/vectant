@@ -248,7 +248,11 @@ describe('AgentWorkflowPanel rendering', () => {
     expect(panel.textContent).toContain('Screenshot consent');
     expect(panel.textContent).toContain('Workflow teaching');
 
-    const teachButton = [...panel.querySelectorAll('button')].find((button) => button.textContent.includes('Teach'));
+    const teachButton = [...panel.querySelectorAll('button')]
+      // The stage row has a selector button and an action button; only the
+      // action button (no data-workflow-stage-selector) dispatches actions.
+      .filter((button) => !button.hasAttribute('data-workflow-stage-selector'))
+      .find((button) => button.textContent.includes('Teach'));
     expect(teachButton).toBeTruthy();
 
     act(() => {
@@ -403,24 +407,26 @@ describe('AgentWorkflowPanel rendering', () => {
     expect(panel.textContent).toContain('stable_entity_identity');
     expect(panel.textContent).toContain('Operator Review Required');
     expect(panel.textContent).toContain('Dojo Export');
-    expect(panel.textContent).toContain('Universe');
+    // Current copy for GET_UNIVERSE_DOSSIER / RUN_WIND_TUNNEL actions.
+    expect(panel.textContent).toContain('Capability');
     expect(panel.textContent).toContain('Practice');
-    expect(panel.textContent).toContain('Wind');
+    expect(panel.textContent).toContain('Hardening');
     expect([...panel.querySelectorAll('button')]
       .filter((button) => button.textContent.trim() === 'Export')).toHaveLength(1);
 
-    const checkrideButton = [...panel.querySelectorAll('button')]
-      .find((button) => button.textContent.includes('Checkride'));
-    const licenseButton = [...panel.querySelectorAll('button')]
-      .find((button) => button.textContent.includes('Relicense'));
-    const universeButton = [...panel.querySelectorAll('button')]
-      .find((button) => button.textContent.includes('Universe'));
-    const practiceButton = [...panel.querySelectorAll('button')]
-      .find((button) => button.textContent.includes('Practice'));
-    const windButton = [...panel.querySelectorAll('button')]
-      .find((button) => button.textContent.includes('Wind'));
-    const healthButton = [...panel.querySelectorAll('button')]
-      .find((button) => button.textContent.includes('Health'));
+    // Dojo debug actions live inside the Dojo card; scope the lookup so
+    // section navigation sharing the same words never matches first.
+    const dojoCard = panel.querySelector('[data-testid="agent-workflow-dojo"]');
+    expect(dojoCard).toBeTruthy();
+    const findActionButton = (label) => [...dojoCard.querySelectorAll('button')]
+      .filter((button) => !button.hasAttribute('data-workflow-stage-selector'))
+      .find((button) => button.textContent.includes(label));
+    const checkrideButton = findActionButton('Checkride');
+    const licenseButton = findActionButton('Relicense');
+    const universeButton = findActionButton('Capability');
+    const practiceButton = findActionButton('Practice');
+    const windButton = findActionButton('Hardening');
+    const healthButton = findActionButton('Health');
 
     expect(checkrideButton).toBeTruthy();
     expect(licenseButton).toBeTruthy();
@@ -501,7 +507,9 @@ describe('AgentWorkflowPanel rendering', () => {
 
     const postcondition = [...panel.querySelectorAll('textarea')]
       .find((input) => input.closest('label')?.textContent.includes('Postcondition'));
-    const allowMutation = panel.querySelector('input[type="checkbox"]');
+    // The mutation-replay consent is a role="switch" button in the form.
+    const allowMutation = [...panel.querySelectorAll('button[role="switch"]')]
+      .find((button) => button.textContent.includes('Allow mutation replay'));
     const saveButton = [...panel.querySelectorAll('button')]
       .find((button) => button.textContent.includes('Save profile'));
 
@@ -509,9 +517,13 @@ describe('AgentWorkflowPanel rendering', () => {
     expect(allowMutation).toBeTruthy();
     expect(saveButton).toBeTruthy();
 
+    // Two separate user ticks: flipping the switch must commit before
+    // Save reads the form, exactly like real interaction timing.
+    act(() => {
+      allowMutation.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
     act(() => {
       setNativeInputValue(postcondition, 'npm run workflow:assert-saved');
-      allowMutation.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       saveButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
@@ -537,5 +549,71 @@ describe('AgentWorkflowPanel rendering', () => {
         },
       }),
     );
+  });
+});
+
+describe('Observe world picker (five verbs, zero jargon)', () => {
+  it('shows plain-language places, never internal vocabulary', () => {
+    const panel = renderPanel({
+      workspaceSlug: 'developer-workspace',
+      workflowState: {
+        runtime: { status: 'ready' },
+        substrates: ['browser', 'terminal', 'runtime', 'game', 'kernel'],
+      },
+    });
+
+    const picker = panel.querySelector('[data-workflow-substrate-picker="observe"]');
+    expect(picker).toBeTruthy();
+    const options = [...picker.querySelectorAll('option')].map((option) => option.textContent);
+    // Human labels for every registered kind...
+    expect(options).toContain('This workspace preview');
+    expect(options).toContain('A terminal here');
+    expect(options).toContain('Programs and notebooks');
+    expect(options).toContain('A game world');
+    expect(options).toContain('System internals (careful)');
+    // ...and zero jargon anywhere in the picker.
+    expect(options.join('|')).not.toMatch(/substrate|adapter|realm|lease/i);
+  });
+
+  it('dispatches the chosen place so the host can attach and observe', () => {
+    const onWorkflowAction = vi.fn();
+    const panel = renderPanel({
+      workspaceSlug: 'developer-workspace',
+      onWorkflowAction,
+      workflowState: {
+        runtime: { status: 'ready' },
+        substrates: ['terminal'],
+      },
+    });
+
+    const picker = panel.querySelector('[data-workflow-substrate-picker="observe"]');
+    expect(picker).toBeTruthy();
+
+    act(() => {
+      setNativeInputValue(picker, 'terminal');
+      picker.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    expect(onWorkflowAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: WORKFLOW_ACTIONS.LIST_SUBSTRATES,
+        payload: expect.objectContaining({ substrate: 'terminal' }),
+      }),
+    );
+  });
+
+  it('renders no picker options when the bridge reports nothing reachable', () => {
+    const panel = renderPanel({
+      workspaceSlug: 'developer-workspace',
+      workflowState: {
+        runtime: { status: 'ready' },
+        substrates: [],
+      },
+    });
+
+    const picker = panel.querySelector('[data-workflow-substrate-picker="observe"]');
+    expect(picker).toBeTruthy();
+    // Only the placeholder remains - honest empty state, no fake choices.
+    expect(picker.querySelectorAll('option')).toHaveLength(1);
   });
 });
