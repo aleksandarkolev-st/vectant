@@ -1,4 +1,4 @@
-import { spawn } from 'child_process';
+﻿import { spawn } from 'child_process';
 import { createHash, randomBytes } from 'crypto';
 import fs from 'fs/promises';
 import os from 'os';
@@ -454,7 +454,7 @@ export async function createProject(workspaceSlug, actor, body = {}) {
   const title = String(body.title || body.request || 'CodeSite project').trim();
   const request = String(body.request || title).trim();
   // Coordination mode (docs/CHANNEL_MODES_TRADEOFFS.md): validated against the
-  // ladder and any workspace floor at creation time — fail closed.
+  // ladder and any workspace floor at creation time â€” fail closed.
   const requestedMode = String(body.channelMode || body.channel_mode || 'registered_direct').trim().toLowerCase();
   const modeCheck = effectiveChannelMode(requestedMode);
   if (!modeCheck.ok) throw badRequest(modeCheck.reasonCode, modeCheck.detail);
@@ -3334,7 +3334,7 @@ export async function createAgentExecutionPlan(workspaceSlug, sessionId, agentAc
   }
   // direct_preferred fast lane: filing a plan auto-opens channels to peers in
   // the same shared session (docs/CHANNEL_MODES_TRADEOFFS.md Mode 3). Failures
-  // here never block the plan itself — channels are an optimization.
+  // here never block the plan itself â€” channels are an optimization.
   try {
     await autoOpenDirectChannels(workspaceSlug, session);
   } catch (err) {
@@ -3370,7 +3370,7 @@ export async function openAgentTransaction(workspaceSlug, sessionId, agentAccess
   const session = authority.session;
   const mutationLeaseId = String(body.mutationLeaseId || body.mutation_lease_id || '').trim();
   if (!mutationLeaseId) throw badRequest('mutation_lease_required');
-  // §9.5 negative: an agent may only open transactions on leases that belong
+  // Â§9.5 negative: an agent may only open transactions on leases that belong
   // to its OWN agent session. Verify ownership explicitly instead of relying
   // on the blanket bypass actor.
   const lease = await prisma.codeSiteMutationLease.findFirst({
@@ -7212,7 +7212,7 @@ async function dispatchInboxDeliveryTarget(inboxItem, payload, target) {
       documentId: inboxItem.documentId,
       payload,
     });
-    // Workstream F.2: signed envelope — HMAC over timestamp+nonce+body digest
+    // Workstream F.2: signed envelope â€” HMAC over timestamp+nonce+body digest
     // gives receivers sender authentication and replay protection.
     const signatureHeaders = signDeliveryEnvelope(bodyText);
     const response = await fetch(target.endpoint, {
@@ -7385,27 +7385,17 @@ function normalizedPolicyField(value) {
   return String(value || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
 }
 
-export async function getAgentInbox(workspaceSlug, agentSessionId, actor = null) {
-  const session = await prisma.codeSiteAgentSession.findFirst({
-    where: { id: agentSessionId, project: { workspaceSlug } },
-  });
-  if (!session) throw notFound('agent_session_not_found');
-  requireAgentInboxAccess(session, actor);
+async function loadAgentInbox(workspaceSlug, session) {
   const items = await prisma.codeSiteAgentInboxItem.findMany({
-    where: { agentSessionId },
+    where: { agentSessionId: session.id },
     orderBy: { createdAt: 'asc' },
   });
   return items.map(inboxProjection);
 }
 
-export async function acknowledgeInboxItem(workspaceSlug, agentSessionId, eventId, actor = null) {
-  const session = await prisma.codeSiteAgentSession.findFirst({
-    where: { id: agentSessionId, project: { workspaceSlug } },
-  });
-  if (!session) throw notFound('agent_session_not_found');
-  requireAgentInboxAccess(session, actor);
+async function acknowledgeAgentInboxItem(workspaceSlug, session, eventId) {
   const item = await prisma.codeSiteAgentInboxItem.findFirst({
-    where: { agentSessionId, eventId, project: { workspaceSlug } },
+    where: { agentSessionId: session.id, eventId, project: { workspaceSlug } },
   });
   if (!item) throw notFound('inbox_item_not_found');
   const updated = await prisma.codeSiteAgentInboxItem.update({
@@ -7426,6 +7416,51 @@ export async function acknowledgeInboxItem(workspaceSlug, agentSessionId, eventI
     },
   });
   return inboxProjection(updated);
+}
+
+export async function getAgentInboxForAgent(
+  workspaceSlug,
+  agentSessionId,
+  agentAccessToken,
+) {
+  const { session, authorizedAt: now } = await requireAgentTokenAuthority(
+    workspaceSlug,
+    agentSessionId,
+    agentAccessToken,
+  );
+  return loadAgentInbox(workspaceSlug, session);
+}
+
+export async function acknowledgeInboxItemForAgent(
+  workspaceSlug,
+  agentSessionId,
+  eventId,
+  agentAccessToken,
+) {
+  const { session } = await requireAgentTokenAuthority(
+    workspaceSlug,
+    agentSessionId,
+    agentAccessToken,
+  );
+  return acknowledgeAgentInboxItem(workspaceSlug, session, eventId);
+}
+
+export async function getAgentInbox(workspaceSlug, agentSessionId, actor = null) {
+  const session = await prisma.codeSiteAgentSession.findFirst({
+    where: { id: agentSessionId, project: { workspaceSlug } },
+  });
+  if (!session) throw notFound('agent_session_not_found');
+  requireAgentInboxAccess(session, actor);
+  return loadAgentInbox(workspaceSlug, session);
+}
+
+export async function acknowledgeInboxItem(workspaceSlug, agentSessionId, eventId, actor = null) {
+  const session = await prisma.codeSiteAgentSession.findFirst({
+    where: { id: agentSessionId, project: { workspaceSlug } },
+  });
+  if (!session) throw notFound('agent_session_not_found');
+  requireAgentInboxAccess(session, actor);
+  return acknowledgeAgentInboxItem(workspaceSlug, session, eventId);
 }
 
 function requireAgentInboxAccess(session, actor) {
@@ -10667,7 +10702,7 @@ export async function shadowMergeSimulate(workspaceSlug, projectId, body = {}, a
     ?? DEFAULT_TOWER_SIMULATION_STRATEGIES,
   );
   // Workstream E: an explicit empty universes list can never constitute an
-  // executed merge proof — the runner fails it, so reject before dispatch.
+  // executed merge proof â€” the runner fails it, so reject before dispatch.
   if (body.universes !== undefined && asArray(body.universes).length === 0) {
     throw badRequest('shadow_universes_required');
   }
@@ -13121,7 +13156,7 @@ function agentChannelProjection(channel) {
     purpose: channel.purpose || null,
     transport: channel.transport || null,
     fromEndpointRef: channel.fromEndpointRef || null,
-    // The responder's endpoint is only revealed after acceptance — exposing
+    // The responder's endpoint is only revealed after acceptance â€” exposing
     // it is the responder's choice, made in /accept.
     toEndpointRef: channel.status === 'requested' ? null : (channel.toEndpointRef || null),
     maxDurationMs: channel.maxDurationMs ?? null,
@@ -13169,7 +13204,7 @@ export async function requestAgentChannel(workspaceSlug, sessionId, agentAccessT
   if (toSessionId === fromSession.id) throw badRequest('channel_self_pairing_forbidden');
   const purpose = String(body.purpose || 'coordination').trim().slice(0, 256);
   const transport = String(body.transport || '').trim().toLowerCase();
-  // Design §8: endpoints are advertised as ws:// or wss:// host:port refs.
+  // Design Â§8: endpoints are advertised as ws:// or wss:// host:port refs.
   const rawEndpoint = String(body.endpointRef || body.endpoint_ref || '').trim();
   if (rawEndpoint && !/^wss?:\/\/[^\s]{1,500}$/.test(rawEndpoint)) {
     throw badRequest('channel_endpoint_invalid');
@@ -13241,13 +13276,13 @@ export async function requestAgentChannel(workspaceSlug, sessionId, agentAccessT
       grantExpiresAt: new Date(Date.now() + CHANNEL_GRANT_WINDOW_MS),
     },
   });
-  // Design §7: the initiator receives its direction's token immediately —
+  // Design Â§7: the initiator receives its direction's token immediately â€”
   // frames it sends are keyed with this; the responder gets the other
   // direction's token only upon acceptance. Stored hash covers both.
   const initiatorToken = mintChannelToken();
   await prisma.codeSiteAgentChannel.update({
     where: { id: channel.id },
-    // Both directions' token hashes are stored as `fromHash|toHash` (pipe —
+    // Both directions' token hashes are stored as `fromHash|toHash` (pipe â€”
     // a hex digest never contains one). The initiator's half is written now;
     // the responder's half replaces the toHalf slot at accept time. Either
     // side verifies its own token against its half via verifyChannelToken.
@@ -13273,8 +13308,8 @@ export async function requestAgentChannel(workspaceSlug, sessionId, agentAccessT
 }
 
 /**
- * Design §7: tokens/channels expire at openedAt + maxDurationMs. Enforced
- * lazily whenever a channel is touched — an expired active channel is flipped
+ * Design Â§7: tokens/channels expire at openedAt + maxDurationMs. Enforced
+ * lazily whenever a channel is touched â€” an expired active channel is flipped
  * to 'expired' before any other logic runs.
  */
 async function sweepExpiredChannel(channel) {
@@ -13301,7 +13336,7 @@ async function sweepExpiredChannel(channel) {
 
 /**
  * Responder accepts a requested channel. Mints the channel token, stores only
- * its hash, and returns it once — inside this authenticated response. Also
+ * its hash, and returns it once â€” inside this authenticated response. Also
  * records the responder's endpoint and activates the channel.
  */
 export async function acceptAgentChannel(workspaceSlug, sessionId, agentAccessToken, channelId, body = {}, options = {}) {
@@ -13327,7 +13362,7 @@ export async function acceptAgentChannel(workspaceSlug, sessionId, agentAccessTo
   }
   const endpointRef = String(body.endpointRef || body.endpoint_ref || '').trim() || null;
   const token = mintChannelToken();
-  // Design §7: acceptance is single-shot. A conditional update makes a
+  // Design Â§7: acceptance is single-shot. A conditional update makes a
   // concurrent double-accept lose deterministically instead of minting two
   // tokens with last-write-wins.
   const claim = await prisma.codeSiteAgentChannel.updateMany({
@@ -13385,7 +13420,7 @@ export async function rejectAgentChannel(workspaceSlug, sessionId, agentAccessTo
 
 /**
  * Close an active channel (either side). Records the transcript summary
- * digest both sides maintained — disputes can later be checked against it
+ * digest both sides maintained â€” disputes can later be checked against it
  * without storing payloads.
  */
 export async function closeAgentChannel(workspaceSlug, sessionId, agentAccessToken, channelId, body = {}, options = {}) {
@@ -13394,7 +13429,7 @@ export async function closeAgentChannel(workspaceSlug, sessionId, agentAccessTok
     now: options.now,
   });
   const session = authority.session;
-  // Design §8: close is idempotent — if the channel is already closed,
+  // Design Â§8: close is idempotent â€” if the channel is already closed,
   // return the record unchanged so both participants can call this.
   const existing = await prisma.codeSiteAgentChannel.findFirst({
     where: { id: String(channelId || ''), workspaceSlug },
@@ -13406,7 +13441,7 @@ export async function closeAgentChannel(workspaceSlug, sessionId, agentAccessTok
   if (channel.fromSessionId !== session.id && channel.toSessionId !== session.id) {
     throw forbidden('channel_participant_mismatch');
   }
-  // An already-expired channel is terminal — report the sweep result instead
+  // An already-expired channel is terminal â€” report the sweep result instead
   // of re-closing (keeps the timeline's expiry record intact).
   if (channel.status === 'expired') {
     return agentChannelProjection(channel);
@@ -13417,8 +13452,8 @@ export async function closeAgentChannel(workspaceSlug, sessionId, agentAccessTok
   // The summary digest is provided by the closing side; both sides maintain a
   // hash chain over the transcript so digests should match. Store what was
   // reported plus who reported it.
-  // The summary digest must look like a real transcript hash — junk defeats
-  // the dispute mechanism (design §7).
+  // The summary digest must look like a real transcript hash â€” junk defeats
+  // the dispute mechanism (design Â§7).
   const rawDigest = String(body.summaryDigest || body.summary_digest || '').trim();
   if (rawDigest && !/^sha256:[0-9a-f]{64}$/.test(rawDigest)) {
     throw badRequest('channel_summary_digest_invalid');
@@ -13450,7 +13485,7 @@ export async function closeAgentChannel(workspaceSlug, sessionId, agentAccessTok
 }
 
 /**
- * Design §9: transports self-report MAC/replay failures so the control plane
+ * Design Â§9: transports self-report MAC/replay failures so the control plane
  * can record channel_violation events. Participant-gated.
  */
 export async function reportAgentChannelViolation(workspaceSlug, sessionId, agentAccessToken, channelId, body = {}, options = {}) {

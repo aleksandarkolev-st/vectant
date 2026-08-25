@@ -1,6 +1,7 @@
-import {
+﻿import {
   abortTransaction,
   acknowledgeInboxItem,
+  acknowledgeInboxItemForAgent,
   attachAgentSession,
   attachProofBundleCommit,
   collisionPredict,
@@ -22,6 +23,7 @@ import {
   eventCursor,
   exportArtifacts,
   getAgentInbox,
+  getAgentInboxForAgent,
   getAgentManifest,
   getAgentSharedKnowledge,
   getControlState,
@@ -120,6 +122,14 @@ export async function GET(request, { params }) {
           requestQuery(request),
         ),
       });
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
+  if (route[0] === 'agent-sessions' && route[2] === 'inbox' && route.length === 3
+    && bearerToken(request)) {
+    try {
+      return okJson({ inbox: await getAgentInboxForAgent(slug, route[1], bearerToken(request)) });
     } catch (error) {
       return handleCodesiteError(error);
     }
@@ -456,6 +466,26 @@ export async function POST(request, { params }) {
         return okJson({ channel: await reportAgentChannelViolation(slug, route[1], bearerToken(request), route[3], body) });
       }
       return okJson({ channel: await closeAgentChannel(slug, route[1], bearerToken(request), route[3], body) });
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
+  if (route[0] === 'agent-sessions'
+    && route[2] === 'inbox'
+    && route[3]
+    && route[3] !== 'stream'
+    && route[4] !== 'respond'
+    && route.length === 4
+    && bearerToken(request)) {
+    try {
+      return okJson({
+        inboxItem: await acknowledgeInboxItemForAgent(
+          slug,
+          route[1],
+          route[3],
+          bearerToken(request),
+        ),
+      });
     } catch (error) {
       return handleCodesiteError(error);
     }

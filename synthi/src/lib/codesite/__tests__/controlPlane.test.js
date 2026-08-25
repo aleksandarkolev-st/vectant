@@ -1,4 +1,4 @@
-import fs from 'fs/promises';
+﻿import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -163,6 +163,7 @@ import {
   attachProofBundleCommit,
   commitTransaction,
   acknowledgeInboxItem,
+  acknowledgeInboxItemForAgent,
   collisionPredict,
   applyRouteRevision,
   createAgentSession,
@@ -178,6 +179,7 @@ import {
   dryRunTransactionWrites,
   detachAgentSession,
   getAgentInbox,
+  getAgentInboxForAgent,
   getAgentManifest,
   getControlState,
   getEvents,
@@ -263,6 +265,7 @@ async function withEnv(values, callback) {
 }
 
 const AGENT_AUTHORITY_NOW = new Date('2026-08-22T12:00:00.000Z');
+const AGENT_INBOX_NOW = new Date(AGENT_AUTHORITY_NOW.getTime() + 60_000);
 const AGENT_AUTHORITY_TOKEN = `csa_${'z'.repeat(43)}`;
 const AGENT_AUTHORITY_TOKEN_HASH = createHash('sha256').update(AGENT_AUTHORITY_TOKEN, 'utf8').digest('hex');
 const AGENT_AUTHORITY_TOKEN_B = `csa_${'q'.repeat(43)}`;
@@ -285,8 +288,8 @@ function agentAuthoritySession(overrides = {}) {
     agentProvider: 'custom-provider',
     status: 'attached',
     capabilitiesJson: JSON.stringify(['codesite.context.read', 'codesite.knowledge.read']),
-    agentAccessTokenExpiresAt: new Date(AGENT_AUTHORITY_NOW.getTime() + 60_000),
-    lastHeartbeatAt: new Date(AGENT_AUTHORITY_NOW.getTime() - 1_000),
+    agentAccessTokenExpiresAt: new Date(Date.now() + 60_000),
+    lastHeartbeatAt: new Date(Date.now() - 1_000),
     endedAt: null,
     project: {
       id: 'project-authority-1',
@@ -3144,7 +3147,7 @@ describe('CodeSite control plane transaction validation', () => {
       expect(result.status).toBe('active');
       expect(result.toEndpointRef).toBe('ws://127.0.0.1:9202/agent-b');
       const updateData = prisma.codeSiteAgentChannel.updateMany.mock.calls.at(-1)[0].data;
-      // `fromHash|toHash` — the mock row has no request-time hash so the
+      // `fromHash|toHash` â€” the mock row has no request-time hash so the
       // from-half is the empty-string hash; the to-half must hash the minted
       // token. The raw token never appears in the stored value.
       const [fromHash, toHash] = updateData.channelTokenHash.split('|');
@@ -9269,5 +9272,141 @@ describe('CodeSite control plane transaction validation', () => {
       }),
     ]));
     expect(replay.completeness.observedEventTypes).toEqual(expect.arrayContaining(['write.allowed']));
+  });
+});
+describe('agent-token inbox access', () => {
+  const inboxItem = {
+    id: 'agent-inbox-1',
+    projectId: 'project-authority-1',
+    agentSessionId: 'agent-authority-1',
+    recipientUserId: 'user-agent-owner',
+    eventId: 'evt-agent-1',
+    documentId: 'document-authority-1',
+    knowledgeItemId: null,
+    kind: 'impact_notice',
+    requiresResponse: false,
+    status: 'pending',
+    redactedPayloadJson: JSON.stringify({ summary: 'Contract changed' }),
+    createdAt: new Date('2026-08-22T11:59:00.000Z'),
+    acknowledgedAt: null,
+    responseAction: null,
+    respondedAt: null,
+  };
+
+  function mockInboxStores() {
+    prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([inboxItem]);
+    prisma.codeSiteAgentInboxItem.findFirst.mockResolvedValue(inboxItem);
+    prisma.codeSiteAgentInboxItem.update.mockImplementation(async ({ data }) => ({
+      ...inboxItem,
+      ...data,
+    }));
+    prisma.codeSiteEvent.create.mockImplementation(async ({ data }) => ({
+      ...data,
+      createdAt: new Date('2026-08-22T12:00:01.000Z'),
+    }));
+  }
+
+  beforeEach(() => {
+      vi.clearAllMocks();
+      prisma.codeSiteProjectMember.findUnique.mockResolvedValue(null);
+      prisma.codeSiteProjectMember.findFirst.mockResolvedValue(null);
+    });
+
+    it('authorizes its own session to read projected inbox items', async () => {
+    const session = agentAuthoritySession();
+    mockBoundAgentAuthoritySession(session);
+    mockInboxStores();
+
+    await expect(getAgentInboxForAgent('acme', session.id, AGENT_AUTHORITY_TOKEN))
+      .resolves.toEqual([
+        expect.objectContaining({
+          id: inboxItem.id,
+          agentSessionId: session.id,
+          eventId: inboxItem.eventId,
+          status: 'pending',
+          redactedPayload: { summary: 'Contract changed' },
+        }),
+      ]);
+    expect(prisma.codeSiteAgentInboxItem.findMany).toHaveBeenCalledWith({
+      where: { agentSessionId: session.id },
+      orderBy: { createdAt: 'asc' },
+    });
+  });
+
+  it.each(['wrong-token', '', `csa_${'x'.repeat(43)}`])(
+    'rejects %j before reading another session inbox',
+    async (token) => {
+      const session = agentAuthoritySession({ id: 'agent-inbox-target' });
+      mockBoundAgentAuthoritySession(session);
+      prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([]);
+
+      await expect(getAgentInboxForAgent('acme', session.id, token)).rejects.toMatchObject({
+        status: 403,
+        code: 'agent_access_token_invalid',
+      });
+      expect(prisma.codeSiteAgentInboxItem.findMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not let session A read session B with A token', async () => {
+    const session = agentAuthoritySession();
+    const otherSession = agentAuthoritySession({ id: 'agent-inbox-b', projectId: 'project-authority-b' });
+    prisma.codeSiteAgentSession.findFirst.mockImplementation(async ({ where } = {}) => (
+      where?.id === session.id
+        && where?.workspaceSlug === session.workspaceSlug
+        && where?.agentAccessTokenHash === AGENT_AUTHORITY_TOKEN_HASH
+        ? session
+        : null
+    ));
+    prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([{ ...inboxItem, agentSessionId: otherSession.id }]);
+
+    await expect(getAgentInboxForAgent('acme', otherSession.id, AGENT_AUTHORITY_TOKEN)).rejects.toMatchObject({
+      status: 403,
+      code: 'agent_access_token_invalid',
+    });
+    expect(prisma.codeSiteAgentInboxItem.findMany).not.toHaveBeenCalled();
+  });
+
+  it('acknowledges its own inbox item and records the causal event', async () => {
+    const session = agentAuthoritySession();
+    mockBoundAgentAuthoritySession(session);
+    mockInboxStores();
+
+    await expect(acknowledgeInboxItemForAgent(
+      'acme',
+      session.id,
+      inboxItem.eventId,
+      AGENT_AUTHORITY_TOKEN,
+    )).resolves.toMatchObject({
+      id: inboxItem.id,
+      eventId: inboxItem.eventId,
+      status: 'acknowledged',
+    });
+
+    expect(prisma.codeSiteAgentInboxItem.update).toHaveBeenCalledWith({
+      where: { id: inboxItem.id },
+      data: expect.objectContaining({ status: 'acknowledged', acknowledgedAt: expect.any(Date) }),
+    });
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        projectId: session.projectId,
+        eventType: 'transponder_update',
+        actorType: 'agent_session',
+        actorId: session.id,
+        detailsJson: expect.stringContaining('inbox_acknowledged'),
+      }),
+    }));
+  });
+
+  it('returns a clean not-found error for an unknown inbox event id', async () => {
+    const session = agentAuthoritySession();
+    mockBoundAgentAuthoritySession(session);
+    mockInboxStores();
+    prisma.codeSiteAgentInboxItem.findFirst.mockResolvedValue(null);
+
+    await expect(acknowledgeInboxItemForAgent('acme', session.id, 'missing-event', AGENT_AUTHORITY_TOKEN))
+      .rejects.toMatchObject({ status: 404, code: 'inbox_item_not_found' });
+    expect(prisma.codeSiteAgentInboxItem.update).not.toHaveBeenCalled();
+    expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
   });
 });
