@@ -30,6 +30,7 @@ const { runtimeRunOnce, runtimeExecOnce, createRuntimePodProgram, codeSiteProgra
 const { createContainerPortProxy } = require('./containerPortProxy');
 const config = require('./config');
 const gitService = require('./gitService');
+const { resolveCorsPolicy } = require('./corsPolicy');
 const {
   COMMAND_SCOPES,
   authorizeCollabGatewayRequest,
@@ -2203,9 +2204,17 @@ const server = http.createServer(async (req, res) => {
   }
 
   // CORS headers — must echo the exact Origin (not '*') when credentials are included
-  const requestOrigin = req.headers.origin;
-  res.setHeader('Access-Control-Allow-Origin', requestOrigin || '*');
-  if (requestOrigin) res.setHeader('Access-Control-Allow-Credentials', 'true');
+  const cors = resolveCorsPolicy({
+    origin: req.headers.origin,
+    allowedOrigins: ALLOWED_ORIGINS,
+    devBypass: isLocalControlPlaneBypass(),
+  });
+  if (cors.allowOrigin !== null) {
+    res.setHeader('Access-Control-Allow-Origin', cors.allowOrigin);
+  }
+  if (cors.credentials) {
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-user-id, x-session-id, x-user-name, x-user-email, x-runtime-scope, x-runtime-fs-user-id, x-synthi-internal-token, x-collab-internal-token');
