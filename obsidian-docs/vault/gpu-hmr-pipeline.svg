@@ -1,0 +1,98 @@
+<svg width="1180" height="640" viewBox="0 0 1180 640" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+  <defs>
+    <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f472b6"/></marker>
+    <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#22d3ee"/></marker>
+    <linearGradient id="hot" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#fb7185"/><stop offset="1" stop-color="#fbbf24"/>
+    </linearGradient>
+  </defs>
+  <rect width="1180" height="640" fill="#020617"/>
+  <text x="40" y="50" fill="#e2e8f0" font-size="20" font-weight="bold">GPU HMR — edit to live swap (RX 9070 XT / gfx1201)</text>
+  <text x="40" y="74" fill="#64748b" font-size="11">fail-hard GPU routing · AI proposes, mechanical verifiers dispose · proof ledger records everything</text>
+
+  <!-- stage boxes -->
+  <!-- 1 trigger -->
+  <g>
+    <rect x="40" y="110" width="230" height="150" rx="8" fill="#0f172a" stroke="#22d3ee" stroke-width="1.5"/>
+    <text x="155" y="138" text-anchor="middle" fill="#22d3ee" font-size="13">1 · TRIGGER</text>
+    <text x="55" y="165" fill="#94a3b8" font-size="10">human: Monaco save</text>
+    <text x="55" y="183" fill="#94a3b8" font-size="10">agent: synthi_compile MCP</text>
+    <text x="55" y="201" fill="#94a3b8" font-size="10">→ compile-request over DC</text>
+    <text x="55" y="219" fill="#94a3b8" font-size="10">gpu_mode: auto|cuda|rocm</text>
+    <text x="55" y="237" fill="#94a3b8" font-size="10">build_manifest.json discovery</text>
+    <text x="55" y="255" fill="#475569" font-size="9">synthi/src/services/compilerClient.js</text>
+  </g>
+  <!-- 2 split -->
+  <g>
+    <rect x="310" y="110" width="230" height="150" rx="8" fill="#0f172a" stroke="#a78bfa" stroke-width="1.5"/>
+    <text x="425" y="138" text-anchor="middle" fill="#a78bfa" font-size="13">2 · DETERMINISTIC SPLIT</text>
+    <text x="325" y="165" fill="#94a3b8" font-size="10">POST /refactor/split/gpu</text>
+    <text x="325" y="183" fill="#94a3b8" font-size="10">Kernel Splitter Agent ≤3 tries</text>
+    <text x="325" y="201" fill="#94a3b8" font-size="10">5 roles → manifest normalize</text>
+    <text x="325" y="219" fill="#94a3b8" font-size="10">verifier-gated retries</text>
+    <text x="325" y="237" fill="#fda4af" font-size="10">no silent CPU fallback!</text>
+    <text x="325" y="255" fill="#475569" font-size="9">ai-backend/ai-engine/gpu_hmr/</text>
+  </g>
+  <!-- 3 compile -->
+  <g>
+    <rect x="580" y="110" width="230" height="150" rx="8" fill="#0f172a" stroke="#34d399" stroke-width="1.5"/>
+    <text x="695" y="138" text-anchor="middle" fill="#34d399" font-size="13">3 · COMPILE (WORKER)</text>
+    <text x="595" y="165" fill="#94a3b8" font-size="10">hipcc → .hsaco for gfx1201</text>
+    <text x="595" y="183" fill="#94a3b8" font-size="10">ABI fingerprint stamping</text>
+    <text x="595" y="201" fill="#94a3b8" font-size="10">identity broker checks</text>
+    <text x="595" y="219" fill="#94a3b8" font-size="10">138 reason codes ledger</text>
+    <text x="595" y="255" fill="#475569" font-size="9">worker/src/hmr/ (129 files)</text>
+  </g>
+  <!-- 4 swap -->
+  <g>
+    <rect x="850" y="110" width="290" height="150" rx="8" fill="#0f172a" stroke="url(#hot)" stroke-width="2"/>
+    <text x="995" y="138" text-anchor="middle" fill="#fb7185" font-size="13">4 · LIVE SWAP</text>
+    <text x="865" y="165" fill="#94a3b8" font-size="10">device_only plan → in-process swap,</text>
+    <text x="865" y="183" fill="#94a3b8" font-size="10">dual-slot GpuModuleManager</text>
+    <text x="865" y="201" fill="#94a3b8" font-size="10">abi_breaking → hold-alive runner</text>
+    <text x="865" y="219" fill="#94a3b8" font-size="10">migrates AppState + buffers</text>
+    <text x="865" y="237" fill="#fbbf24" font-size="10">process never dies · epoch-grafted</text>
+    <text x="865" y="255" fill="#475569" font-size="9">hmr/gpu_module_manager.rs · gpu_hold_alive.rs</text>
+  </g>
+
+  <!-- flow arrows -->
+  <line x1="270" y1="185" x2="308" y2="185" stroke="#22d3ee" stroke-width="2" marker-end="url(#a2)"/>
+  <line x1="540" y1="185" x2="578" y2="185" stroke="#a78bfa" stroke-width="2" marker-end="url(#a2)"/>
+  <line x1="810" y1="185" x2="848" y2="185" stroke="#f472b6" stroke-width="2" marker-end="url(#a1)"/>
+
+  <!-- verification band -->
+  <rect x="40" y="300" width="1100" height="120" rx="8" fill="rgba(136,19,55,0.18)" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="5,3"/>
+  <text x="60" y="330" fill="#fb7185" font-size="13">VERIFICATION DOCTRINE — "prompts are not a safety mechanism"</text>
+  <text x="60" y="356" fill="#94a3b8" font-size="10.5">mechanical verifier_gpu.py no-shim contract · split_verifier.py manifest checks · identity broker proof_required kinds</text>
+  <text x="60" y="376" fill="#94a3b8" font-size="10.5">proof = decoded visual before/after/diff through the changed path on real hardware + adversarial input exercising the gap</text>
+  <text x="60" y="396" fill="#94a3b8" font-size="10.5">breadth: 500+ generated live scenarios · wall-times recorded per run (agent-edit vs human-edit)</text>
+
+  <!-- timings row -->
+  <g font-size="10">
+    <rect x="40" y="450" width="250" height="70" rx="8" fill="#0f172a" stroke="#34d399"/>
+    <text x="60" y="476" fill="#34d399" font-size="11">ray-light agent recompile</text>
+    <text x="60" y="500" fill="#e2e8f0" font-size="17" font-weight="bold">17 ms</text>
+    <text x="140" y="500" fill="#64748b" font-size="9">device compile</text>
+  </g>
+  <g font-size="10">
+    <rect x="315" y="450" width="250" height="70" rx="8" fill="#0f172a" stroke="#34d399"/>
+    <text x="335" y="476" fill="#34d399" font-size="11">Flow module swap</text>
+    <text x="335" y="500" fill="#e2e8f0" font-size="17" font-weight="bold">24.5 ms</text>
+    <text x="430" y="500" fill="#64748b" font-size="9">MCP runner</text>
+  </g>
+  <g font-size="10">
+    <rect x="590" y="450" width="250" height="70" rx="8" fill="#0f172a" stroke="#fbbf24"/>
+    <text x="610" y="476" fill="#fbbf24" font-size="11">HIPRT recompile range</text>
+    <text x="610" y="500" fill="#e2e8f0" font-size="17" font-weight="bold">41–82 ms</text>
+    <text x="720" y="500" fill="#64748b" font-size="9">full pipeline</text>
+  </g>
+  <g font-size="10">
+    <rect x="865" y="450" width="275" height="70" rx="8" fill="#0f172a" stroke="#22d3ee"/>
+    <text x="885" y="476" fill="#22d3ee" font-size="11">validation breadth</text>
+    <text x="885" y="500" fill="#e2e8f0" font-size="17" font-weight="bold">500+ scenarios</text>
+    <text x="1010" y="500" fill="#64748b" font-size="9">per acceptance run</text>
+  </g>
+
+  <text x="40" y="570" fill="#475569" font-size="9">invariants: GPU-preferred compiles fail hard rather than fall back · AI never certifies · every swap leaves ledger evidence · local authority stays with the user</text>
+  <text x="40" y="600" fill="#334155" font-size="9">sources: ai-backend/ai-engine/gpu_hmr/* · backend/synthi-webrtc-compiler/worker/src/hmr/* · mcp/synthi-mcp/src/{hmr,gpu_proof,gpu_proof_ledger}.ts · docs/GPU_HMR_*</text>
+</svg>
