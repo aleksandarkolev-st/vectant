@@ -44,6 +44,17 @@ const nextConfig = { eslint: { ignoreDuringBuilds: true },
   // @synthi/mcp-hub workspace package + hoisted deps (not just synthi/).
   outputFileTracingRoot: path.resolve(__dirname, '..'),
   transpilePackages: ['@synthi/mcp-hub'],
+  async rewrites() {
+    const collabProxyTarget = (process.env.COLLAB_PROXY_TARGET || '').replace(/\/+$/, '');
+    if (!collabProxyTarget) return [];
+
+    return [
+      {
+        source: '/collab/:path*',
+        destination: `${collabProxyTarget}/:path*`,
+      },
+    ];
+  },
   // Turbopack-specific configuration (used by `next dev --turbopack`)
   turbopack: {
     root: __dirname,

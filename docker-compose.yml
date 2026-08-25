@@ -68,7 +68,8 @@ services:
       dockerfile: synthi/Dockerfile
       target: builder
       args:
-        NEXT_PUBLIC_COLLAB_SERVER_URL: "http://localhost:${COLLAB_HOST_PORT:-1234}"
+        NEXT_PUBLIC_COLLAB_SERVER_URL: "/collab"
+        COLLAB_PROXY_TARGET: "http://collab-server:1234"
         NEXT_PUBLIC_YSWEET_URL: "http://localhost:${YSWEET_HOST_PORT:-8180}"
         NEXT_PUBLIC_COLLAB_PORT: "${COLLAB_HOST_PORT:-1234}"
         NEXT_PUBLIC_COMPILE_SIGNAL_URL: "ws://localhost:${SIGNALING_HOST_PORT:-9000}"
@@ -92,7 +93,8 @@ services:
       context: .
       dockerfile: synthi/Dockerfile
       args:
-        NEXT_PUBLIC_COLLAB_SERVER_URL: "http://localhost:${COLLAB_HOST_PORT:-1234}"
+        NEXT_PUBLIC_COLLAB_SERVER_URL: "/collab"
+        COLLAB_PROXY_TARGET: "http://collab-server:1234"
         NEXT_PUBLIC_YSWEET_URL: "http://localhost:${YSWEET_HOST_PORT:-8180}"
         NEXT_PUBLIC_COLLAB_PORT: "${COLLAB_HOST_PORT:-1234}"
         NEXT_PUBLIC_COMPILE_SIGNAL_URL: "ws://localhost:${SIGNALING_HOST_PORT:-9000}"

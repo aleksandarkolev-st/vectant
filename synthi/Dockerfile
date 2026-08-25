@@ -57,6 +57,7 @@ ARG NEXT_PUBLIC_AI_ENGINE_URL=
 ARG NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=
 ARG NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH=
 ARG NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS=
+ARG COLLAB_PROXY_TARGET=
 
 RUN if [ -z "$NEXT_PUBLIC_COLLAB_SERVER_URL" ] || \
         [ -z "$NEXT_PUBLIC_COMPILE_SIGNAL_URL" ] || \
@@ -83,6 +84,10 @@ RUN rm -f .env.production.local && \
             value="${entry#*=}"; \
             if [ -n "$value" ]; then printf '%s=%s\n' "$key" "$value" >> .env.production.local; fi; \
         done
+
+# The browser connects through this same-origin path.  The target remains an
+# internal compose/Kubernetes address and never reaches client-side code.
+ENV COLLAB_PROXY_TARGET=$COLLAB_PROXY_TARGET
 
 # Generate the Prisma client (reads synthi/prisma/schema.prisma → hoisted node_modules/.prisma)
 RUN npx prisma generate

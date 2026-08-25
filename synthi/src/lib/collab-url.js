@@ -5,6 +5,14 @@ const stripTrailingSlash = (value = '') => value.replace(/\/+$/, '');
 const toHttpUrl = (value = '') => value.replace(/^ws/i, 'http');
 const toWsUrl = (value = '') => value.replace(/^http/i, 'ws');
 
+function resolveBrowserRelativeUrl(value) {
+    if (typeof window === 'undefined' || !window.location || !value.startsWith('/')) {
+        return value;
+    }
+
+    return `${window.location.origin}${value}`;
+}
+
 export function resolveCollabHttpUrl() {
     const configured =
         process.env.NEXT_PUBLIC_COLLAB_SERVER_URL ||
@@ -12,7 +20,7 @@ export function resolveCollabHttpUrl() {
         process.env.NEXT_PUBLIC_YJS_URL;
 
     if (configured) {
-        return stripTrailingSlash(toHttpUrl(configured));
+        return stripTrailingSlash(resolveBrowserRelativeUrl(toHttpUrl(configured)));
     }
 
     if (typeof window !== 'undefined' && window.location) {
