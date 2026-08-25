@@ -71,7 +71,8 @@ sha256 integrity digest. An importing agent:
 2. holds a license scoped to ITS OWN realm ids (exact match, no prefixes),
 3. executes with its own adapters under its own policy.
 
-Licenses are seeded from a JSON file passed as argv[3]:
+Licenses are seeded from a JSON file passed as the third script argument
+(`process.argv[4]`, after `node tsx bridge_agent.mts <port> [gameWsUrl] [licenseFile]`):
 
 ```
 [{
