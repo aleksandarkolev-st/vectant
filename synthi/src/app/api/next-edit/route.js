@@ -7,6 +7,7 @@ import {
   REPLACE_DIVIDER,
 } from '@/lib/nextEdit';
 import { withInternalAiAuth } from '@/lib/internalAiAuth';
+import { resolveActor } from '@/lib/integrations/session';
 import { renderCodeIntelHints } from '@/utils/aiContextBroker';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -439,6 +440,9 @@ const extractText = (resp) => {
 };
 
 export async function POST(request) {
+  const actor = await resolveActor();
+  if (!actor) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
   let body;
   try {
     body = await request.json();
