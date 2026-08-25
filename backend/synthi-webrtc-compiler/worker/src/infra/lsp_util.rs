@@ -55,3 +55,49 @@ pub fn rewrite_uris(val: &mut serde_json::Value, state: &LspSessionState, to_ser
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{rewrite_uris, LspSessionState};
+    use std::collections::HashMap;
+
+    fn session_state() -> LspSessionState {
+        LspSessionState {
+            client_root_uri: Some("file:///synthi/".to_string()),
+            server_root_uri: "file:///tmp/synthi-session-42/".to_string(),
+            doc_versions: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn rewrites_nested_workspace_uris_to_the_session_workspace() {
+        let mut request = serde_json::json!({
+            "textDocument": { "uri": "file:///synthi/include/math.hpp" },
+            "related": ["file:///synthi/src/main.cpp"],
+        });
+
+        rewrite_uris(&mut request, &session_state(), true);
+
+        assert_eq!(
+            request["textDocument"]["uri"],
+            "file:///tmp/synthi-session-42/include/math.hpp"
+        );
+        assert_eq!(
+            request["related"][0],
+            "file:///tmp/synthi-session-42/src/main.cpp"
+        );
+    }
+
+    #[test]
+    fn rewrites_server_navigation_results_back_to_the_editor_workspace() {
+        let mut response = serde_json::json!({
+            "uri": "file:///tmp/synthi-session-42/include/math.hpp",
+            "targetUri": "file:///tmp/synthi-session-42/src/main.cpp",
+        });
+
+        rewrite_uris(&mut response, &session_state(), false);
+
+        assert_eq!(response["uri"], "file:///synthi/include/math.hpp");
+        assert_eq!(response["targetUri"], "file:///synthi/src/main.cpp");
+    }
+}
