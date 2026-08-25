@@ -1820,3 +1820,56 @@ reauth), so the actual hosted `beta.vectant.dev` guest flow wasn't exercised end
 a real deploy + a two-account manual pass (host shares via room code with an account that has
 no prior workspace membership; confirm files load; confirm toggling `canEdit` live-gates
 saving) before calling this fully closed.
+
+### Deployed to beta.vectant.dev (same session, after `gcloud auth login`)
+
+Merged `fix/collab-guest-workspace-access` → `main` (`f09540914`), ran the pre-flight
+`codesite:release-gate` (failed only on stale proof-provenance — 1,239-file drift since a
+month-old Dojo proof capture, unrelated to this fix; 6/8 check categories pass clean),
+submitted `gcloud builds submit --config cloudbuild.yaml .` with the pipeline's own defaults
+(they already match the documented standard prod command in
+`docs/AGENT_DOJO_RELEASE_GATE_RUNBOOK.md` — `k8s/overlays/dojo-release-gate` for both
+`_KUSTOMIZE_DIR` and `_DOJO_RELEASE_KUSTOMIZE_DIR`). Prod was 369 commits stale
+(`c65ffeaf4`, 2026-07-28) so this shipped a month of accumulated changes, not just this fix.
+
+Build result: all 10 images built, Dojo Postgres + Prisma migrations applied cleanly (6 new
+Prisma migrations), `kubectl apply` succeeded — then `kubectl rollout status deployment/frontend`
+timed out (5 min budget, 1/2 new replicas). Root cause:
+`COLLAB_INTERNAL_TOKEN` referenced in both manifests since 2026-08-22 but the backing GCP
+secret (`synthi-collab-internal-token`) was never created — see [[prod-env-wiring-gaps]] for
+the new variant this became. `CreateContainerConfigError` on the new frontend pod; **collab-server
+was a full outage** (0/1 available — it uses `Recreate`, so the old pod was already gone).
+Created the secret (with the user's explicit go-ahead — the permission classifier correctly
+gated this), force-resynced the ExternalSecret by annotating it (the 1h `refreshInterval` was
+too slow), both pods started.
+
+Second, deeper issue surfaced once collab-server actually started: its `collab-server` Service
+had **zero endpoints** even though the pod ran fine and GCLB reported it externally healthy —
+a genuine circular-dependency deadlock in the `/codesite/readiness` probe chain (collab-server's
+own readiness requires round-tripping through frontend, which calls back into collab-server via
+the same not-yet-ready Service). Fixed by pointing the k8s readinessProbe at the existing
+self-contained `/debug/status` instead — see [[k8s-manifests-have-placeholder-image-tags]] for
+the full writeup, including the GCLB-vs-internal-Service health-check distinction this
+surfaced.
+
+**Self-inflicted regression, caught and fixed within the same incident:** shipping that
+readinessProbe fix via `kubectl apply -f k8s/collab-server.yaml` (the raw base manifest, not
+rendered through the live `dojo-release-gate` overlay) reverted `REDIS_URL` back to the base's
+hardcoded, unresolvable `redis://redis.synthi.svc.cluster.local:6379` (that overlay patches it
+to an external managed Redis via `synthi-dojo-release-secrets`) — caused exactly the mistake
+[[k8s-manifests-have-placeholder-image-tags]] already warned about, just via a different field
+than the image tag. Also reverted the image tag itself to `build-tag-required`. Both caught
+within ~1 minute via direct verification and corrected — image via `kubectl set image`, then
+`REDIS_URL` via a file-based strategic-merge patch (an inline `-p '{...}'` attempt silently
+no-op'd, almost certainly PowerShell quote-mangling the nested JSON — the pod name/hash not
+changing was the tell). Rewrote the memory file with this full failure mode so it isn't
+repeated.
+
+**Final verified state:** `frontend` 2/2 and `collab-server` 1/1, both on
+`4fece6bc-0b9c-40ec-9f3f-e570a606b4d8`, zero restarts, `collab-server` Service has endpoints
+again, collab-server logs show real users already connected (WS + GCS repo materialization)
+with no Redis errors. The readinessProbe fix itself committed and pushed separately
+(`a9956d05c`) since it was applied live before being committed.
+
+Still not done: the two-account manual guest-access pass from the section above. Everything
+else about this deploy is now live and confirmed healthy.
