@@ -1,7 +1,7 @@
 import { CodeSiteIcons } from "../icons";
 
 /**
- * Ten sections is more than a panel this size can present flat, which is why the
+ * Eleven sections is more than a panel this size can present flat, which is why the
  * old rail needed a horizontal scroller and a status card beside it to explain
  * which one you were on. Workflows solves the same problem next door with two
  * levels: a four-tile command strip over a sub-view strip. These four groups are

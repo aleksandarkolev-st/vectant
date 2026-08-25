@@ -1,0 +1,53 @@
+<svg width="1180" height="520" viewBox="0 0 1180 520" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+  <defs>
+    <marker id="s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#22d3ee"/></marker>
+    <style>
+      .lane { fill:#0f172a; stroke:#1e293b; }
+      .actor { font-size:11px; fill:#e2e8f0; font-weight:bold; }
+      .msg { font-size:9.5px; fill:#94a3b8; }
+      .line { stroke:#334155; stroke-width:1.2; }
+    </style>
+  </defs>
+  <rect width="1180" height="520" fill="#020617"/>
+  <text x="40" y="42" fill="#e2e8f0" font-size="19" font-weight="bold">GPU edit → live hot-reload — sequence</text>
+
+  <!-- actors -->
+  <g>
+    <rect class="lane" x="60" y="70" width="150" height="34" rx="6"/><text class="actor" x="135" y="92" text-anchor="middle">Editor / MCP agent</text>
+    <rect class="lane" x="330" y="70" width="160" height="34" rx="6"/><text class="actor" x="410" y="92" text-anchor="middle">Rust Worker</text>
+    <rect class="lane" x="620" y="70" width="150" height="34" rx="6"/><text class="actor" x="695" y="92" text-anchor="middle">ai-engine :8000</text>
+    <rect class="lane" x="900" y="70" width="180" height="34" rx="6"/><text class="actor" x="990" y="92" text-anchor="middle">Running GPU process</text>
+  </g>
+  <!-- lifelines -->
+  <line class="line" x1="135" y1="104" x2="135" y2="450"/>
+  <line class="line" x1="410" y1="104" x2="410" y2="450"/>
+  <line class="line" x1="695" y1="104" x2="695" y2="450"/>
+  <line class="line" x1="990" y1="104" x2="990" y2="450"/>
+
+  <!-- messages -->
+  <line x1="135" y1="140" x2="405" y2="140" stroke="#22d3ee" stroke-width="1.6" marker-end="url(#s)"/>
+  <text class="msg" x="145" y="132">compile-request (use_ai_split · prefer_gpu_pipeline · gpu_mode)</text>
+
+  <line x1="410" y1="185" x2="693" y2="185" stroke="#22d3ee" stroke-width="1.6" marker-end="url(#s)"/>
+  <text class="msg" x="420" y="177">POST /refactor/split/gpu (fail-hard if GPU endpoint down)</text>
+
+  <rect x="700" y="205" width="120" height="46" rx="6" fill="rgba(167,139,250,0.12)" stroke="#a78bfa"/>
+  <text class="msg" x="760" y="224" text-anchor="middle" fill="#c4b5fd">Splitter Agent</text>
+  <text class="msg" x="760" y="240" text-anchor="middle" fill="#c4b5fd">≤3 verifier-gated tries</text>
+  <path d="M 697 200 C 680 190, 680 265, 697 255" fill="none" stroke="#a78bfa" stroke-width="1.2"/>
+
+  <line x1="693" y1="285" x2="413" y2="285" stroke="#a78bfa" stroke-width="1.6" stroke-dasharray="6,3" marker-end="url(#s)"/>
+  <text class="msg" x="430" y="277">files + build_manifest + verification report</text>
+
+  <line x1="410" y1="320" x2="985" y2="320" stroke="#fb7185" stroke-width="2" marker-end="url(#s)"/>
+  <text class="msg" x="500" y="312" fill="#fda4af">hipcc .hsaco (gfx1201) → dual-slot GpuModuleManager swap</text>
+
+  <rect x="850" y="340" width="270" height="52" rx="6" fill="rgba(251,113,133,0.1)" stroke="#fb7185"/>
+  <text class="msg" x="985" y="360" text-anchor="middle" fill="#fda4af" font-size="9">device_only: in-process swap, zero downtime</text>
+  <text class="msg" x="985" y="378" text-anchor="middle" fill="#fda4af" font-size="9">abi_breaking: hold-alive runner migrates AppState</text>
+
+  <line x1="988" y1="415" x2="138" y2="415" stroke="#34d399" stroke-width="1.6" stroke-dasharray="6,3" marker-end="url(#s)"/>
+  <text class="msg" x="300" y="407" fill="#86efac">build-log DC + screenshot + proof-ledger entry (before/after/diff)</text>
+
+  <text x="40" y="485" fill="#475569" font-size="9">invariant: AI never certifies — mechanical verifiers own acceptance · every swap records wall-time and decoded visual evidence on the RX 9070 XT</text>
+</svg>

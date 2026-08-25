@@ -1,4 +1,5 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'crypto';
+import { getCodeSiteRuntimeConfig } from './runtimeConfig';
 
 /**
  * Registered direct channels — security primitives.
@@ -90,9 +91,7 @@ export function modeTransports(mode) {
 }
 
 function maxActivePerSession() {
-  const raw = Number(process.env.SYNTHI_CODESITE_MAX_ACTIVE_CHANNELS);
-  if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
-  return CHANNEL_MAX_ACTIVE_PER_SESSION_DEFAULT;
+  return getCodeSiteRuntimeConfig().maxActiveChannels;
 }
 
 export function channelMaxDurationMs(requestedMs) {
