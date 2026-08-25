@@ -1123,7 +1123,29 @@ async fn main() -> Result<()> {
     if let Some(ref sid) = session_id {
         debug_log!("Session ID: {sid}");
     }
-    let (ws_stream, _) = connect_async(&signaling_url).await?;
+    // Docker may start this container before embedded DNS has published the
+    // signaling service. Treat that as a recoverable dependency condition,
+    // not a fatal worker error: exiting here leaves every editor without an
+    // LSP transport until Docker happens to recreate the worker.
+    let mut reconnect_delay = std::time::Duration::from_millis(250);
+    let (ws_stream, _) = loop {
+        match connect_async(&signaling_url).await {
+            Ok(connection) => break connection,
+            Err(error) => {
+                eprintln!(
+                    "[Worker] Signaling service is not reachable yet ({}). Retrying in {}ms.",
+                    error,
+                    reconnect_delay.as_millis(),
+                );
+                tokio::time::sleep(reconnect_delay).await;
+                reconnect_delay = std::cmp::min(
+                    reconnect_delay.saturating_mul(2),
+                    std::time::Duration::from_secs(10),
+                );
+            }
+        }
+    };
+    debug_log!("Connected to signaling server");
     let (mut ws_write, mut ws_read) = ws_stream.split();
     let (signal_tx, mut signal_rx) = mpsc::unbounded_channel::<SignalMessage>();
 
@@ -2967,30 +2989,20 @@ async fn wire_peer_channels(
 
                 debug_log!("[on_data_channel] LSP branch matched: lang='{}', spawning handler task...", lang);
                 tokio::spawn(async move {
-                    // Try to download the workspace files
+                    // The session workspace is the source of truth for both
+                    // file-sync and the LSP. Using storage::download here
+                    // created a second /synthi/<slug> tree while browser
+                    // edits were written to this session's temp directory.
+                    // clangd then indexed stale files and could not resolve
+                    // newly edited headers or cross-file symbols.
                     let slug_to_use = slug_opt.as_deref().unwrap_or("test-workspace");
                     debug_log!("LSP Request: lang={}, slug={}", lang, slug_to_use);
-
-                    let workspace_path = match storage::download(slug_to_use, None).await {
-                        Ok(path) => {
-                            let abs_path = if cfg!(target_os = "windows") {
-                                if let Ok(full) = tokio::fs::canonicalize(&path).await {
-                                    full
-                                } else {
-                                    path
-                                }
-                            } else {
-                                path
-                            };
-                            debug_log!("Successfully downloaded workspace to: {}", abs_path.display());
-                            abs_path
-                        },
-                        Err(e) => {
-                            eprintln!("Failed to download workspace: {}", e);
-                            debug_log!("Falling back to temp workspace: {}", workspace_path_for_lsp.display());
-                            workspace_path_for_lsp.as_ref().clone()
-                        }
-                    };
+                    let workspace_path = workspace_path_for_lsp.as_ref().clone();
+                    debug_log!(
+                        "[LSP] Using session workspace for {}: {}",
+                        slug_to_use,
+                        workspace_path.display(),
+                    );
 
                     // ── Install dependencies + language server in parallel ─────
                     // These two steps are independent: dep_installer scans
@@ -3052,13 +3064,18 @@ async fn wire_peer_channels(
                     debug_log!("Starting LSP for language: {}", lang);
                     let mut cmd = match lang.as_str() {
                         "cpp" | "c" => {
-                            // Create compile_flags.txt to enforce C++26
+                            // Respect the project's compilation database or
+                            // compile_flags.txt. A universal C++26 / -xc++
+                            // file makes C translation units and projects
+                            // targeting another standard report false errors.
+                            // For standalone files clangd can derive the host
+                            // toolchain defaults through --query-driver below.
+                            let compile_commands = workspace_path.join("compile_commands.json");
                             let flags_path = workspace_path.join("compile_flags.txt");
-                            if let Ok(mut file) = std::fs::File::create(&flags_path) {
-                                use std::io::Write;
-                                let _ = writeln!(file, "-std=c++26");
-                                // Force C++ mode to ensure headers are treated correctly
-                                let _ = writeln!(file, "-xc++");
+                            if !compile_commands.exists() && !flags_path.exists() {
+                                debug_log!(
+                                    "[LSP] No C/C++ compile database or flags found; using clangd toolchain defaults"
+                                );
                             }
 
                             // Create .clang-tidy to disable the include-cleaner check.
@@ -4095,15 +4112,11 @@ async fn wire_peer_channels(
 
                         let op = json.get("op").and_then(|o| o.as_str()).unwrap_or("");
 
-                        // Resolve workspace root.  The files were downloaded to
-                        // /tmp/workspaces/{slug}/ by storage::download, but we may
-                        // also have a slug in the message for safety.
-                        let base = if let Some(slug) = json.get("slug").and_then(|s| s.as_str()) {
-                            let p = std::path::PathBuf::from(format!("/tmp/workspaces/{}", slug));
-                            if p.exists() { p } else { ws_path.as_ref().clone() }
-                        } else {
-                            ws_path.as_ref().clone()
-                        };
+                        // Keep file-sync on the same per-peer workspace that
+                        // owns the LSP process. A slug is routing metadata,
+                        // never a filesystem authority: mapping it to a second
+                        // directory makes the language server index stale data.
+                        let base = ws_path.as_ref().clone();
 
                         match op {
                             "write" | "edit_delta" => {
