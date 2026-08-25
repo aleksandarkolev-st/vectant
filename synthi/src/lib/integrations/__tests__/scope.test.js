@@ -71,3 +71,69 @@ describe('canWriteScope (create / edit / delete / enable / allowlist)', () => {
     expect(await canWriteScope({ userId: 'u1' }, { scope: 'bogus' })).toBe(false);
   });
 });
+
+// Non-members can still be an active collab-session host/guest — checked
+// live against the collab-server (see collabGuestAccess.js). This backs the
+// codesite control-plane route the same way the workspace-guest fallback
+// backs the file-tree/file-content routes (requireWorkspaceAccess).
+describe('canReadScope / canWriteScope collab-guest fallback', () => {
+  const actor = { userId: 'u1', workspaceUserId: 'guest-1' };
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+    vi.stubEnv('COLLAB_SERVER_URL', 'http://collab.test');
+    vi.stubEnv('COLLAB_INTERNAL_TOKEN', 'shared-internal-secret');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it('lets a non-member active collab guest read', async () => {
+    stubMembership(null);
+    fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ role: 'guest', permissions: { canEdit: false, canFileOps: false } }),
+    });
+
+    expect(await canReadScope(actor, { scope: 'workspace', workspaceSlug: 'team' })).toBe(true);
+  });
+
+  it('denies read to a non-member with no active collab session', async () => {
+    stubMembership(null);
+    fetch.mockResolvedValueOnce({ ok: false, status: 404 });
+
+    expect(await canReadScope(actor, { scope: 'workspace', workspaceSlug: 'team' })).toBe(false);
+  });
+
+  it('lets a non-member collab guest write only when the host granted canEdit', async () => {
+    stubMembership(null);
+    fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ role: 'guest', permissions: { canEdit: false, canFileOps: true } }),
+    });
+
+    expect(await canWriteScope(actor, { scope: 'workspace', workspaceSlug: 'team' })).toBe(false);
+  });
+
+  it('lets a non-member collab guest with canEdit write', async () => {
+    stubMembership(null);
+    fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ role: 'guest', permissions: { canEdit: true, canFileOps: false } }),
+    });
+
+    expect(await canWriteScope(actor, { scope: 'workspace', workspaceSlug: 'team' })).toBe(true);
+  });
+
+  it('lets the collab session host write unconditionally', async () => {
+    stubMembership(null);
+    fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ role: 'host', permissions: { canEdit: true, canFileOps: true, canTerminal: true, canGit: true } }),
+    });
+
+    expect(await canWriteScope(actor, { scope: 'workspace', workspaceSlug: 'team' })).toBe(true);
+  });
+});

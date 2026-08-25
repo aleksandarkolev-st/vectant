@@ -5110,6 +5110,7 @@ const server = http.createServer(async (req, res) => {
       create: 20,
       'validate-token': 60,
       host: 120,
+      'workspace-access': 120,
       knock: 30,
       admit: 60,
       deny: 60,
@@ -5215,6 +5216,52 @@ const server = http.createServer(async (req, res) => {
                 slug: session.slug,
               }),
             };
+            break;
+          }
+
+          case 'workspace-access': {
+            // GET /session/workspace-access/:userId?slug=<workspace>
+            //
+            // Internal-only lookup used by the frontend server to check whether
+            // an authenticated caller (identified by their workspaceUserId — see
+            // synthi/src/lib/integrations/session.js) is currently the host or an
+            // admitted guest of an active collab session for a workspace slug.
+            // This is how collab guests get real file access without a Prisma
+            // WorkspaceMembership row (see synthi/src/lib/workspaceAccess.js).
+            //
+            // Must never be reachable without the shared internal token — it
+            // would otherwise let anyone probe session membership for an
+            // arbitrary userId.
+            if (!hasTrustedInternalToken(req, { config })) {
+              res.writeHead(403, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'internal_token_required' }));
+              return;
+            }
+            const targetUserId = sessionIdParam ? decodeURIComponent(sessionIdParam) : '';
+            const workspaceSlug = urlObj.searchParams.get('slug') || '';
+            if (!targetUserId || !workspaceSlug) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'userId and slug are required' }));
+              return;
+            }
+            let access = null;
+            for (const session of sessionManager.getSessionsForSlug(workspaceSlug)) {
+              if (session.hostId === targetUserId) {
+                access = { role: 'host', permissions: { canEdit: true, canFileOps: true, canTerminal: true, canGit: true } };
+                break;
+              }
+              const guest = (session.guests || []).find((g) => g.guestId === targetUserId);
+              if (guest) {
+                access = { role: 'guest', permissions: { ...guest.permissions } };
+                break;
+              }
+            }
+            if (!access) {
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'No active session for this user in this workspace' }));
+              return;
+            }
+            result = access;
             break;
           }
 

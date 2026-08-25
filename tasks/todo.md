@@ -1757,3 +1757,119 @@ pure fast-forward — no second conflict resolution is possible.
 
 Not done (blocked, user-side): pushing `dev`, fast-forwarding `main`, and verifying the GKE
 rollout. `gcloud auth login` is still required before any cluster inspection.
+
+## Collab guests get real workspace file access (2026-08-25)
+
+Branch `fix/collab-guest-workspace-access` off `main` (fast-forwarded to `origin/main` first —
+local `main` was 369 commits stale).
+
+**Bug report:** hard to get a collaborator "inside" a workspace on hosted beta; host's
+permission toggles in the Share modal seem to do nothing; a guest can't see workspace files
+even after being granted permission; invite-link sharing doesn't work — only room-code entry
+or the direct email invite actually gets someone in.
+
+**Root cause (traced, not inferred):** two authorization layers that never talked to each
+other. `SessionManager.js` (collab-server) correctly tracks room codes, knock/admit, and the
+four guest permission toggles (`canEdit`/`canFileOps`/`canTerminal`/`canGit`) — all fine, WS
+broadcast and permission-merge logic verified correct. But every route that actually serves
+file content — `workspaceAccess.js`'s `requireWorkspaceAccess()` (gates the file-tree endpoint
+and `item/route.js`'s GET/POST/PUT/DELETE) and `routeHelpers.js`'s `requireCodesiteAccess()` →
+`scope.js`'s `canReadScope`/`canWriteScope` — checks **only** Prisma `WorkspaceMembership`,
+with zero knowledge a collab session exists. A guest admitted via room code or invite link
+never gets a membership row, so those routes 404 "Workspace not found" regardless of what the
+host granted — hence the toggles feeling broken (nothing downstream ever reads them) and files
+never loading. The only path that fully works is the direct email invite, because
+`WorkspaceUsersPanel.handleInviteUser` explicitly creates a real membership via
+`POST /api/workspace/[slug]/members` before sending the collab invite; every other join path
+skips that step. Did not find a code bug in the invite-link chain itself (`makeInviteLink` →
+`/[slug]?collab=&token=` → `/collab/[sessionId]` → `validateToken` → knock) — best read is that
+symptom collapses into the same root cause once a guest is admitted but still walled off.
+
+**Fix:** give collab guests real, permission-scoped access without a persisted membership row —
+checked live against collab-server session state on every request (auto-revoked the instant a
+guest is kicked / session ends).
+- collab-server: new internal-only `GET /session/workspace-access/:userId?slug=` (`server.js`),
+  gated by the existing `hasTrustedInternalToken`/`COLLAB_INTERNAL_TOKEN` mechanism (already
+  provisioned to the frontend deployment — no new secret). Thin wrapper around
+  `SessionManager.getSessionsForSlug()`.
+- `synthi/src/lib/collabGuestAccess.js` (new): server-side helper the frontend calls to hit
+  that endpoint.
+- `workspaceAccess.js`'s `requireWorkspaceAccess()` and `scope.js`'s
+  `canReadScope`/`canWriteScope`: fall back to it only when Prisma membership is absent — real
+  members are completely unaffected (verified via existing test suites, zero regressions).
+- `item/route.js`: threads the specific permission per verb for a `collab-guest` role (base
+  read for GET; `canEdit` for content writes; `canFileOps` for create/rename/delete) — matches
+  the ShareModal's own `PERM_CONFIG` semantics exactly.
+- Left the terminal-exec gateway and `collab:git:*` action scopes alone — already correctly
+  wired to `SessionManager.checkPermission` on the collab-server's own direct endpoints.
+
+Verification:
+- New `backend/collab-server/__tests__/sessionWorkspaceAccess.test.js` (7 tests, `node --test`):
+  host/guest recognition, live permission-update reflection, stranger denied, kick revokes
+  access immediately, terminated session revokes both host and guest, cross-slug isolation.
+  Added to `.github/workflows/codesite-tests.yml`'s collab-server job.
+- Extended `workspaceAccess.test.js` (+5), `scope.test.js` (+5), `item/route.test.js` (+7) for
+  the new fallback/gating paths.
+- Ran the full touched-and-downstream batch: 94 vitest tests across 6 files pass, plus the
+  collab-server `node --test` CI batch (127/133 pass — the 6 failures are pre-existing,
+  Windows-only symlink/procfs tests in `codesiteFs.test.js`, untouched by this change, that the
+  CI comment itself notes only genuinely execute on the `ubuntu-latest` runner).
+
+**Not verified:** no live cluster access this session (`gcloud auth login` needs interactive
+reauth), so the actual hosted `beta.vectant.dev` guest flow wasn't exercised end-to-end. Needs
+a real deploy + a two-account manual pass (host shares via room code with an account that has
+no prior workspace membership; confirm files load; confirm toggling `canEdit` live-gates
+saving) before calling this fully closed.
+
+### Deployed to beta.vectant.dev (same session, after `gcloud auth login`)
+
+Merged `fix/collab-guest-workspace-access` → `main` (`f09540914`), ran the pre-flight
+`codesite:release-gate` (failed only on stale proof-provenance — 1,239-file drift since a
+month-old Dojo proof capture, unrelated to this fix; 6/8 check categories pass clean),
+submitted `gcloud builds submit --config cloudbuild.yaml .` with the pipeline's own defaults
+(they already match the documented standard prod command in
+`docs/AGENT_DOJO_RELEASE_GATE_RUNBOOK.md` — `k8s/overlays/dojo-release-gate` for both
+`_KUSTOMIZE_DIR` and `_DOJO_RELEASE_KUSTOMIZE_DIR`). Prod was 369 commits stale
+(`c65ffeaf4`, 2026-07-28) so this shipped a month of accumulated changes, not just this fix.
+
+Build result: all 10 images built, Dojo Postgres + Prisma migrations applied cleanly (6 new
+Prisma migrations), `kubectl apply` succeeded — then `kubectl rollout status deployment/frontend`
+timed out (5 min budget, 1/2 new replicas). Root cause:
+`COLLAB_INTERNAL_TOKEN` referenced in both manifests since 2026-08-22 but the backing GCP
+secret (`synthi-collab-internal-token`) was never created — see [[prod-env-wiring-gaps]] for
+the new variant this became. `CreateContainerConfigError` on the new frontend pod; **collab-server
+was a full outage** (0/1 available — it uses `Recreate`, so the old pod was already gone).
+Created the secret (with the user's explicit go-ahead — the permission classifier correctly
+gated this), force-resynced the ExternalSecret by annotating it (the 1h `refreshInterval` was
+too slow), both pods started.
+
+Second, deeper issue surfaced once collab-server actually started: its `collab-server` Service
+had **zero endpoints** even though the pod ran fine and GCLB reported it externally healthy —
+a genuine circular-dependency deadlock in the `/codesite/readiness` probe chain (collab-server's
+own readiness requires round-tripping through frontend, which calls back into collab-server via
+the same not-yet-ready Service). Fixed by pointing the k8s readinessProbe at the existing
+self-contained `/debug/status` instead — see [[k8s-manifests-have-placeholder-image-tags]] for
+the full writeup, including the GCLB-vs-internal-Service health-check distinction this
+surfaced.
+
+**Self-inflicted regression, caught and fixed within the same incident:** shipping that
+readinessProbe fix via `kubectl apply -f k8s/collab-server.yaml` (the raw base manifest, not
+rendered through the live `dojo-release-gate` overlay) reverted `REDIS_URL` back to the base's
+hardcoded, unresolvable `redis://redis.synthi.svc.cluster.local:6379` (that overlay patches it
+to an external managed Redis via `synthi-dojo-release-secrets`) — caused exactly the mistake
+[[k8s-manifests-have-placeholder-image-tags]] already warned about, just via a different field
+than the image tag. Also reverted the image tag itself to `build-tag-required`. Both caught
+within ~1 minute via direct verification and corrected — image via `kubectl set image`, then
+`REDIS_URL` via a file-based strategic-merge patch (an inline `-p '{...}'` attempt silently
+no-op'd, almost certainly PowerShell quote-mangling the nested JSON — the pod name/hash not
+changing was the tell). Rewrote the memory file with this full failure mode so it isn't
+repeated.
+
+**Final verified state:** `frontend` 2/2 and `collab-server` 1/1, both on
+`4fece6bc-0b9c-40ec-9f3f-e570a606b4d8`, zero restarts, `collab-server` Service has endpoints
+again, collab-server logs show real users already connected (WS + GCS repo materialization)
+with no Redis errors. The readinessProbe fix itself committed and pushed separately
+(`a9956d05c`) since it was applied live before being committed.
+
+Still not done: the two-account manual guest-access pass from the section above. Everything
+else about this deploy is now live and confirmed healthy.
