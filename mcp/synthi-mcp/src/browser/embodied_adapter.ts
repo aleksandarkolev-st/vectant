@@ -119,6 +119,30 @@ export function createBrowserEmbodiedBundle(
       },
     },
 
+    replay_provider: {
+      // Re-executes each recorded step through the SAME performAction port
+      // the actor uses - no replay-specific logic, no knowledge of what the
+      // events mean. A refused step fails the run with a classified trunk.
+      replay: async (fragment, options) => {
+        const stepResults = [] as ReplayOutcome["step_results"];
+        for (const [index, step] of fragment.steps.entries()) {
+          const result = await ports.performAction(options.handle, step.event as BrowserTraceEventShape);
+          stepResults.push(
+            result.ok
+              ? { step_index: index, ok: true }
+              : {
+                  step_index: index,
+                  ok: false,
+                  classifier_trunk:
+                    options.mode === "same_state" ? "world_changed" : "app_validation_error",
+                  ...(result.refusal_reason ? { detail: { refusal_reason: result.refusal_reason } } : {}),
+                },
+          );
+        }
+        return { ok: stepResults.every((stepResult) => stepResult.ok), step_results: stepResults };
+      },
+    },
+
     attach: async (request) => ({
       handle_id: `browser-${request.realm.realm_id}`,
       environment: { recorded: [], recording: false },

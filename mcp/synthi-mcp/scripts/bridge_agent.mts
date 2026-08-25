@@ -8,6 +8,7 @@ import { embodiedBridgeContext } from "../src/browser_workflow_bridge/embodied_d
 import { registerSubstrateAdapter, unregisterAllSubstrateAdapters } from "../src/embodied/substrate.js";
 import { createGameBundle } from "../src/embodied/adapters/game/protocol.js";
 import { createKernelBundle } from "../src/embodied/adapters/kernel/index.js";
+import { createBrowserEmbodiedBundle } from "../src/browser/embodied_adapter.js";
 import { readFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
 // Resolve ws from THIS package upward (works wherever it is hoisted).
@@ -95,6 +96,97 @@ if (terminalAllow) {
   const binaries = terminalAllow.split(",").map((b) => b.trim()).filter(Boolean);
   unregisterAllSubstrateAdapters();
   registerSubstrateAdapter(createTerminalBundle(allowlistPolicy(binaries)));
+}
+
+// Browser-agent mode: SYNTHI_BROWSER_AGENT=cdp + SYNTHI_BROWSER_CDP_URL=<ws>
+// attaches the browser substrate to an ALREADY RUNNING browser over CDP.
+// Targeting rule (mirrors the teaching agent's independent implementation):
+// interactables are addressed by tag + stable distinguishing attributes
+// (data-*, id, name, aria-label, type). Text content is NEVER used; an
+// element with no distinguishing attribute is unresolvable and the step
+// fails - that refusal IS the discrimination behavior.
+if (process.env.SYNTHI_BROWSER_AGENT === "cdp" && process.env.SYNTHI_BROWSER_CDP_URL) {
+  const pwRequire = createRequire(import.meta.url);
+  const { chromium } = pwRequire("playwright-core");
+  unregisterAllSubstrateAdapters();
+
+  const browser = await chromium.connectOverCDP(process.env.SYNTHI_BROWSER_CDP_URL);
+  const context = browser.contexts()[0] ?? (await browser.newContext());
+
+  async function currentPage() {
+    let page = context.pages()[0];
+    if (!page) page = await context.newPage();
+    return page;
+  }
+
+  registerSubstrateAdapter(
+    createBrowserEmbodiedBundle({
+      observePage: async () => {
+        const page = await currentPage();
+        const url = page.url();
+        const descriptors = await page.evaluate(() => {
+          const elements = [...document.querySelectorAll("button, a")];
+          return elements.map((element) => ({
+            text: (element.textContent ?? "").trim(),
+            attrs: Object.fromEntries(
+              [...element.attributes]
+                .filter((attr) => /^(data-[a-z0-9-]+|id|name|aria-label|type)$/i.test(attr.name))
+                .map((attr) => [attr.name, attr.value]),
+            ),
+          }));
+        });
+        const dom: Record<string, unknown> = {};
+        descriptors.forEach((entry, index) => {
+          dom[`el-${index}`] = entry;
+        });
+        return { url, origin: new URL(url).origin, dom };
+      },
+      performAction: async (handle, event) => {
+        try {
+          const page = await currentPage();
+          const record = event as { selector?: string; origin?: string; url?: string; detail?: { submit_path?: string } };
+          if (!record.selector) return { ok: false, refusal_reason: "event carries no target reference" };
+          // Realm discipline: this session IS bound to one world - the
+          // attach consent's realm. Keep the tab there regardless of which
+          // origin the demonstration was recorded against; that recorded
+          // origin describes the TEACHER'S world, not ours.
+          const sessionOrigin = handle?.realm?.realm_id;
+          if (sessionOrigin && !page.url().startsWith(sessionOrigin)) {
+            await page.goto(`${sessionOrigin}/`);
+          }
+          // Click through Playwright's own locator engine, which understands
+          // both plain CSS and the `>> nth=` ordinal form.
+          await page.click(record.selector);
+          // Resolve the entity from THIS page's own structure. The recorded
+          // target is either a unique attribute selector or an attribute
+          // family + ordinal ("the Nth button carrying <attr>") - both are
+          // resolved here in plain DOM terms against the LOCAL world.
+          const entity = await page.evaluate((sel: string) => {
+            const familyMatch = sel.match(/^(\w+)\[([a-z-]+)\] >> nth=(\d+)$/);
+            if (familyMatch) {
+              const [, tag, attr, ordinal] = familyMatch;
+              const family = [...document.querySelectorAll(`${tag}[${attr}]`)];
+              return family[Number(ordinal)]?.getAttribute(attr) ?? "";
+            }
+            const el = document.querySelector(sel);
+            return el?.getAttribute("data-entity") ?? "";
+          }, record.selector);
+          if (record.detail?.submit_path) {
+            // Flow-internal requests resolve against the CURRENT world's
+            // origin (the session realm), never the teaching origin.
+            const here = new URL(page.url()).origin;
+            await page.request.post(`${here}${record.detail.submit_path}`, {
+              data: { entity },
+              headers: { "content-type": "application/json" },
+            });
+          }
+          return { ok: true };
+        } catch (error) {
+          return { ok: false, refusal_reason: error instanceof Error ? error.message : String(error) };
+        }
+      },
+    }),
+  );
 }
 
 // Terminal adapter comes from embodiedBridgeContext when none was registered
