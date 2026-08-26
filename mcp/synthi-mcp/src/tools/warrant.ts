@@ -20,6 +20,7 @@
  * per admitted call. Failures fail closed with plain-language reasons.
  */
 
+import { timingSafeEqual } from "node:crypto";
 import { WarrantRegistry, type ToolGrant } from "../security/warrant.js";
 import { errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
 import { buildError, type ErrorPayload } from "../correctness/errors.js";
@@ -33,6 +34,28 @@ export const WARRANT_TOOL_NAMES = [
   "synthi_warrant_revoke",
   "synthi_warrant_list",
 ] as const;
+
+/** When set, warrant management tools additionally require this key in _meta.warrant_admin_key. */
+export function resolveWarrantAdminKey(): string | null {
+  const raw = process.env["SYNTHI_WARRANT_ADMIN_KEY"];
+  return raw !== undefined && raw.trim().length > 0 ? raw.trim() : null;
+}
+
+/** Organization-level ceilings over how many warrants may exist and how long they may run. */
+export function resolveOrgCeilings(): { max_active: number; max_ttl_ms: number } {
+  const parsePositive = (raw: string | undefined, fallback: number): number => {
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  };
+  return {
+    max_active: parsePositive(process.env["SYNTHI_WARRANT_MAX_ACTIVE"], 100),
+    max_ttl_ms: parsePositive(process.env["SYNTHI_WARRANT_MAX_TTL_MS"], 86_400_000),
+  };
+}
+
+function adminKeyPresented(params: unknown): unknown {
+  return metaValue(params, "warrant_admin_key");
+}
 
 /** Process-wide registry behind the MCP surface. Singleton by design. */
 const warrantRegistry = new WarrantRegistry();
@@ -63,23 +86,34 @@ export async function dispatchWarrantTool(
 
 function issueTool(args: unknown): ToolResponse {
   const a = obj(args);
+  const now = Date.now();
+  const ceilings = resolveOrgCeilings();
+  const activeCount = warrantRegistry
+    .listWarrants()
+    .filter((w) => w.status === "active" && w.expires_at_ms > now).length;
+  if (activeCount >= ceilings.max_active) {
+    return errorResponse("warrant_ceiling_reached", {
+      human_reason: `This organization already holds ${activeCount} active warrants (ceiling ${ceilings.max_active}). Revoke warrants before issuing more.`,
+    });
+  }
   const warrant = warrantRegistry.issue({
     subject: requiredString(a, "subject"),
     grants: toolGrants(a["grants"]),
-    now: Date.now(),
-    ttl_ms: requiredNumber(a, "ttl_ms"),
+    now,
+    ttl_ms: Math.min(requiredNumber(a, "ttl_ms"), ceilings.max_ttl_ms),
   });
   return jsonResponse({ ok: true, warrant });
 }
 
 function attenuateTool(args: unknown): ToolResponse {
   const a = obj(args);
+  const ceilings = resolveOrgCeilings();
   const warrant = warrantRegistry.attenuate({
     parent_warrant_id: requiredString(a, "parent_warrant_id"),
     subject: requiredString(a, "subject"),
     grants: toolGrants(a["grants"]),
     now: Date.now(),
-    ttl_ms: numberOpt(a["ttl_ms"]),
+    ttl_ms: Math.min(numberOpt(a["ttl_ms"]) ?? Number.MAX_SAFE_INTEGER, ceilings.max_ttl_ms),
   });
   return jsonResponse({ ok: true, warrant });
 }
@@ -109,6 +143,14 @@ export function resolveWarrantMode(): WarrantMode {
   return "off";
 }
 
+function adminKeyMatches(presented: unknown, expected: string): boolean {
+  if (typeof presented !== "string" || presented.length === 0) return false;
+  const left = Buffer.from(presented);
+  const right = Buffer.from(expected);
+  if (left.length !== right.length) return false;
+  return timingSafeEqual(left, right);
+}
+
 /**
  * Server-dispatch adapter, called before every tool call right after the
  * quota gate. Returns:
@@ -124,7 +166,23 @@ export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayl
   // Management-plane exemption: the warrant tools themselves must stay
   // callable in enforce mode or no first warrant could ever be issued
   // (bootstrap deadlock proven by live wire testing 2026-08-26).
-  if ((WARRANT_TOOL_NAMES as readonly string[]).includes(toolName)) return null;
+  if ((WARRANT_TOOL_NAMES as readonly string[]).includes(toolName)) {
+    if (mode === "off") return null;
+    const adminKey = resolveWarrantAdminKey();
+    // Unconfigured (local/dev) posture keeps the historical open management plane.
+    if (adminKey === null) return null;
+    if (adminKeyMatches(adminKeyPresented(params), adminKey)) return null;
+    eventLog.push({
+      kind: "security",
+      code: "rate_limit_warning",
+      detail: { code: "warrant_admin_required", mode, tool: toolName },
+    });
+    if (mode === "warn") return null;
+    return buildError("warrant_admin_required", {
+      human_reason:
+        "Warrant administration requires the organization's admin key in the call's _meta.warrant_admin_key field.",
+    });
+  }
   if (mode === "off") return null;
 
   const warrantId = metaWarrantId(params);
@@ -171,10 +229,15 @@ export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayl
   });
 }
 
-function metaWarrantId(params: unknown): string | undefined {
-  const meta = (params as { _meta?: { warrant_id?: unknown } } | undefined)?._meta;
-  const value = meta?.warrant_id;
+function metaValue(params: unknown, key: string): unknown {
+  const meta = (params as { _meta?: Record<string, unknown> } | undefined)?._meta;
+  const value = meta?.[key];
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function metaWarrantId(params: unknown): string | undefined {
+  const v = metaValue(params, "warrant_id");
+  return typeof v === "string" ? v : undefined;
 }
 
 function errorMessage(err: unknown): string {
@@ -279,3 +342,8 @@ export const WARRANT_TOOLS = [
     inputSchema: { type: "object", properties: {}, required: [] },
   },
 ] as const;
+
+/** Test isolation hook for the process-wide registry. */
+export function __resetWarrantRegistryForTests(): void {
+  warrantRegistry.resetForTests();
+}

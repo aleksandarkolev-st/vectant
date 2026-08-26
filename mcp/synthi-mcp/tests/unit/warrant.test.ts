@@ -6,8 +6,11 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { ToolGrant } from "../../src/security/warrant.js";
 import { WarrantRegistry, globMatch } from "../../src/security/warrant.js";
 import {
+  __resetWarrantRegistryForTests,
   dispatchWarrantTool,
   enforceWarrantGate,
+  resolveOrgCeilings,
+  resolveWarrantAdminKey,
   resolveWarrantMode,
 } from "../../src/tools/warrant.js";
 
@@ -358,5 +361,73 @@ describe("warrant enforcement gate", () => {
     process.env["SYNTHI_WARRANT_MODE"] = "off";
     expect(enforceWarrantGate("synthi_screenshot", { arguments: {} })).toBeNull();
     expect(resolveWarrantMode()).toBe("off");
+  });
+});
+
+describe("warrant admin gate and org ceilings", () => {
+  const ORIGINALS = { mode: process.env["SYNTHI_WARRANT_MODE"], key: process.env["SYNTHI_WARRANT_ADMIN_KEY"], active: process.env["SYNTHI_WARRANT_MAX_ACTIVE"], ttl: process.env["SYNTHI_WARRANT_MAX_TTL_MS"] };
+
+  beforeEach(() => {
+    __resetWarrantRegistryForTests();
+    process.env["SYNTHI_WARRANT_MODE"] = "enforce";
+    delete process.env["SYNTHI_WARRANT_ADMIN_KEY"];
+    delete process.env["SYNTHI_WARRANT_MAX_ACTIVE"];
+    delete process.env["SYNTHI_WARRANT_MAX_TTL_MS"];
+  });
+
+  afterAll(() => {
+    process.env["SYNTHI_WARRANT_MODE"] = ORIGINALS.mode;
+    if (ORIGINALS.key === undefined) delete process.env["SYNTHI_WARRANT_ADMIN_KEY"]; else process.env["SYNTHI_WARRANT_ADMIN_KEY"] = ORIGINALS.key;
+    if (ORIGINALS.active === undefined) delete process.env["SYNTHI_WARRANT_MAX_ACTIVE"]; else process.env["SYNTHI_WARRANT_MAX_ACTIVE"] = ORIGINALS.active;
+    if (ORIGINALS.ttl === undefined) delete process.env["SYNTHI_WARRANT_MAX_TTL_MS"]; else process.env["SYNTHI_WARRANT_MAX_TTL_MS"] = ORIGINALS.ttl;
+  });
+
+  it("leaves the management plane open when no admin key is configured", () => {
+    expect(enforceWarrantGate("synthi_warrant_issue", { arguments: {} })).toBeNull();
+    expect(resolveWarrantAdminKey()).toBeNull();
+  });
+
+  it("requires the admin key for management tools once configured", () => {
+    process.env["SYNTHI_WARRANT_ADMIN_KEY"] = "sekrit";
+    const missing = enforceWarrantGate("synthi_warrant_issue", { arguments: {} });
+    expect(missing?.error ?? missing?.code).toBe("warrant_admin_required");
+    const wrong = enforceWarrantGate("synthi_warrant_issue", { arguments: {}, _meta: { warrant_admin_key: "wrong" } });
+    expect(wrong?.error ?? wrong?.code).toBe("warrant_admin_required");
+    const right = enforceWarrantGate("synthi_warrant_issue", { arguments: {}, _meta: { warrant_admin_key: "sekrit" } });
+    expect(right).toBeNull();
+  });
+
+  it("still gates ordinary tools even when the admin key is presented", () => {
+    process.env["SYNTHI_WARRANT_ADMIN_KEY"] = "sekrit";
+    const r = enforceWarrantGate("synthi_screenshot", { arguments: {}, _meta: { warrant_admin_key: "sekrit" } });
+    expect(r?.error ?? r?.code).toBe("warrant_required");
+  });
+
+  it("parses org ceilings from env with sane defaults", () => {
+    const defaults = resolveOrgCeilings();
+    expect(defaults.max_active).toBeGreaterThan(0);
+    expect(defaults.max_ttl_ms).toBeGreaterThan(0);
+    process.env["SYNTHI_WARRANT_MAX_ACTIVE"] = "1";
+    process.env["SYNTHI_WARRANT_MAX_TTL_MS"] = "5000";
+    expect(resolveOrgCeilings()).toEqual({ max_active: 1, max_ttl_ms: 5000 });
+  });
+
+  it("enforces the active-warrant ceiling through the dispatcher", async () => {
+    process.env["SYNTHI_WARRANT_MAX_ACTIVE"] = "2";
+    const first = await dispatchWarrantTool("synthi_warrant_issue", { subject: "one", grants: [{ tool: "synthi_screenshot" }], ttl_ms: 60_000 });
+    expect(first.isError).toBeFalsy();
+    const second = await dispatchWarrantTool("synthi_warrant_issue", { subject: "two", grants: [{ tool: "synthi_screenshot" }], ttl_ms: 60_000 });
+    expect(second.isError).toBeFalsy();
+    const third = await dispatchWarrantTool("synthi_warrant_issue", { subject: "three", grants: [{ tool: "synthi_screenshot" }], ttl_ms: 60_000 });
+    expect(third.isError).toBe(true);
+    const body = JSON.parse(third.content[0]!.text);
+    expect(body.error).toBe("warrant_ceiling_reached");
+  });
+
+  it("clamps oversized ttl to the organization maximum", async () => {
+    process.env["SYNTHI_WARRANT_MAX_TTL_MS"] = "5000";
+    const issued = await dispatchWarrantTool("synthi_warrant_issue", { subject: "greedy-ttl", grants: [{ tool: "synthi_screenshot" }], ttl_ms: 99_999_999 });
+    const warrant = JSON.parse(issued.content[0]!.text).warrant;
+    expect(warrant.expires_at_ms - warrant.issued_at_ms).toBeLessThanOrEqual(5000);
   });
 });

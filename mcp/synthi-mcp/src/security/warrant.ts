@@ -381,6 +381,11 @@ export class WarrantRegistry {
     return expiredCount;
   }
 
+  /** Test isolation hook: drops every record. Never call outside unit tests. */
+  resetForTests(): void {
+    this.records.clear();
+  }
+
   /** Records along the delegation chain from the given warrant up to its root. Cycle-safe. */
   private chainUp(warrantId: string): WarrantRecord[] {
     const chain: WarrantRecord[] = [];
