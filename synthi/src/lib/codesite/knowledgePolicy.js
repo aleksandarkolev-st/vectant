@@ -587,8 +587,14 @@ function normalizeAgentQuestion(input, common) {
     ...common,
     questionUrgency: urgency,
     suggestedExpertAgentSessionIds: [...new Set(suggested)],
-    answerText: null,
-    answeredByAgentSessionId: null,
+    // Stored rows carry answerText/answeredByAgentSessionId once answered;
+    // preserve them through projection re-validation instead of resetting.
+    answerText: optionalText(input.answerText || input.answer_text, 'question_answer_text', 4096),
+    answeredByAgentSessionId: normalizeId(
+      input.answeredByAgentSessionId || input.answered_by_agent_session_id,
+      'question_answered_by_agent_session_id',
+      { required: false },
+    ),
   };
 }
 
