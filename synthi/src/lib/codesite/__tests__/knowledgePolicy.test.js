@@ -623,6 +623,8 @@ describe('agent_question knowledge kind', () => {
   });
 
   it('rejects unrouted broadcast questions unless explicitly allowed', () => {
+    // Stored rows are resynced through artifact projection, which must bypass
+    // this creation-time routing rule; newly-created questions still cannot.
     expectPolicyError(
       () => validateKnowledgeItem(question({ suggestedExpertAgentSessionIds: [] })),
       'knowledge_question_experts_or_unrouted_required',
