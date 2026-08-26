@@ -11,6 +11,7 @@ import {
 import { eventLog } from "./events/index.js";
 import { recordToolCall } from "./observability/metrics.js";
 import { enforceQuota } from "./observability/quota.js";
+import { dispatchWarrantTool, enforceWarrantGate, WARRANT_TOOLS } from "./tools/warrant.js";
 import {
   RESOURCES,
   RESOURCE_URIS,
@@ -122,6 +123,7 @@ export const STATIC_TOOL_DEFINITIONS = [
   ...BROWSER_TOOLS,
   ...DOJO_TOOLS,
   ...AUTH_TOOLS,
+  ...WARRANT_TOOLS,
   ...SOURCE_TOOLS,
   ...SAFETY_TOOLS,
   ...PROGRAM_TOOLS,
@@ -1399,6 +1401,11 @@ async function dispatchTool(
     synthi_restore: async () => (await restoreTool(args)) as CallToolResult,
     synthi_list_snapshots: async () => (await listSnapshotsTool(args)) as CallToolResult,
     synthi_answer_escape_hatch: async () => (await answerEscapeHatchTool(args)) as CallToolResult,
+    synthi_warrant_issue: async () => (await dispatchWarrantTool("synthi_warrant_issue", args)) as CallToolResult,
+    synthi_warrant_attenuate: async () => (await dispatchWarrantTool("synthi_warrant_attenuate", args)) as CallToolResult,
+    synthi_warrant_check: async () => (await dispatchWarrantTool("synthi_warrant_check", args)) as CallToolResult,
+    synthi_warrant_revoke: async () => (await dispatchWarrantTool("synthi_warrant_revoke", args)) as CallToolResult,
+    synthi_warrant_list: async () => (await dispatchWarrantTool("synthi_warrant_list", args)) as CallToolResult,
   };
 
   const handler = handlers[toolName];
@@ -1428,6 +1435,16 @@ async function dispatchTool(
       recordToolCall(toolName, "error");
       return {
         content: [{ type: "text" as const, text: JSON.stringify(quotaError) }],
+        isError: true,
+      };
+    }
+    // Agent-warrant gate (WI_WARRANTS_SPEC Patch B). off=default|warn|enforce;
+    // combined check+charge pre-dispatch, mirroring the quota gate above.
+    const warrantError = enforceWarrantGate(toolName, request.params);
+    if (warrantError) {
+      recordToolCall(toolName, "error");
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(warrantError) }],
         isError: true,
       };
     }

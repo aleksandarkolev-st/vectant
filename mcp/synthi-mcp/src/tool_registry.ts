@@ -263,6 +263,12 @@ export const ADVERTISED_TOOLS = [
   "synthi_codesite_review_quarantine",
   "synthi_codesite_replay_quarantine",
   "synthi_codesite_apply_quarantine",
+  // Agent warrants
+  "synthi_warrant_issue",
+  "synthi_warrant_attenuate",
+  "synthi_warrant_check",
+  "synthi_warrant_revoke",
+  "synthi_warrant_list",
   // Lifecycle
   "synthi_attach",
   "synthi_detach",

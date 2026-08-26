@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import type { ToolGrant } from "../../src/security/warrant.js";
 import { WarrantRegistry, globMatch } from "../../src/security/warrant.js";
+import { dispatchWarrantTool } from "../../src/tools/warrant.js";
 
 const NOW = 1_000_000;
 const TTL = 60_000;
@@ -284,5 +285,44 @@ describe("WarrantRegistry", () => {
       if (childDecision.allowed && !parentDecision.allowed) violations += 1;
     }
     expect(violations).toBe(0);
+  });
+});
+
+describe("warrant MCP dispatcher", () => {
+  it("issues through the tool surface and lists it", async () => {
+    const issued = await dispatchWarrantTool("synthi_warrant_issue", { subject: "ci-bot", grants: [{ tool: "synthi_screenshot" }], ttl_ms: 60_000 });
+    expect(issued.isError).toBeFalsy();
+    const warrant = JSON.parse(issued.content[0]!.text).warrant;
+    expect(warrant.subject).toBe("ci-bot");
+    const list = await dispatchWarrantTool("synthi_warrant_list", {});
+    const warrants = JSON.parse(list.content[0]!.text).warrants;
+    expect(warrants.some((w: { warrant_id: string }) => w.warrant_id === warrant.warrant_id)).toBe(true);
+  });
+
+  it("checks a covered call as allowed and an uncovered one as denied", async () => {
+    const issued = await dispatchWarrantTool("synthi_warrant_issue", { subject: "s", grants: [{ tool: "synthi_screenshot", arg_constraints: { url: "https://staging.example.com/**" } }], ttl_ms: 60_000 });
+    const warrant = JSON.parse(issued.content[0]!.text).warrant;
+    const allowed = await dispatchWarrantTool("synthi_warrant_check", { warrant_id: warrant.warrant_id, tool: "synthi_screenshot", args: { url: "https://staging.example.com/x" } });
+    expect(JSON.parse(allowed.content[0]!.text).allowed).toBe(true);
+    const denied = await dispatchWarrantTool("synthi_warrant_check", { warrant_id: warrant.warrant_id, tool: "synthi_compile" });
+    const deniedBody = JSON.parse(denied.content[0]!.text);
+    expect(deniedBody.allowed).toBe(false);
+    expect(deniedBody.reason_code).toBe("tool_not_covered");
+  });
+
+  it("revokes through the tool surface and the cascade is visible in check", async () => {
+    const parent = JSON.parse((await dispatchWarrantTool("synthi_warrant_issue", { subject: "p", grants: [{ tool: "synthi_screenshot" }], ttl_ms: 60_000 })).content[0]!.text).warrant;
+    const child = JSON.parse((await dispatchWarrantTool("synthi_warrant_attenuate", { parent_warrant_id: parent.warrant_id, subject: "c", grants: [{ tool: "synthi_screenshot" }], ttl_ms: 30_000 })).content[0]!.text).warrant;
+    const revoked = await dispatchWarrantTool("synthi_warrant_revoke", { warrant_id: parent.warrant_id });
+    expect(JSON.parse(revoked.content[0]!.text).revoked_count).toBe(2);
+    const after = JSON.parse((await dispatchWarrantTool("synthi_warrant_check", { warrant_id: child.warrant_id, tool: "synthi_screenshot" })).content[0]!.text);
+    expect(after.allowed).toBe(false);
+    expect(after.reason_code).toBe("revoked");
+  });
+
+  it("surfaces validation failures as isError with a human reason", async () => {
+    const bad = await dispatchWarrantTool("synthi_warrant_issue", { ttl_ms: 60_000 });
+    expect(bad.isError).toBe(true);
+    expect(JSON.parse(bad.content[0]!.text).human_reason).toBeTruthy();
   });
 });
