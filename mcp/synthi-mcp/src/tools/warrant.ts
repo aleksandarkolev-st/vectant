@@ -1,9 +1,10 @@
 /**
  * Agent-warrant MCP surface + enforcement gate (WI_WARRANTS_SPEC, Patch B).
  *
- * Five tools expose the pure WarrantRegistry (Patch A) over MCP: issue a root
+ * Six tools expose the pure WarrantRegistry (Patch A) over MCP: issue a root
  * lease, attenuate it into strictly narrower children, check coverage, revoke
- * a subtree, and list the full audit view. One process-wide registry backs
+ * a subtree, list the full audit view, and show a graduated warrant's live
+ * autonomy rung. One process-wide registry backs
  * them all; every mutating call stamps time at the boundary (`now: Date.now()`),
  * keeping the core clock-free per the house rules.
  *
@@ -21,18 +22,19 @@
  */
 
 import { timingSafeEqual } from "node:crypto";
-import { WarrantRegistry, type ToolGrant } from "../security/warrant.js";
+import { WarrantRegistry, type AutonomyStep, type ToolGrant } from "../security/warrant.js";
 import { errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
 import { buildError, type ErrorPayload } from "../correctness/errors.js";
 import { eventLog } from "../events/index.js";
 
-/** The five warrant tools this module owns (mirrored in tool_registry.ts). */
+/** The six warrant tools this module owns (mirrored in tool_registry.ts). */
 export const WARRANT_TOOL_NAMES = [
   "synthi_warrant_issue",
   "synthi_warrant_attenuate",
   "synthi_warrant_check",
   "synthi_warrant_revoke",
   "synthi_warrant_list",
+  "synthi_warrant_status",
 ] as const;
 
 /** When set, warrant management tools additionally require this key in _meta.warrant_admin_key. */
@@ -76,6 +78,10 @@ export async function dispatchWarrantTool(
         return revokeTool(args);
       case "synthi_warrant_list":
         return jsonResponse({ ok: true, warrants: warrantRegistry.listWarrants() });
+      case "synthi_warrant_status":
+        return jsonResponse(
+          warrantRegistry.status(requiredString(obj(args), "warrant_id"), Date.now()),
+        );
       default:
         throw new Error(`Unknown warrant tool '${toolName}'.`);
     }
@@ -100,6 +106,8 @@ function issueTool(args: unknown): ToolResponse {
     subject: requiredString(a, "subject"),
     grants: toolGrants(a["grants"]),
     seal: a["seal"] === true,
+    graduated: a["graduated"] === true,
+    ladder: a["ladder"] === undefined ? undefined : autonomyLadder(a["ladder"]),
     now,
     ttl_ms: Math.min(requiredNumber(a, "ttl_ms"), ceilings.max_ttl_ms),
   });
@@ -114,6 +122,8 @@ function attenuateTool(args: unknown): ToolResponse {
     subject: requiredString(a, "subject"),
     grants: toolGrants(a["grants"]),
     seal: a["seal"] === true,
+    graduated: a["graduated"] === true,
+    ladder: a["ladder"] === undefined ? undefined : autonomyLadder(a["ladder"]),
     now: Date.now(),
     ttl_ms: Math.min(numberOpt(a["ttl_ms"]) ?? Number.MAX_SAFE_INTEGER, ceilings.max_ttl_ms),
   });
@@ -290,6 +300,41 @@ function toolGrants(value: unknown): ToolGrant[] {
   });
 }
 
+/**
+ * Coerce the optional JSON `ladder` array into AutonomySteps, rejecting
+ * malformed entries up front so the pure registry only ever sees well-typed
+ * input. Step grants reuse the same defensive parser as base grants; deeper
+ * policy limits (sample floors, ratio ranges, ladder depth) stay in the core.
+ */
+function autonomyLadder(value: unknown): AutonomyStep[] {
+  if (!Array.isArray(value)) {
+    throw new Error("The 'ladder' field needs an array of autonomy steps.");
+  }
+  return value.map((entry, index) => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new Error("Every autonomy step must be an object.");
+    }
+    const raw = entry as Record<string, unknown>;
+    const gate = raw["unlock_after"];
+    if (typeof gate !== "object" || gate === null || Array.isArray(gate)) {
+      throw new Error(`Autonomy step ${index} needs an 'unlock_after' evidence-gate object.`);
+    }
+    const rawGate = gate as Record<string, unknown>;
+    const minSample = numberOpt(rawGate["min_sample"]);
+    if (minSample === undefined) {
+      throw new Error(`Autonomy step ${index} needs a numeric 'unlock_after.min_sample'.`);
+    }
+    const successRatio = numberOpt(rawGate["success_ratio"]);
+    if (successRatio === undefined) {
+      throw new Error(`Autonomy step ${index} needs a numeric 'unlock_after.success_ratio'.`);
+    }
+    return {
+      unlock_after: { min_sample: minSample, success_ratio: successRatio },
+      grants: toolGrants(raw["grants"]),
+    };
+  });
+}
+
 function obj(args: unknown): Record<string, unknown> {
   return (args ?? {}) as Record<string, unknown>;
 }
@@ -323,12 +368,12 @@ export const WARRANT_TOOLS = [
   {
     name: "synthi_warrant_issue",
     description: "Issue a capability warrant: an expiring, invocation-capped lease letting one agent use specific tools under argument constraints.",
-    inputSchema: { type: "object", properties: { subject: { type: "string", description: "Agent or user the warrant is for." }, grants: { type: "array", items: { type: "object", properties: { tool: { type: "string" }, arg_constraints: { type: "object", additionalProperties: { type: "string" } }, max_invocations: { type: "number" } }, required: ["tool"] } }, ttl_ms: { type: "number" }, seal: { type: "boolean", description: "Seal the warrant: every use must present the one-time bearer secret in _meta.warrant_bearer." } }, required: ["subject", "grants", "ttl_ms"] },
+    inputSchema: {"type":"object","properties":{"subject":{"type":"string","description":"Agent or user the warrant is for."},"grants":{"type":"array","items":{"type":"object","properties":{"tool":{"type":"string"},"arg_constraints":{"type":"object","additionalProperties":{"type":"string"}},"max_invocations":{"type":"number"}},"required":["tool"]}},"ttl_ms":{"type":"number"},"seal":{"type":"boolean","description":"Seal the warrant: every use must present the one-time bearer secret in _meta.warrant_bearer."},"graduated":{"type":"boolean","description":"Enable the earned-autonomy ladder: rungs unlock as this warrant accumulates clean call evidence."},"ladder":{"type":"array","description":"Ordered autonomy steps; each unlocks its extra grants when the evidence gate is met.","items":{"type":"object","properties":{"unlock_after":{"type":"object","properties":{"min_sample":{"type":"number"},"success_ratio":{"type":"number"}},"required":["min_sample","success_ratio"]},"grants":{"type":"array","items":{"type":"object","properties":{"tool":{"type":"string"},"arg_constraints":{"type":"object","additionalProperties":{"type":"string"}},"max_invocations":{"type":"number"}},"required":["tool"]}}},"required":["unlock_after","grants"]}}},"required":["subject","grants","ttl_ms"]},
   },
   {
     name: "synthi_warrant_attenuate",
     description: "Create a strictly narrower child warrant from an existing one so work can be delegated with less authority than the holder has.",
-    inputSchema: { type: "object", properties: { parent_warrant_id: { type: "string" }, subject: { type: "string" }, grants: { type: "array", items: { type: "object", properties: { tool: { type: "string" }, arg_constraints: { type: "object", additionalProperties: { type: "string" } }, max_invocations: { type: "number" } }, required: ["tool"] } }, ttl_ms: { type: "number" }, seal: { type: "boolean", description: "Seal the warrant: every use must present the one-time bearer secret in _meta.warrant_bearer." } }, required: ["parent_warrant_id", "subject", "grants"] },
+    inputSchema: {"type":"object","properties":{"parent_warrant_id":{"type":"string"},"subject":{"type":"string"},"grants":{"type":"array","items":{"type":"object","properties":{"tool":{"type":"string"},"arg_constraints":{"type":"object","additionalProperties":{"type":"string"}},"max_invocations":{"type":"number"}},"required":["tool"]}},"ttl_ms":{"type":"number"},"seal":{"type":"boolean","description":"Seal the warrant: every use must present the one-time bearer secret in _meta.warrant_bearer."},"graduated":{"type":"boolean","description":"Enable the earned-autonomy ladder: rungs unlock as this warrant accumulates clean call evidence."},"ladder":{"type":"array","description":"Ordered autonomy steps; each unlocks its extra grants when the evidence gate is met.","items":{"type":"object","properties":{"unlock_after":{"type":"object","properties":{"min_sample":{"type":"number"},"success_ratio":{"type":"number"}},"required":["min_sample","success_ratio"]},"grants":{"type":"array","items":{"type":"object","properties":{"tool":{"type":"string"},"arg_constraints":{"type":"object","additionalProperties":{"type":"string"}},"max_invocations":{"type":"number"}},"required":["tool"]}}},"required":["unlock_after","grants"]}}},"required":["parent_warrant_id","subject","grants"]},
   },
   {
     name: "synthi_warrant_check",
@@ -344,6 +389,11 @@ export const WARRANT_TOOLS = [
     name: "synthi_warrant_list",
     description: "List every known warrant for audit.",
     inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "synthi_warrant_status",
+    description: "Show a warrant's current autonomy rung, evidence progress, and effective grants.",
+    inputSchema: { type: "object", properties: { warrant_id: { type: "string" } }, required: ["warrant_id"] },
   },
 ] as const;
 

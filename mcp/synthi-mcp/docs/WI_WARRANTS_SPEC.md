@@ -151,3 +151,51 @@ on every call.
 - Tests: sealed round-trip, missing/wrong bearer denial, audit secrecy,
   child-fresh-bearer, dispatcher path; live-wire default-posture battery stays
   16/16 for unsealed regression.
+
+## Patch E — Self-graduating warrants (earned-autonomy ladders)
+
+Motivation: enterprise frameworks (NeuBird Earned Autonomy 2026, Digital
+Apprentice arXiv:2606.04321, Covenant Std Part 7) converge on graduated agent
+trust - promotion on sustained evidence, hair-trigger demotion, pinned
+ceilings - but ship only as org process. This mechanizes graduation inside
+the credential itself.
+
+- src/security/warrant.ts additions:
+  - type AutonomyStep { unlock_after: { min_sample: number; success_ratio: number };
+    grants: readonly ToolGrant[] }  // additional grants the step unlocks
+  - Warrant gains optional graduated?: boolean, ladder?: readonly AutonomyStep[]
+    (frozen at issuance; NEVER mutated), plus runtime-only counters kept in the
+    record (not on the audit view): admitted_count, denied_count, demoted_rungs,
+    cooldown_until_ms.
+  - Code constants: MIN_EVIDENCE_SAMPLE = 5 (floor for any step's min_sample),
+    PROBE_DEMOTION_THRESHOLD = 3 (out-of-scope denials within current rung that
+    trigger one-rung demotion), COOLDOWN_MS = 60_000.
+  - issue/attenuate input gains graduated?: boolean; ladder?: readonly AutonomyStep[].
+    Validation: ladder length <= 4; every step.min_sample >= MIN_EVIDENCE_SAMPLE;
+    every step.success_ratio in (0,1]. Graduated warrants require admin posture
+    unchanged (management plane already gated).
+  - Effective grants computation (pure fn computeEffectiveGrants(warrant, record)):
+    base grants + ladder steps [0 .. currentRung) where currentRung counts steps
+    whose evidence is met (admitted_count >= step.unlock_after.min_sample AND
+    admitted/(admitted+denied) >= step.success_ratio), minus demoted_rungs
+    (floored at 0). Cooldown active => base grants only.
+  - check(): records outcome AFTER the decision - allowed => admitted_count+1;
+    denied with reason_code arg_out_of_scope or bearer_mismatch => denied_count+1
+    and if denied_count >= PROBE_DEMOTION_THRESHOLD then demoted_rungs+1 (cap at
+    ladder length), denied_count reset, cooldown_until_ms = now + COOLDOWN_MS.
+    Denial evaluation uses effective grants (a graduated warrant may therefore
+    be ALLOWED mid-life for tools its ladder unlocked).
+  - New exported type WarrantStatusView { warrant; effective_grants; current_rung;
+    next_step?: { checks_remaining: number } | null; demoted_rungs; cooldown_active }
+  - New method status(warrant_id, now): WarrantStatusView - transparency surface.
+  - Attenuation from a graduated parent snapshots the parent's CURRENT effective
+    grants as static child grants (child never inherits the ladder; promotion
+    never propagates down).
+- src/tools/warrant.ts: pass graduated/ladder through issueTool/attenuateTool
+  (ladder parsed defensively like grants); new tool synthi_warrant_status
+  { warrant_id } returning the status view JSON; WARRANT_TOOLS schema entries
+  updated (+ synthi_warrant_status definition); ADVERTISED_TOOLS gains the name.
+- Tests: promotion unlocks rung after evidence; below-threshold stays locked;
+  probe demotion drops rung + cooldown locks to base; ladder validation throws
+  (depth/sample/ratio); attenuation snapshot excludes future rungs; status view
+  math; dispatcher path for synthi_warrant_status.

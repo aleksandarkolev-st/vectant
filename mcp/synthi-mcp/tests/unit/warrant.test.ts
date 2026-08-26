@@ -474,3 +474,73 @@ describe("sealed warrants (proof-of-possession)", () => {
       expect.objectContaining({ allowed: false }));
   });
 });
+
+describe("graduated warrants (earned-autonomy ladders)", () => {
+  const LADDER = [
+    { unlock_after: { min_sample: 5, success_ratio: 0.9 }, grants: [{ tool: "synthi_describe" }] },
+    { unlock_after: { min_sample: 10, success_ratio: 0.95 }, grants: [{ tool: "synthi_get_event_log" }] },
+  ];
+  function make() {
+    const reg = new WarrantRegistry();
+    const w = reg.issue({ subject: "agent", grants: [{ tool: "synthi_screenshot" }], now: NOW, ttl_ms: TTL, graduated: true, ladder: LADDER });
+    return { reg, id: w.warrant_id };
+  }
+
+  it("stays base-only until evidence is met, then unlocks rung one", () => {
+    const { reg, id } = make();
+    for (let i = 0; i < 4; i += 1) expect(reg.check({ warrant_id: id, tool: "synthi_screenshot", now: NOW + 1 }).allowed).toBe(true);
+    expect(reg.status(id, NOW + 2).current_rung).toBe(0);
+    expect(reg.check({ warrant_id: id, tool: "synthi_screenshot", now: NOW + 1 }).allowed).toBe(true);
+    expect(reg.check({ warrant_id: id, tool: "synthi_describe", now: NOW + 2 }).allowed).toBe(true);
+    expect(reg.status(id, NOW + 3).current_rung).toBe(1);
+  });
+
+  it("probes delay promotion: a denied attempt poisons the success ratio", () => {
+    const { reg, id } = make();
+    for (let i = 0; i < 5; i += 1) reg.check({ warrant_id: id, tool: "synthi_screenshot", now: NOW + 1 });
+    expect(codeOf(reg.check({ warrant_id: id, tool: "never_granted", now: NOW + 2 }))).toBe("tool_not_covered");
+    expect(reg.status(id, NOW + 3).current_rung).toBe(0);
+    for (let i = 0; i < 4; i += 1) reg.check({ warrant_id: id, tool: "synthi_screenshot", now: NOW + 3 });
+    expect(reg.status(id, NOW + 4).current_rung).toBe(1);
+  });
+
+  it("demotes after repeated out-of-scope probes and cools down to base only", () => {
+    const { reg, id } = make();
+    for (let i = 0; i < 5; i += 1) reg.check({ warrant_id: id, tool: "synthi_screenshot", now: NOW + 1 });
+    expect(reg.status(id, NOW + 2).current_rung).toBe(1);
+    for (let i = 0; i < 3; i += 1) reg.check({ warrant_id: id, tool: "never_granted", now: NOW + 2 });
+    const st = reg.status(id, NOW + 3);
+    expect(st.demoted_rungs).toBe(1);
+    expect(st.cooldown_active).toBe(true);
+    expect(st.effective_grants.some((g) => g.tool === "synthi_describe")).toBe(false);
+    const later = reg.status(id, NOW + 2 + 61_000);
+    expect(later.cooldown_active).toBe(false);
+    expect(later.current_rung).toBe(0);
+  });
+
+  it("validates ladders at issue time", () => {
+    const reg = new WarrantRegistry();
+    expect(() => reg.issue({ subject: "s", grants: [{ tool: "t" }], now: NOW, ttl_ms: TTL, graduated: true, ladder: [{ unlock_after: { min_sample: 2, success_ratio: 0.9 }, grants: [] }] })).toThrow(/at least/i);
+    expect(() => reg.issue({ subject: "s", grants: [{ tool: "t" }], now: NOW, ttl_ms: TTL, graduated: true, ladder: Array.from({ length: 5 }, () => ({ unlock_after: { min_sample: 10, success_ratio: 0.9 }, grants: [{ tool: "t" }] })) })).toThrow(/depth|length|4/i);
+    expect(() => reg.issue({ subject: "s", grants: [{ tool: "t" }], now: NOW, ttl_ms: TTL, graduated: true, ladder: [{ unlock_after: { min_sample: 10, success_ratio: 1.5 }, grants: [{ tool: "t" }] }] })).toThrow(/ratio/i);
+  });
+
+  it("attenuation snapshots current effective grants and never propagates future rungs", () => {
+    const parentReg = new WarrantRegistry();
+    const parent = parentReg.issue({ subject: "p", grants: [{ tool: "synthi_screenshot" }], now: NOW, ttl_ms: TTL, graduated: true, ladder: LADDER });
+    for (let i = 0; i < 5; i += 1) parentReg.check({ warrant_id: parent.warrant_id, tool: "synthi_screenshot", now: NOW + 1 });
+    const child = parentReg.attenuate({ parent_warrant_id: parent.warrant_id, subject: "c", grants: [{ tool: "synthi_screenshot" }, { tool: "synthi_describe" }], now: NOW + 2 });
+    expect(child.graduated).toBeFalsy();
+    expect(child.ladder).toBeUndefined();
+    expect(parentReg.check({ warrant_id: child.warrant_id, tool: "synthi_describe", now: NOW + 3 }).allowed).toBe(true);
+    expect(parentReg.check({ warrant_id: child.warrant_id, tool: "synthi_get_event_log", now: NOW + 3 }).allowed).toBe(false);
+  });
+
+  it("status view reports next-step progress", () => {
+    const { reg, id } = make();
+    for (let i = 0; i < 3; i += 1) reg.check({ warrant_id: id, tool: "synthi_screenshot", now: NOW + 1 });
+    const st = reg.status(id, NOW + 2);
+    expect(st.current_rung).toBe(0);
+    expect(st.next_step?.checks_remaining).toBe(2);
+  });
+});
