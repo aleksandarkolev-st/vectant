@@ -30,7 +30,7 @@
  * recording follows last.
  */
 
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import {
   WarrantRegistry,
   grantAcceptsArgs,
@@ -84,6 +84,14 @@ const warrantRegistry = new WarrantRegistry();
 /** Process-wide progression ledger behind the separated trust surface. */
 const trustLedger = new TrustLedger();
 
+/**
+ * Patch I4: security events must not carry raw warrant identifiers — they are
+ * capability handles. Only a short sha256 prefix is logged; correlation stays
+ * possible, plaintext leakage does not.
+ */
+const rid = (id: string): string =>
+  createHash("sha256").update(id).digest("hex").slice(0, 12);
+
 export async function dispatchWarrantTool(
   toolName: string,
   args: unknown
@@ -117,7 +125,12 @@ export async function dispatchWarrantTool(
               "Trust progression binds only sealed warrants; re-issue with seal:true so evidence is possession-proven.",
           });
         }
-        trustLedger.bind(warrantId, requiredString(a, "policy_id"), Date.now());
+        // Patch I1: bind-time subject wiring — pass the warrant's subject so
+        // inherited demotion taint lifts onto this binding immediately
+        // (mirroring the gate's per-call subject resolution), not only after
+        // its first recorded call. Positional note: `warrant` stays unset
+        // (as before), so the subject occupies the ledger's fifth parameter.
+        trustLedger.bind(warrantId, requiredString(a, "policy_id"), Date.now(), undefined, warrant.subject);
         return jsonResponse({ ok: true });
       }
       case "synthi_warrant_policy_register": {
@@ -352,9 +365,9 @@ export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayl
         code: "warrant_denied",
         mode,
         tool: toolName,
-        warrant_id: warrantId,
+        warrant_id: rid(warrantId),
         reason_code: decision.reason_code,
-        human_reason: decision.human_reason,
+        human_reason: String(decision.human_reason).slice(0, 120),
       },
     });
     if (mode === "warn") return null;

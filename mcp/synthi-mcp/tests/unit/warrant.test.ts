@@ -653,3 +653,50 @@ describe("Patch H - taint inheritance and escalating cooldowns", () => {
     expect(ledger.view(w.warrant_id, NOW + 8 + 61_000 + 120_000 + 1)!.cooldown_active).toBe(false);
   });
 });
+
+describe("Patch I - laundering closures", () => {
+  function setup() {
+    const reg = new WarrantRegistry();
+    const ledger = new TrustLedger();
+    ledger.registerPolicy({ policy_id: "std", steps: [{ unlock_after: { min_sample: 5, success_ratio: 0.9 }, grants: [{ tool: "synthi_describe" }] }] });
+    return { reg, ledger };
+  }
+
+  it("bearer_mismatch denials no longer count as demotion probes", () => {
+    const { reg, ledger } = setup();
+    const w = reg.issue({ subject: "victim", grants: [{ tool: "synthi_screenshot" }], now: NOW, ttl_ms: TTL, seal: true });
+    ledger.bind(w.warrant_id, "std", NOW);
+    for (let i = 0; i < 10; i += 1) ledger.record(w.warrant_id, { allowed: false, reason_code: "bearer_mismatch" }, NOW + 1 + i);
+    const v = ledger.view(w.warrant_id, NOW + 50)!;
+    expect(v.demoted_rungs).toBe(0);
+    expect(v.cooldown_active).toBe(false);
+  });
+
+  it("unbind leaves a tombstone: rebind mid-cooldown stays locked and keeps demotions", () => {
+    const { reg, ledger } = setup();
+    const w = reg.issue({ subject: "s", grants: [{ tool: "synthi_screenshot" }], now: NOW, ttl_ms: TTL });
+    ledger.bind(w.warrant_id, "std", NOW);
+    for (let i = 0; i < 5; i += 1) ledger.record(w.warrant_id, { allowed: true }, NOW + 1);
+    for (let i = 0; i < 3; i += 1) ledger.record(w.warrant_id, { allowed: false, reason_code: "tool_not_covered" }, NOW + 2);
+    expect(ledger.view(w.warrant_id, NOW + 3)?.cooldown_active).toBe(true);
+    ledger.unbind(w.warrant_id);
+    ledger.bind(w.warrant_id, "std", NOW + 4); // would previously launder
+    const v = ledger.view(w.warrant_id, NOW + 5)!;
+    expect(v.demoted_rungs).toBe(1);
+    expect(v.cooldown_active).toBe(true);
+  });
+
+  it("bind-time taint lands immediately with case-folded subjects", () => {
+    const { reg, ledger } = setup();
+    const w = reg.issue({ subject: "Mixed-Case", grants: [{ tool: "synthi_screenshot" }], now: NOW, ttl_ms: TTL });
+    // Simulate prior demotion for the folded subject via record on another warrant.
+    const w0 = reg.issue({ subject: "MIXED-case", grants: [{ tool: "synthi_screenshot" }], now: NOW, ttl_ms: TTL });
+    ledger.bind(w0.warrant_id, "std", NOW);
+    for (let i = 0; i < 5; i += 1) ledger.record(w0.warrant_id, { allowed: true }, NOW + 1, "MIXED-case");
+    for (let i = 0; i < 3; i += 1) ledger.record(w0.warrant_id, { allowed: false, reason_code: "tool_not_covered" }, NOW + 2, "MIXED-case");
+    ledger.bind(w.warrant_id, "std", NOW + 3, undefined, "Mixed-Case");
+    const v = ledger.view(w.warrant_id, NOW + 4)!;
+    expect(v.current_rung).toBe(0);
+    expect(ledger.viewTaint("mixed-CASE")).toBeGreaterThanOrEqual(1);
+  });
+});

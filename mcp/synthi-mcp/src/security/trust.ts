@@ -9,8 +9,11 @@
  * with each accumulated demotion (Patch H2). Demotions also TAINT the acting
  * subject, and applyInheritedTaint lifts a warrant's binding to its subject's
  * taint floor, so discipline earned under one lease follows the agent into
- * the next (Patch H1). Unbinding drops progression entirely and the warrant
- * reverts to exactly its issued grants.
+ * the next (Patch H1) — enforced at bind time too, not only at issuance
+ * (Patch I1). Unbinding drops progression entirely and the warrant reverts
+ * to exactly its issued grants; a binding carrying demotions or a running
+ * cooldown leaves a capped tombstone behind so an unbind→rebind cycle cannot
+ * launder the record (Patch I3).
  *
  * Pure module: zero IO, no clock reads — time enters as `now`. Nothing here
  * mutates warrants; composing trust with authorization happens in the tools
@@ -34,6 +37,16 @@ export { MIN_EVIDENCE_SAMPLE, PROBE_DEMOTION_THRESHOLD, COOLDOWN_MS };
 
 /** A policy's ladder may never run deeper than this many steps. */
 const MAX_POLICY_DEPTH = 4;
+/**
+ * Patch I3: at most this many tombstones of unbound-but-recently-demoted
+ * bindings are remembered; inserting beyond the cap evicts the oldest.
+ */
+export const MAX_TOMBSTONES = 5000;
+/**
+ * Patch I5a: at most this many per-subject taint floors are remembered;
+ * inserting a NEW subject beyond the cap evicts the oldest.
+ */
+export const MAX_TAINT_ENTRIES = 10000;
 
 /** One rung of a trust ladder: extra grants unlocked once the evidence gate is met. */
 export interface ProgressionStep {
@@ -59,11 +72,18 @@ interface Binding {
   cooldown_until_ms: number;
 }
 
-/** Denial reason codes counted as probing: repeated, they signal boundary testing, not bad luck. */
+/**
+ * Denial reason codes counted as probing: repeated, they signal boundary
+ * testing BY the holder against the ladder's own edges. bearer_mismatch is
+ * deliberately EXCLUDED (Patch I2): failing a bearer proof is an attack
+ * AGAINST the holder — it needs nothing but a leaked warrant id — not
+ * evidence that the holder probed their own boundary, so it must neither
+ * demote the holder's ladder nor taint their subject. Such failures remain
+ * logged/denied upstream; they simply never feed this ledger.
+ */
 const PROBE_REASON_CODES: ReadonlySet<string> = new Set([
   "tool_not_covered",
   "arg_out_of_scope",
-  "bearer_mismatch",
 ]);
 
 /**
@@ -144,9 +164,23 @@ export class TrustLedger {
    * Patch H1: demotion floors learned per acting subject, fed by
    * `record(..., subject)` and enforced onto bindings by
    * `applyInheritedTaint` — repeat offenders cannot launder their record
-   * simply by obtaining a fresh warrant.
+   * simply by obtaining a fresh warrant. Keys are LOWERCASED subjects
+   * (Patch I1: 'Agent-7' and 'agent-7' are one offender) and the map is
+   * capped at MAX_TAINT_ENTRIES with oldest-first eviction (Patch I5a).
    */
   private readonly subjectTaint = new Map<string, number>();
+
+  /**
+   * Patch I3: discipline remembered across an unbind. Detaching a binding
+   * that carries demotions (or a cooldown deadline) writes a tombstone so an
+   * immediate unbind→rebind cycle cannot launder the record; the next
+   * successful bind restores both fields and consumes the tombstone. Capped
+   * at MAX_TOMBSTONES, oldest inserted evicted first.
+   */
+  private readonly tombstones = new Map<
+    string,
+    { demoted_rungs: number; cooldown_until_ms: number }
+  >();
 
   /**
    * `warrantExists` is an optional pure probe (typically wired to the
@@ -237,12 +271,26 @@ export class TrustLedger {
    * Rebinding to the SAME policy preserves everything (an idempotent
    * re-affirmation); unbind() remains the deliberate escape valve that
    * drops progression state entirely.
+   *
+   * Patch I3: unbinding does not fully forget. A binding demoted below its
+   * top rung — or detached mid-cooldown — leaves a tombstone keyed by
+   * warrant id; the next successful bind for that warrant restores
+   * demoted_rungs = max(inherited-from-subject, tombstone.demoted_rungs)
+   * and keeps the tombstone's cooldown_until_ms (so a mid-cooldown
+   * rebind stays locked), then consumes the tombstone.
+   *
+   * Patch I1 — bind-time subject taint: when the caller supplies
+   * `subject`, a successful bind immediately lifts the fresh binding to
+   * that subject's inherited demotion floor via applyInheritedTaint, so
+   * discipline earned under earlier warrants is in force from the very
+   * first call instead of only after issuance-time application.
    */
   bind(
     warrantId: string,
     policyId: string,
     now: number = Number.POSITIVE_INFINITY,
     warrant?: Warrant,
+    subject?: string,
   ): void {
     const policy = this.policies.get(policyId);
     if (policy === undefined) {
@@ -260,14 +308,35 @@ export class TrustLedger {
     }
     if (existing === undefined || existing.policy_id !== policyId) {
       // Policy change (or first bind): evidence starts from zero, by design,
-      // but demotions carry over — they are discipline, not evidence.
+      // but demotions carry over — they are discipline, not evidence. A
+      // tombstone from an intervening unbind (Patch I3) restores the
+      // stronger of its remembered demotions and whatever taint the
+      // subject brings, and keeps a running cooldown alive across the gap;
+      // it is consumed once applied.
+      const tombstone = this.tombstones.get(warrantId);
+      this.tombstones.delete(warrantId);
+      const inheritedTaint =
+        subject === undefined ? 0 : this.subjectTaint.get(subject.toLowerCase()) ?? 0;
       this.bindings.set(warrantId, {
         policy_id: policyId,
         admitted_count: 0,
         denied_count: 0,
-        demoted_rungs: existing?.demoted_rungs ?? 0,
-        cooldown_until_ms: 0,
+        demoted_rungs: Math.max(
+          existing?.demoted_rungs ?? 0,
+          tombstone?.demoted_rungs ?? 0,
+          inheritedTaint,
+        ),
+        cooldown_until_ms:
+          existing?.cooldown_until_ms ?? tombstone?.cooldown_until_ms ?? 0,
       });
+    } else {
+      this.tombstones.delete(warrantId);
+    }
+    // Patch I1: apply inherited taint at bind time so floors land
+    // immediately, not just at issuance (applyInheritedTaint is max-only,
+    // so legitimate progress is never rolled back).
+    if (subject !== undefined) {
+      this.applyInheritedTaint(warrantId, subject.toLowerCase());
     }
   }
 
@@ -277,13 +346,35 @@ export class TrustLedger {
    * the warrant is cooling down from a probe demotion — unbinding is the
    * Patch G3 escape valve (progression drops entirely, authority reverts to
    * base), whereas rebinding stays blocked. Unbound or unknown ids throw.
+   *
+   * Patch I3: a binding that carries demotions — or an unexpired cooldown —
+   * first leaves a capped tombstone so an immediate unbind→rebind cycle
+   * cannot launder the discipline; spotless bindings forget nothing worth
+   * remembering and write no tombstone.
    */
   unbind(warrantId: string): void {
-    if (!this.bindings.delete(warrantId)) {
+    const binding = this.bindings.get(warrantId);
+    if (binding === undefined) {
       throw new Error(
         `Cannot unbind trust: warrant '${warrantId}' is not bound to any progression policy.`,
       );
     }
+    if (
+      binding.demoted_rungs > 0 ||
+      binding.cooldown_until_ms > Number.POSITIVE_INFINITY
+    ) {
+      this.tombstones.set(warrantId, {
+        demoted_rungs: binding.demoted_rungs,
+        cooldown_until_ms: binding.cooldown_until_ms,
+      });
+      // Patch I3: bounded memory — drop the oldest-inserted tombstone first.
+      while (this.tombstones.size > MAX_TOMBSTONES) {
+        const oldest = this.tombstones.keys().next();
+        if (oldest.done === true) break;
+        this.tombstones.delete(oldest.value);
+      }
+    }
+    this.bindings.delete(warrantId);
   }
 
   /**
@@ -334,20 +425,33 @@ export class TrustLedger {
     binding.cooldown_until_ms =
       now + COOLDOWN_MS * 2 ** Math.max(0, binding.demoted_rungs - 1);
     // Patch H1: a demotion taints the acting subject, not just this binding.
+    // Keys are lowercased so 'Agent-7' and 'agent-7' share one floor
+    // (Patch I1), and the map stays capped with oldest-first eviction
+    // (Patch I5a); refreshing an existing key keeps it youngest.
     if (subject !== undefined) {
+      const key = String(subject).toLowerCase();
+      if (!this.subjectTaint.has(key)) {
+        this.subjectTaint.set(key, 0);
+        while (this.subjectTaint.size > MAX_TAINT_ENTRIES) {
+          const oldest = this.subjectTaint.keys().next();
+          if (oldest.done === true) break;
+          this.subjectTaint.delete(oldest.value);
+        }
+      }
       this.subjectTaint.set(
-        subject,
-        Math.max(this.subjectTaint.get(subject) ?? 0, binding.demoted_rungs),
+        key,
+        Math.max(this.subjectTaint.get(key) ?? 0, binding.demoted_rungs),
       );
     }
   }
 
   /**
    * Patch H1: the demotion floor a subject has earned across every warrant
-   * they have held (0 when untainted). Read-only audit surface.
+   * they have held (0 when untainted). Read-only audit surface. Subject is
+   * folded to lowercase before lookup (Patch I1).
    */
   viewTaint(subject: string): number {
-    return this.subjectTaint.get(subject) ?? 0;
+    return this.subjectTaint.get(String(subject).toLowerCase()) ?? 0;
   }
 
   /**
@@ -355,9 +459,10 @@ export class TrustLedger {
    * demotion earned under one warrant follows the subject into the next.
    * Max-only (never a reduction), and a silent no-op for unknown subjects
    * or unbound warrants, so legitimate progress is never rolled back.
+   * Subject is folded to lowercase before lookup (Patch I1).
    */
   applyInheritedTaint(warrantId: string, subject: string): void {
-    const taint = this.subjectTaint.get(subject);
+    const taint = this.subjectTaint.get(String(subject).toLowerCase());
     if (taint === undefined) return;
     const binding = this.bindings.get(warrantId);
     if (binding === undefined) return;
@@ -424,10 +529,11 @@ export class TrustLedger {
     ];
   }
 
-  /** Test isolation hook: drops every policy, binding, and subject taint. Never call outside unit tests. */
+  /** Test isolation hook: drops every policy, binding, subject taint, and tombstone. Never call outside unit tests. */
   resetForTests(): void {
     this.policies.clear();
     this.bindings.clear();
     this.subjectTaint.clear();
+    this.tombstones.clear();
   }
 }
