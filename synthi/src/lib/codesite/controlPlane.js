@@ -3457,19 +3457,24 @@ export async function respondToAgentKnowledgeInbox(
       const answerTargetId = responseKind === inboxItem.knowledgeItem.kind
         ? inboxItem.knowledgeItem.id
         : inboxItem.knowledgeItem.sourceKnowledgeItemId;
+      let answerPayload = parseJson(inboxItem.knowledgeItem.payloadJson, {});
+      if (responseKind !== inboxItem.knowledgeItem.kind) {
+        const sourceQuestion = await db.codeSiteKnowledgeItem.findFirst({
+          where: { id: answerTargetId, kind: 'agent_question' },
+          select: { payloadJson: true },
+        });
+        answerPayload = sourceQuestion
+          ? parseJson(sourceQuestion.payloadJson, {})
+          : {};
+      }
       nextKnowledge = await db.codeSiteKnowledgeItem.update({
         where: { id: answerTargetId },
         data: {
           status: 'answered',
           payloadJson: stringifyJson({
-            ...parseJson(inboxItem.knowledgeItem.payloadJson, {}),
+            ...answerPayload,
             answerText: response.answer,
             answeredByAgentSessionId: authority.session.id,
-            ...(responseKind === inboxItem.knowledgeItem.kind ? {} : {
-              fromAgentSessionId: null,
-              suggestedExpertAgentSessionIds: [],
-              questionUrgency: 'normal',
-            }),
           }),
           updatedAt: now,
         },
