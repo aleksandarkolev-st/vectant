@@ -38,6 +38,15 @@ function kindPayload(item) {
       responseAction: item.responseAction,
     };
   }
+  if (item.kind === 'agent_question') {
+    return {
+      questionUrgency: item.questionUrgency,
+      suggestedExpertAgentSessionIds: item.suggestedExpertAgentSessionIds,
+      fromAgentSessionId: item.source?.agentSessionId || null,
+      answerText: item.answerText || null,
+      answeredByAgentSessionId: item.answeredByAgentSessionId || null,
+    };
+  }
   return {
     fromAgentSessionId: item.fromAgentSessionId,
     toAgentSessionId: item.toAgentSessionId,
@@ -152,6 +161,10 @@ export function projectKnowledgeRecord(row) {
     recipientAgentSessionIds: payload.recipientAgentSessionIds,
     requiresResponse: payload.requiresResponse,
     responseAction: payload.responseAction,
+    questionUrgency: payload.questionUrgency,
+    suggestedExpertAgentSessionIds: payload.suggestedExpertAgentSessionIds || [],
+    answerText: payload.answerText,
+    answeredByAgentSessionId: payload.answeredByAgentSessionId,
     fromAgentSessionId: payload.fromAgentSessionId,
     toAgentSessionId: payload.toAgentSessionId,
     unresolvedRisks: payload.unresolvedRisks,
