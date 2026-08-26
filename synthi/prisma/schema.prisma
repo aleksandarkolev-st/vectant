@@ -379,6 +379,8 @@ model CodeSiteProject {
   knowledgeItems     CodeSiteKnowledgeItem[]
   knowledgeReferences CodeSiteKnowledgeReference[]
   agentChannels      CodeSiteAgentChannel[]
+  publishedNotams    CodeSiteFleetNotam[]
+  notamIngestStates  CodeSiteNotamIngestState[]
 
   @@index([workspaceSlug])
   @@index([collaborationSessionId])
@@ -987,6 +989,55 @@ model CodeSitePolicyDelta {
   @@index([promotionState])
 }
 
+model CodeSiteFleetNotam {
+  id                      String   @id @default(cuid())
+  projectId               String
+  workspaceSlug           String
+  sourcePolicyDeltaId     String
+  advisoryKey             String
+  title                   String
+  summary                 String
+  affectedZoneKey         String?
+  affectedRoutesJson      String
+  triggerConditionsJson   String
+  ruleCandidateJson       String
+  confidence              Float
+  expectedRiskReduction   Float?
+  digestSha256            String
+  status                  String   @default("active")
+  publishedAt             DateTime @default(now())
+  expiresAt               DateTime?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  project      CodeSiteProject            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  ingestStates CodeSiteNotamIngestState[]
+
+  @@unique([projectId, advisoryKey])
+  @@index([status, expiresAt])
+  @@index([workspaceSlug])
+  @@index([affectedZoneKey])
+}
+
+model CodeSiteNotamIngestState {
+  id             String   @id @default(cuid())
+  notamId        String
+  projectId      String
+  workspaceSlug  String
+  state          String   @default("unreviewed")
+  decidedBy      String?
+  decidedAt      DateTime?
+  reason         String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  notam   CodeSiteFleetNotam @relation(fields: [notamId], references: [id], onDelete: Cascade)
+  project CodeSiteProject    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([notamId, projectId])
+  @@index([projectId, state])
+}
+
 // Durable Local Support relay state. This table stores only the signed request
 // envelope and scrubbed target metadata; local response bodies are never
 // persisted in the cloud control plane.
@@ -1368,4 +1419,3 @@ model CodeSiteAgentChannel {
   @@index([fromSessionId])
   @@index([toSessionId])
 }
-

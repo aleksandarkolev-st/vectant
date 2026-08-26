@@ -86,6 +86,11 @@
   validateTransaction,
 } from '@/lib/codesite/controlPlane';
 import {
+  decideFleetNotam,
+  listFleetNotamsForProject,
+  publishFleetNotam,
+} from '@/lib/codesite/fleetNotams';
+import {
   probeCodeSiteActivityBridge,
   probeCodeSiteDeploymentStatus,
 } from '@/lib/codesite/activityBridgeReadiness';
@@ -247,6 +252,17 @@ export async function GET(request, { params }) {
         cursor: params.get('cursor'),
         limit: params.get('limit'),
       }));
+    }
+
+    if (route[0] === 'projects' && route[2] === 'fleet-notams') {
+      const notamQuery = new URL(request.url).searchParams;
+      const includeOwn = notamQuery.get('include_own') === 'true' || notamQuery.get('includeOwn') === 'true';
+      const includeMuted = notamQuery.get('include_muted') === 'true' || notamQuery.get('includeMuted') === 'true';
+      return okJson(await listFleetNotamsForProject(slug, route[1], {
+        include_own: includeOwn,
+        include_muted: includeMuted,
+        ...(notamQuery.get('route') ? { route: notamQuery.get('route') } : {}),
+      }, access.actor));
     }
 
     if (route[0] === 'projects' && route[2] === 'schemas') {
@@ -718,6 +734,14 @@ export async function POST(request, { params }) {
       return okJson(await resumeMaydayIncident(slug, route[1], body, access.actor));
     }
 
+    if (route[0] === 'projects' && route[2] === 'fleet-notams' && route[3] === 'publish') {
+      return okJson({ fleetNotam: await publishFleetNotam(slug, route[1], body, access.actor) }, { status: 201 });
+    }
+
+    if (route[0] === 'projects' && route[2] === 'fleet-notams' && route[4] === 'decision') {
+      return okJson({ fleetNotam: await decideFleetNotam(slug, route[1], route[3], body, access.actor) });
+    }
+
     if (route[0] === 'projects' && route[2] === 'policy-deltas' && route[4] === 'promote') {
       return okJson({ policyDelta: await promotePolicyDelta(slug, route[1], route[3], body, access.actor) });
     }
@@ -801,6 +825,7 @@ function postAccessMode(route) {
     'collision-predict',
     'observations',
   ].includes(route[2])) return 'read';
+  if (route[0] === 'projects' && route[2] === 'fleet-notams' && route.length === 3) return 'read';
   if (route[0] === 'documents' && route[2] === 'reviews') return 'read';
   if (route[0] === 'execution-plans' && route[2] === 'route-revisions') return 'read';
   if (route[0] === 'route-revisions' && ['review', 'apply'].includes(route[2])) return 'read';

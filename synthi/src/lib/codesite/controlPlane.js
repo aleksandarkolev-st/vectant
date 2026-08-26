@@ -44,6 +44,12 @@ import {
   predictCollisions,
   validateCodeSiteEventType,
 } from './policy';
+import {
+  fleetNotamClearanceGate,
+  listFleetNotamsForProject,
+  mergeFleetNotamForecast,
+  mergeFleetNotamGate,
+} from './fleetNotams';
 import { discoverRepoPolicySignals, REPO_POLICY_COMPILER_VERSION } from './repoPolicyCompiler';
 import {
   buildReadSnapshotEvidence,
@@ -3783,6 +3789,12 @@ async function requestMutationLeaseForPlan(workspaceSlug, plan, body = {}, actor
     zonePolicy,
     collisionAvoidance,
   });
+  const fleetNotams = await fleetNotamClearanceGate({
+    workspaceSlug,
+    projectId: plan.projectId,
+    route: executionPlan.route,
+    zonePolicy,
+  });
   const pilotLicenseHealth = await pilotLicenseHealthForLeaseRequest({
     workspaceSlug,
     plan,
@@ -3798,7 +3810,7 @@ async function requestMutationLeaseForPlan(workspaceSlug, plan, body = {}, actor
     zonePolicy,
     body,
   });
-  const clearancePolicy = applyGovernancePolicyGate(
+  const advisoryPolicy = mergeFleetNotamGate(
     applyCounterfactualPolicyGate(
       applyPilotLicenseHealthGate(
         applyTowerCollisionGate(applyDojoClearanceGate(policy, dojoProof), collisionAvoidance),
@@ -3806,13 +3818,15 @@ async function requestMutationLeaseForPlan(workspaceSlug, plan, body = {}, actor
       ),
       counterfactualPolicy,
     ),
-    governancePolicy,
+    fleetNotams,
   );
+  const clearancePolicy = applyGovernancePolicyGate(advisoryPolicy, governancePolicy);
   const finalRequestedLease = {
     ...requestedLease,
     requiredRadar: unique([
       ...asArray(requestedLease.requiredRadar),
       ...asArray(counterfactualPolicy.requiredRadar),
+      ...asArray(fleetNotams.requiredRadar),
       ...asArray(governancePolicy.requiredRadar),
     ]),
   };
@@ -3833,6 +3847,7 @@ async function requestMutationLeaseForPlan(workspaceSlug, plan, body = {}, actor
         pilotLicenseRequirement: clearancePolicy.pilotLicenseRequirement || null,
         collisionAvoidance: clearancePolicy.collisionAvoidance || null,
         counterfactualPolicy: counterfactualPolicy.appliedPolicyDeltas.length ? counterfactualPolicy : null,
+        fleetNotamGate: fleetNotams.appliedNotams.length ? fleetNotams : null,
         governancePolicy: governancePolicy.required ? governancePolicy : null,
       }),
       dojoProofRef: dojoProof.proofRef,
@@ -3865,6 +3880,7 @@ async function requestMutationLeaseForPlan(workspaceSlug, plan, body = {}, actor
       pilotLicenseRequirement: clearancePolicy.pilotLicenseRequirement || null,
       collisionAvoidance: clearancePolicy.collisionAvoidance || null,
       counterfactualPolicy: counterfactualPolicy.appliedPolicyDeltas.length ? counterfactualPolicy : null,
+      fleetNotamGate: fleetNotams.appliedNotams.length ? fleetNotams : null,
       governancePolicy: governancePolicy.required ? governancePolicy : null,
     },
   });
@@ -3884,6 +3900,7 @@ async function requestMutationLeaseForPlan(workspaceSlug, plan, body = {}, actor
       pilotLicenseRequirement: clearancePolicy.pilotLicenseRequirement || null,
       collisionAvoidance: clearancePolicy.collisionAvoidance || null,
       counterfactualPolicy: counterfactualPolicy.appliedPolicyDeltas.length ? counterfactualPolicy : null,
+      fleetNotams: fleetNotams.appliedNotams,
       governancePolicy: governancePolicy.required ? governancePolicy : null,
     },
   });
@@ -10958,6 +10975,20 @@ export async function collisionPredict(workspaceSlug, projectId, actor = null) {
     leases: mutationLeases,
     zonePolicy,
   });
+  const fleetNotamVisibility = await listFleetNotamsForProject(workspaceSlug, projectId, {
+    route: executionPlans.flatMap((executionPlan) => asArray(executionPlan.route)),
+  }, actor);
+  const fleetNotams = {
+    appliedNotams: fleetNotamVisibility.advisories.map((advisory) => advisory.notamId),
+    matchedRoutes: unique(executionPlans.flatMap((executionPlan) => asArray(executionPlan.route)))
+      .filter((routePath) => fleetNotamVisibility.advisories.some((advisory) =>
+        asArray(advisory.affectedRoutes).some((affectedRoute) => towerPathsOverlap(affectedRoute, routePath)))),
+    visibleCount: fleetNotamVisibility.advisories.length,
+    adoptedCount: fleetNotamVisibility.advisories.filter((advisory) => advisory.effect === 'adopted').length,
+  };
+  if (fleetNotams.appliedNotams.length) {
+    Object.assign(forecast, mergeFleetNotamForecast(forecast, fleetNotams));
+  }
   const learnedPolicyDeltas = await promotedPolicyDeltasForWorkspace(workspaceSlug);
   if (!learnedPolicyDeltas.length) return forecast;
   const signals = buildTowerSimulationSignals({

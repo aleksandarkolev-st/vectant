@@ -61,6 +61,9 @@ export const CODESITE_TOOL_NAMES = [
   "synthi_codesite_get_incident_replay",
   "synthi_codesite_resume_mayday",
   "synthi_codesite_file_policy_delta",
+  "synthi_codesite_list_fleet_notams",
+  "synthi_codesite_publish_fleet_notam",
+  "synthi_codesite_decide_fleet_notam",
   "synthi_codesite_promote_policy_delta",
   "synthi_codesite_reject_policy_delta",
   "synthi_codesite_request_landing",
@@ -116,6 +119,7 @@ const CONTROL_ARG_KEYS = new Set([
   "file_path",
   "incident_id",
   "include",
+  "include_muted",
   "inspection_run_id",
   "line_anchor",
   "line_number",
@@ -124,6 +128,8 @@ const CONTROL_ARG_KEYS = new Set([
   "mutation_lease_id",
   "path",
   "policy_delta_id",
+  "route",
+  "notam_id",
   "project_id",
   "quarantine_id",
   "route_revision_id",
@@ -608,6 +614,25 @@ export const CODESITE_TOOLS = [
     confidence: { type: "number" },
     replayRefs: { type: "array", items: { type: "string" } },
   }, []),
+  codeSiteTool("synthi_codesite_list_fleet_notams", "List cross-project fleet NOTAM advisories visible to a project. Visibility never affects clearance; only locally adopted advisories do.", {
+    project_id: { type: "string" },
+    include_own: { type: "boolean" },
+    include_muted: { type: "boolean" },
+    route: { type: "string" },
+  }, []),
+  codeSiteTool("synthi_codesite_publish_fleet_notam", "Publish a promoted, evidence-backed policy delta as a cross-project advisory.", {
+    project_id: { type: "string" },
+    policy_delta_id: { type: "string" },
+    title: { type: "string" },
+    summary: { type: "string" },
+    expires_at: { type: "string" },
+  }, ["policy_delta_id"]),
+  codeSiteTool("synthi_codesite_decide_fleet_notam", "Locally adopt, mute, dismiss, or reactivate a fleet NOTAM for this project. Only adopted advisories affect clearance decisions; visibility never does.", {
+    project_id: { type: "string" },
+    notam_id: { type: "string" },
+    state: { type: "string", enum: ["adopt", "mute", "dismiss", "reactivate"] },
+    reason: { type: "string" },
+  }, ["notam_id", "state"]),
   codeSiteTool("synthi_codesite_promote_policy_delta", "Promote a proposed CodeSite policy delta after validation/replay evidence.", {
     project_id: { type: "string" },
     policy_delta_id: { type: "string" },
@@ -1193,6 +1218,37 @@ function buildCodeSiteRequest(toolName: RoutedCodeSiteToolName, args: JsonObject
         method: "POST",
         path: `/projects/${encodeURIComponent(requiredProjectId(args))}/policy-deltas`,
         body: bodyFromArgs(args),
+      };
+    case "synthi_codesite_list_fleet_notams": {
+      const query: Record<string, string> = {};
+      if (args["include_own"] !== undefined) query.includeOwn = args["include_own"] === true ? "true" : "false";
+      if (args["include_muted"] !== undefined) query.include_muted = args["include_muted"] === true ? "true" : "false";
+      if (optionalString(args["route"])) query.route = String(args["route"]);
+      return {
+        method: "GET",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/fleet-notams`,
+        ...(Object.keys(query).length ? { query } : {}),
+      };
+    }
+    case "synthi_codesite_publish_fleet_notam":
+      return {
+        method: "POST",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/fleet-notams/publish`,
+        body: {
+          policy_delta_id: requiredString(args, "policy_delta_id"),
+          ...(optionalString(args["title"]) ? { title: optionalString(args["title"]) } : {}),
+          ...(optionalString(args["summary"]) ? { summary: optionalString(args["summary"]) } : {}),
+          ...(optionalString(args["expires_at"]) ? { expiresAt: optionalString(args["expires_at"]) } : {}),
+        },
+      };
+    case "synthi_codesite_decide_fleet_notam":
+      return {
+        method: "POST",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/fleet-notams/${encodeURIComponent(requiredString(args, "notam_id"))}/decision`,
+        body: {
+          state: requiredString(args, "state"),
+          ...(optionalString(args["reason"]) ? { reason: optionalString(args["reason"]) } : {}),
+        },
       };
     case "synthi_codesite_promote_policy_delta":
       return {

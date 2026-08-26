@@ -135,6 +135,12 @@ export const CODE_SITE_EVENT_TYPES = [
   'channel_rejected',
   'channel_closed',
   'channel_violation',
+  'fleet_notam_published',
+  'fleet_notam_acknowledge',
+  'fleet_notam_mute',
+  'fleet_notam_dismiss',
+  'fleet_notam_reactivate',
+  'fleet_notam_adopt',
 ];
 
 const CODE_SITE_EVENT_TYPE_SET = new Set(CODE_SITE_EVENT_TYPES);
