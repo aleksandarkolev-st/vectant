@@ -115,6 +115,9 @@ describe("CodeSite MCP tool surface", () => {
       "rebase_requested",
       "abort",
       "dismiss",
+      "answer",
+      "claim",
+      "defer",
     ]);
   });
 
@@ -298,6 +301,150 @@ describe("CodeSite MCP tool surface", () => {
       message: "codesite_agent_knowledge_identity_arguments_forbidden",
     }));
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("dispatches expert discovery with bounded path and limit filters", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-1";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({ experts: [] }));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_find_experts", {
+      paths: ["src/a.ts"],
+      limit: 5,
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    expect(String(url)).toBe(
+      "http://codesite.test/api/workspace/workspace-env/codesite/agent-sessions/agent-1/experts?paths=src%2Fa.ts&limit=5",
+    );
+    expect(init?.method).toBe("GET");
+    expect(init?.headers).toMatchObject({ authorization: "Bearer csa_agent-secret-token" });
+  });
+
+  it("omits unspecified expert filters and preserves repeated references", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-1";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({ experts: [] }));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_find_experts", {
+      paths: ["src/a.ts", "src/b.ts"],
+      limit: 5,
+    });
+
+    expect(response?.isError).toBeUndefined();
+    const [url] = vi.mocked(fetch).mock.calls[0];
+    expect(String(url)).toBe(
+      "http://codesite.test/api/workspace/workspace-env/codesite/agent-sessions/agent-1/experts?paths=src%2Fa.ts&paths=src%2Fb.ts&limit=5",
+    );
+  });
+
+  it("rejects invalid expert discovery arguments before fetch", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-1";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+
+    const invalidPaths = await dispatchCodeSiteTool("synthi_codesite_find_experts", {
+      paths: "src/a.ts",
+      limit: 5,
+    });
+    const invalidLimit = await dispatchCodeSiteTool("synthi_codesite_find_experts", {
+      paths: ["src/a.ts"],
+      limit: 11,
+    });
+
+    for (const response of [invalidPaths, invalidLimit]) {
+      expect(response?.isError).toBe(true);
+      expect(response?.structuredContent).toEqual(expect.objectContaining({
+        error: "codesite_tool_failed",
+        message: "codesite_agent_knowledge_arguments_invalid",
+      }));
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("asks an expert question without caller-selected authority fields", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-1";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({ question: { id: "question-1" } }));
+    const args = {
+      title: "Who owns turn clamping?",
+      summary: "Need the current owner before changing maxTurnRate.",
+      references: REFERENCES,
+    };
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_ask_expert_question", args);
+
+    expect(response?.isError).toBeUndefined();
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    expect(String(url)).toBe(
+      "http://codesite.test/api/workspace/workspace-env/codesite/agent-sessions/agent-1/questions",
+    );
+    expect(JSON.parse(String(init?.body))).toEqual(args);
+  });
+
+  it("requires a question summary before fetch", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-1";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_ask_expert_question", {
+      title: "Who owns turn clamping?",
+      references: REFERENCES,
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "codesite_tool_failed",
+      message: "codesite_agent_knowledge_arguments_required",
+    }));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("requires answer text when answering an agent question", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-1";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({ inboxItem: { id: "inbox-1" } }));
+
+    const answered = await dispatchCodeSiteTool("synthi_codesite_respond_impact_notice", {
+      notice_id: "inbox-1",
+      action: "answer",
+      answer: "Yes, velocity is clamped at maxTurnRate.",
+    });
+    const missingAnswer = await dispatchCodeSiteTool("synthi_codesite_respond_impact_notice", {
+      notice_id: "inbox-1",
+      action: "answer",
+      answer: "",
+    });
+
+    expect(answered?.isError).toBeUndefined();
+    const [, init] = vi.mocked(fetch).mock.calls[0];
+    expect(JSON.parse(String(init?.body))).toEqual(expect.objectContaining({
+      action: "answer",
+      answer: "Yes, velocity is clamped at maxTurnRate.",
+    }));
+    expect(missingAnswer?.isError).toBe(true);
+    expect(missingAnswer?.structuredContent).toEqual(expect.objectContaining({
+      error: "codesite_tool_failed",
+      message: "codesite_question_answer_required",
+    }));
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes agent_question through shared-knowledge filtering", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-1";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({ knowledge: [] }));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_get_shared_knowledge", {
+      kind: "agent_question",
+      status: "answered",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    const [url] = vi.mocked(fetch).mock.calls[0];
+    expect(url).toEqual(new URL(
+      "http://codesite.test/api/workspace/workspace-env/codesite/agent-sessions/agent-1/knowledge?kind=agent_question&status=answered",
+    ));
   });
 
   it.each([

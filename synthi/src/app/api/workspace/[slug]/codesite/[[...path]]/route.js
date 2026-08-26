@@ -336,7 +336,17 @@ function bearerToken(request) {
 }
 
 function requestQuery(request) {
-  return Object.fromEntries(new URL(request.url).searchParams.entries());
+  const query = {};
+  for (const [key, value] of new URL(request.url).searchParams.entries()) {
+    if (query[key] === undefined) {
+      query[key] = value;
+    } else if (Array.isArray(query[key])) {
+      query[key].push(value);
+    } else {
+      query[key] = [query[key], value];
+    }
+  }
+  return query;
 }
 
 export async function POST(request, { params }) {

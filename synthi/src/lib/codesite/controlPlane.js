@@ -3396,10 +3396,16 @@ export async function respondToAgentKnowledgeInbox(
   // The routed notice for a question is an impact_notice wrapper around the
   // agent_question record; answer/claim/defer/dismiss act on the question
   // itself, so validate against the underlying knowledge kind.
-  const responseKind = inboxItem.knowledgeItem.kind === 'impact_notice'
-    && parseJson(inboxItem.knowledgeItem.payloadJson, {})?.sourceKnowledgeId != null
-    ? 'agent_question'
-    : inboxItem.knowledgeItem.kind;
+  const impactPayload = parseJson(inboxItem.knowledgeItem.payloadJson, {});
+  const questionSourceId = inboxItem.knowledgeItem.sourceKnowledgeItemId || impactPayload?.sourceKnowledgeId || null;
+  let responseKind = inboxItem.knowledgeItem.kind;
+  if (inboxItem.knowledgeItem.kind === 'impact_notice' && questionSourceId) {
+    const sourceKnowledge = await prisma.codeSiteKnowledgeItem.findFirst({
+      where: { id: questionSourceId, projectId: authority.session.projectId },
+      select: { kind: true },
+    });
+    if (sourceKnowledge?.kind === 'agent_question') responseKind = 'agent_question';
+  }
   const response = validateKnowledgeResponse(responseKind, body);
   if (inboxItem.respondedAt) {
     const previous = parseJson(inboxItem.responseJson, {});
@@ -3430,7 +3436,7 @@ export async function respondToAgentKnowledgeInbox(
     // targets the underlying question record, not the wrapper itself.
     if (response.targetStatus && responseKind !== inboxItem.knowledgeItem.kind) {
       await db.codeSiteKnowledgeItem.update({
-        where: { id: inboxItem.knowledgeItem.sourceKnowledgeItemId },
+        where: { id: questionSourceId },
         data: { status: response.targetStatus },
       });
     }
@@ -3456,7 +3462,7 @@ export async function respondToAgentKnowledgeInbox(
     if (isQuestionAnswer) {
       const answerTargetId = responseKind === inboxItem.knowledgeItem.kind
         ? inboxItem.knowledgeItem.id
-        : inboxItem.knowledgeItem.sourceKnowledgeItemId;
+        : questionSourceId;
       let answerPayload = parseJson(inboxItem.knowledgeItem.payloadJson, {});
       if (responseKind !== inboxItem.knowledgeItem.kind) {
         const sourceQuestion = await db.codeSiteKnowledgeItem.findFirst({
@@ -3504,9 +3510,9 @@ export async function respondToAgentKnowledgeInbox(
       // For a direct agent_question the asker is on the record itself; for an
       // impact_notice wrapper we resolve via the source question's payload.
       let askerSessionId = questionPayload.fromAgentSessionId || inboxItem.knowledgeItem.createdByAgentSessionId;
-      if (responseKind !== inboxItem.knowledgeItem.kind && inboxItem.knowledgeItem.sourceKnowledgeItemId) {
+      if (responseKind !== inboxItem.knowledgeItem.kind && questionSourceId) {
         const sourceQuestion = await db.codeSiteKnowledgeItem.findFirst({
-          where: { id: inboxItem.knowledgeItem.sourceKnowledgeItemId, kind: 'agent_question' },
+          where: { id: questionSourceId, kind: 'agent_question' },
           select: { payloadJson: true, createdByAgentSessionId: true },
         });
         if (sourceQuestion) {

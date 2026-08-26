@@ -578,7 +578,8 @@ function normalizeAgentQuestion(input, common) {
       'question_suggested_expert_agent_session_ids',
       { limit: 8, maxLength: KNOWLEDGE_REFERENCE_LIMITS.idLength, allowEmpty: true },
     ).map((value) => normalizeId(value, 'question_suggested_expert_agent_session_id'));
-  if (!suggested.length && !input.skipSuggestionValidation && input.allowUnrouted !== true) {
+  const allowUnrouted = input.allowUnrouted === true || input.allow_unrouted === true;
+  if (!suggested.length && !input.skipSuggestionValidation && !allowUnrouted) {
     // A question with no suggested expert and no explicit unrouted flag is a
     // broadcast in disguise; refuse it rather than spamming every peer.
     throw policyError('knowledge_question_experts_or_unrouted_required');

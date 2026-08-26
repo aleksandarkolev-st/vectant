@@ -9408,6 +9408,8 @@ describe('agent-token inbox access', () => {
       .rejects.toMatchObject({ status: 404, code: 'inbox_item_not_found' });
     expect(prisma.codeSiteAgentInboxItem.update).not.toHaveBeenCalled();
     expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+  });
+});
 
 describe('listProjectChannels keyset pagination', () => {
   const baseTime = new Date('2026-06-30T12:00:00.000Z');

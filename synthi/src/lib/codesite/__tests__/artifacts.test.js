@@ -740,6 +740,18 @@ describe('CodeSite artifact projection', () => {
     expect(schema.properties).not.toHaveProperty('recipientAgentSessionIds');
   });
 
+  it('skips persisted agent questions from repo shared-knowledge summaries', () => {
+    const projected = buildSharedKnowledgeRepoProjection([{
+      id: 'q1',
+      kind: 'agent_question',
+      payloadJson: '{}',
+      scopeJson: '{"visibility":"project","references":{"paths":["src/a.ts"]}}',
+      projectId: 'p1',
+    }]);
+
+    expect(projected).toEqual([]);
+  });
+
   it('writes the repo-local artifact tree when an artifact root is available', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-artifacts-'));
     const result = await writeArtifactProjection(projectFixture(), null, path.join(root, '.synthi', 'codesite'));

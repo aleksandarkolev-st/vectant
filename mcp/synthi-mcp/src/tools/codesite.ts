@@ -205,12 +205,15 @@ const SHARED_SKILL_RECIPE_PROPERTIES = {
 } as const;
 
 const IMPACT_NOTICE_ACTIONS = ["acknowledge", "refresh", "rebase_requested", "abort", "dismiss"] as const;
+const QUESTION_ACTIONS = ["answer", "claim", "defer", "dismiss"] as const;
+const KNOWLEDGE_RESPONSE_ACTIONS = [...new Set([...IMPACT_NOTICE_ACTIONS, ...QUESTION_ACTIONS])] as const;
 const SHARED_KNOWLEDGE_STATUSES = [
   "draft", "verified", "rejected", "invalidated", "archived",
   "open", "claimed", "escalated", "resolved", "dismissed",
   "pending_review", "published", "deprecated", "revoked",
   "pending", "acknowledged", "rebasing", "irrelevant", "aborted", "expired",
   "ready", "reopened", "completed", "declined", "cancelled",
+  "answered", "stale",
 ] as const;
 
 export const CODESITE_TOOLS = [
@@ -288,7 +291,7 @@ export const CODESITE_TOOLS = [
     "synthi_codesite_get_shared_knowledge",
     "Read redacted shared knowledge relevant to the currently attached agent.",
     {
-      kind: { type: "string", enum: ["discovery", "lead", "shared_skill", "impact_notice", "handoff"] },
+      kind: { type: "string", enum: ["discovery", "lead", "shared_skill", "impact_notice", "handoff", "agent_question"] },
       status: { type: "string", enum: SHARED_KNOWLEDGE_STATUSES },
       since: { type: "string", format: "date-time" },
       limit: { type: "integer", minimum: 1, maximum: 100 },
@@ -304,9 +307,10 @@ export const CODESITE_TOOLS = [
     "Respond to an impact notice delivered to the currently attached agent.",
     {
       notice_id: { type: "string", minLength: 1, maxLength: 128 },
-      action: { type: "string", enum: IMPACT_NOTICE_ACTIONS },
+      action: { type: "string", enum: KNOWLEDGE_RESPONSE_ACTIONS },
       reason: { type: "string", maxLength: 2048 },
       evidence_refs: { type: "array", items: { type: "string" }, maxItems: 64 },
+      answer: { type: "string", maxLength: 4096 },
     },
     ["notice_id", "action"],
   ),
@@ -779,14 +783,16 @@ async function dispatchAgentBoundKnowledgeTool(
       action: args["action"],
       reason: args["reason"],
       evidence_refs: args["evidence_refs"],
+      answer: args["answer"],
     });
   } else if (toolName === "synthi_codesite_find_experts") {
     method = "GET";
     path = `${basePath}/experts`;
     url = new URL(`${apiBase}${path}`);
     for (const key of ["paths", "symbols", "contracts"] as const) {
+      if (args[key] === undefined) continue;
       const values = boundedStringListArg(args[key], "codesite_agent_knowledge_arguments_invalid", 32);
-      if (values.length > 0) url.searchParams.set(key, values.join(","));
+      for (const value of values) url.searchParams.append(key, value);
     }
     if (args["limit"] !== undefined) url.searchParams.set("limit", String(args["limit"]));
   } else if (toolName === "synthi_codesite_ask_expert_question") {
@@ -1566,7 +1572,7 @@ const SHARED_KNOWLEDGE_FILTER_KEYS = [
   "workstream_id",
 ] as const;
 
-const KNOWLEDGE_KINDS = new Set(["discovery", "lead", "shared_skill", "impact_notice", "handoff"]);
+const KNOWLEDGE_KINDS = new Set(["discovery", "lead", "shared_skill", "impact_notice", "handoff", "agent_question"]);
 const KNOWLEDGE_STATUSES = new Set<string>(SHARED_KNOWLEDGE_STATUSES);
 const IMPACT_ACTIONS_REQUIRING_EVIDENCE = new Set(["rebase_requested", "abort", "dismiss"]);
 
@@ -1636,13 +1642,23 @@ function validateAgentBoundKnowledgeArguments(toolName: AgentBoundKnowledgeToolN
     return;
   }
   if (toolName === "synthi_codesite_respond_impact_notice") {
-    assertAllowedKeys(args, ["notice_id", "action", "reason", "evidence_refs"]);
+    assertAllowedKeys(args, ["notice_id", "action", "reason", "evidence_refs", "answer"]);
     requireArguments(args, ["notice_id", "action"]);
     const action = requiredString(args, "action");
-    if (!(IMPACT_NOTICE_ACTIONS as readonly string[]).includes(action)) {
+    if (!(KNOWLEDGE_RESPONSE_ACTIONS as readonly string[]).includes(action)) {
       throw new Error("codesite_impact_notice_action_invalid");
     }
-    if (IMPACT_ACTIONS_REQUIRING_EVIDENCE.has(action)) {
+    const isQuestionAction = (QUESTION_ACTIONS as readonly string[]).includes(action);
+    if (action === "answer") {
+      const answer = args["answer"];
+      if (typeof answer !== "string" || !answer.trim()) {
+        throw new Error("codesite_question_answer_required");
+      }
+      if (answer.length > 4096) {
+        throw new Error("codesite_question_answer_invalid");
+      }
+    }
+    if (!isQuestionAction && IMPACT_ACTIONS_REQUIRING_EVIDENCE.has(action)) {
       if (!optionalString(args["reason"])) throw new Error("codesite_impact_notice_reason_required");
       if (stringListArg(args["evidence_refs"]).length === 0) {
         throw new Error("codesite_impact_notice_evidence_required");

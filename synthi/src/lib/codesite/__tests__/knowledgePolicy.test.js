@@ -635,6 +635,13 @@ describe('agent_question knowledge kind', () => {
     })).suggestedExpertAgentSessionIds).toEqual([]);
   });
 
+  it('accepts the documented snake_case unrouted flag', () => {
+    expect(validateKnowledgeItem(question({
+      suggestedExpertAgentSessionIds: [],
+      allow_unrouted: true,
+    })).suggestedExpertAgentSessionIds).toEqual([]);
+  });
+
   it('rejects invalid urgency and oversized suggestion lists', () => {
     expectPolicyError(() => validateKnowledgeItem(question({ urgency: 'yesterday' })), 'knowledge_question_urgency_invalid');
     expectPolicyError(
@@ -653,5 +660,15 @@ describe('agent_question knowledge kind', () => {
     }));
     expect(first).toBe(second);
     expect(first).not.toBe(otherAsker);
+  });
+
+  it('projects an answered question without exposing response routing metadata', () => {
+    const projection = validateKnowledgeItem(question({
+      status: 'answered',
+      answerText: 'Yes, clamped at maxTurnRate.',
+      answeredByAgentSessionId: 'agent-alice',
+    }));
+    expect(projection.answerText).toBe('Yes, clamped at maxTurnRate.');
+    expect(safeKnowledgeProjection(projection).answerText).toBe('Yes, clamped at maxTurnRate.');
   });
 });
