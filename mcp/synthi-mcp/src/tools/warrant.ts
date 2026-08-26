@@ -99,6 +99,7 @@ function issueTool(args: unknown): ToolResponse {
   const warrant = warrantRegistry.issue({
     subject: requiredString(a, "subject"),
     grants: toolGrants(a["grants"]),
+    seal: a["seal"] === true,
     now,
     ttl_ms: Math.min(requiredNumber(a, "ttl_ms"), ceilings.max_ttl_ms),
   });
@@ -112,6 +113,7 @@ function attenuateTool(args: unknown): ToolResponse {
     parent_warrant_id: requiredString(a, "parent_warrant_id"),
     subject: requiredString(a, "subject"),
     grants: toolGrants(a["grants"]),
+    seal: a["seal"] === true,
     now: Date.now(),
     ttl_ms: Math.min(numberOpt(a["ttl_ms"]) ?? Number.MAX_SAFE_INTEGER, ceilings.max_ttl_ms),
   });
@@ -124,6 +126,7 @@ function checkTool(args: unknown): ToolResponse {
     warrant_id: requiredString(a, "warrant_id"),
     tool: requiredString(a, "tool"),
     args: recordOpt(a["args"]),
+    bearer: typeof a["bearer"] === "string" ? a["bearer"] : undefined,
     now: numberOpt(a["now"]) ?? Date.now(),
   });
   return jsonResponse({ ok: decision.allowed, ...decision });
@@ -192,6 +195,7 @@ export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayl
       warrant_id: warrantId,
       tool: toolName,
       args: recordOpt(args),
+      bearer: typeof metaValue(params, "warrant_bearer") === "string" ? metaValue(params, "warrant_bearer") as string : undefined,
       now: Date.now(),
     });
     if (decision.allowed) {
@@ -319,17 +323,17 @@ export const WARRANT_TOOLS = [
   {
     name: "synthi_warrant_issue",
     description: "Issue a capability warrant: an expiring, invocation-capped lease letting one agent use specific tools under argument constraints.",
-    inputSchema: { type: "object", properties: { subject: { type: "string", description: "Agent or user the warrant is for." }, grants: { type: "array", items: { type: "object", properties: { tool: { type: "string" }, arg_constraints: { type: "object", additionalProperties: { type: "string" } }, max_invocations: { type: "number" } }, required: ["tool"] } }, ttl_ms: { type: "number" } }, required: ["subject", "grants", "ttl_ms"] },
+    inputSchema: { type: "object", properties: { subject: { type: "string", description: "Agent or user the warrant is for." }, grants: { type: "array", items: { type: "object", properties: { tool: { type: "string" }, arg_constraints: { type: "object", additionalProperties: { type: "string" } }, max_invocations: { type: "number" } }, required: ["tool"] } }, ttl_ms: { type: "number" }, seal: { type: "boolean", description: "Seal the warrant: every use must present the one-time bearer secret in _meta.warrant_bearer." } }, required: ["subject", "grants", "ttl_ms"] },
   },
   {
     name: "synthi_warrant_attenuate",
     description: "Create a strictly narrower child warrant from an existing one so work can be delegated with less authority than the holder has.",
-    inputSchema: { type: "object", properties: { parent_warrant_id: { type: "string" }, subject: { type: "string" }, grants: { type: "array", items: { type: "object", properties: { tool: { type: "string" }, arg_constraints: { type: "object", additionalProperties: { type: "string" } }, max_invocations: { type: "number" } }, required: ["tool"] } }, ttl_ms: { type: "number" } }, required: ["parent_warrant_id", "subject", "grants"] },
+    inputSchema: { type: "object", properties: { parent_warrant_id: { type: "string" }, subject: { type: "string" }, grants: { type: "array", items: { type: "object", properties: { tool: { type: "string" }, arg_constraints: { type: "object", additionalProperties: { type: "string" } }, max_invocations: { type: "number" } }, required: ["tool"] } }, ttl_ms: { type: "number" }, seal: { type: "boolean", description: "Seal the warrant: every use must present the one-time bearer secret in _meta.warrant_bearer." } }, required: ["parent_warrant_id", "subject", "grants"] },
   },
   {
     name: "synthi_warrant_check",
     description: "Ask whether a warrant allows one tool call right now, with plain-language denial reasons.",
-    inputSchema: { type: "object", properties: { warrant_id: { type: "string" }, tool: { type: "string" }, args: { type: "object" }, now: { type: "number" } }, required: ["warrant_id", "tool"] },
+    inputSchema: { type: "object", properties: { warrant_id: { type: "string" }, tool: { type: "string" }, args: { type: "object" }, bearer: { type: "string", description: "Bearer secret proving possession of a sealed warrant." }, now: { type: "number" } }, required: ["warrant_id", "tool"] },
   },
   {
     name: "synthi_warrant_revoke",

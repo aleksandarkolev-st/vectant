@@ -127,3 +127,27 @@ green from `mcp/synthi-mcp` (orchestrator runs this — codex does NOT run tests
 
 Commit discipline: one commit per patch, orchestrator commits after verifying diff
 and running tests.
+
+## Patch D — Sealed warrants (proof-of-possession)
+
+Motivation: warrant ids transit logs and transcripts; possession of the id string
+must not equal authority. A sealed warrant additionally requires a bearer secret
+on every call.
+
+- src/security/warrant.ts: `Warrant` gains `sealed?: boolean` (never the secret).
+  WarrantRecord gains `bearer_hash?: string` (sha256 hex). issue/attenuate input
+  gains `seal?: boolean`; sealed issuance mints a bearer `wb_` + 32 hex chars
+  (from randomUUID), stores only its sha256, and returns IssuedWarrant
+  (Warrant plus optional disclosed-once `bearer`). Attenuating from a sealed
+  parent ALWAYS seals the child with a fresh bearer (possession narrows with
+  authority). check input gains `bearer?: string`; when the record has a
+  bearer_hash, require timingSafeEqual(sha256(bearer), bearer_hash) else deny
+  `bearer_mismatch` with human_reason "This warrant is sealed; the call must
+  prove possession with its bearer secret in _meta.warrant_bearer."
+  listWarrants/sweep never disclose secrets.
+- src/tools/warrant.ts: gate passes _meta.warrant_bearer into check; issue/
+  attenuate tools pass `seal` through and include `bearer` in their response;
+  check tool accepts args.bearer; WARRANT_TOOLS schemas gain seal/bearer fields.
+- Tests: sealed round-trip, missing/wrong bearer denial, audit secrecy,
+  child-fresh-bearer, dispatcher path; live-wire default-posture battery stays
+  16/16 for unsealed regression.

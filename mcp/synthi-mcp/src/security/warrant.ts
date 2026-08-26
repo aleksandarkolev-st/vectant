@@ -8,9 +8,11 @@
  *
  * Pure module: zero IO, no clock reads — time enters as `now`. Decisions
  * fail closed and carry `reason_code` + `human_reason` in plain language.
+ * Sealed warrants additionally demand proof of possession: every call must
+ * present the bearer secret; only its sha256 hash is ever stored here.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 
 /** Delegation chains may never run deeper than this many warrants. */
 const MAX_CHAIN_DEPTH = 8;
@@ -34,16 +36,26 @@ export interface Warrant {
   /** id of the tree root; equals warrant_id for roots */
   root_warrant_id: string;
   status: "active" | "revoked";
+  /** True when calls must prove possession with the bearer secret; never the secret itself */
+  sealed?: boolean;
 }
 
 export type WarrantDecision =
   | { allowed: true; warrant_id: string }
   | { allowed: false; reason_code: string; human_reason: string };
 
+/**
+ * What issue/attenuate return: the warrant plus, when sealed, the bearer
+ * secret — disclosed once here; only its sha256 hash is kept by the registry.
+ */
+export type IssuedWarrant = Warrant & { bearer?: string };
+
 interface WarrantRecord {
   readonly warrant: Warrant;
   /** tool -> invocations left; only present for tools whose grant sets max_invocations */
   readonly remaining: Map<string, number>;
+  /** sha256 hex of the bearer secret for sealed warrants; the secret itself is never stored */
+  readonly bearer_hash?: string;
 }
 
 /**
@@ -86,6 +98,18 @@ export function patternIsStricterOrEqual(
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function sha256Hex(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function hashesMatch(presented: string | undefined, expectedHash: string): boolean {
+  if (presented === undefined || presented.length === 0) return false;
+  const left = Buffer.from(sha256Hex(presented));
+  const right = Buffer.from(expectedHash);
+  if (left.length !== right.length) return false;
+  return timingSafeEqual(left, right);
 }
 
 function deny(reasonCode: string, humanReason: string): WarrantDecision {
@@ -170,17 +194,23 @@ function firstViolatedArgKey(
 export class WarrantRegistry {
   private readonly records = new Map<string, WarrantRecord>();
 
-  /** Issue a fresh root warrant (no parent). Throws on bad input. */
+  /**
+   * Issue a fresh root warrant (no parent). Throws on bad input. With `seal`,
+   * mints a bearer secret (disclosed once on the result) that every call must
+   * present; only its sha256 hash is stored.
+   */
   issue(input: {
     subject: string;
     grants: readonly ToolGrant[];
     now: number;
     ttl_ms: number;
-  }): Warrant {
+    seal?: boolean;
+  }): IssuedWarrant {
     validateSubjectAndGrants(input.subject, input.grants);
     validateTtl(input.ttl_ms);
 
     const warrantId = `wr_${randomUUID()}`;
+    const bearer = input.seal === true ? `wb_${randomUUID().replaceAll("-", "")}` : undefined;
     const warrant: Warrant = {
       warrant_id: warrantId,
       subject: input.subject,
@@ -189,9 +219,14 @@ export class WarrantRegistry {
       expires_at_ms: input.now + input.ttl_ms,
       root_warrant_id: warrantId,
       status: "active",
+      ...(bearer === undefined ? {} : { sealed: true }),
     };
-    this.records.set(warrantId, { warrant, remaining: initialRemaining(warrant.grants) });
-    return { ...warrant };
+    this.records.set(warrantId, {
+      warrant,
+      remaining: initialRemaining(warrant.grants),
+      ...(bearer === undefined ? {} : { bearer_hash: sha256Hex(bearer) }),
+    });
+    return { ...warrant, ...(bearer === undefined ? {} : { bearer }) };
   }
 
   /**
@@ -200,6 +235,9 @@ export class WarrantRegistry {
    * arg constraints must be subset-per-key (equal or stricter), invocation
    * ceilings must fit the parent's remaining budget, expiry is clamped to
    * the parent's, and chain depth may not exceed MAX_CHAIN_DEPTH.
+   * A child under a sealed parent is ALWAYS sealed with a fresh bearer
+   * (possession narrows with authority, never inherited); `seal` seals it
+   * otherwise.
    */
   attenuate(input: {
     parent_warrant_id: string;
@@ -207,7 +245,8 @@ export class WarrantRegistry {
     grants: readonly ToolGrant[];
     now: number;
     ttl_ms?: number;
-  }): Warrant {
+    seal?: boolean;
+  }): IssuedWarrant {
     const parent = this.records.get(input.parent_warrant_id);
     if (parent === undefined) {
       throw new Error(`Cannot attenuate: no warrant exists with identifier '${input.parent_warrant_id}'.`);
@@ -265,6 +304,8 @@ export class WarrantRegistry {
     }
 
     const ttl = input.ttl_ms === undefined ? parent.warrant.expires_at_ms - input.now : input.ttl_ms;
+    const sealed = parent.bearer_hash !== undefined || input.seal === true;
+    const bearer = sealed ? `wb_${randomUUID().replaceAll("-", "")}` : undefined;
     const warrant: Warrant = {
       warrant_id: `wr_${randomUUID()}`,
       subject: input.subject,
@@ -274,16 +315,25 @@ export class WarrantRegistry {
       parent_warrant_id: input.parent_warrant_id,
       root_warrant_id: parent.warrant.root_warrant_id,
       status: "active",
+      ...(bearer === undefined ? {} : { sealed: true }),
     };
-    this.records.set(warrant.warrant_id, { warrant, remaining: initialRemaining(warrant.grants) });
-    return { ...warrant };
+    this.records.set(warrant.warrant_id, {
+      warrant,
+      remaining: initialRemaining(warrant.grants),
+      ...(bearer === undefined ? {} : { bearer_hash: sha256Hex(bearer) }),
+    });
+    return { ...warrant, ...(bearer === undefined ? {} : { bearer }) };
   }
 
-  /** THE decision function. Fails closed with reason_code + human_reason. */
+  /**
+   * THE decision function. Fails closed with reason_code + human_reason.
+   * Sealed warrants demand their bearer secret BEFORE any capability checks.
+   */
   check(input: {
     warrant_id: string;
     tool: string;
     args?: Readonly<Record<string, unknown>>;
+    bearer?: string;
     now: number;
   }): WarrantDecision {
     const record = this.records.get(input.warrant_id);
@@ -295,6 +345,12 @@ export class WarrantRegistry {
     }
     if (input.now >= record.warrant.expires_at_ms) {
       return deny("expired", "This warrant has expired.");
+    }
+    if (record.bearer_hash !== undefined && !hashesMatch(input.bearer, record.bearer_hash)) {
+      return deny(
+        "bearer_mismatch",
+        "This warrant is sealed; the call must prove possession with its bearer secret in _meta.warrant_bearer.",
+      );
     }
 
     const covering = record.warrant.grants.filter((grant) => grant.tool === input.tool);

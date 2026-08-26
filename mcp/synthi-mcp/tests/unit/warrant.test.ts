@@ -431,3 +431,46 @@ describe("warrant admin gate and org ceilings", () => {
     expect(warrant.expires_at_ms - warrant.issued_at_ms).toBeLessThanOrEqual(5000);
   });
 });
+
+describe("sealed warrants (proof-of-possession)", () => {
+  it("issues sealed, discloses the bearer once, and requires it on every check", () => {
+    const reg = new WarrantRegistry();
+    const issued = reg.issue({ subject: "s", grants: [{ tool: "fs.read" }], now: NOW, ttl_ms: TTL, seal: true });
+    expect(issued.sealed).toBe(true);
+    expect(issued.bearer).toMatch(/^wb_[0-9a-f]{32}$/);
+    const missing = reg.check({ warrant_id: issued.warrant_id, tool: "fs.read", now: NOW + 1 });
+    expect(codeOf(missing)).toBe("bearer_mismatch");
+    const wrong = reg.check({ warrant_id: issued.warrant_id, tool: "fs.read", bearer: "wb_" + "0".repeat(32), now: NOW + 1 });
+    expect(codeOf(wrong)).toBe("bearer_mismatch");
+    const good = reg.check({ warrant_id: issued.warrant_id, tool: "fs.read", bearer: issued.bearer!, now: NOW + 1 });
+    expect(good.allowed).toBe(true);
+  });
+
+  it("keeps unsealed warrants working exactly as before", () => {
+    const reg = new WarrantRegistry();
+    const plain = reg.issue({ subject: "s", grants: [{ tool: "fs.read" }], now: NOW, ttl_ms: TTL });
+    expect(plain.sealed).toBeUndefined();
+    expect(plain.bearer).toBeUndefined();
+    expect(reg.check({ warrant_id: plain.warrant_id, tool: "fs.read", now: NOW + 1 }).allowed).toBe(true);
+  });
+
+  it("never discloses secrets through audit views", () => {
+    const reg = new WarrantRegistry();
+    const issued = reg.issue({ subject: "s", grants: [{ tool: "fs.read" }], now: NOW, ttl_ms: TTL, seal: true });
+    const listed = reg.listWarrants().find((w) => w.warrant_id === issued.warrant_id)!;
+    expect(listed.sealed).toBe(true);
+    expect(JSON.stringify(listed)).not.toContain(issued.bearer!);
+  });
+
+  it("seals attenuated children of sealed parents with a fresh bearer", () => {
+    const reg = new WarrantRegistry();
+    const parent = reg.issue({ subject: "p", grants: [{ tool: "fs.read" }], now: NOW, ttl_ms: TTL, seal: true });
+    const child = reg.attenuate({ parent_warrant_id: parent.warrant_id, subject: "c", grants: [{ tool: "fs.read" }], now: NOW });
+    expect(child.sealed).toBe(true);
+    expect(child.bearer).toBeTruthy();
+    expect(child.bearer).not.toBe(parent.bearer);
+    expect(reg.check({ warrant_id: child.warrant_id, tool: "fs.read", bearer: child.bearer!, now: NOW + 1 }).allowed).toBe(true);
+    expect(reg.check({ warrant_id: child.warrant_id, tool: "fs.read", bearer: parent.bearer!, now: NOW + 1 })).toEqual(
+      expect.objectContaining({ allowed: false }));
+  });
+});
