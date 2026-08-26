@@ -1,0 +1,2657 @@
+{
+  "runId": "20260826T080045-45025",
+  "startedAt": "2026-08-26T08:00:45.025449+00:00",
+  "workspaceSlug": "acme-proof",
+  "towerTokenMasked": "0167dce6...MASKED",
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/api/workspace/acme-proof/codesite/projects",
+      "httpStatus": 401,
+      "authKind": "none",
+      "authTokenMasked": null,
+      "requestBody": null,
+      "responseBodyTruncated400": "{\"error\":\"Authentication required\"}",
+      "responseParsed": {
+        "error": "Authentication required"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/workspace/acme-proof/codesite/projects",
+      "httpStatus": 201,
+      "authKind": "tower",
+      "authTokenMasked": "0167dce6...MASKED",
+      "requestBody": "{\"title\": \"Expertise Proof 20260826T080045-45025\", \"request\": \"Live verification of Agent Expertise Directory\"}",
+      "responseBodyTruncated400": "{\"project\":{\"id\":\"cmt9t107d006oqw01wzyu2ru3\",\"workspaceSlug\":\"acme-proof\",\"collaborationSessionId\":null,\"title\":\"Expertise Proof 20260826T080045-45025\",\"request\":\"Live verification of Agent Expertise Directory\",\"status\":\"active\",\"channelMode\":\"registered_direct\",\"createdByUserId\":\"codesite-internal-service\",\"createdAt\":\"2026-08-26T08:00:49.225Z\",\"updatedAt\":\"2026-08-26T08:00:49.225Z\",\"counts\":{\"me",
+      "responseParsed": {
+        "project": {
+          "id": "cmt9t107d006oqw01wzyu2ru3",
+          "workspaceSlug": "acme-proof",
+          "collaborationSessionId": null,
+          "title": "Expertise Proof 20260826T080045-45025",
+          "request": "Live verification of Agent Expertise Directory",
+          "status": "active",
+          "channelMode": "registered_direct",
+          "createdByUserId": "codesite-internal-service",
+          "createdAt": "2026-08-26T08:00:49.225Z",
+          "updatedAt": "2026-08-26T08:00:49.225Z",
+          "counts": {
+            "members": 1,
+            "agentSessions": 0,
+            "executionPlans": 0,
+            "mutationLeases": 0,
+            "incidents": 0,
+            "inspectionRuns": 0,
+            "permits": 0,
+            "documentReviews": 0,
+            "routeRevisions": 0
+          },
+          "zonePolicy": {
+            "version": 1,
+            "generatedAt": "2026-08-26T08:00:49.222Z",
+            "zones": [
+              {
+                "zoneKey": "class_a",
+                "label": "Critical controlled airspace",
+                "class": "A",
+                "paths": [
+                  "api/auth/**",
+                  "billing/**",
+                  "db/migrations/**",
+                  "infra/prod/**",
+                  "infra/production/**",
+                  "**/.env",
+                  "**/.env.*"
+                ],
+                "rules": [
+                  "explicit_tower_clearance_required",
+                  "licensed_pilot_required",
+                  "inspector_signoff_required",
+                  "black_box_required"
+                ],
+                "risk": "critical",
+                "source": "compiled_default"
+              },
+              {
+                "zoneKey": "class_b",
+                "label": "Shared contract airspace",
+                "class": "B",
+                "paths": [
+                  "packages/schemas/**",
+                  "openapi/**",
+                  "packages/*/src/index.ts",
+                  "synthi/prisma/**",
+                  "backend/collab-server/permissionMiddleware.js"
+                ],
+                "rules": [
+                  "flight_plan_required",
+                  "downstream_notification_required",
+                  "change_order_for_mutation"
+                ],
+                "risk": "high",
+                "source": "compiled_default"
+              },
+              {
+                "zoneKey": "class_c",
+                "label": "Feature implementation airspace",
+                "class": "C",
+                "paths": [
+                  "apps/web/**",
+                  "components/**",
+                  "synthi/src/app/**",
+                  "synthi/src/components/**",
+                  "backend/collab-server/**"
+                ],
+                "rules": [
+                  "auto_clearance_allowed",
+                  "landing_inspection_required"
+                ],
+                "risk": "medium",
+                "source": "compiled_default"
+              },
+              {
+                "zoneKey": "class_d",
+                "label": "Low-risk support airspace",
+                "class": "D",
+                "paths": [
+                  "docs/**",
+                  "tests/**",
+                  "**/__tests__/**",
+                  "**/*.test.js",
+                  "**/*.test.jsx",
+                  "**/*.test.ts",
+                  "**/*.test.tsx",
+                  "**/*.md"
+                ],
+                "rules": [
+                  "micro_clearance_allowed",
+                  "sample_inspection"
+                ],
+                "risk": "low",
+                "source": "compiled_default"
+              },
+              {
+                "zoneKey": "prisma_schema_synthi_prisma_schema_prisma",
+                "label": "Prisma schema: synthi/prisma/schema.prisma",
+                "class": "B",
+                "paths": [
+                  "synthi/prisma/schema.prisma"
+                ],
+                "rules": [
+                  "flight_plan_required",
+                  "downstream_notification_required",
+                  "change_order_for_mutation",
+                  "migration_radar_required"
+                ],
+                "risk": "high",
+                "source": "repo_prisma_schema"
+              },
+              {
+                "zoneKey": "migration_runway_synthi_prisma_migrations",
+                "label": "Migration runway: synthi/prisma/migrations",
+                "class": "A",
+                "paths": [
+                  "synthi/prisma/migrations/**"
+                ],
+                "rules": [
+                  "explicit_tower_clearance_required",
+                  "licensed_pilot_required",
+                  "inspector_signoff_required",
+                  "black_box_required",
+                  "single_migration_runway_lock"
+                ],
+                "risk": "critical",
+                "source": "repo_prisma_migration"
+              },
+              {
+                "zoneKey": "package_exports_packages_mcp_hub",
+                "label": "Public package exports: @synthi/mcp-hub",
+                "class": "B",
+                "paths": [
+                  "packages/mcp-hub/**",
+                  "packages/mcp-hub/index.d.ts",
+                  "packages/mcp-hub/src/index.js",
+                  "packages/mcp-hub/src/helpers.js"
+                ],
+                "rules": [
+                  "flight_plan_required",
+                  "downstream_notification_required",
+                  "change_order_for_mutation",
+                  "downstream_package_radar_required"
+                ],
+                "risk": "high",
+                "source": "repo_package_exports"
+              },
+              {
+                "zoneKey": "package_exports_packages_atomic_orchestrator",
+                "label": "Public package exports: @vectant/atomic-orchestrator",
+                "class": "B",
+                "paths": [
+                  "packages/atomic-orchestrator/**",
+                  "packages/atomic-orchestrator/src/index.js"
+                ],
+                "rules": [
+                  "flight_plan_required",
+                  "downstream_notification_required",
+                  "change_order_for_mutation",
+                  "downstream_package_radar_required"
+                ],
+                "risk": "high",
+                "source": "repo_package_exports"
+              }
+            ],
+            "noFlyZones": [
+              "**/.env",
+              "**/.env.*",
+              "secrets/**",
+              "**/*secret*",
+              "**/*.pem",
+              "**/*.key"
+            ],
+            "classRules": {
+              "A": [
+                "explicit_tower_clearance_required",
+                "licensed_pilot_required",
+                "inspector_signoff_required",
+                "black_box_required"
+              ],
+              "B": [
+                "flight_plan_required",
+                "downstream_notification_required",
+                "change_order_for_mutation"
+              ],
+              "C": [
+                "auto_clearance_allowed",
+                "landing_inspection_required"
+              ],
+              "D": [
+                "micro_clearance_allowed",
+                "sample_inspection"
+              ]
+            },
+            "semanticGraph": {
+              "files": [
+                "package.json",
+                "synthi/package.json",
+                "synthi/server.js",
+                "synthi/scripts/build-node-polyfills.js",
+                "synthi/scripts/build-test-vsix.js",
+                "synthi/scripts/codesite-channel-relay.cjs",
+                "synthi/scripts/codesite-counterfactual-memory-proof.mjs",
+                "synthi/scripts/codesite-emergency-broadcasts-proof.mjs",
+                "synthi/scripts/codesite-filesystem-boundary-proof.mjs",
+                "synthi/scripts/codesite-full-workflow-proof.mjs",
+                "synthi/scripts/codesite-line-inspector-proof.mjs",
+                "synthi/scripts/codesite-metrics-proof.mjs",
+                "synthi/scripts/codesite-mutation-surface-coverage-proof.mjs",
+                "synthi/scripts/codesite-pilot-license-proof.mjs",
+                "synthi/scripts/codesite-proof-api.mjs",
+                "synthi/scripts/codesite-proof-verify.mjs",
+                "synthi/scripts/codesite-quarantine-review-proof.mjs",
+                "synthi/scripts/codesite-radar-adapter-proof.mjs",
+                "synthi/scripts/codesite-release-gate-suite-freshness-proof.mjs",
+                "synthi/scripts/codesite-release-gate.mjs",
+                "synthi/scripts/codesite-repo-local-autosync-proof.mjs",
+                "synthi/scripts/codesite-repo-policy-compiler-proof.mjs",
+                "synthi/scripts/codesite-run-mature-proof-suite.mjs",
+                "synthi/scripts/codesite-runtime-mount-boundary-proof.mjs",
+                "synthi/scripts/codesite-runtime-quarantine-proof.mjs",
+                "synthi/scripts/codesite-runway-occupancy-proof.mjs",
+                "synthi/scripts/codesite-shadow-runner.mjs",
+                "synthi/scripts/codesite-shadow-simulator-proof.mjs",
+                "synthi/scripts/codesite-ui-governance-proof.mjs",
+                "synthi/scripts/codesite-unmanaged-host-boundary-proof.mjs",
+                "synthi/scripts/dojo-ghost-mode-visual-proof.mjs",
+                "synthi/scripts/dojo-visual-proof-utils.mjs",
+                "synthi/scripts/dojo-visual-proof.mjs",
+                "synthi/scripts/live-test-nep.mjs",
+                "synthi/scripts/nep-replay-fixture.jsonl",
+                "synthi/scripts/nep-replay.mjs",
+                "synthi/scripts/polyfill-entry.js",
+                "synthi/scripts/prepare-standalone.js",
+                "synthi/scripts/shadow-card-visual-proof.mjs",
+                "synthi/scripts/test-ai-primitives.mjs",
+                "synthi/public/content-hash-worker.js",
+                "synthi/public/extension-host-worker-hardened.js",
+                "synthi/public/extension-host-worker.js",
+                "synthi/public/extension-test-v2.html",
+                "synthi/public/extension-test-v3.html",
+                "synthi/public/extension-test.html",
+                "synthi/public/file.svg",
+                "synthi/public/globe.svg",
+                "synthi/public/next.svg",
+                "synthi/public/node-polyfills.js",
+                "synthi/public/synthi-dark-logo.svg",
+                "synthi/public/synthi-logo.svg",
+                "synthi/public/synthi-v-mark.svg",
+                "synthi/public/test-extension.vsix",
+                "synthi/public/vectant-dark-theme.png",
+                "synthi/public/vectant-light-theme.png",
+                "synthi/public/vercel.svg",
+                "synthi/public/vscode-tunnel-sw.js",
+                "synthi/public/window.svg",
+                "synthi/public/vectant/left_bracket_full.png",
+                "synthi/public/vectant/right_bracket_full.png",
+                "synthi/public/vectant/the_V.png",
+                "synthi/public/vectant/extensions/vectant-oauth-relay-v0.1.0.zip",
+                "synthi/public/vectant/extensions/vectant-oauth-relay.zip",
+                "synthi/public/vectant/extensions/vectant-oauth-relay/background.js",
+                "synthi/public/vectant/extensions/vectant-oauth-relay/content-bridge.js",
+                "synthi/public/vectant/extensions/vectant-oauth-relay/manifest.json",
+                "synthi/public/extensions/synthi-oauth-relay-v0.1.0.zip",
+                "synthi/public/extensions/synthi-oauth-relay.zip",
+                "synthi/public/extensions/synthi-oauth-relay/background.js",
+                "synthi/public/extensions/synthi-oauth-relay/content-bridge.js",
+                "synthi/public/extensions/synthi-oauth-relay/manifest.json",
+                "synthi/prisma/schema.prisma",
+                "synthi/prisma/migrations/migration_lock.toml",
+                "synthi/prisma/migrations/20260823070000_add_codesite_agent_channels/migration.sql",
+                "synthi/prisma/migrations/20260822060000_add_codesite_shared_knowledge/migration.sql",
+                "synthi/prisma/migrations/20260822043000_add_codesite_agent_access_token/migration.sql",
+                "synthi/prisma/migrations/20260822041500_complete_codesite_agent_attachment_identity/migration.sql",
+                "synthi/prisma/migrations/20260822040000_add_codesite_agent_attachment_identity/migration.sql",
+                "synthi/prisma/migrations/20260821100000_add_local_support_linked_projects/migration.sql",
+                "synthi/prisma/migrations/20260728000000_add_programs_marketplace_and_integrations/migration.sql",
+                "synthi/prisma/migrations/20260723000000_add_jupyter_notebook_support/migration.sql",
+                "synthi/prisma/migrations/20260722000000_add_encrypted_secret/migration.sql",
+                "synthi/prisma/migrations/20260716234000_add_local_support_control_proposal/migration.sql",
+                "synthi/prisma/migrations/20260714160000_add_local_support_full_access_policy/migration.sql",
+                "synthi/prisma/migrations/20260714150000_add_local_support_policy_org_scope/migration.sql",
+                "synthi/prisma/migrations/20260714120000_add_local_support_control_audit/migration.sql",
+                "synthi/prisma/migrations/20260714090000_add_local_support_control_commands/migration.sql",
+                "synthi/prisma/migrations/20260713100000_add_local_support_approved_ports/migration.sql",
+                "synthi/prisma/migrations/20260711130000_add_local_support_policy_state/migration.sql",
+                "synthi/prisma/migrations/20260711120000_add_local_support_security_events/migration.sql",
+                "synthi/prisma/migrations/20260711110000_add_local_support_session_app_version/migration.sql",
+                "synthi/prisma/migrations/20260711090000_add_durable_local_support_pairing/migration.sql",
+                "synthi/prisma/migrations/20260710150000_add_encrypted_local_support_payload/migration.sql",
+                "synthi/prisma/migrations/20260710140000_add_local_support_device_nonce/migration.sql",
+                "synthi/prisma/migrations/20260710130000_add_local_support_paired_session/migration.sql",
+                "synthi/prisma/migrations/20260710120000_add_local_support_relay_control_plane/migration.sql",
+                "synthi/prisma/migrations/20260704120000_add_codesite_governance_workflows/migration.sql",
+                "synthi/prisma/migrations/20260702094000_add_codesite_proof_signatures/migration.sql",
+                "synthi/prisma/migrations/20260702093000_add_codesite_project_members/migration.sql",
+                "synthi/prisma/migrations/20260701014500_add_codesite_line_provenance_project_range_index/migration.sql",
+                "synthi/prisma/migrations/20260701013000_add_codesite_line_provenance_ranges/migration.sql",
+                "synthi/prisma/migrations/20260630195000_add_codesite_substrate_identity/migration.sql",
+                "synthi/prisma/migrations/20260630043000_add_codesite_transaction_snapshot_evidence/migration.sql",
+                "synthi/prisma/migrations/20260630033000_add_codesite_event_logical_time_cursor/migration.sql",
+                "synthi/prisma/migrations/20260630030000_add_codesite_proof_repo_state/migration.sql",
+                "synthi/prisma/migrations/20260629090000_add_codesite_control_plane/migration.sql",
+                "synthi/prisma/migrations/20260612110000_workspace_membership_roles/migration.sql",
+                "synthi/prisma/migrations/20260610120000_add_github_pat_storage/migration.sql",
+                "synthi/prisma/migrations/20260526153000_add_github_token_metadata/migration.sql",
+                "synthi/prisma/migrations/20260517000000_explicit_workspace_membership/migration.sql",
+                "synthi/prisma/migrations/20251211194534_jfasldkf/migration.sql",
+                "synthi/prisma/migrations/20251012121413_remove_workspace_item_model/migration.sql",
+                "synthi/prisma/migrations/20251011111949_add_is_folder_property_to_workspace_item/migration.sql",
+                "synthi/prisma/migrations/20251010150613_add_name_field_to_workspace_item/migration.sql",
+                "synthi/prisma/migrations/20251010143741_add_workspaces_support_in_db/migration.sql",
+                "synthi/prisma/migrations/20251010085525_add_basic_user_to_test_connection/migration.sql",
+                "synthi/prisma/backfills/backfill-workspace-roles.sql",
+                "packages/mcp-hub/package.json",
+                "packages/atomic-orchestrator/package.json"
+              ],
+              "importEdges": [
+                {
+                  "from": "synthi/scripts/codesite-counterfactual-memory-proof.mjs",
+                  "imports": [
+                    "synthi/scripts/codesite-proof-api.mjs"
+                  ]
+                },
+                {
+                  "from": "synthi/scripts/codesite-full-workflow-proof.mjs",
+                  "imports": [
+                    "mcp/synthi-mcp/dist/dojo/proof/signing.js",
+                    "backend/collab-server/codesiteFs.js",
+                    "backend/collab-server/terminalRouting.js",
+                    "backend/collab-server/runtimePodTerminal.js"
+                  ]
+                },
+                {
+                  "from": "synthi/scripts/codesite-line-inspector-proof.mjs",
+                  "imports": [
+                    "synthi/scripts/codesite-proof-api.mjs",
+                    "backend/collab-server/codesiteFs.js"
+                  ]
+                },
+                {
+                  "from": "synthi/scripts/codesite-pilot-license-proof.mjs",
+                  "imports": [
+                    "mcp/synthi-mcp/dist/dojo/proof/signing.js"
+                  ]
+                },
+                {
+                  "from": "synthi/scripts/codesite-quarantine-review-proof.mjs",
+                  "imports": [
+                    "mcp/synthi-mcp/dist/dojo/proof/signing.js",
+                    "mcp/synthi-mcp/dist/tools/codesite.js",
+                    "synthi/scripts/codesite-proof-api.mjs"
+                  ]
+                },
+                {
+                  "from": "synthi/scripts/codesite-radar-adapter-proof.mjs",
+                  "imports": [
+                    "synthi/scripts/codesite-proof-api.mjs"
+                  ]
+                },
+                {
+                  "from": "synthi/scripts/codesite-release-gate-suite-freshness-proof.mjs",
+                  "imports": [
+                    "synthi/scripts/codesite-release-gate.mjs"
+                  ]
+                },
+                {
+                  "from": "synthi/scripts/codesite-release-gate.mjs",
+                  "imports": [
+                    "synthi/scripts/codesite-proof-verify.mjs"
+                  ]
+                },
+                {
+                  "from": "synthi/scripts/codesite-repo-local-autosync-proof.mjs",
+                  "imports": [
+                    "synthi/scripts/codesite-proof-api.mjs"
+                  ]
+                },
+                {
+                  "from": "synthi/scripts/codesite-repo-policy-compiler-proof.mjs",
+                  "imports": [
+                    "synthi/scripts/codesite-proof-api.mjs",
+                    "synthi/scripts/SignupForm"
+                  ]
+                },
+                {
+                  "from": "synthi/scripts/codesite-runtime-mount-boundary-proof.mjs",
+                  "imports": [
+                    "backend/collab-server/workspaceRuntimeContainer.js"
+                  ]
+                },
+                {
+                  "from": "synthi/scripts/codesite-runtime-quarantine-proof.mjs",
+                  "imports": [
+                    "mcp/synthi-mcp/dist/dojo/proof/signing.js",
+                    "synthi/scripts/codesite-proof-api.mjs"
+                  ]
+                },
+                {
+                  "from": "synthi/scripts/codesite-runway-occupancy-proof.mjs",
+                  "imports": [
+                    "synthi/scripts/codesite-proof-api.mjs"
+                  ]
+                },
+                {
+                  "from": "synthi/scripts/codesite-shadow-simulator-proof.mjs",
+                  "imports": [
+                    "synthi/scripts/codesite-proof-api.mjs"
+                  ]
+                },
+                {
+                  "from": "synthi/scripts/codesite-unmanaged-host-boundary-proof.mjs",
+                  "imports": [
+                    "backend/collab-server/workspaceRuntimeContainer.js",
+                    "backend/collab-server/codesiteHostWriteSentinel.js"
+                  ]
+                },
+                {
+                  "from": "synthi/scripts/dojo-ghost-mode-visual-proof.mjs",
+                  "imports": [
+                    "synthi/scripts/dojo-visual-proof-utils.mjs"
+                  ]
+                },
+                {
+                  "from": "synthi/scripts/dojo-visual-proof-utils.mjs",
+                  "imports": [
+                    "mcp/synthi-mcp/scripts/lib/dojo-visual-proof-utils.mjs"
+                  ]
+                },
+                {
+                  "from": "synthi/scripts/dojo-visual-proof.mjs",
+                  "imports": [
+                    "synthi/scripts/dojo-visual-proof-utils.mjs"
+                  ]
+                },
+                {
+                  "from": "synthi/scripts/live-test-nep.mjs",
+                  "imports": [
+                    "synthi/scripts/a"
+                  ]
+                },
+                {
+                  "from": "synthi/scripts/test-ai-primitives.mjs",
+                  "imports": [
+                    "synthi/src/lib/completion.js",
+                    "synthi/src/lib/nextEdit.js",
+                    "synthi/src/utils/nepRecentEdits.js",
+                    "synthi/src/lib/aiReplayHarness.js",
+                    "synthi/src/app/workspace/[slug]/Editor/tabIntentRouter.js"
+                  ]
+                }
+              ],
+              "testOwnership": [],
+              "packageExports": [
+                {
+                  "packageName": "@synthi/mcp-hub",
+                  "root": "packages/mcp-hub",
+                  "exports": [
+                    "packages/mcp-hub/index.d.ts",
+                    "packages/mcp-hub/src/index.js",
+                    "packages/mcp-hub/src/helpers.js"
+                  ],
+                  "exportMap": {
+                    ".": [
+                      "packages/mcp-hub/index.d.ts",
+                      "packages/mcp-hub/src/index.js"
+                    ],
+                    "./helpers": [
+                      "packages/mcp-hub/src/helpers.js"
+                    ]
+                  }
+                },
+                {
+                  "packageName": "@vectant/atomic-orchestrator",
+                  "root": "packages/atomic-orchestrator",
+                  "exports": [
+                    "packages/atomic-orchestrator/src/index.js"
+                  ],
+                  "exportMap": {
+                    ".": [
+                      "packages/atomic-orchestrator/src/index.js"
+                    ]
+                  }
+                }
+              ],
+              "generatedClients": [],
+              "migrationLocks": [
+                "synthi/prisma/migrations"
+              ],
+              "deploymentConfig": [],
+              "sourceDigest": "sha256:4dfb3b164fb81fe29f60ddaf2deb63a032f4da343739cf9fbea90059adb2cb56"
+            },
+            "policySources": {
+              "defaults": 4,
+              "repoSignals": 4,
+              "custom": 0,
+              "codeowners": 0,
+              "openapi": 0,
+              "prismaSchemas": 1,
+              "prismaMigrations": 1,
+              "packageExports": 2,
+              "importEdges": 20,
+              "testOwnership": 0,
+              "deployment": 0,
+              "pastIncidents": 0,
+              "secretPatterns": 6
+            },
+            "policyDigest": "sha256:e4d1e850daf2ccf57f568417cd4c75c3e5d0e7002e58df0d7b85ca66c9106b54",
+            "compiler": {
+              "compilerVersion": "2026-07-01.1",
+              "repoRoot": "/app",
+              "maxFiles": 12000,
+              "sourceDigest": "sha256:4dfb3b164fb81fe29f60ddaf2deb63a032f4da343739cf9fbea90059adb2cb56",
+              "policyDigest": "sha256:e4d1e850daf2ccf57f568417cd4c75c3e5d0e7002e58df0d7b85ca66c9106b54",
+              "compiledAt": "2026-08-26T08:00:49.222Z",
+              "fileCount": 120,
+              "truncated": false,
+              "source": "repo_policy_compiler",
+              "error": null
+            }
+          },
+          "controlPlan": {
+            "version": 1,
+            "title": "Expertise Proof 20260826T080045-45025",
+            "request": "Live verification of Agent Expertise Directory",
+            "towerState": "planning",
+            "selectedStrategy": "airspace_survey_first",
+            "missions": [],
+            "routeIntersections": [],
+            "requiredRadar": [
+              "clearance",
+              "type",
+              "test",
+              "handover"
+            ],
+            "zoneDigest": "sha256:2f65f681a50b37dbb7da509580b722f3912e8af48fb37311e5efb97562e0f279",
+            "createdAt": "2026-08-26T08:00:49.223Z"
+          },
+          "members": [
+            {
+              "id": "cmt9t107i006qqw01sm02v39i",
+              "projectId": "cmt9t107d006oqw01wzyu2ru3",
+              "workspaceSlug": "acme-proof",
+              "userId": "codesite-internal-service",
+              "role": "owner",
+              "permissions": [
+                "project:read",
+                "project:write",
+                "project:members:manage",
+                "agent:any",
+                "document:file",
+                "inspection:manage",
+                "mayday:declare",
+                "mayday:resume",
+                "mayday:override_resume"
+              ],
+              "redactionPolicy": null,
+              "participationStatus": "enabled",
+              "source": "project_creator",
+              "createdByUserId": "codesite-internal-service",
+              "revokedAt": null,
+              "createdAt": "2026-08-26T08:00:49.230Z",
+              "updatedAt": "2026-08-26T08:00:49.230Z"
+            }
+          ],
+          "agentSessions": [],
+          "agentRegistry": [],
+          "executionPlans": [],
+          "mutationLeases": [],
+          "mutationTxns": [],
+          "assumptions": [],
+          "policyDecisions": [],
+          "events": [
+            {
+              "id": "cmt9t10880070qw01f10p9v8p",
+              "projectId": "cmt9t107d006oqw01wzyu2ru3",
+              "mutationLeaseId": null,
+              "eventType": "tower_instruction",
+              "displayCallsign": null,
+              "actorType": "human",
+              "actorId": "codesite-internal-service",
+              "details": {
+                "instruction": "CodeSite project opened. File flight plans before mutation.",
+                "controlPlan": {
+                  "version": 1,
+                  "title": "Expertise Proof 20260826T080045-45025",
+                  "request": "Live verification of Agent Expertise Directory",
+                  "towerState": "planning",
+                  "selectedStrategy": "airspace_survey_first",
+                  "missions": [],
+                  "routeIntersections": [],
+                  "requiredRadar": [
+                    "clearance",
+                    "type",
+                    "test",
+                    "handover"
+                  ],
+                  "zoneDigest": "sha256:2f65f681a50b37dbb7da509580b722f3912e8af48fb37311e5efb97562e0f279",
+                  "createdAt": "2026-08-26T08:00:49.223Z"
+                },
+                "automaticWorkflow": null
+              },
+              "evidenceRefs": [],
+              "logicalTime": 1,
+              "createdAt": "2026-08-26T08:00:49.256Z"
+            }
+          ],
+          "incidents": [],
+          "inspectionRuns": [],
+          "proofBundles": [],
+          "lineProvenance": [],
+          "documents": [],
+          "permits": [],
+          "documentReviews": [],
+          "routeRevisions": [],
+          "counterfactualRuns": [],
+          "policyDeltas": [],
+          "inboxItems": []
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/workspace/acme-proof/codesite/projects/cmt9t107d006oqw01wzyu2ru3/members",
+      "httpStatus": 201,
+      "authKind": "tower",
+      "authTokenMasked": "0167dce6...MASKED",
+      "requestBody": "{\"userId\": \"user-alice\", \"role\": \"owner\"}",
+      "responseBodyTruncated400": "{\"member\":{\"id\":\"cmt9t12r50072qw01sd44sfqd\",\"projectId\":\"cmt9t107d006oqw01wzyu2ru3\",\"workspaceSlug\":\"acme-proof\",\"userId\":\"user-alice\",\"role\":\"owner\",\"permissions\":[\"project:read\",\"project:write\",\"project:members:manage\",\"agent:any\",\"document:file\",\"inspection:manage\",\"mayday:declare\",\"mayday:resume\",\"mayday:override_resume\"],\"redactionPolicy\":null,\"participationStatus\":\"enabled\",\"source\":\"project",
+      "responseParsed": {
+        "member": {
+          "id": "cmt9t12r50072qw01sd44sfqd",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "workspaceSlug": "acme-proof",
+          "userId": "user-alice",
+          "role": "owner",
+          "permissions": [
+            "project:read",
+            "project:write",
+            "project:members:manage",
+            "agent:any",
+            "document:file",
+            "inspection:manage",
+            "mayday:declare",
+            "mayday:resume",
+            "mayday:override_resume"
+          ],
+          "redactionPolicy": null,
+          "participationStatus": "enabled",
+          "source": "project_member_api",
+          "createdByUserId": "codesite-internal-service",
+          "revokedAt": null,
+          "createdAt": "2026-08-26T08:00:52.530Z",
+          "updatedAt": "2026-08-26T08:00:52.530Z"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/workspace/acme-proof/codesite/projects/cmt9t107d006oqw01wzyu2ru3/members",
+      "httpStatus": 201,
+      "authKind": "tower",
+      "authTokenMasked": "0167dce6...MASKED",
+      "requestBody": "{\"userId\": \"user-ben\", \"role\": \"agent\"}",
+      "responseBodyTruncated400": "{\"member\":{\"id\":\"cmt9t14rm0076qw01cigy6no6\",\"projectId\":\"cmt9t107d006oqw01wzyu2ru3\",\"workspaceSlug\":\"acme-proof\",\"userId\":\"user-ben\",\"role\":\"agent\",\"permissions\":[\"project:read\",\"project:write\",\"agent:own\",\"document:file\",\"mayday:declare\"],\"redactionPolicy\":null,\"participationStatus\":\"enabled\",\"source\":\"project_member_api\",\"createdByUserId\":\"codesite-internal-service\",\"revokedAt\":null,\"createdAt\":",
+      "responseParsed": {
+        "member": {
+          "id": "cmt9t14rm0076qw01cigy6no6",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "workspaceSlug": "acme-proof",
+          "userId": "user-ben",
+          "role": "agent",
+          "permissions": [
+            "project:read",
+            "project:write",
+            "agent:own",
+            "document:file",
+            "mayday:declare"
+          ],
+          "redactionPolicy": null,
+          "participationStatus": "enabled",
+          "source": "project_member_api",
+          "createdByUserId": "codesite-internal-service",
+          "revokedAt": null,
+          "createdAt": "2026-08-26T08:00:55.138Z",
+          "updatedAt": "2026-08-26T08:00:55.138Z"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/workspace/acme-proof/codesite/projects/cmt9t107d006oqw01wzyu2ru3/agent-sessions/attach",
+      "httpStatus": 201,
+      "authKind": "tower",
+      "authTokenMasked": "0167dce6...MASKED",
+      "requestBody": "{\"collaborationMembershipVerified\": true, \"ownerUserId\": \"user-alice\", \"collaborationUserId\": \"member-alice\", \"effectiveWorkspaceUserId\": \"eff-alice\", \"collaborationSessionId\": \"proof-collab-20260826T080045-45025\", \"terminalSessionId\": \"codex-rotation-01-term-20260826T080045-45025\", \"runtimeScope\": \"workspace:acme-proof\", \"agentProvider\": \"codex\", \"providerSessionRef\": \"codex-codex-rotation-01-prov-20260826T080045-45025\", \"displayCallsign\": \"CODEX-ROTATION-01\", \"capabilities\": [\"codesite.context.read\", \"codesite.inbox.read\", \"codesite.events.read\", \"codesite.knowledge.read\", \"codesite.knowledge.write\", \"codesite.inbox.respond\", \"codesite.observations.write\", \"codesite.plans.write\"], \"subscriptions\": [\"path:src/**\"]}",
+      "responseBodyTruncated400": "{\"session\":{\"id\":\"cmt9t16rh007cqw01do9552nn\",\"projectId\":\"cmt9t107d006oqw01wzyu2ru3\",\"ownerUserId\":\"user-alice\",\"workspaceSlug\":\"acme-proof\",\"collaborationUserId\":\"member-alice\",\"effectiveWorkspaceUserId\":\"eff-alice\",\"collaborationSessionId\":\"proof-collab-20260826T080045-45025\",\"terminalSessionId\":\"codex-rotation-01-term-20260826T080045-45025\",\"runtimeSessionId\":null,\"runtimeScope\":\"workspace:acme",
+      "responseParsed": {
+        "session": {
+          "id": "cmt9t16rh007cqw01do9552nn",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "ownerUserId": "user-alice",
+          "workspaceSlug": "acme-proof",
+          "collaborationUserId": "member-alice",
+          "effectiveWorkspaceUserId": "eff-alice",
+          "collaborationSessionId": "proof-collab-20260826T080045-45025",
+          "terminalSessionId": "codex-rotation-01-term-20260826T080045-45025",
+          "runtimeSessionId": null,
+          "runtimeScope": "workspace:acme-proof",
+          "agentProvider": "codex",
+          "agentRuntime": "terminal",
+          "providerSessionBound": true,
+          "displayCallsign": "CODEX-ROTATION-01",
+          "status": "attached",
+          "permissions": [
+            "codesite.context.read",
+            "codesite.inbox.read",
+            "codesite.events.read",
+            "codesite.knowledge.read",
+            "codesite.knowledge.write",
+            "codesite.inbox.respond",
+            "codesite.observations.write",
+            "codesite.plans.write"
+          ],
+          "redactionPolicy": {
+            "acceptsTowerMessages": true,
+            "redactSecrets": true,
+            "redactPrivatePrompts": true,
+            "allowAttachments": false,
+            "visibleZones": [
+              "**"
+            ],
+            "allowedDocumentKinds": [
+              "rfi",
+              "change_order",
+              "inspection_request",
+              "inspection_result",
+              "mayday",
+              "handoff",
+              "stop_work",
+              "punch",
+              "tower_instruction"
+            ]
+          },
+          "capabilities": [
+            "codesite.context.read",
+            "codesite.inbox.read",
+            "codesite.events.read",
+            "codesite.knowledge.read",
+            "codesite.knowledge.write",
+            "codesite.inbox.respond",
+            "codesite.observations.write",
+            "codesite.plans.write"
+          ],
+          "executionHost": {
+            "type": "workspace_terminal",
+            "hostId": null,
+            "platform": null
+          },
+          "subscriptions": [
+            "path:src/**"
+          ],
+          "deliveryChannel": {
+            "type": "mcp_poll",
+            "channelId": null
+          },
+          "attachSource": "collab_terminal_adapter",
+          "bindingVersion": 1,
+          "agentAccessTokenExpiresAt": "2026-08-27T08:00:57.725Z",
+          "activeMutationLeaseId": null,
+          "activeTransactionId": null,
+          "dojoPilotLicenseRef": null,
+          "dojoProofRef": null,
+          "dojoEvidenceRefs": [],
+          "dojoDecisionDigest": null,
+          "pilotLicenseSnapshot": null,
+          "attachedAt": "2026-08-26T08:00:57.725Z",
+          "lastHeartbeatAt": "2026-08-26T08:00:57.725Z",
+          "detachedAt": null,
+          "createdAt": "2026-08-26T08:00:57.726Z",
+          "updatedAt": "2026-08-26T08:00:57.726Z",
+          "endedAt": null
+        },
+        "event": {
+          "id": "cmt9t16rm007eqw0169ndu7ba",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "mutationLeaseId": null,
+          "eventType": "agent_attached",
+          "displayCallsign": "CODEX-ROTATION-01",
+          "actorType": "agent_session",
+          "actorId": "cmt9t16rh007cqw01do9552nn",
+          "details": {
+            "ownerUserId": "user-alice",
+            "collaborationUserId": "member-alice",
+            "effectiveWorkspaceUserId": "eff-alice",
+            "collaborationSessionId": "proof-collab-20260826T080045-45025",
+            "terminalSessionId": "codex-rotation-01-term-20260826T080045-45025",
+            "runtimeSessionId": null,
+            "runtimeScope": "workspace:acme-proof",
+            "provider": "codex",
+            "status": "attached",
+            "subscriptions": [
+              "path:src/**"
+            ],
+            "deliveryChannel": "mcp_poll"
+          },
+          "evidenceRefs": [],
+          "logicalTime": 4,
+          "createdAt": "2026-08-26T08:00:57.730Z"
+        },
+        "resumed": false,
+        "agentAccessToken": "csa__fUr...REDACTED",
+        "agentAccessTokenExpiresAt": "2026-08-27T08:00:57.725Z"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/workspace/acme-proof/codesite/projects/cmt9t107d006oqw01wzyu2ru3/agent-sessions/attach",
+      "httpStatus": 201,
+      "authKind": "tower",
+      "authTokenMasked": "0167dce6...MASKED",
+      "requestBody": "{\"collaborationMembershipVerified\": true, \"ownerUserId\": \"user-ben\", \"collaborationUserId\": \"member-ben\", \"effectiveWorkspaceUserId\": \"eff-ben\", \"collaborationSessionId\": \"proof-collab-20260826T080045-45025\", \"terminalSessionId\": \"claude-door-02-term-20260826T080045-45025\", \"runtimeScope\": \"workspace:acme-proof\", \"agentProvider\": \"claude\", \"providerSessionRef\": \"claude-claude-door-02-prov-20260826T080045-45025\", \"displayCallsign\": \"CLAUDE-DOOR-02\", \"capabilities\": [\"codesite.context.read\", \"codesite.inbox.read\", \"codesite.events.read\", \"codesite.knowledge.read\", \"codesite.knowledge.write\", \"codesite.inbox.respond\", \"codesite.observations.write\", \"codesite.plans.write\"], \"subscriptions\": [\"path:src/**\"]}",
+      "responseBodyTruncated400": "{\"session\":{\"id\":\"cmt9t18ti007iqw01hx1mvi65\",\"projectId\":\"cmt9t107d006oqw01wzyu2ru3\",\"ownerUserId\":\"user-ben\",\"workspaceSlug\":\"acme-proof\",\"collaborationUserId\":\"member-ben\",\"effectiveWorkspaceUserId\":\"eff-ben\",\"collaborationSessionId\":\"proof-collab-20260826T080045-45025\",\"terminalSessionId\":\"claude-door-02-term-20260826T080045-45025\",\"runtimeSessionId\":null,\"runtimeScope\":\"workspace:acme-proof\",\"",
+      "responseParsed": {
+        "session": {
+          "id": "cmt9t18ti007iqw01hx1mvi65",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "ownerUserId": "user-ben",
+          "workspaceSlug": "acme-proof",
+          "collaborationUserId": "member-ben",
+          "effectiveWorkspaceUserId": "eff-ben",
+          "collaborationSessionId": "proof-collab-20260826T080045-45025",
+          "terminalSessionId": "claude-door-02-term-20260826T080045-45025",
+          "runtimeSessionId": null,
+          "runtimeScope": "workspace:acme-proof",
+          "agentProvider": "claude",
+          "agentRuntime": "terminal",
+          "providerSessionBound": true,
+          "displayCallsign": "CLAUDE-DOOR-02",
+          "status": "attached",
+          "permissions": [
+            "codesite.context.read",
+            "codesite.inbox.read",
+            "codesite.events.read",
+            "codesite.knowledge.read",
+            "codesite.knowledge.write",
+            "codesite.inbox.respond",
+            "codesite.observations.write",
+            "codesite.plans.write"
+          ],
+          "redactionPolicy": {
+            "acceptsTowerMessages": true,
+            "redactSecrets": true,
+            "redactPrivatePrompts": true,
+            "allowAttachments": false,
+            "visibleZones": [
+              "**"
+            ],
+            "allowedDocumentKinds": [
+              "rfi",
+              "change_order",
+              "inspection_request",
+              "inspection_result",
+              "mayday",
+              "handoff",
+              "stop_work",
+              "punch",
+              "tower_instruction"
+            ]
+          },
+          "capabilities": [
+            "codesite.context.read",
+            "codesite.inbox.read",
+            "codesite.events.read",
+            "codesite.knowledge.read",
+            "codesite.knowledge.write",
+            "codesite.inbox.respond",
+            "codesite.observations.write",
+            "codesite.plans.write"
+          ],
+          "executionHost": {
+            "type": "workspace_terminal",
+            "hostId": null,
+            "platform": null
+          },
+          "subscriptions": [
+            "path:src/**"
+          ],
+          "deliveryChannel": {
+            "type": "mcp_poll",
+            "channelId": null
+          },
+          "attachSource": "collab_terminal_adapter",
+          "bindingVersion": 1,
+          "agentAccessTokenExpiresAt": "2026-08-27T08:01:00.389Z",
+          "activeMutationLeaseId": null,
+          "activeTransactionId": null,
+          "dojoPilotLicenseRef": null,
+          "dojoProofRef": null,
+          "dojoEvidenceRefs": [],
+          "dojoDecisionDigest": null,
+          "pilotLicenseSnapshot": null,
+          "attachedAt": "2026-08-26T08:01:00.389Z",
+          "lastHeartbeatAt": "2026-08-26T08:01:00.389Z",
+          "detachedAt": null,
+          "createdAt": "2026-08-26T08:01:00.390Z",
+          "updatedAt": "2026-08-26T08:01:00.390Z",
+          "endedAt": null
+        },
+        "event": {
+          "id": "cmt9t18tm007kqw01yztx3xya",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "mutationLeaseId": null,
+          "eventType": "agent_attached",
+          "displayCallsign": "CLAUDE-DOOR-02",
+          "actorType": "agent_session",
+          "actorId": "cmt9t18ti007iqw01hx1mvi65",
+          "details": {
+            "ownerUserId": "user-ben",
+            "collaborationUserId": "member-ben",
+            "effectiveWorkspaceUserId": "eff-ben",
+            "collaborationSessionId": "proof-collab-20260826T080045-45025",
+            "terminalSessionId": "claude-door-02-term-20260826T080045-45025",
+            "runtimeSessionId": null,
+            "runtimeScope": "workspace:acme-proof",
+            "provider": "claude",
+            "status": "attached",
+            "subscriptions": [
+              "path:src/**"
+            ],
+            "deliveryChannel": "mcp_poll"
+          },
+          "evidenceRefs": [],
+          "logicalTime": 5,
+          "createdAt": "2026-08-26T08:01:00.395Z"
+        },
+        "resumed": false,
+        "agentAccessToken": "csa_rzuD...REDACTED",
+        "agentAccessTokenExpiresAt": "2026-08-27T08:01:00.389Z"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/workspace/acme-proof/codesite/agent-sessions/cmt9t16rh007cqw01do9552nn/heartbeat",
+      "httpStatus": 200,
+      "authKind": "tower(heartbeat:alice)",
+      "authTokenMasked": "0167dce6...MASKED",
+      "requestBody": "{\"collaborationMembershipVerified\": true, \"ownerUserId\": \"user-alice\", \"collaborationUserId\": \"member-alice\", \"effectiveWorkspaceUserId\": \"eff-alice\", \"collaborationSessionId\": \"proof-collab-20260826T080045-45025\", \"terminalSessionId\": \"codex-rotation-01-term-20260826T080045-45025\", \"runtimeScope\": \"workspace:acme-proof\", \"agentProvider\": \"codex\", \"providerSessionRef\": \"codex-codex-rotation-01-prov-20260826T080045-45025\"}",
+      "responseBodyTruncated400": "{\"session\":{\"id\":\"cmt9t16rh007cqw01do9552nn\",\"projectId\":\"cmt9t107d006oqw01wzyu2ru3\",\"ownerUserId\":\"user-alice\",\"workspaceSlug\":\"acme-proof\",\"collaborationUserId\":\"member-alice\",\"effectiveWorkspaceUserId\":\"eff-alice\",\"collaborationSessionId\":\"proof-collab-20260826T080045-45025\",\"terminalSessionId\":\"codex-rotation-01-term-20260826T080045-45025\",\"runtimeSessionId\":null,\"runtimeScope\":\"workspace:acme",
+      "responseParsed": {
+        "session": {
+          "id": "cmt9t16rh007cqw01do9552nn",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "ownerUserId": "user-alice",
+          "workspaceSlug": "acme-proof",
+          "collaborationUserId": "member-alice",
+          "effectiveWorkspaceUserId": "eff-alice",
+          "collaborationSessionId": "proof-collab-20260826T080045-45025",
+          "terminalSessionId": "codex-rotation-01-term-20260826T080045-45025",
+          "runtimeSessionId": null,
+          "runtimeScope": "workspace:acme-proof",
+          "agentProvider": "codex",
+          "agentRuntime": "terminal",
+          "providerSessionBound": true,
+          "displayCallsign": "CODEX-ROTATION-01",
+          "status": "attached",
+          "permissions": [
+            "codesite.context.read",
+            "codesite.inbox.read",
+            "codesite.events.read",
+            "codesite.knowledge.read",
+            "codesite.knowledge.write",
+            "codesite.inbox.respond",
+            "codesite.observations.write",
+            "codesite.plans.write"
+          ],
+          "redactionPolicy": {
+            "acceptsTowerMessages": true,
+            "redactSecrets": true,
+            "redactPrivatePrompts": true,
+            "allowAttachments": false,
+            "visibleZones": [
+              "**"
+            ],
+            "allowedDocumentKinds": [
+              "rfi",
+              "change_order",
+              "inspection_request",
+              "inspection_result",
+              "mayday",
+              "handoff",
+              "stop_work",
+              "punch",
+              "tower_instruction"
+            ]
+          },
+          "capabilities": [
+            "codesite.context.read",
+            "codesite.inbox.read",
+            "codesite.events.read",
+            "codesite.knowledge.read",
+            "codesite.knowledge.write",
+            "codesite.inbox.respond",
+            "codesite.observations.write",
+            "codesite.plans.write"
+          ],
+          "executionHost": {
+            "type": "workspace_terminal",
+            "hostId": null,
+            "platform": null
+          },
+          "subscriptions": [
+            "path:src/**"
+          ],
+          "deliveryChannel": {
+            "type": "mcp_poll",
+            "channelId": null
+          },
+          "attachSource": "collab_terminal_adapter",
+          "bindingVersion": 1,
+          "agentAccessTokenExpiresAt": "2026-08-27T08:00:57.725Z",
+          "activeMutationLeaseId": null,
+          "activeTransactionId": null,
+          "dojoPilotLicenseRef": null,
+          "dojoProofRef": null,
+          "dojoEvidenceRefs": [],
+          "dojoDecisionDigest": null,
+          "pilotLicenseSnapshot": null,
+          "attachedAt": "2026-08-26T08:00:57.725Z",
+          "lastHeartbeatAt": "2026-08-26T08:01:03.133Z",
+          "detachedAt": null,
+          "createdAt": "2026-08-26T08:00:57.726Z",
+          "updatedAt": "2026-08-26T08:01:03.134Z",
+          "endedAt": null
+        },
+        "event": {
+          "id": "cmt9t1axv007mqw01rnklwob9",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "mutationLeaseId": null,
+          "eventType": "agent_heartbeat",
+          "displayCallsign": "CODEX-ROTATION-01",
+          "actorType": "agent_session",
+          "actorId": "cmt9t16rh007cqw01do9552nn",
+          "details": {
+            "status": "attached",
+            "terminalSessionId": "codex-rotation-01-term-20260826T080045-45025"
+          },
+          "evidenceRefs": [],
+          "logicalTime": 6,
+          "createdAt": "2026-08-26T08:01:03.139Z"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/workspace/acme-proof/codesite/agent-sessions/cmt9t16rh007cqw01do9552nn/execution-plans",
+      "httpStatus": 201,
+      "authKind": "agent(alice)[plans.write]",
+      "authTokenMasked": "csa__fUr...REDACTED...MASKED",
+      "requestBody": "{\"mission\": \"alice: rework Turn consumer safely\", \"domain\": \"gameplay\", \"route\": [\"src/CharacterController.cpp\"], \"requestedTools\": [\"fs.read\"]}",
+      "responseBodyTruncated400": "{\"executionPlan\":{\"id\":\"cmt9t1d1g007oqw015tlyzx8e\",\"projectId\":\"cmt9t107d006oqw01wzyu2ru3\",\"agentSessionId\":\"cmt9t16rh007cqw01do9552nn\",\"displayCallsign\":\"CODEX-ROTATION-01\",\"mission\":\"alice: rework Turn consumer safely\",\"domain\":\"gameplay\",\"status\":\"filed\",\"route\":[\"src/CharacterController.cpp\"],\"blockedZones\":[],\"abortConditions\":[],\"requestedTools\":[\"fs.read\"],\"estimatedDurationMs\":null,\"filedA",
+      "responseParsed": {
+        "executionPlan": {
+          "id": "cmt9t1d1g007oqw015tlyzx8e",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "agentSessionId": "cmt9t16rh007cqw01do9552nn",
+          "displayCallsign": "CODEX-ROTATION-01",
+          "mission": "alice: rework Turn consumer safely",
+          "domain": "gameplay",
+          "status": "filed",
+          "route": [
+            "src/CharacterController.cpp"
+          ],
+          "blockedZones": [],
+          "abortConditions": [],
+          "requestedTools": [
+            "fs.read"
+          ],
+          "estimatedDurationMs": null,
+          "filedAt": "2026-08-26T08:01:05.861Z",
+          "closedAt": null
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/workspace/acme-proof/codesite/agent-sessions/cmt9t16rh007cqw01do9552nn/mutation-leases",
+      "httpStatus": 201,
+      "authKind": "agent(alice)[plans.write]",
+      "authTokenMasked": "csa__fUr...REDACTED...MASKED",
+      "requestBody": "{\"executionPlanId\": \"cmt9t1d1g007oqw015tlyzx8e\", \"route\": [\"src/CharacterController.cpp\"]}",
+      "responseBodyTruncated400": "{\"mutationLease\":{\"id\":\"cmt9t1fr2007uqw01df83d1au\",\"projectId\":\"cmt9t107d006oqw01wzyu2ru3\",\"executionPlanId\":\"cmt9t1d1g007oqw015tlyzx8e\",\"agentSessionId\":\"cmt9t16rh007cqw01do9552nn\",\"displayCallsign\":\"CODEX-ROTATION-01\",\"status\":\"active\",\"lease\":{\"allowedPaths\":[\"src/CharacterController.cpp\"],\"blockedPaths\":[],\"allowedTools\":[\"fs.read\"],\"invariants\":[\"clearance.diff.inside_route\",\"no.secret.exposu",
+      "responseParsed": {
+        "mutationLease": {
+          "id": "cmt9t1fr2007uqw01df83d1au",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "executionPlanId": "cmt9t1d1g007oqw015tlyzx8e",
+          "agentSessionId": "cmt9t16rh007cqw01do9552nn",
+          "displayCallsign": "CODEX-ROTATION-01",
+          "status": "active",
+          "lease": {
+            "allowedPaths": [
+              "src/CharacterController.cpp"
+            ],
+            "blockedPaths": [],
+            "allowedTools": [
+              "fs.read"
+            ],
+            "invariants": [
+              "clearance.diff.inside_route",
+              "no.secret.exposure"
+            ],
+            "requiredRadar": [
+              "clearance",
+              "handover",
+              "typecheck",
+              "tests"
+            ],
+            "expiresAt": null,
+            "issuedBy": "codesite_policy_engine",
+            "towerInstruction": "Cleared as filed. Maintain transponder updates until landing.",
+            "inspectedZones": [
+              {
+                "zoneKey": "unclassified",
+                "label": "Unclassified repo airspace",
+                "class": "C",
+                "risk": "medium",
+                "rules": [
+                  "auto_clearance_allowed",
+                  "landing_inspection_required"
+                ],
+                "path": "src/CharacterController.cpp"
+              }
+            ],
+            "dojoProofVerification": {
+              "ok": false,
+              "status": "blocked",
+              "checkedAt": "2026-08-26T08:01:09.356Z",
+              "source": "codesite_dojo_public_verifier",
+              "signatureVerified": false,
+              "blockedBy": [
+                "dojo_public_proof_capsule_required",
+                "dojo_public_proof_key_required"
+              ],
+              "digest": "sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a"
+            },
+            "pilotLicenseHealth": {
+              "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+              "key": "cmt9t16rh007cqw01do9552nn",
+              "projectId": "cmt9t107d006oqw01wzyu2ru3",
+              "workspaceSlug": "acme-proof",
+              "agentSessionId": "cmt9t16rh007cqw01do9552nn",
+              "ownerUserId": "user-alice",
+              "displayCallsign": "CODEX-ROTATION-01",
+              "status": "active",
+              "level": "Student",
+              "levelRank": 1,
+              "dojoPilotLicenseRef": null,
+              "dojoLicenseRef": null,
+              "dojoProofRef": null,
+              "dojoDecisionDigest": null,
+              "repoScope": "acme-proof",
+              "authorizedAirspace": [],
+              "restrictedAirspace": [],
+              "requiredRadar": [],
+              "earnedBy": [],
+              "expiresAt": null,
+              "expiresOn": [],
+              "sourceDrift": {
+                "monitored": false,
+                "sourceDigest": null,
+                "currentSourceDigest": "sha256:4dfb3b164fb81fe29f60ddaf2deb63a032f4da343739cf9fbea90059adb2cb56",
+                "expired": false
+              },
+              "landingStats": {
+                "total": 0,
+                "passed": 0,
+                "failed": 0,
+                "evidenceRefs": []
+              },
+              "violationStats": {
+                "total": 0,
+                "critical": 0,
+                "latestAt": null,
+                "evidenceRefs": []
+              },
+              "reasonCodes": [
+                "pilot_license_health_active"
+              ],
+              "requiredAction": null,
+              "evidenceRefs": [],
+              "lifecycle": {
+                "issuedAt": "2026-08-26T08:00:57.726Z",
+                "checkedAt": "2026-08-26T08:01:09.372Z",
+                "latestLandingAt": null,
+                "latestViolationAt": null,
+                "sourcePolicyDigest": "sha256:e4d1e850daf2ccf57f568417cd4c75c3e5d0e7002e58df0d7b85ca66c9106b54"
+              }
+            },
+            "pilotLicenseRequirement": {
+              "required": false,
+              "classes": [
+                "C"
+              ],
+              "minimumLevel": "Student",
+              "minimumLevelRank": 1
+            },
+            "collisionAvoidance": null,
+            "counterfactualPolicy": null,
+            "governancePolicy": null
+          },
+          "pilotLicenseHealth": {
+            "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+            "key": "cmt9t16rh007cqw01do9552nn",
+            "projectId": "cmt9t107d006oqw01wzyu2ru3",
+            "workspaceSlug": "acme-proof",
+            "agentSessionId": "cmt9t16rh007cqw01do9552nn",
+            "ownerUserId": "user-alice",
+            "displayCallsign": "CODEX-ROTATION-01",
+            "status": "active",
+            "level": "Student",
+            "levelRank": 1,
+            "dojoPilotLicenseRef": null,
+            "dojoLicenseRef": null,
+            "dojoProofRef": null,
+            "dojoDecisionDigest": null,
+            "repoScope": "acme-proof",
+            "authorizedAirspace": [],
+            "restrictedAirspace": [],
+            "requiredRadar": [],
+            "earnedBy": [],
+            "expiresAt": null,
+            "expiresOn": [],
+            "sourceDrift": {
+              "monitored": false,
+              "sourceDigest": null,
+              "currentSourceDigest": "sha256:4dfb3b164fb81fe29f60ddaf2deb63a032f4da343739cf9fbea90059adb2cb56",
+              "expired": false
+            },
+            "landingStats": {
+              "total": 0,
+              "passed": 0,
+              "failed": 0,
+              "evidenceRefs": []
+            },
+            "violationStats": {
+              "total": 0,
+              "critical": 0,
+              "latestAt": null,
+              "evidenceRefs": []
+            },
+            "reasonCodes": [
+              "pilot_license_health_active"
+            ],
+            "requiredAction": null,
+            "evidenceRefs": [],
+            "lifecycle": {
+              "issuedAt": "2026-08-26T08:00:57.726Z",
+              "checkedAt": "2026-08-26T08:01:09.372Z",
+              "latestLandingAt": null,
+              "latestViolationAt": null,
+              "sourcePolicyDigest": "sha256:e4d1e850daf2ccf57f568417cd4c75c3e5d0e7002e58df0d7b85ca66c9106b54"
+            }
+          },
+          "pilotLicenseRequirement": {
+            "required": false,
+            "classes": [
+              "C"
+            ],
+            "minimumLevel": "Student",
+            "minimumLevelRank": 1
+          },
+          "dojoProofRef": null,
+          "dojoLicenseRef": null,
+          "dojoEvidenceRefs": [],
+          "dojoLedgerCheckpointHash": null,
+          "dojoDecisionDigest": "sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a",
+          "implementationStatus": {
+            "executable": false,
+            "productionRuntime": false
+          },
+          "issuedAt": "2026-08-26T08:01:09.374Z",
+          "expiresAt": null,
+          "revokedAt": null,
+          "policyDecision": {
+            "id": "cmt9t1fr6007wqw01b9mvl663",
+            "projectId": "cmt9t107d006oqw01wzyu2ru3",
+            "mutationLeaseId": "cmt9t1fr2007uqw01df83d1au",
+            "displayCallsign": "CODEX-ROTATION-01",
+            "decision": "allow",
+            "reasonCodes": [
+              "route_inside_clearance",
+              "pilot_license_not_required_for_route"
+            ],
+            "inputDigest": "sha256:d5b4ae202d424ef9dbae09284aac9c7697133f565e45c8f54d1886e9c47c080f",
+            "decisionBody": {
+              "status": "active",
+              "towerInstruction": "Cleared as filed. Maintain transponder updates until landing.",
+              "inspectedZones": [
+                {
+                  "zoneKey": "unclassified",
+                  "label": "Unclassified repo airspace",
+                  "class": "C",
+                  "risk": "medium",
+                  "rules": [
+                    "auto_clearance_allowed",
+                    "landing_inspection_required"
+                  ],
+                  "path": "src/CharacterController.cpp"
+                }
+              ],
+              "dojoProof": {
+                "proofRef": null,
+                "licenseRef": null,
+                "evidenceRefs": [],
+                "ledgerCheckpointHash": null,
+                "decisionDigest": "sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a",
+                "implementationStatus": {
+                  "executable": false,
+                  "productionRuntime": false
+                },
+                "verification": {
+                  "ok": false,
+                  "status": "blocked",
+                  "checkedAt": "2026-08-26T08:01:09.356Z",
+                  "source": "codesite_dojo_public_verifier",
+                  "signatureVerified": false,
+                  "blockedBy": [
+                    "dojo_public_proof_capsule_required",
+                    "dojo_public_proof_key_required"
+                  ],
+                  "digest": "sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a"
+                }
+              },
+              "pilotLicenseHealth": {
+                "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+                "key": "cmt9t16rh007cqw01do9552nn",
+                "projectId": "cmt9t107d006oqw01wzyu2ru3",
+                "workspaceSlug": "acme-proof",
+                "agentSessionId": "cmt9t16rh007cqw01do9552nn",
+                "ownerUserId": "user-alice",
+                "displayCallsign": "CODEX-ROTATION-01",
+                "status": "active",
+                "level": "Student",
+                "levelRank": 1,
+                "dojoPilotLicenseRef": null,
+                "dojoLicenseRef": null,
+                "dojoProofRef": null,
+                "dojoDecisionDigest": null,
+                "repoScope": "acme-proof",
+                "authorizedAirspace": [],
+                "restrictedAirspace": [],
+                "requiredRadar": [],
+                "earnedBy": [],
+                "expiresAt": null,
+                "expiresOn": [],
+                "sourceDrift": {
+                  "monitored": false,
+                  "sourceDigest": null,
+                  "currentSourceDigest": "sha256:4dfb3b164fb81fe29f60ddaf2deb63a032f4da343739cf9fbea90059adb2cb56",
+                  "expired": false
+                },
+                "landingStats": {
+                  "total": 0,
+                  "passed": 0,
+                  "failed": 0,
+                  "evidenceRefs": []
+                },
+                "violationStats": {
+                  "total": 0,
+                  "critical": 0,
+                  "latestAt": null,
+                  "evidenceRefs": []
+                },
+                "reasonCodes": [
+                  "pilot_license_health_active"
+                ],
+                "requiredAction": null,
+                "evidenceRefs": [],
+                "lifecycle": {
+                  "issuedAt": "2026-08-26T08:00:57.726Z",
+                  "checkedAt": "2026-08-26T08:01:09.372Z",
+                  "latestLandingAt": null,
+                  "latestViolationAt": null,
+                  "sourcePolicyDigest": "sha256:e4d1e850daf2ccf57f568417cd4c75c3e5d0e7002e58df0d7b85ca66c9106b54"
+                }
+              },
+              "pilotLicenseRequirement": {
+                "required": false,
+                "classes": [
+                  "C"
+                ],
+                "minimumLevel": "Student",
+                "minimumLevelRank": 1
+              },
+              "collisionAvoidance": null,
+              "counterfactualPolicy": null,
+              "governancePolicy": null
+            },
+            "createdAt": "2026-08-26T08:01:09.379Z"
+          }
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/workspace/acme-proof/codesite/agent-sessions/cmt9t16rh007cqw01do9552nn/transactions",
+      "httpStatus": 201,
+      "authKind": "agent(alice)[plans.write]",
+      "authTokenMasked": "csa__fUr...REDACTED...MASKED",
+      "requestBody": "{\"mutationLeaseId\": \"cmt9t1fr2007uqw01df83d1au\", \"baseSnapshot\": \"live-expertise-base\"}",
+      "responseBodyTruncated400": "{\"transaction\":{\"id\":\"cmt9t1hxf0080qw01kfnfa92o\",\"projectId\":\"cmt9t107d006oqw01wzyu2ru3\",\"mutationLeaseId\":\"cmt9t1fr2007uqw01df83d1au\",\"agentSessionId\":\"cmt9t16rh007cqw01do9552nn\",\"baseSnapshot\":\"live-expertise-base\",\"baseSnapshotEvidence\":null,\"isolation\":\"serializable\",\"status\":\"open\",\"readSet\":[],\"observedReadSet\":[],\"writeSet\":[],\"observedWriteSet\":[],\"semanticDependencyRefs\":[],\"invariants\":[",
+      "responseParsed": {
+        "transaction": {
+          "id": "cmt9t1hxf0080qw01kfnfa92o",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "mutationLeaseId": "cmt9t1fr2007uqw01df83d1au",
+          "agentSessionId": "cmt9t16rh007cqw01do9552nn",
+          "baseSnapshot": "live-expertise-base",
+          "baseSnapshotEvidence": null,
+          "isolation": "serializable",
+          "status": "open",
+          "readSet": [],
+          "observedReadSet": [],
+          "writeSet": [],
+          "observedWriteSet": [],
+          "semanticDependencyRefs": [],
+          "invariants": [
+            "clearance.diff.inside_route",
+            "no.secret.exposure"
+          ],
+          "assumptionRefs": [],
+          "commitDecision": null,
+          "proofBundleDigest": null,
+          "openedAt": "2026-08-26T08:01:12.196Z",
+          "closedAt": null
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/workspace/acme-proof/codesite/agent-sessions/cmt9t16rh007cqw01do9552nn/transactions/cmt9t1hxf0080qw01kfnfa92o/record-write",
+      "httpStatus": 200,
+      "authKind": "agent(alice)[observations.write]",
+      "authTokenMasked": "csa__fUr...REDACTED...MASKED",
+      "requestBody": "{\"path\": \"src/CharacterController.cpp\"}",
+      "responseBodyTruncated400": "{\"ok\":false,\"transaction\":{\"id\":\"cmt9t1hxf0080qw01kfnfa92o\",\"projectId\":\"cmt9t107d006oqw01wzyu2ru3\",\"mutationLeaseId\":\"cmt9t1fr2007uqw01df83d1au\",\"agentSessionId\":\"cmt9t16rh007cqw01do9552nn\",\"baseSnapshot\":\"live-expertise-base\",\"baseSnapshotEvidence\":null,\"isolation\":\"serializable\",\"status\":\"open\",\"readSet\":[],\"observedReadSet\":[],\"writeSet\":[],\"observedWriteSet\":[],\"semanticDependencyRefs\":[],\"in",
+      "responseParsed": {
+        "ok": false,
+        "transaction": {
+          "id": "cmt9t1hxf0080qw01kfnfa92o",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "mutationLeaseId": "cmt9t1fr2007uqw01df83d1au",
+          "agentSessionId": "cmt9t16rh007cqw01do9552nn",
+          "baseSnapshot": "live-expertise-base",
+          "baseSnapshotEvidence": null,
+          "isolation": "serializable",
+          "status": "open",
+          "readSet": [],
+          "observedReadSet": [],
+          "writeSet": [],
+          "observedWriteSet": [],
+          "semanticDependencyRefs": [],
+          "invariants": [
+            "clearance.diff.inside_route",
+            "no.secret.exposure"
+          ],
+          "assumptionRefs": [],
+          "commitDecision": null,
+          "proofBundleDigest": null,
+          "openedAt": "2026-08-26T08:01:12.196Z",
+          "closedAt": null
+        },
+        "policyDecision": {
+          "id": "cmt9t1kri0086qw015yvcqb6v",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "mutationLeaseId": "cmt9t1fr2007uqw01df83d1au",
+          "displayCallsign": "CODEX-ROTATION-01",
+          "decision": "block",
+          "reasonCodes": [
+            "tool_not_in_clearance"
+          ],
+          "inputDigest": "sha256:83d210443287a52236f2673370f6b7034d691ed338e7d6605a0083020917f86b",
+          "decisionBody": {
+            "path": "src/CharacterController.cpp",
+            "zone": {
+              "zoneKey": "unclassified",
+              "label": "Unclassified repo airspace",
+              "class": "C",
+              "risk": "medium",
+              "rules": [
+                "auto_clearance_allowed",
+                "landing_inspection_required"
+              ],
+              "path": "src/CharacterController.cpp"
+            },
+            "towerInstruction": "Write denied for src/CharacterController.cpp. File change order or request a new clearance."
+          },
+          "createdAt": "2026-08-26T08:01:15.870Z"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/workspace/acme-proof/codesite/agent-sessions/cmt9t18ti007iqw01hx1mvi65/heartbeat",
+      "httpStatus": 200,
+      "authKind": "tower(heartbeat:ben)",
+      "authTokenMasked": "0167dce6...MASKED",
+      "requestBody": "{\"collaborationMembershipVerified\": true, \"ownerUserId\": \"user-ben\", \"collaborationUserId\": \"member-ben\", \"effectiveWorkspaceUserId\": \"eff-ben\", \"collaborationSessionId\": \"proof-collab-20260826T080045-45025\", \"terminalSessionId\": \"claude-door-02-term-20260826T080045-45025\", \"runtimeScope\": \"workspace:acme-proof\", \"agentProvider\": \"claude\", \"providerSessionRef\": \"claude-claude-door-02-prov-20260826T080045-45025\"}",
+      "responseBodyTruncated400": "{\"session\":{\"id\":\"cmt9t18ti007iqw01hx1mvi65\",\"projectId\":\"cmt9t107d006oqw01wzyu2ru3\",\"ownerUserId\":\"user-ben\",\"workspaceSlug\":\"acme-proof\",\"collaborationUserId\":\"member-ben\",\"effectiveWorkspaceUserId\":\"eff-ben\",\"collaborationSessionId\":\"proof-collab-20260826T080045-45025\",\"terminalSessionId\":\"claude-door-02-term-20260826T080045-45025\",\"runtimeSessionId\":null,\"runtimeScope\":\"workspace:acme-proof\",\"",
+      "responseParsed": {
+        "session": {
+          "id": "cmt9t18ti007iqw01hx1mvi65",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "ownerUserId": "user-ben",
+          "workspaceSlug": "acme-proof",
+          "collaborationUserId": "member-ben",
+          "effectiveWorkspaceUserId": "eff-ben",
+          "collaborationSessionId": "proof-collab-20260826T080045-45025",
+          "terminalSessionId": "claude-door-02-term-20260826T080045-45025",
+          "runtimeSessionId": null,
+          "runtimeScope": "workspace:acme-proof",
+          "agentProvider": "claude",
+          "agentRuntime": "terminal",
+          "providerSessionBound": true,
+          "displayCallsign": "CLAUDE-DOOR-02",
+          "status": "attached",
+          "permissions": [
+            "codesite.context.read",
+            "codesite.inbox.read",
+            "codesite.events.read",
+            "codesite.knowledge.read",
+            "codesite.knowledge.write",
+            "codesite.inbox.respond",
+            "codesite.observations.write",
+            "codesite.plans.write"
+          ],
+          "redactionPolicy": {
+            "acceptsTowerMessages": true,
+            "redactSecrets": true,
+            "redactPrivatePrompts": true,
+            "allowAttachments": false,
+            "visibleZones": [
+              "**"
+            ],
+            "allowedDocumentKinds": [
+              "rfi",
+              "change_order",
+              "inspection_request",
+              "inspection_result",
+              "mayday",
+              "handoff",
+              "stop_work",
+              "punch",
+              "tower_instruction"
+            ]
+          },
+          "capabilities": [
+            "codesite.context.read",
+            "codesite.inbox.read",
+            "codesite.events.read",
+            "codesite.knowledge.read",
+            "codesite.knowledge.write",
+            "codesite.inbox.respond",
+            "codesite.observations.write",
+            "codesite.plans.write"
+          ],
+          "executionHost": {
+            "type": "workspace_terminal",
+            "hostId": null,
+            "platform": null
+          },
+          "subscriptions": [
+            "path:src/**"
+          ],
+          "deliveryChannel": {
+            "type": "mcp_poll",
+            "channelId": null
+          },
+          "attachSource": "collab_terminal_adapter",
+          "bindingVersion": 1,
+          "agentAccessTokenExpiresAt": "2026-08-27T08:01:00.389Z",
+          "activeMutationLeaseId": null,
+          "activeTransactionId": null,
+          "dojoPilotLicenseRef": null,
+          "dojoProofRef": null,
+          "dojoEvidenceRefs": [],
+          "dojoDecisionDigest": null,
+          "pilotLicenseSnapshot": null,
+          "attachedAt": "2026-08-26T08:01:00.389Z",
+          "lastHeartbeatAt": "2026-08-26T08:01:18.792Z",
+          "detachedAt": null,
+          "createdAt": "2026-08-26T08:01:00.390Z",
+          "updatedAt": "2026-08-26T08:01:18.793Z",
+          "endedAt": null
+        },
+        "event": {
+          "id": "cmt9t1n0z008aqw017wols0m8",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "mutationLeaseId": null,
+          "eventType": "agent_heartbeat",
+          "displayCallsign": "CLAUDE-DOOR-02",
+          "actorType": "agent_session",
+          "actorId": "cmt9t18ti007iqw01hx1mvi65",
+          "details": {
+            "status": "attached",
+            "terminalSessionId": "claude-door-02-term-20260826T080045-45025"
+          },
+          "evidenceRefs": [],
+          "logicalTime": 13,
+          "createdAt": "2026-08-26T08:01:18.803Z"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/workspace/acme-proof/codesite/agent-sessions/cmt9t18ti007iqw01hx1mvi65/execution-plans",
+      "httpStatus": 201,
+      "authKind": "agent(ben)[plans.write]",
+      "authTokenMasked": "csa_rzuD...REDACTED...MASKED",
+      "requestBody": "{\"mission\": \"ben: rework Turn consumer safely\", \"domain\": \"gameplay\", \"route\": [\"src/CharacterController.cpp\"], \"requestedTools\": [\"fs.read\"]}",
+      "responseBodyTruncated400": "{\"executionPlan\":{\"id\":\"cmt9t1pay008cqw012xhvbz6h\",\"projectId\":\"cmt9t107d006oqw01wzyu2ru3\",\"agentSessionId\":\"cmt9t18ti007iqw01hx1mvi65\",\"displayCallsign\":\"CLAUDE-DOOR-02\",\"mission\":\"ben: rework Turn consumer safely\",\"domain\":\"gameplay\",\"status\":\"filed\",\"route\":[\"src/CharacterController.cpp\"],\"blockedZones\":[],\"abortConditions\":[],\"requestedTools\":[\"fs.read\"],\"estimatedDurationMs\":null,\"filedAt\":\"2",
+      "responseParsed": {
+        "executionPlan": {
+          "id": "cmt9t1pay008cqw012xhvbz6h",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "agentSessionId": "cmt9t18ti007iqw01hx1mvi65",
+          "displayCallsign": "CLAUDE-DOOR-02",
+          "mission": "ben: rework Turn consumer safely",
+          "domain": "gameplay",
+          "status": "filed",
+          "route": [
+            "src/CharacterController.cpp"
+          ],
+          "blockedZones": [],
+          "abortConditions": [],
+          "requestedTools": [
+            "fs.read"
+          ],
+          "estimatedDurationMs": null,
+          "filedAt": "2026-08-26T08:01:21.755Z",
+          "closedAt": null
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/workspace/acme-proof/codesite/agent-sessions/cmt9t18ti007iqw01hx1mvi65/mutation-leases",
+      "httpStatus": 201,
+      "authKind": "agent(ben)[plans.write]",
+      "authTokenMasked": "csa_rzuD...REDACTED...MASKED",
+      "requestBody": "{\"executionPlanId\": \"cmt9t1pay008cqw012xhvbz6h\", \"route\": [\"src/CharacterController.cpp\"]}",
+      "responseBodyTruncated400": "{\"mutationLease\":{\"id\":\"cmt9t1sff008iqw018yddbzju\",\"projectId\":\"cmt9t107d006oqw01wzyu2ru3\",\"executionPlanId\":\"cmt9t1pay008cqw012xhvbz6h\",\"agentSessionId\":\"cmt9t18ti007iqw01hx1mvi65\",\"displayCallsign\":\"CLAUDE-DOOR-02\",\"status\":\"active\",\"lease\":{\"allowedPaths\":[\"src/CharacterController.cpp\"],\"blockedPaths\":[],\"allowedTools\":[\"fs.read\"],\"invariants\":[\"clearance.diff.inside_route\",\"no.secret.exposure\"",
+      "responseParsed": {
+        "mutationLease": {
+          "id": "cmt9t1sff008iqw018yddbzju",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "executionPlanId": "cmt9t1pay008cqw012xhvbz6h",
+          "agentSessionId": "cmt9t18ti007iqw01hx1mvi65",
+          "displayCallsign": "CLAUDE-DOOR-02",
+          "status": "active",
+          "lease": {
+            "allowedPaths": [
+              "src/CharacterController.cpp"
+            ],
+            "blockedPaths": [],
+            "allowedTools": [
+              "fs.read"
+            ],
+            "invariants": [
+              "clearance.diff.inside_route",
+              "no.secret.exposure"
+            ],
+            "requiredRadar": [
+              "clearance",
+              "handover",
+              "typecheck",
+              "tests"
+            ],
+            "expiresAt": null,
+            "issuedBy": "codesite_policy_engine",
+            "towerInstruction": "Cleared as filed. Maintain transponder updates until landing.",
+            "inspectedZones": [
+              {
+                "zoneKey": "unclassified",
+                "label": "Unclassified repo airspace",
+                "class": "C",
+                "risk": "medium",
+                "rules": [
+                  "auto_clearance_allowed",
+                  "landing_inspection_required"
+                ],
+                "path": "src/CharacterController.cpp"
+              }
+            ],
+            "dojoProofVerification": {
+              "ok": false,
+              "status": "blocked",
+              "checkedAt": "2026-08-26T08:01:25.789Z",
+              "source": "codesite_dojo_public_verifier",
+              "signatureVerified": false,
+              "blockedBy": [
+                "dojo_public_proof_capsule_required",
+                "dojo_public_proof_key_required"
+              ],
+              "digest": "sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a"
+            },
+            "pilotLicenseHealth": {
+              "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+              "key": "cmt9t18ti007iqw01hx1mvi65",
+              "projectId": "cmt9t107d006oqw01wzyu2ru3",
+              "workspaceSlug": "acme-proof",
+              "agentSessionId": "cmt9t18ti007iqw01hx1mvi65",
+              "ownerUserId": "user-ben",
+              "displayCallsign": "CLAUDE-DOOR-02",
+              "status": "active",
+              "level": "Student",
+              "levelRank": 1,
+              "dojoPilotLicenseRef": null,
+              "dojoLicenseRef": null,
+              "dojoProofRef": null,
+              "dojoDecisionDigest": null,
+              "repoScope": "acme-proof",
+              "authorizedAirspace": [],
+              "restrictedAirspace": [],
+              "requiredRadar": [],
+              "earnedBy": [],
+              "expiresAt": null,
+              "expiresOn": [],
+              "sourceDrift": {
+                "monitored": false,
+                "sourceDigest": null,
+                "currentSourceDigest": "sha256:4dfb3b164fb81fe29f60ddaf2deb63a032f4da343739cf9fbea90059adb2cb56",
+                "expired": false
+              },
+              "landingStats": {
+                "total": 0,
+                "passed": 0,
+                "failed": 0,
+                "evidenceRefs": []
+              },
+              "violationStats": {
+                "total": 0,
+                "critical": 0,
+                "latestAt": null,
+                "evidenceRefs": []
+              },
+              "reasonCodes": [
+                "pilot_license_health_active"
+              ],
+              "requiredAction": null,
+              "evidenceRefs": [],
+              "lifecycle": {
+                "issuedAt": "2026-08-26T08:01:00.390Z",
+                "checkedAt": "2026-08-26T08:01:25.803Z",
+                "latestLandingAt": null,
+                "latestViolationAt": null,
+                "sourcePolicyDigest": "sha256:e4d1e850daf2ccf57f568417cd4c75c3e5d0e7002e58df0d7b85ca66c9106b54"
+              }
+            },
+            "pilotLicenseRequirement": {
+              "required": false,
+              "classes": [
+                "C"
+              ],
+              "minimumLevel": "Student",
+              "minimumLevelRank": 1
+            },
+            "collisionAvoidance": null,
+            "counterfactualPolicy": null,
+            "governancePolicy": null
+          },
+          "pilotLicenseHealth": {
+            "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+            "key": "cmt9t18ti007iqw01hx1mvi65",
+            "projectId": "cmt9t107d006oqw01wzyu2ru3",
+            "workspaceSlug": "acme-proof",
+            "agentSessionId": "cmt9t18ti007iqw01hx1mvi65",
+            "ownerUserId": "user-ben",
+            "displayCallsign": "CLAUDE-DOOR-02",
+            "status": "active",
+            "level": "Student",
+            "levelRank": 1,
+            "dojoPilotLicenseRef": null,
+            "dojoLicenseRef": null,
+            "dojoProofRef": null,
+            "dojoDecisionDigest": null,
+            "repoScope": "acme-proof",
+            "authorizedAirspace": [],
+            "restrictedAirspace": [],
+            "requiredRadar": [],
+            "earnedBy": [],
+            "expiresAt": null,
+            "expiresOn": [],
+            "sourceDrift": {
+              "monitored": false,
+              "sourceDigest": null,
+              "currentSourceDigest": "sha256:4dfb3b164fb81fe29f60ddaf2deb63a032f4da343739cf9fbea90059adb2cb56",
+              "expired": false
+            },
+            "landingStats": {
+              "total": 0,
+              "passed": 0,
+              "failed": 0,
+              "evidenceRefs": []
+            },
+            "violationStats": {
+              "total": 0,
+              "critical": 0,
+              "latestAt": null,
+              "evidenceRefs": []
+            },
+            "reasonCodes": [
+              "pilot_license_health_active"
+            ],
+            "requiredAction": null,
+            "evidenceRefs": [],
+            "lifecycle": {
+              "issuedAt": "2026-08-26T08:01:00.390Z",
+              "checkedAt": "2026-08-26T08:01:25.803Z",
+              "latestLandingAt": null,
+              "latestViolationAt": null,
+              "sourcePolicyDigest": "sha256:e4d1e850daf2ccf57f568417cd4c75c3e5d0e7002e58df0d7b85ca66c9106b54"
+            }
+          },
+          "pilotLicenseRequirement": {
+            "required": false,
+            "classes": [
+              "C"
+            ],
+            "minimumLevel": "Student",
+            "minimumLevelRank": 1
+          },
+          "dojoProofRef": null,
+          "dojoLicenseRef": null,
+          "dojoEvidenceRefs": [],
+          "dojoLedgerCheckpointHash": null,
+          "dojoDecisionDigest": "sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a",
+          "implementationStatus": {
+            "executable": false,
+            "productionRuntime": false
+          },
+          "issuedAt": "2026-08-26T08:01:25.804Z",
+          "expiresAt": null,
+          "revokedAt": null,
+          "policyDecision": {
+            "id": "cmt9t1sfj008kqw01sflw7goe",
+            "projectId": "cmt9t107d006oqw01wzyu2ru3",
+            "mutationLeaseId": "cmt9t1sff008iqw018yddbzju",
+            "displayCallsign": "CLAUDE-DOOR-02",
+            "decision": "allow",
+            "reasonCodes": [
+              "route_inside_clearance",
+              "pilot_license_not_required_for_route"
+            ],
+            "inputDigest": "sha256:c2f7c3c97db8cfc76dfc2baa3594b1a35b6dc77fee6db208f42db28b248472eb",
+            "decisionBody": {
+              "status": "active",
+              "towerInstruction": "Cleared as filed. Maintain transponder updates until landing.",
+              "inspectedZones": [
+                {
+                  "zoneKey": "unclassified",
+                  "label": "Unclassified repo airspace",
+                  "class": "C",
+                  "risk": "medium",
+                  "rules": [
+                    "auto_clearance_allowed",
+                    "landing_inspection_required"
+                  ],
+                  "path": "src/CharacterController.cpp"
+                }
+              ],
+              "dojoProof": {
+                "proofRef": null,
+                "licenseRef": null,
+                "evidenceRefs": [],
+                "ledgerCheckpointHash": null,
+                "decisionDigest": "sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a",
+                "implementationStatus": {
+                  "executable": false,
+                  "productionRuntime": false
+                },
+                "verification": {
+                  "ok": false,
+                  "status": "blocked",
+                  "checkedAt": "2026-08-26T08:01:25.789Z",
+                  "source": "codesite_dojo_public_verifier",
+                  "signatureVerified": false,
+                  "blockedBy": [
+                    "dojo_public_proof_capsule_required",
+                    "dojo_public_proof_key_required"
+                  ],
+                  "digest": "sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a"
+                }
+              },
+              "pilotLicenseHealth": {
+                "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+                "key": "cmt9t18ti007iqw01hx1mvi65",
+                "projectId": "cmt9t107d006oqw01wzyu2ru3",
+                "workspaceSlug": "acme-proof",
+                "agentSessionId": "cmt9t18ti007iqw01hx1mvi65",
+                "ownerUserId": "user-ben",
+                "displayCallsign": "CLAUDE-DOOR-02",
+                "status": "active",
+                "level": "Student",
+                "levelRank": 1,
+                "dojoPilotLicenseRef": null,
+                "dojoLicenseRef": null,
+                "dojoProofRef": null,
+                "dojoDecisionDigest": null,
+                "repoScope": "acme-proof",
+                "authorizedAirspace": [],
+                "restrictedAirspace": [],
+                "requiredRadar": [],
+                "earnedBy": [],
+                "expiresAt": null,
+                "expiresOn": [],
+                "sourceDrift": {
+                  "monitored": false,
+                  "sourceDigest": null,
+                  "currentSourceDigest": "sha256:4dfb3b164fb81fe29f60ddaf2deb63a032f4da343739cf9fbea90059adb2cb56",
+                  "expired": false
+                },
+                "landingStats": {
+                  "total": 0,
+                  "passed": 0,
+                  "failed": 0,
+                  "evidenceRefs": []
+                },
+                "violationStats": {
+                  "total": 0,
+                  "critical": 0,
+                  "latestAt": null,
+                  "evidenceRefs": []
+                },
+                "reasonCodes": [
+                  "pilot_license_health_active"
+                ],
+                "requiredAction": null,
+                "evidenceRefs": [],
+                "lifecycle": {
+                  "issuedAt": "2026-08-26T08:01:00.390Z",
+                  "checkedAt": "2026-08-26T08:01:25.803Z",
+                  "latestLandingAt": null,
+                  "latestViolationAt": null,
+                  "sourcePolicyDigest": "sha256:e4d1e850daf2ccf57f568417cd4c75c3e5d0e7002e58df0d7b85ca66c9106b54"
+                }
+              },
+              "pilotLicenseRequirement": {
+                "required": false,
+                "classes": [
+                  "C"
+                ],
+                "minimumLevel": "Student",
+                "minimumLevelRank": 1
+              },
+              "collisionAvoidance": null,
+              "counterfactualPolicy": null,
+              "governancePolicy": null
+            },
+            "createdAt": "2026-08-26T08:01:25.807Z"
+          }
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/workspace/acme-proof/codesite/agent-sessions/cmt9t18ti007iqw01hx1mvi65/transactions",
+      "httpStatus": 201,
+      "authKind": "agent(ben)[plans.write]",
+      "authTokenMasked": "csa_rzuD...REDACTED...MASKED",
+      "requestBody": "{\"mutationLeaseId\": \"cmt9t1sff008iqw018yddbzju\", \"baseSnapshot\": \"live-expertise-base\"}",
+      "responseBodyTruncated400": "{\"transaction\":{\"id\":\"cmt9t1ut1008oqw01f9t5ls5c\",\"projectId\":\"cmt9t107d006oqw01wzyu2ru3\",\"mutationLeaseId\":\"cmt9t1sff008iqw018yddbzju\",\"agentSessionId\":\"cmt9t18ti007iqw01hx1mvi65\",\"baseSnapshot\":\"live-expertise-base\",\"baseSnapshotEvidence\":null,\"isolation\":\"serializable\",\"status\":\"open\",\"readSet\":[],\"observedReadSet\":[],\"writeSet\":[],\"observedWriteSet\":[],\"semanticDependencyRefs\":[],\"invariants\":[",
+      "responseParsed": {
+        "transaction": {
+          "id": "cmt9t1ut1008oqw01f9t5ls5c",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "mutationLeaseId": "cmt9t1sff008iqw018yddbzju",
+          "agentSessionId": "cmt9t18ti007iqw01hx1mvi65",
+          "baseSnapshot": "live-expertise-base",
+          "baseSnapshotEvidence": null,
+          "isolation": "serializable",
+          "status": "open",
+          "readSet": [],
+          "observedReadSet": [],
+          "writeSet": [],
+          "observedWriteSet": [],
+          "semanticDependencyRefs": [],
+          "invariants": [
+            "clearance.diff.inside_route",
+            "no.secret.exposure"
+          ],
+          "assumptionRefs": [],
+          "commitDecision": null,
+          "proofBundleDigest": null,
+          "openedAt": "2026-08-26T08:01:28.886Z",
+          "closedAt": null
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/workspace/acme-proof/codesite/agent-sessions/cmt9t18ti007iqw01hx1mvi65/transactions/cmt9t1ut1008oqw01f9t5ls5c/record-write",
+      "httpStatus": 200,
+      "authKind": "agent(ben)[observations.write]",
+      "authTokenMasked": "csa_rzuD...REDACTED...MASKED",
+      "requestBody": "{\"path\": \"src/CharacterController.cpp\"}",
+      "responseBodyTruncated400": "{\"ok\":false,\"transaction\":{\"id\":\"cmt9t1ut1008oqw01f9t5ls5c\",\"projectId\":\"cmt9t107d006oqw01wzyu2ru3\",\"mutationLeaseId\":\"cmt9t1sff008iqw018yddbzju\",\"agentSessionId\":\"cmt9t18ti007iqw01hx1mvi65\",\"baseSnapshot\":\"live-expertise-base\",\"baseSnapshotEvidence\":null,\"isolation\":\"serializable\",\"status\":\"open\",\"readSet\":[],\"observedReadSet\":[],\"writeSet\":[],\"observedWriteSet\":[],\"semanticDependencyRefs\":[],\"in",
+      "responseParsed": {
+        "ok": false,
+        "transaction": {
+          "id": "cmt9t1ut1008oqw01f9t5ls5c",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "mutationLeaseId": "cmt9t1sff008iqw018yddbzju",
+          "agentSessionId": "cmt9t18ti007iqw01hx1mvi65",
+          "baseSnapshot": "live-expertise-base",
+          "baseSnapshotEvidence": null,
+          "isolation": "serializable",
+          "status": "open",
+          "readSet": [],
+          "observedReadSet": [],
+          "writeSet": [],
+          "observedWriteSet": [],
+          "semanticDependencyRefs": [],
+          "invariants": [
+            "clearance.diff.inside_route",
+            "no.secret.exposure"
+          ],
+          "assumptionRefs": [],
+          "commitDecision": null,
+          "proofBundleDigest": null,
+          "openedAt": "2026-08-26T08:01:28.886Z",
+          "closedAt": null
+        },
+        "policyDecision": {
+          "id": "cmt9t1y4u008uqw01kwpczyrx",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "mutationLeaseId": "cmt9t1sff008iqw018yddbzju",
+          "displayCallsign": "CLAUDE-DOOR-02",
+          "decision": "block",
+          "reasonCodes": [
+            "tool_not_in_clearance"
+          ],
+          "inputDigest": "sha256:3236e9fc5f3912034cf6ddbdefdb3b480513ae432129482e2b2dc875f8d7656b",
+          "decisionBody": {
+            "path": "src/CharacterController.cpp",
+            "zone": {
+              "zoneKey": "unclassified",
+              "label": "Unclassified repo airspace",
+              "class": "C",
+              "risk": "medium",
+              "rules": [
+                "auto_clearance_allowed",
+                "landing_inspection_required"
+              ],
+              "path": "src/CharacterController.cpp"
+            },
+            "towerInstruction": "Write denied for src/CharacterController.cpp. File change order or request a new clearance."
+          },
+          "createdAt": "2026-08-26T08:01:33.199Z"
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/workspace/acme-proof/codesite/agent-sessions/cmt9t18ti007iqw01hx1mvi65/experts?paths=src/CharacterController.cpp&limit=5",
+      "httpStatus": 200,
+      "authKind": "agent(ben)[context.read]",
+      "authTokenMasked": "csa_rzuD...REDACTED...MASKED",
+      "requestBody": null,
+      "responseBodyTruncated400": "{\"contextVersion\":\"synthi.codesite.expertise.v1\",\"generatedAt\":\"2026-08-26T08:01:36.479Z\",\"projectId\":\"cmt9t107d006oqw01wzyu2ru3\",\"query\":{\"paths\":[\"src/CharacterController.cpp\"],\"symbols\":[],\"contracts\":[]},\"experts\":[{\"agentSessionId\":\"cmt9t16rh007cqw01do9552nn\",\"displayCallsign\":\"CODEX-ROTATION-01\",\"ownerUserId\":\"user-alice\",\"agentProvider\":\"codex\",\"status\":\"attached\",\"score\":1.5,\"lastInteracti",
+      "responseParsed": {
+        "contextVersion": "synthi.codesite.expertise.v1",
+        "generatedAt": "2026-08-26T08:01:36.479Z",
+        "projectId": "cmt9t107d006oqw01wzyu2ru3",
+        "query": {
+          "paths": [
+            "src/CharacterController.cpp"
+          ],
+          "symbols": [],
+          "contracts": []
+        },
+        "experts": [
+          {
+            "agentSessionId": "cmt9t16rh007cqw01do9552nn",
+            "displayCallsign": "CODEX-ROTATION-01",
+            "ownerUserId": "user-alice",
+            "agentProvider": "codex",
+            "status": "attached",
+            "score": 1.5,
+            "lastInteractionAt": "2026-08-26T08:01:05.861Z",
+            "evidence": [
+              "plan_route:cmt9t1d1g007oqw015tlyzx8e"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/workspace/acme-proof/codesite/agent-sessions/cmt9t18ti007iqw01hx1mvi65/questions",
+      "httpStatus": 201,
+      "authKind": "agent(ben)[knowledge.write]",
+      "authTokenMasked": "csa_rzuD...REDACTED...MASKED",
+      "requestBody": "{\"title\": \"Does Turn clamp angular velocity?\", \"summary\": \"Need to know whether CharacterController::Turn clamps angular velocity before reworking the consumer.\", \"references\": {\"paths\": [\"src/CharacterController.cpp\"], \"symbols\": [\"CharacterController::Turn\"]}, \"urgency\": \"high\"}",
+      "responseBodyTruncated400": "{\"question\":{\"id\":\"knw_N9vf-kWCnmaanUrcWXKPoJk7\",\"kind\":\"agent_question\",\"projectId\":\"cmt9t107d006oqw01wzyu2ru3\",\"title\":\"Does Turn clamp angular velocity?\",\"summary\":\"Need to know whether CharacterController::Turn clamps angular velocity before reworking the consumer.\",\"status\":\"open\",\"visibility\":\"project\",\"redactionClass\":\"project_fact\",\"source\":{\"actorType\":\"agent\",\"actorId\":\"cmt9t18ti007iqw01",
+      "responseParsed": {
+        "question": {
+          "id": "knw_N9vf-kWCnmaanUrcWXKPoJk7",
+          "kind": "agent_question",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "title": "Does Turn clamp angular velocity?",
+          "summary": "Need to know whether CharacterController::Turn clamps angular velocity before reworking the consumer.",
+          "status": "open",
+          "visibility": "project",
+          "redactionClass": "project_fact",
+          "source": {
+            "actorType": "agent",
+            "actorId": "cmt9t18ti007iqw01hx1mvi65",
+            "agentSessionId": "cmt9t18ti007iqw01hx1mvi65",
+            "terminalSessionId": "claude-door-02-term-20260826T080045-45025"
+          },
+          "references": {
+            "paths": [
+              "src/CharacterController.cpp"
+            ],
+            "symbols": [
+              "CharacterController::Turn"
+            ],
+            "contracts": [],
+            "runtimeSessionIds": [],
+            "agentSessionIds": [],
+            "workstreamIds": [],
+            "transactionIds": []
+          },
+          "evidenceRefs": [],
+          "tags": [],
+          "confidence": null,
+          "createdAt": "2026-08-26T08:01:38.498Z",
+          "updatedAt": "2026-08-26T08:01:38.505Z",
+          "expiresAt": null,
+          "questionUrgency": "normal",
+          "suggestedExpertAgentSessionIds": [
+            "cmt9t16rh007cqw01do9552nn"
+          ],
+          "fromAgentSessionId": "cmt9t18ti007iqw01hx1mvi65",
+          "answerText": null,
+          "answeredByAgentSessionId": null
+        },
+        "event": {
+          "id": "evt_GAJLKIaG6oBQf_f0dPNbeDoh",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "mutationLeaseId": null,
+          "eventType": "agent_question_asked",
+          "displayCallsign": "CLAUDE-DOOR-02",
+          "actorType": "agent_session",
+          "actorId": "cmt9t18ti007iqw01hx1mvi65",
+          "details": {
+            "knowledgeItemId": "knw_N9vf-kWCnmaanUrcWXKPoJk7",
+            "kind": "agent_question",
+            "status": "open",
+            "title": "Does Turn clamp angular velocity?",
+            "references": {
+              "paths": [
+                "src/CharacterController.cpp"
+              ],
+              "symbols": [
+                "CharacterController::Turn"
+              ],
+              "contracts": [],
+              "runtimeSessionIds": [],
+              "agentSessionIds": [],
+              "workstreamIds": [],
+              "transactionIds": []
+            },
+            "confidence": null
+          },
+          "evidenceRefs": [],
+          "logicalTime": 20,
+          "createdAt": "2026-08-26T08:01:38.504Z"
+        },
+        "routedTo": [
+          {
+            "knowledgeItemId": "imp__noJG1HJo17J5dxb_r2voy_g",
+            "inboxItem": {
+              "id": "cmt9t228l0093qw01sa3ma2e6",
+              "projectId": "cmt9t107d006oqw01wzyu2ru3",
+              "agentSessionId": "cmt9t16rh007cqw01do9552nn",
+              "recipientUserId": "user-alice",
+              "eventId": "evt_oW0G9v8-uRrgo264Hq1slIwI",
+              "documentId": null,
+              "knowledgeItemId": "imp__noJG1HJo17J5dxb_r2voy_g",
+              "kind": "impact_notice",
+              "requiresResponse": true,
+              "status": "pending",
+              "redactedPayload": {
+                "knowledgeItemId": "imp__noJG1HJo17J5dxb_r2voy_g",
+                "sourceKnowledgeItemId": "knw_N9vf-kWCnmaanUrcWXKPoJk7",
+                "title": "Impact: Does Turn clamp angular velocity?",
+                "summary": "Need to know whether CharacterController::Turn clamps angular velocity before reworking the consumer.",
+                "references": {
+                  "paths": [
+                    "src/CharacterController.cpp"
+                  ],
+                  "symbols": [
+                    "CharacterController::Turn"
+                  ],
+                  "contracts": [],
+                  "runtimeSessionIds": [],
+                  "agentSessionIds": [
+                    "cmt9t16rh007cqw01do9552nn"
+                  ],
+                  "workstreamIds": [],
+                  "transactionIds": []
+                },
+                "reasons": [
+                  "explicit_agent_reference",
+                  "route:cmt9t1d1g007oqw015tlyzx8e",
+                  "subscription:path:src/**"
+                ],
+                "targetTransactionIds": []
+              },
+              "createdAt": "2026-08-26T08:01:38.517Z",
+              "acknowledgedAt": null,
+              "responseAction": null,
+              "respondedAt": null
+            },
+            "agentSessionId": "cmt9t16rh007cqw01do9552nn"
+          }
+        ],
+        "suggestedExperts": [
+          {
+            "agentSessionId": "cmt9t16rh007cqw01do9552nn",
+            "displayCallsign": "CODEX-ROTATION-01",
+            "ownerUserId": "user-alice",
+            "agentProvider": "codex",
+            "status": "attached",
+            "score": 1.5,
+            "lastInteractionAt": "2026-08-26T08:01:05.861Z",
+            "evidence": [
+              "plan_route:cmt9t1d1g007oqw015tlyzx8e"
+            ]
+          }
+        ],
+        "duplicate": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/workspace/acme-proof/codesite/agent-sessions/cmt9t16rh007cqw01do9552nn/inbox",
+      "httpStatus": 200,
+      "authKind": "agent(alice)[inbox.read]",
+      "authTokenMasked": "csa__fUr...REDACTED...MASKED",
+      "requestBody": null,
+      "responseBodyTruncated400": "{\"inbox\":[{\"id\":\"cmt9t228l0093qw01sa3ma2e6\",\"projectId\":\"cmt9t107d006oqw01wzyu2ru3\",\"agentSessionId\":\"cmt9t16rh007cqw01do9552nn\",\"recipientUserId\":\"user-alice\",\"eventId\":\"evt_oW0G9v8-uRrgo264Hq1slIwI\",\"documentId\":null,\"knowledgeItemId\":\"imp__noJG1HJo17J5dxb_r2voy_g\",\"kind\":\"impact_notice\",\"requiresResponse\":true,\"status\":\"pending\",\"redactedPayload\":{\"knowledgeItemId\":\"imp__noJG1HJo17J5dxb_r2voy_g",
+      "responseParsed": {
+        "inbox": [
+          {
+            "id": "cmt9t228l0093qw01sa3ma2e6",
+            "projectId": "cmt9t107d006oqw01wzyu2ru3",
+            "agentSessionId": "cmt9t16rh007cqw01do9552nn",
+            "recipientUserId": "user-alice",
+            "eventId": "evt_oW0G9v8-uRrgo264Hq1slIwI",
+            "documentId": null,
+            "knowledgeItemId": "imp__noJG1HJo17J5dxb_r2voy_g",
+            "kind": "impact_notice",
+            "requiresResponse": true,
+            "status": "pending",
+            "redactedPayload": {
+              "knowledgeItemId": "imp__noJG1HJo17J5dxb_r2voy_g",
+              "sourceKnowledgeItemId": "knw_N9vf-kWCnmaanUrcWXKPoJk7",
+              "title": "Impact: Does Turn clamp angular velocity?",
+              "summary": "Need to know whether CharacterController::Turn clamps angular velocity before reworking the consumer.",
+              "references": {
+                "paths": [
+                  "src/CharacterController.cpp"
+                ],
+                "symbols": [
+                  "CharacterController::Turn"
+                ],
+                "contracts": [],
+                "runtimeSessionIds": [],
+                "agentSessionIds": [
+                  "cmt9t16rh007cqw01do9552nn"
+                ],
+                "workstreamIds": [],
+                "transactionIds": []
+              },
+              "reasons": [
+                "explicit_agent_reference",
+                "route:cmt9t1d1g007oqw015tlyzx8e",
+                "subscription:path:src/**"
+              ],
+              "targetTransactionIds": []
+            },
+            "createdAt": "2026-08-26T08:01:38.517Z",
+            "acknowledgedAt": null,
+            "responseAction": null,
+            "respondedAt": null
+          }
+        ]
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/workspace/acme-proof/codesite/agent-sessions/cmt9t16rh007cqw01do9552nn/inbox/cmt9t228l0093qw01sa3ma2e6/respond",
+      "httpStatus": 200,
+      "authKind": "agent(alice)[inbox.respond]",
+      "authTokenMasked": "csa__fUr...REDACTED...MASKED",
+      "requestBody": "{\"action\": \"answer\", \"answer\": \"Yes - CharacterController::Turn clamps angular velocity internally at maxTurnRate.\", \"reason\": \"Verified in source.\"}",
+      "responseBodyTruncated400": "{\"inboxItem\":{\"id\":\"cmt9t228l0093qw01sa3ma2e6\",\"projectId\":\"cmt9t107d006oqw01wzyu2ru3\",\"agentSessionId\":\"cmt9t16rh007cqw01do9552nn\",\"recipientUserId\":\"user-alice\",\"eventId\":\"evt_oW0G9v8-uRrgo264Hq1slIwI\",\"documentId\":null,\"knowledgeItemId\":\"imp__noJG1HJo17J5dxb_r2voy_g\",\"kind\":\"impact_notice\",\"requiresResponse\":true,\"status\":\"responded\",\"redactedPayload\":{\"knowledgeItemId\":\"imp__noJG1HJo17J5dxb_r2",
+      "responseParsed": {
+        "inboxItem": {
+          "id": "cmt9t228l0093qw01sa3ma2e6",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "agentSessionId": "cmt9t16rh007cqw01do9552nn",
+          "recipientUserId": "user-alice",
+          "eventId": "evt_oW0G9v8-uRrgo264Hq1slIwI",
+          "documentId": null,
+          "knowledgeItemId": "imp__noJG1HJo17J5dxb_r2voy_g",
+          "kind": "impact_notice",
+          "requiresResponse": true,
+          "status": "responded",
+          "redactedPayload": {
+            "knowledgeItemId": "imp__noJG1HJo17J5dxb_r2voy_g",
+            "sourceKnowledgeItemId": "knw_N9vf-kWCnmaanUrcWXKPoJk7",
+            "title": "Impact: Does Turn clamp angular velocity?",
+            "summary": "Need to know whether CharacterController::Turn clamps angular velocity before reworking the consumer.",
+            "references": {
+              "paths": [
+                "src/CharacterController.cpp"
+              ],
+              "symbols": [
+                "CharacterController::Turn"
+              ],
+              "contracts": [],
+              "runtimeSessionIds": [],
+              "agentSessionIds": [
+                "cmt9t16rh007cqw01do9552nn"
+              ],
+              "workstreamIds": [],
+              "transactionIds": []
+            },
+            "reasons": [
+              "explicit_agent_reference",
+              "route:cmt9t1d1g007oqw015tlyzx8e",
+              "subscription:path:src/**"
+            ],
+            "targetTransactionIds": []
+          },
+          "createdAt": "2026-08-26T08:01:38.517Z",
+          "acknowledgedAt": "2026-08-26T08:01:43.583Z",
+          "responseAction": "answer",
+          "respondedAt": "2026-08-26T08:01:43.583Z"
+        },
+        "knowledge": {
+          "id": "knw_N9vf-kWCnmaanUrcWXKPoJk7",
+          "kind": "agent_question",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "title": "Does Turn clamp angular velocity?",
+          "summary": "Need to know whether CharacterController::Turn clamps angular velocity before reworking the consumer.",
+          "status": "answered",
+          "visibility": "project",
+          "redactionClass": "project_fact",
+          "source": {
+            "actorType": "agent",
+            "actorId": "cmt9t18ti007iqw01hx1mvi65",
+            "agentSessionId": "cmt9t18ti007iqw01hx1mvi65",
+            "terminalSessionId": "claude-door-02-term-20260826T080045-45025"
+          },
+          "references": {
+            "paths": [
+              "src/CharacterController.cpp"
+            ],
+            "symbols": [
+              "CharacterController::Turn"
+            ],
+            "contracts": [],
+            "runtimeSessionIds": [],
+            "agentSessionIds": [
+              "cmt9t16rh007cqw01do9552nn"
+            ],
+            "workstreamIds": [],
+            "transactionIds": []
+          },
+          "evidenceRefs": [],
+          "tags": [],
+          "confidence": null,
+          "createdAt": "2026-08-26T08:01:38.498Z",
+          "updatedAt": "2026-08-26T08:01:43.583Z",
+          "expiresAt": null,
+          "questionUrgency": "normal",
+          "suggestedExpertAgentSessionIds": [
+            "cmt9t16rh007cqw01do9552nn"
+          ],
+          "fromAgentSessionId": "cmt9t18ti007iqw01hx1mvi65",
+          "answerText": "Yes - CharacterController::Turn clamps angular velocity internally at maxTurnRate.",
+          "answeredByAgentSessionId": "cmt9t16rh007cqw01do9552nn"
+        },
+        "response": {
+          "action": "answer",
+          "reason": "Verified in source.",
+          "evidenceRefs": [],
+          "answer": "Yes - CharacterController::Turn clamps angular velocity internally at maxTurnRate.",
+          "metadata": {},
+          "targetStatus": "answered"
+        },
+        "event": {
+          "id": "cmt9t265h0095qw01u3f4bk5k",
+          "projectId": "cmt9t107d006oqw01wzyu2ru3",
+          "mutationLeaseId": null,
+          "eventType": "agent_question_answered",
+          "displayCallsign": "CODEX-ROTATION-01",
+          "actorType": "agent_session",
+          "actorId": "cmt9t16rh007cqw01do9552nn",
+          "details": {
+            "inboxItemId": "cmt9t228l0093qw01sa3ma2e6",
+            "knowledgeItemId": "imp__noJG1HJo17J5dxb_r2voy_g",
+            "kind": "impact_notice",
+            "action": "answer",
+            "reason": "Verified in source.",
+            "targetStatus": "answered"
+          },
+          "evidenceRefs": [],
+          "logicalTime": 22,
+          "createdAt": "2026-08-26T08:01:43.590Z"
+        },
+        "duplicate": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/workspace/acme-proof/codesite/agent-sessions/cmt9t18ti007iqw01hx1mvi65/knowledge?kind=agent_question&status=answered",
+      "httpStatus": 200,
+      "authKind": "agent(ben)[knowledge.read]",
+      "authTokenMasked": "csa_rzuD...REDACTED...MASKED",
+      "requestBody": null,
+      "responseBodyTruncated400": "{\"knowledge\":[{\"id\":\"knw_N9vf-kWCnmaanUrcWXKPoJk7\",\"kind\":\"agent_question\",\"projectId\":\"cmt9t107d006oqw01wzyu2ru3\",\"title\":\"Does Turn clamp angular velocity?\",\"summary\":\"Need to know whether CharacterController::Turn clamps angular velocity before reworking the consumer.\",\"status\":\"answered\",\"visibility\":\"project\",\"redactionClass\":\"project_fact\",\"source\":{\"actorType\":\"agent\",\"actorId\":\"cmt9t18ti00",
+      "responseParsed": {
+        "knowledge": [
+          {
+            "id": "knw_N9vf-kWCnmaanUrcWXKPoJk7",
+            "kind": "agent_question",
+            "projectId": "cmt9t107d006oqw01wzyu2ru3",
+            "title": "Does Turn clamp angular velocity?",
+            "summary": "Need to know whether CharacterController::Turn clamps angular velocity before reworking the consumer.",
+            "status": "answered",
+            "visibility": "project",
+            "redactionClass": "project_fact",
+            "source": {
+              "actorType": "agent",
+              "actorId": "cmt9t18ti007iqw01hx1mvi65",
+              "agentSessionId": "cmt9t18ti007iqw01hx1mvi65",
+              "terminalSessionId": "claude-door-02-term-20260826T080045-45025"
+            },
+            "references": {
+              "paths": [
+                "src/CharacterController.cpp"
+              ],
+              "symbols": [
+                "CharacterController::Turn"
+              ],
+              "contracts": [],
+              "runtimeSessionIds": [],
+              "agentSessionIds": [],
+              "workstreamIds": [],
+              "transactionIds": []
+            },
+            "evidenceRefs": [],
+            "tags": [],
+            "confidence": null,
+            "createdAt": "2026-08-26T08:01:38.498Z",
+            "updatedAt": "2026-08-26T08:01:43.583Z",
+            "expiresAt": null,
+            "questionUrgency": "normal",
+            "suggestedExpertAgentSessionIds": [
+              "cmt9t16rh007cqw01do9552nn"
+            ],
+            "fromAgentSessionId": "cmt9t18ti007iqw01hx1mvi65",
+            "answerText": "Yes - CharacterController::Turn clamps angular velocity internally at maxTurnRate.",
+            "answeredByAgentSessionId": "cmt9t16rh007cqw01do9552nn"
+          }
+        ]
+      }
+    }
+  ],
+  "assertions": {
+    "expertsTopIsAliceSession": true,
+    "questionRoutedToContainsAliceSid": true,
+    "respondHttp200AndNoUnroutedError": true,
+    "benAnsweredKnowledgeContainsMaxTurnRate": true
+  },
+  "dbCorroboration": {
+    "questionId": "knw_N9vf-kWCnmaanUrcWXKPoJk7",
+    "projectId": "cmt9t107d006oqw01wzyu2ru3",
+    "queries": [
+      {
+        "purpose": "question row",
+        "sql": "SELECT \"kind\", \"status\", \"payloadJson\" FROM \"CodeSiteKnowledgeItem\" WHERE \"id\"='knw_N9vf-kWCnmaanUrcWXKPoJk7';",
+        "result": "agent_question|answered|{\"answerText\":\"Yes - CharacterController::Turn clamps angular velocity internally at maxTurnRate.\",\"answeredByAgentSessionId\":\"cmt9t16rh007cqw01do9552nn\",\"fromAgentSessionId\":\"cmt9t18ti007iqw01hx1mvi65\",\"questionUrgency\":\"high\",\"source\":{\"actorId\":\"cmt9t18ti007iqw01hx1mvi65\",\"actorType\":\"agent\",\"agentSessionId\":\"cmt9t18ti007iqw01hx1mvi65\",\"terminalSessionId\":\"claude-door-02-term-20260826T080045-45025\"},\"suggestedExpertAgentSessionIds\":[\"cmt9t16rh007cqw01do9552nn\"],\"tags\":[]}"
+      }
+    ],
+    "table": "CodeSiteKnowledgeItem",
+    "columns": [
+      "id",
+      "projectId",
+      "kind",
+      "status",
+      "title",
+      "summary",
+      "payloadJson",
+      "scopeJson",
+      "redactionClass",
+      "confidence",
+      "verificationStatus",
+      "createdByUserId",
+      "createdByAgentSessionId",
+      "ownerUserId",
+      "ownerAgentSessionId",
+      "sourceEventId",
+      "sourceKnowledgeItemId",
+      "targetTransactionId",
+      "dedupeKey",
+      "evidenceRefsJson",
+      "expiresAt",
+      "resolvedAt",
+      "createdAt",
+      "updatedAt"
+    ],
+    "assertions": {
+      "rowKindIsAgentQuestion": true,
+      "rowStatusIsAnswered": true,
+      "payloadContainsMaxTurnRate": true,
+      "suggestedExpertsNonEmpty": true,
+      "suggestedExpertsStillIncludeAlice": true
+    },
+    "answerTextExcerpt": "Yes - CharacterController::Turn clamps angular velocity internally at maxTurnRate.",
+    "answeredByAgentSessionId": "cmt9t16rh007cqw01do9552nn"
+  },
+  "sessions": {
+    "aliceSessionId": "cmt9t16rh007cqw01do9552nn",
+    "aliceTokenMasked": "csa__fUr...REDACTED...MASKED",
+    "benSessionId": "cmt9t18ti007iqw01hx1mvi65",
+    "benTokenMasked": "csa_rzuD...REDACTED...MASKED"
+  },
+  "chains": {
+    "alice": {
+      "planId": "cmt9t1d1g007oqw015tlyzx8e",
+      "leaseId": "cmt9t1fr2007uqw01df83d1au",
+      "txnId": "cmt9t1hxf0080qw01kfnfa92o"
+    },
+    "ben": {
+      "planId": "cmt9t1pay008cqw012xhvbz6h",
+      "leaseId": "cmt9t1sff008iqw018yddbzju",
+      "txnId": "cmt9t1ut1008oqw01f9t5ls5c"
+    }
+  },
+  "expertsRaw": [
+    {
+      "agentSessionId": "cmt9t16rh007cqw01do9552nn",
+      "displayCallsign": "CODEX-ROTATION-01",
+      "ownerUserId": "user-alice",
+      "agentProvider": "codex",
+      "status": "attached",
+      "score": 1.5,
+      "lastInteractionAt": "2026-08-26T08:01:05.861Z",
+      "evidence": [
+        "plan_route:cmt9t1d1g007oqw015tlyzx8e"
+      ]
+    }
+  ],
+  "questionId": "knw_N9vf-kWCnmaanUrcWXKPoJk7",
+  "routedTo": [
+    "cmt9t16rh007cqw01do9552nn"
+  ],
+  "benKnowledgeMatch": {
+    "id": "knw_N9vf-kWCnmaanUrcWXKPoJk7",
+    "kind": "agent_question",
+    "projectId": "cmt9t107d006oqw01wzyu2ru3",
+    "title": "Does Turn clamp angular velocity?",
+    "summary": "Need to know whether CharacterController::Turn clamps angular velocity before reworking the consumer.",
+    "status": "answered",
+    "visibility": "project",
+    "redactionClass": "project_fact",
+    "source": {
+      "actorType": "agent",
+      "actorId": "cmt9t18ti007iqw01hx1mvi65",
+      "agentSessionId": "cmt9t18ti007iqw01hx1mvi65",
+      "terminalSessionId": "claude-door-02-term-20260826T080045-45025"
+    },
+    "references": {
+      "paths": [
+        "src/CharacterController.cpp"
+      ],
+      "symbols": [
+        "CharacterController::Turn"
+      ],
+      "contracts": [],
+      "runtimeSessionIds": [],
+      "agentSessionIds": [],
+      "workstreamIds": [],
+      "transactionIds": []
+    },
+    "evidenceRefs": [],
+    "tags": [],
+    "confidence": null,
+    "createdAt": "2026-08-26T08:01:38.498Z",
+    "updatedAt": "2026-08-26T08:01:43.583Z",
+    "expiresAt": null,
+    "questionUrgency": "normal",
+    "suggestedExpertAgentSessionIds": [
+      "cmt9t16rh007cqw01do9552nn"
+    ],
+    "fromAgentSessionId": "cmt9t18ti007iqw01hx1mvi65",
+    "answerText": "Yes - CharacterController::Turn clamps angular velocity internally at maxTurnRate.",
+    "answeredByAgentSessionId": "cmt9t16rh007cqw01do9552nn"
+  },
+  "finishedAt": "2026-08-26T08:01:46.729894+00:00"
+}
