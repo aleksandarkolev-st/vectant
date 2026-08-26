@@ -67,10 +67,14 @@ export async function publishFleetNotam(workspaceSlug, projectId, body = {}, act
   const sourcePolicyDeltaId = String(body.policyDeltaId || body.policy_delta_id || '');
   if (!sourcePolicyDeltaId) throw badRequest('policy_delta_required');
   const sourcePolicyDelta = await prisma.codeSitePolicyDelta.findFirst({
-    where: { id: sourcePolicyDeltaId, projectId },
+    where: { id: sourcePolicyDeltaId },
   });
-  if (!sourcePolicyDelta
-    || !PROMOTED_POLICY_DELTA_STATES.has(sourcePolicyDelta.promotionState)
+  if (!sourcePolicyDelta || sourcePolicyDelta.projectId !== projectId) {
+    // Distinct failure mode: the delta either does not exist or belongs to a
+    // different project — cross-project publication is forbidden.
+    throw notFound('fleet_notam_source_delta_not_in_project');
+  }
+  if (!PROMOTED_POLICY_DELTA_STATES.has(sourcePolicyDelta.promotionState)
     || Number(sourcePolicyDelta.confidence) < MINIMUM_PUBLISHED_CONFIDENCE) {
     // Fail closed: only promoted, evidence-backed deltas may become fleet
     // advisories. Weak or unreviewed signals never broadcast.
