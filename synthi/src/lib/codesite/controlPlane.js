@@ -3385,7 +3385,14 @@ export async function respondToAgentKnowledgeInbox(
     include: { knowledgeItem: { include: { references: true } } },
   });
   if (!inboxItem || !inboxItem.knowledgeItem) throw notFound('knowledge_inbox_item_not_found');
-  const response = validateKnowledgeResponse(inboxItem.knowledgeItem.kind, body);
+  // The routed notice for a question is an impact_notice wrapper around the
+  // agent_question record; answer/claim/defer/dismiss act on the question
+  // itself, so validate against the underlying knowledge kind.
+  const responseKind = inboxItem.knowledgeItem.kind === 'impact_notice'
+    && parseJson(inboxItem.knowledgeItem.payloadJson, {})?.sourceKnowledgeId != null
+    ? 'agent_question'
+    : inboxItem.knowledgeItem.kind;
+  const response = validateKnowledgeResponse(responseKind, body);
   if (inboxItem.respondedAt) {
     const previous = parseJson(inboxItem.responseJson, {});
     if (inboxItem.responseAction === response.action && stableJson(previous) === stableJson(response)) {
@@ -3429,7 +3436,7 @@ export async function respondToAgentKnowledgeInbox(
     // An answered question stores the answer on the question record and
     // routes a durable acknowledgement back to the asking agent so the
     // answer survives as shared knowledge even after both sessions end.
-    const isQuestionAnswer = inboxItem.knowledgeItem.kind === 'agent_question' && response.action === 'answer';
+    const isQuestionAnswer = responseKind === 'agent_question' && response.action === 'answer';
     if (isQuestionAnswer && nextKnowledge.id === inboxItem.knowledgeItem.id) {
       nextKnowledge = await db.codeSiteKnowledgeItem.update({
         where: { id: inboxItem.knowledgeItem.id },
@@ -3444,7 +3451,7 @@ export async function respondToAgentKnowledgeInbox(
       });
     }
     const event = await recordEventWithClient(db, authority.session.projectId, {
-      eventType: inboxItem.knowledgeItem.kind === 'agent_question' && response.action === 'answer'
+      eventType: responseKind === 'agent_question' && response.action === 'answer'
         ? 'agent_question_answered'
         : knowledgeResponseEventType(inboxItem.knowledgeItem.kind, response.action),
       displayCallsign: authority.session.displayCallsign,
@@ -3462,9 +3469,21 @@ export async function respondToAgentKnowledgeInbox(
     }, { syncArtifacts: false });
     // Deliver a durable "answered" notice back to the asking agent session so
     // it can pick up the answer on its next poll even if it was offline.
-    if (inboxItem.knowledgeItem.kind === 'agent_question') {
-      const askerSessionId = parseJson(inboxItem.knowledgeItem.payloadJson, {})?.fromAgentSessionId
-        || inboxItem.knowledgeItem.createdByAgentSessionId;
+    if (responseKind === 'agent_question') {
+      const questionPayload = parseJson(inboxItem.knowledgeItem.payloadJson, {});
+      // For a direct agent_question the asker is on the record itself; for an
+      // impact_notice wrapper we resolve via the source question's payload.
+      let askerSessionId = questionPayload.fromAgentSessionId || inboxItem.knowledgeItem.createdByAgentSessionId;
+      if (responseKind !== inboxItem.knowledgeItem.kind && inboxItem.knowledgeItem.sourceKnowledgeItemId) {
+        const sourceQuestion = await db.codeSiteKnowledgeItem.findFirst({
+          where: { id: inboxItem.knowledgeItem.sourceKnowledgeItemId, kind: 'agent_question' },
+          select: { payloadJson: true, createdByAgentSessionId: true },
+        });
+        if (sourceQuestion) {
+          askerSessionId = parseJson(sourceQuestion.payloadJson, {})?.fromAgentSessionId
+            || sourceQuestion.createdByAgentSessionId;
+        }
+      }
       if (askerSessionId && askerSessionId !== authority.session.id) {
         const asker = await db.codeSiteAgentSession.findFirst({
           where: { id: askerSessionId, projectId: authority.session.projectId },
