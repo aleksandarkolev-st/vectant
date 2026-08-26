@@ -1,0 +1,107 @@
+# Agent Expertise Directory
+
+Status: implemented on `feat/agent-expertise-directory`, live-stack proven 2026-08-26.
+Companion to: `docs/MULTI_HUMAN_MULTI_AGENT_SHARED_SESSION_PROOF_PLAN.md` (Workstream C).
+
+## Problem
+
+CodeSite already shares discoveries, leads, skills, and handoffs through
+relevance-routed durable inboxes. What it could not answer was **"who knows
+this?"** — when an agent hits a question about a path, symbol, or contract, its
+only options were blind broadcast (RFI to every peer) or silently redoing
+research another agent had already done. Both waste the scarcest resource in a
+multi-agent session: attention.
+
+## Feature
+
+Three pieces, all provider-agnostic (pure control plane + MCP; any agent host
+that can speak the existing CodeSite tools can use them):
+
+1. **Derived expertise index** (`synthi/src/lib/codesite/agentExpertise.js`).
+   Expertise is *inferred from evidence the control plane already persists* —
+   never self-declared, never hardcoded:
+   - transaction read/write sets and observed sets (weight 3 write / 2 read)
+   - typed semantic refs on transactions (symbols/contracts)
+   - execution-plan routes (weight 1.5)
+   - knowledge-item references (weight 2) and authorship (weight 1)
+   Scores decay with a 14-day half-life so stale experts sink. Ranking is
+   deterministic (score desc, session id asc) and never returns the asker.
+
+2. **`synthi_codesite_find_experts`** — agent-bound MCP tool + HTTP endpoint
+   `GET .../agent-sessions/:id/experts?paths=...&symbols=...&contracts=...`.
+   Returns ranked peers with callsign, provider, score, last-interaction, and
+   evidence refs (`plan_route:<planId>`, `transaction_write:<txnId>`, …) so the
+   answer is auditable, not vibes.
+
+3. **Routed questions with reusable answers** — new `agent_question` knowledge
+   kind:
+   - `synthi_codesite_ask_expert_question` / `POST .../questions` derives
+     suggested experts from the same index when the asker does not pin any;
+     unrouted broadcast questions are refused at policy level
+     (`knowledge_question_experts_or_unrouted_required`) unless explicitly
+     allowed.
+   - Routing lands a durable `impact_notice` inbox item on each expert
+     (reuses `buildKnowledgeDeliveryPlan` + `persistKnowledgeAndImpacts`).
+   - The expert answers through the existing inbox respond endpoint with
+     `action:"answer"`; the answer text is persisted onto the question record,
+     the question becomes `answered` shared knowledge, and the asker receives a
+     durable `agent_question_answered` inbox notice.
+   - Identical re-asks dedupe on asker + references (existing dedupe key), so
+     the next agent with the same question finds the answered thread via
+     `get_shared_knowledge` without interrupting anyone.
+
+## API surface
+
+| Surface | Detail |
+| --- | --- |
+| `GET /api/workspace/:slug/codesite/agent-sessions/:id/experts` | agent-token auth, `codesite.context.read`; query `paths`/`symbols`/`contracts`/`limit` (1–10) |
+| `POST /api/workspace/:slug/codesite/agent-sessions/:id/questions` | agent-token auth, `codesite.knowledge.write`; body `{title, summary, references, urgency?, suggested_expert_agent_session_ids?, allow_unrouted?}` |
+| `POST .../agent-sessions/:id/inbox/:itemId/respond` | widened for questions: `answer` (requires answer text), `claim`, `defer`, `dismiss`; works through the impact_notice wrapper |
+| MCP | `synthi_codesite_find_experts`, `synthi_codesite_ask_expert_question` (agent-bound, environment identity only) |
+| Events | `agent_question_asked`, `agent_question_answered` on the causal timeline |
+
+## Security / privacy posture
+
+- Questions ride the existing coordination bus: redaction scan, private-key
+  material rejection, project-scoped visibility, dedupe.
+- Answer actions are validated against the *underlying* question kind even when
+  delivered through an `impact_notice` wrapper; status transitions target the
+  source question, not the wrapper.
+- Stored answered questions stay visible to the asker via wrapper
+  `sourceKnowledgeItemId` admission in `visibleKnowledgeRowsForSession`.
+- Artifact projection tolerates stored unrouted questions (creation-time policy
+  still refuses new unrouted questions).
+
+## Validation evidence (2026-08-26)
+
+- Unit: synthi vitest 166 passed (expertise lib 12, policy incl. question kind,
+  responses, events, routing, controlPlane, artifacts); MCP vitest 59 passed;
+  `tsc --noEmit` clean.
+- Live stack (docker compose, real HTTP, real scoped agent tokens, distinct
+  owner users alice/ben): `tmp/live-expertise-proof.sh` — **ALL EXPERTISE
+  PROOFS PASSED**: auth wall 401; derived expert ranking (writer/plan-holder
+  ranked, asker excluded); question routed to derived expert; duplicate re-ask
+  deduped; expert answered via own credential; answer visible to asker as
+  shared knowledge (`maxTurnRate` text present); durable
+  `agent_question_answered` notice in asker inbox; both timeline events
+  present. Independent subagent reproduced the full flow (21-request
+  transcript in `.visual-proof/expertise-live-transcript-*.json`, all four
+  assertions true).
+- UI: CodeSite Operations panel renders in the browser (screenshot
+  `.visual-proof/ui-1-chrome-codesite-panel-404-state.png`); note the panel is
+  workspace-scoped, so it must be viewed under a workspace the signed-in user
+  belongs to (e.g. `/workspace/acme-chan-fuzz/codesite`), not the
+  service-token-only `acme-proof` workspace.
+
+## Bugs found and fixed during live proving (each its own commit)
+
+1. `f24a680b6` — answer actions rejected because validation used the wrapper
+   kind; validate through the underlying question kind and resolve the asker
+   via `sourceKnowledgeItemId`.
+2. `bc4af0646` — answered questions invisible to the asker; admit wrapper
+   source ids in visibility filtering.
+3. `41c1fc18f` — answer rewrite clobbered question identity
+   (`fromAgentSessionId`/suggestions nulled), breaking artifact-sync
+   revalidation; merge into the question's own payload instead.
+4. `7ee6c39d5` — projection revalidation reset `answerText`; carry stored
+   answer fields through.
