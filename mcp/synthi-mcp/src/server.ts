@@ -11,7 +11,7 @@ import {
 import { eventLog } from "./events/index.js";
 import { recordToolCall } from "./observability/metrics.js";
 import { enforceQuota } from "./observability/quota.js";
-import { dispatchWarrantTool, enforceWarrantGate, WARRANT_TOOLS } from "./tools/warrant.js";
+import { dispatchWarrantTool, enforceWarrantGate, authorizeResourceRead, settleWarrant, metaWarrantIdFromParams, WARRANT_TOOLS } from "./tools/warrant.js";
 import {
   RESOURCES,
   RESOURCE_URIS,
@@ -1266,6 +1266,15 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
 
   server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
     const uri = req.params.uri;
+    // Patch J3: security-event telemetry is warrant/admin-key gated in
+    // warn/enforce modes; off mode (and non-event resources) pass through.
+    const resourceError = authorizeResourceRead(uri, req.params);
+    if (resourceError) {
+      return {
+        contents: [{ type: "text" as const, text: JSON.stringify(resourceError) }],
+        isError: true,
+      };
+    }
     const contents = await readResource(uri);
     if (!contents) throw new Error(`unknown_resource: ${uri}`);
     const out: Record<string, unknown> = { uri: contents.uri, mimeType: contents.mimeType };
@@ -1455,15 +1464,31 @@ async function dispatchTool(
     // External MCP tools (ext_<i>) are proxied through the hub (Slice 1b),
     // sourced from the same connection registry the in-app AI uses.
     if (isExternalToolName(toolName)) {
-      const result = await callExternalTool(
-        toolName,
-        (args ?? {}) as Record<string, unknown>,
-        options.externalTools?.aliasMap ?? {},
-      );
+      let result: CallToolResult;
+      try {
+        result = await callExternalTool(
+          toolName,
+          (args ?? {}) as Record<string, unknown>,
+          options.externalTools?.aliasMap ?? {},
+        ) as CallToolResult;
+      } catch (err) {
+        // Patch J1 settle: a dispatch that THREW never produced a response,
+        // so its reservation is refunded. Business errors (isError results)
+        // keep the charge - the attempt was consumed.
+        settleWarrant(toolName, metaWarrantIdFromParams(request.params), false);
+        throw err;
+      }
       recordToolCall(toolName, result.isError ? "error" : "ok");
-      return result as CallToolResult;
+      return result;
     }
-    const response = await dispatchTool(toolName, args, signal);
+    let response: CallToolResult;
+    try {
+      response = await dispatchTool(toolName, args, signal);
+    } catch (err) {
+      // Patch J1 settle: same refund-on-throw semantics as above.
+      settleWarrant(toolName, metaWarrantIdFromParams(request.params), false);
+      throw err;
+    }
     // Record the outcome for Prometheus. Most tools return structured error
     // payloads via `isError: true` rather than throwing — respect that.
     recordToolCall(toolName, response.isError ? "error" : "ok");

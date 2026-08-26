@@ -398,6 +398,55 @@ export class WarrantRegistry {
     }
   }
 
+  /**
+   * Atomically reserve one invocation of `tool` across the whole ancestor
+   * chain: either every budgeted node has headroom (all decrement) or none
+   * mutates. Closes the check-then-charge double-spend window under
+   * concurrent calls. Returns whether the reservation was granted.
+   */
+  tryReserve(warrantId: string, tool: string): { reserved: boolean } {
+    const record = this.records.get(warrantId);
+    if (record === undefined) {
+      return { reserved: false };
+    }
+    const chain = this.chainUp(warrantId);
+    for (const node of chain) {
+      const remaining = node.remaining.get(tool);
+      if (remaining !== undefined && remaining <= 0) {
+        return { reserved: false };
+      }
+    }
+    for (const node of chain) {
+      const remaining = node.remaining.get(tool);
+      if (remaining !== undefined) {
+        node.remaining.set(tool, Math.max(0, remaining - 1));
+      }
+    }
+    return { reserved: true };
+  }
+
+  /**
+   * Refund a reservation after a failed dispatch: restores one invocation on
+   * every budgeted node of the chain. Only meaningful after a successful
+   * tryReserve.
+   */
+  settleReserved(warrantId: string, tool: string): void {
+    const record = this.records.get(warrantId);
+    if (record === undefined) return;
+    for (const node of this.chainUp(warrantId)) {
+      const remaining = node.remaining.get(tool);
+      if (remaining !== undefined) {
+        node.remaining.set(tool, remaining + 1);
+      }
+    }
+  }
+
+  /** Direct O(1) snapshot lookup by id (cloned; safe to hand to callers). */
+  get(warrantId: string): Warrant | undefined {
+    const record = this.records.get(warrantId);
+    return record === undefined ? undefined : { ...record.warrant, grants: record.warrant.grants.map((grant) => ({ ...grant })) };
+  }
+
   /** Revoke the warrant and every descendant. Returns how many were revoked. */
   revoke(warrantId: string): number {
     const root = this.records.get(warrantId);

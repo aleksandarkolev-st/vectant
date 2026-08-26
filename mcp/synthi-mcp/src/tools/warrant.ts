@@ -118,7 +118,7 @@ export async function dispatchWarrantTool(
         // Patch G2: progression requires proof-of-possession. Binding is only
         // meaningful for sealed warrants — evidence must never accumulate for
         // a lease whose holder cannot even prove they hold it.
-        const warrant = warrantRegistry.listWarrants().find((w) => w.warrant_id === warrantId);
+        const warrant = warrantRegistry.get(warrantId);
         if (warrant === undefined || warrant.sealed !== true) {
           return errorResponse("bind_requires_sealed", {
             human_reason:
@@ -154,7 +154,7 @@ export async function dispatchWarrantTool(
         // but stays holder-only by possession of the sealed bearer secret.
         const a = obj(args);
         const warrantId = requiredString(a, "warrant_id");
-        const warrant = warrantRegistry.listWarrants().find((w) => w.warrant_id === warrantId);
+        const warrant = warrantRegistry.get(warrantId);
         if (warrant === undefined || warrant.sealed !== true) {
           return errorResponse("unbind_requires_sealed", {
             human_reason:
@@ -300,7 +300,7 @@ export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayl
     const bearer = typeof metaValue(params, "warrant_bearer") === "string" ? metaValue(params, "warrant_bearer") as string : undefined;
     // Patch H1: resolve the acting subject ONCE so every evidence write below
     // tags the demotion-taint map with whoever holds this warrant.
-    const wSnap = warrantRegistry.listWarrants().find((w) => w.warrant_id === warrantId);
+    const wSnap = warrantRegistry.get(warrantId);
     const subject = wSnap?.subject;
     // Patch G1 golden rule: registry.check runs UNCONDITIONALLY first —
     // lifecycle (revoked/expired/unknown), bearer possession, base coverage,
@@ -355,8 +355,19 @@ export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayl
       );
     }
     if (decision.allowed) {
-      warrantRegistry.chargeInvocation(warrantId, toolName);
-      return null;
+      // Patch J1: reserve atomically across the chain (closes the concurrent
+      // double-spend window); the reservation IS the charge on success.
+      const reservation = warrantRegistry.tryReserve(warrantId, toolName);
+      if (!reservation.reserved) {
+        decision = {
+          allowed: false,
+          reason_code: "invocations_exhausted",
+          human_reason: `This warrant's invocation budget for '${toolName}' is exhausted (a parallel call may hold the last slot).`,
+        };
+        trustLedger.record(warrantId, { allowed: false, reason_code: "invocations_exhausted" }, nowMs, subject);
+      } else {
+        return null;
+      }
     }
     eventLog.push({
       kind: "security",
@@ -386,6 +397,60 @@ export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayl
   return buildError("warrant_required", {
     human_reason:
       "This server requires a capability warrant for tool calls right now. Present a warrant identifier in the call's _meta.warrant_id field.",
+  });
+}
+
+/**
+ * Patch J1: settle a reservation after dispatch. A failed (isError) dispatch
+ * refunds the invocation across the chain; success keeps it as the charge.
+ * Safe no-op when the call carried no warrant id or an unknown one.
+ */
+export function metaWarrantIdFromParams(params: unknown): string | undefined {
+  return metaWarrantId(params);
+}
+
+export function settleWarrant(_toolName: string, warrantId: string | undefined, commit: boolean): void {
+  if (!warrantId || commit) return;
+  warrantRegistry.settleReserved(warrantId, _toolName);
+}
+
+/**
+ * Patch J3: gate resource reads. Security-event resources carry sensitive
+ * telemetry (warrant ids, reason codes), so in warn/enforce modes they
+ * require either an active warrant or the organization admin key. Returns
+ * an error payload to reject, or null to allow.
+ */
+export function authorizeResourceRead(uri: string, params: unknown): ErrorPayload | null {
+  const mode = resolveWarrantMode();
+  if (mode === "off") return null;
+  let path = "";
+  try {
+    path = new URL(uri).pathname.toLowerCase();
+  } catch {
+    path = uri.toLowerCase();
+  }
+  if (!path.includes("events")) return null;
+  const adminKey = resolveWarrantAdminKey();
+  if (adminKey !== null && adminKeyMatches(adminKeyPresented(params), adminKey)) return null;
+  const warrantId = metaValue(params, "warrant_id");
+  if (typeof warrantId === "string" && warrantId.length > 0) {
+    const snapshot = warrantRegistry.get(warrantId);
+    if (snapshot !== undefined && snapshot.status === "active" && snapshot.expires_at_ms > Date.now()) {
+      return null;
+    }
+  }
+  eventLog.push({
+    kind: "security",
+    code: "rate_limit_warning",
+    detail: {
+      code: "resource_access_denied",
+      mode,
+      uri: String(uri).slice(0, 120),
+      warrant_id: typeof warrantId === "string" ? rid(warrantId) : undefined,
+    },
+  });
+  return buildError("resource_access_denied", {
+    human_reason: "Reading security-event resources requires an active warrant or the organization admin key.",
   });
 }
 

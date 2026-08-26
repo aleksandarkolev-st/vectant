@@ -700,3 +700,44 @@ describe("Patch I - laundering closures", () => {
     expect(ledger.viewTaint("mixed-CASE")).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe("Patch J - reserve/settle budgets and O(1) lookup", () => {
+  function budgeted() {
+    const reg = new WarrantRegistry();
+    const w = reg.issue({ subject: "s", grants: [{ tool: "synthi_screenshot", max_invocations: 2 }], now: NOW, ttl_ms: TTL });
+    return { reg, id: w.warrant_id };
+  }
+
+  it("tryReserve admits exactly the budget under repeated reservation", () => {
+    const { reg, id } = budgeted();
+    const outcomes: boolean[] = [];
+    for (let i = 0; i < 10; i += 1) {
+      const attempt = reg.tryReserve(id, "synthi_screenshot");
+      if (attempt.reserved && i < 8) continue;
+      if (attempt.reserved) reg.settleReserved(id, "synthi_screenshot"); // keep state clean
+      outcomes.push(attempt.reserved);
+      if (outcomes.length >= 3) break;
+    }
+    expect(reg.tryReserve(id, "synthi_screenshot").reserved).toBe(false);
+    expect(codeOf(reg.check({ warrant_id: id, tool: "synthi_screenshot", now: NOW + 1 }))).toBe("invocations_exhausted");
+  });
+
+  it("settleReserved refunds a failed dispatch so budget is not double-spent", () => {
+    const { reg, id } = budgeted();
+    expect(reg.tryReserve(id, "synthi_screenshot").reserved).toBe(true);
+    reg.settleReserved(id, "synthi_screenshot"); // dispatch failed -> refund
+    expect(reg.tryReserve(id, "synthi_screenshot").reserved).toBe(true); // re-issued
+    expect(reg.tryReserve(id, "synthi_screenshot").reserved).toBe(true); // second real charge
+    expect(reg.tryReserve(id, "synthi_screenshot").reserved).toBe(false); // budget of 2 spent
+  });
+
+  it("unbudgeted tools always reserve and get() returns an O(1) snapshot", () => {
+    const { reg, id } = budgeted();
+    for (let i = 0; i < 5; i += 1) {
+      expect(reg.tryReserve(id, "synthi_describe").reserved).toBe(true);
+    }
+    const snap = reg.get(id);
+    expect(snap?.warrant_id).toBe(id);
+    expect(snap?.grants.length).toBeGreaterThan(0);
+  });
+});
