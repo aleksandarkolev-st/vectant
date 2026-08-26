@@ -5,6 +5,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { ToolGrant } from "../../src/security/warrant.js";
 import { WarrantRegistry, globMatch } from "../../src/security/warrant.js";
+import { TrustLedger } from "../../src/security/trust.js";
 import {
   __resetWarrantRegistryForTests,
   dispatchWarrantTool,
@@ -475,72 +476,77 @@ describe("sealed warrants (proof-of-possession)", () => {
   });
 });
 
-describe("graduated warrants (earned-autonomy ladders)", () => {
-  const LADDER = [
+describe("separated trust progression (TrustLedger)", () => {
+  const STEPS = [
     { unlock_after: { min_sample: 5, success_ratio: 0.9 }, grants: [{ tool: "synthi_describe" }] },
-    { unlock_after: { min_sample: 10, success_ratio: 0.95 }, grants: [{ tool: "synthi_get_event_log" }] },
+    { unlock_after: { min_sample: 8, success_ratio: 0.95 }, grants: [{ tool: "synthi_get_event_log" }] },
   ];
-  function make() {
+  function setup() {
     const reg = new WarrantRegistry();
-    const w = reg.issue({ subject: "agent", grants: [{ tool: "synthi_screenshot" }], now: NOW, ttl_ms: TTL, graduated: true, ladder: LADDER });
-    return { reg, id: w.warrant_id };
+    const ledger = new TrustLedger();
+    const w = reg.issue({ subject: "agent", grants: [{ tool: "synthi_screenshot" }], now: NOW, ttl_ms: TTL });
+    ledger.registerPolicy({ policy_id: "std", steps: STEPS });
+    return { reg, ledger, id: w.warrant_id };
   }
 
-  it("stays base-only until evidence is met, then unlocks rung one", () => {
-    const { reg, id } = make();
-    for (let i = 0; i < 4; i += 1) expect(reg.check({ warrant_id: id, tool: "synthi_screenshot", now: NOW + 1 }).allowed).toBe(true);
-    expect(reg.status(id, NOW + 2).current_rung).toBe(0);
-    expect(reg.check({ warrant_id: id, tool: "synthi_screenshot", now: NOW + 1 }).allowed).toBe(true);
-    expect(reg.check({ warrant_id: id, tool: "synthi_describe", now: NOW + 2 }).allowed).toBe(true);
-    expect(reg.status(id, NOW + 3).current_rung).toBe(1);
+  it("registers policies with validation", () => {
+    const { ledger } = setup();
+    expect(() => ledger.registerPolicy({ policy_id: "bad", steps: [{ unlock_after: { min_sample: 2, success_ratio: 0.9 }, grants: [] }] })).toThrow(/at least/i);
+    expect(() => ledger.registerPolicy({ policy_id: "bad", steps: Array.from({ length: 5 }, () => ({ unlock_after: { min_sample: 9, success_ratio: 0.9 }, grants: [{ tool: "t" }] })) })).toThrow(/depth/i);
+    expect(() => ledger.registerPolicy({ policy_id: "bad", steps: [{ unlock_after: { min_sample: 9, success_ratio: 1.5 }, grants: [{ tool: "t" }] }] })).toThrow(/ratio/i);
+    expect(() => ledger.registerPolicy({ policy_id: "std", steps: STEPS })).toThrow(/already registered/i);
   });
 
-  it("probes delay promotion: a denied attempt poisons the success ratio", () => {
-    const { reg, id } = make();
-    for (let i = 0; i < 5; i += 1) reg.check({ warrant_id: id, tool: "synthi_screenshot", now: NOW + 1 });
-    expect(codeOf(reg.check({ warrant_id: id, tool: "never_granted", now: NOW + 2 }))).toBe("tool_not_covered");
-    expect(reg.status(id, NOW + 3).current_rung).toBe(0);
-    for (let i = 0; i < 4; i += 1) reg.check({ warrant_id: id, tool: "synthi_screenshot", now: NOW + 3 });
-    expect(reg.status(id, NOW + 4).current_rung).toBe(1);
+  it("unlocks rungs from recorded evidence while the warrant itself stays pure", () => {
+    const { reg, ledger, id } = setup();
+    ledger.bind(id, "std");
+    for (let i = 0; i < 5; i += 1) {
+      expect(reg.check({ warrant_id: id, tool: "synthi_screenshot", now: NOW + 1 }).allowed).toBe(true);
+      ledger.record(id, { allowed: true }, NOW + 1);
+    }
+    // Pure registry: base authority is static, so the ladder tool is NOT admitted by the warrant alone...
+    expect(reg.check({ warrant_id: id, tool: "synthi_describe", now: NOW + 2 }).allowed).toBe(false);
+    // ...admitting it takes composing the warrant with its bound ledger.
+    const warrant = reg.listWarrants()[0]!;
+    expect(ledger.effectiveGrantsFor(warrant, id, NOW + 2).some((g) => g.tool === "synthi_describe")).toBe(true);
+    const v = ledger.view(id, NOW + 2)!;
+    expect(v.current_rung).toBe(1);
+    expect(v.unlocked_grants.some((g) => g.tool === "synthi_describe")).toBe(true);
+    expect(v.next_step?.checks_remaining).toBe(3);
   });
 
-  it("demotes after repeated out-of-scope probes and cools down to base only", () => {
-    const { reg, id } = make();
-    for (let i = 0; i < 5; i += 1) reg.check({ warrant_id: id, tool: "synthi_screenshot", now: NOW + 1 });
-    expect(reg.status(id, NOW + 2).current_rung).toBe(1);
-    for (let i = 0; i < 3; i += 1) reg.check({ warrant_id: id, tool: "never_granted", now: NOW + 2 });
-    const st = reg.status(id, NOW + 3);
-    expect(st.demoted_rungs).toBe(1);
-    expect(st.cooldown_active).toBe(true);
-    expect(st.effective_grants.some((g) => g.tool === "synthi_describe")).toBe(false);
-    const later = reg.status(id, NOW + 2 + 61_000);
-    expect(later.cooldown_active).toBe(false);
-    expect(later.current_rung).toBe(0);
+  it("demotes on probe evidence and cools down to base only", () => {
+    const { reg, ledger, id } = setup();
+    ledger.bind(id, "std");
+    for (let i = 0; i < 5; i += 1) ledger.record(id, { allowed: true }, NOW + 1);
+    for (let i = 0; i < 3; i += 1) ledger.record(id, { allowed: false, reason_code: "tool_not_covered" }, NOW + 2);
+    const v = ledger.view(id, NOW + 3)!;
+    expect(v.demoted_rungs).toBe(1);
+    expect(v.cooldown_active).toBe(true);
+    const warrant = reg.listWarrants()[0]!;
+    expect(ledger.effectiveGrantsFor(warrant, id, NOW + 3).some((g) => g.tool === "synthi_describe")).toBe(false);
   });
 
-  it("validates ladders at issue time", () => {
-    const reg = new WarrantRegistry();
-    expect(() => reg.issue({ subject: "s", grants: [{ tool: "t" }], now: NOW, ttl_ms: TTL, graduated: true, ladder: [{ unlock_after: { min_sample: 2, success_ratio: 0.9 }, grants: [] }] })).toThrow(/at least/i);
-    expect(() => reg.issue({ subject: "s", grants: [{ tool: "t" }], now: NOW, ttl_ms: TTL, graduated: true, ladder: Array.from({ length: 5 }, () => ({ unlock_after: { min_sample: 10, success_ratio: 0.9 }, grants: [{ tool: "t" }] })) })).toThrow(/depth|length|4/i);
-    expect(() => reg.issue({ subject: "s", grants: [{ tool: "t" }], now: NOW, ttl_ms: TTL, graduated: true, ladder: [{ unlock_after: { min_sample: 10, success_ratio: 1.5 }, grants: [{ tool: "t" }] }] })).toThrow(/ratio/i);
+  it("blocks rebinding during cooldown and resets counters on policy change", () => {
+    const { ledger, id } = setup();
+    ledger.registerPolicy({ policy_id: "alt", steps: [{ unlock_after: { min_sample: 5, success_ratio: 0.9 }, grants: [{ tool: "synthi_locate" }] }] });
+    ledger.bind(id, "std");
+    for (let i = 0; i < 5; i += 1) ledger.record(id, { allowed: true }, NOW + 1);
+    for (let i = 0; i < 3; i += 1) ledger.record(id, { allowed: false, reason_code: "tool_not_covered" }, NOW + 2);
+    expect(() => ledger.bind(id, "alt", NOW + 3)).toThrow(/cooldown/i);
+    const after = ledger.view(id, NOW + 61_002)!;
+    expect(after.cooldown_active).toBe(false);
+    ledger.bind(id, "alt", NOW + 61_002);
+    expect(ledger.view(id, NOW + 61_003)?.current_rung ?? 0).toBeLessThan(1);
   });
 
-  it("attenuation snapshots current effective grants and never propagates future rungs", () => {
-    const parentReg = new WarrantRegistry();
-    const parent = parentReg.issue({ subject: "p", grants: [{ tool: "synthi_screenshot" }], now: NOW, ttl_ms: TTL, graduated: true, ladder: LADDER });
-    for (let i = 0; i < 5; i += 1) parentReg.check({ warrant_id: parent.warrant_id, tool: "synthi_screenshot", now: NOW + 1 });
-    const child = parentReg.attenuate({ parent_warrant_id: parent.warrant_id, subject: "c", grants: [{ tool: "synthi_screenshot" }, { tool: "synthi_describe" }], now: NOW + 2 });
-    expect(child.graduated).toBeFalsy();
-    expect(child.ladder).toBeUndefined();
-    expect(parentReg.check({ warrant_id: child.warrant_id, tool: "synthi_describe", now: NOW + 3 }).allowed).toBe(true);
-    expect(parentReg.check({ warrant_id: child.warrant_id, tool: "synthi_get_event_log", now: NOW + 3 }).allowed).toBe(false);
-  });
-
-  it("status view reports next-step progress", () => {
-    const { reg, id } = make();
-    for (let i = 0; i < 3; i += 1) reg.check({ warrant_id: id, tool: "synthi_screenshot", now: NOW + 1 });
-    const st = reg.status(id, NOW + 2);
-    expect(st.current_rung).toBe(0);
-    expect(st.next_step?.checks_remaining).toBe(2);
+  it("unbind restores full base authority and clears progression state", () => {
+    const { reg, ledger, id } = setup();
+    ledger.bind(id, "std");
+    for (let i = 0; i < 5; i += 1) ledger.record(id, { allowed: true }, NOW + 1);
+    const warrant = reg.listWarrants()[0]!;
+    ledger.unbind(id);
+    expect(ledger.view(id, NOW + 2)).toBeNull();
+    expect(ledger.effectiveGrantsFor(warrant, id, NOW + 2).map((g) => g.tool)).toEqual(["synthi_screenshot"]);
   });
 });

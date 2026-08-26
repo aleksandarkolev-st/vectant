@@ -17,11 +17,6 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 /** Delegation chains may never run deeper than this many warrants. */
 const MAX_CHAIN_DEPTH = 8;
 
-const MIN_EVIDENCE_SAMPLE = 5;
-const PROBE_DEMOTION_THRESHOLD = 3;
-const COOLDOWN_MS = 60_000;
-export { MIN_EVIDENCE_SAMPLE, PROBE_DEMOTION_THRESHOLD, COOLDOWN_MS };
-
 export interface ToolGrant {
   tool: string;
   /** glob patterns ( "*" and "**" only ) matched against top-level string values of the call args */
@@ -43,10 +38,6 @@ export interface Warrant {
   status: "active" | "revoked";
   /** True when calls must prove possession with the bearer secret; never the secret itself */
   sealed?: boolean;
-  /** graduated autonomy: unlocked ladder rungs add grants (frozen at issuance) */
-  graduated?: boolean;
-  /** the autonomy ladder (frozen at issuance) */
-  ladder?: readonly AutonomyStep[];
 }
 
 export type WarrantDecision =
@@ -59,29 +50,12 @@ export type WarrantDecision =
  */
 export type IssuedWarrant = Warrant & { bearer?: string };
 
-export interface AutonomyStep {
-  unlock_after: { min_sample: number; success_ratio: number };
-  grants: readonly ToolGrant[];
-}
-export type WarrantStatusView = {
-  warrant: Warrant;
-  effective_grants: readonly ToolGrant[];
-  current_rung: number;
-  next_step: { checks_remaining: number } | null;
-  demoted_rungs: number;
-  cooldown_active: boolean;
-};
-
 interface WarrantRecord {
   readonly warrant: Warrant;
   /** tool -> invocations left; only present for tools whose grant sets max_invocations */
   readonly remaining: Map<string, number>;
   /** sha256 hex of the bearer secret for sealed warrants; the secret itself is never stored */
   readonly bearer_hash?: string;
-  admitted_count: number;
-  denied_count: number;
-  demoted_rungs: number;
-  cooldown_until_ms: number;
 }
 
 /**
@@ -162,24 +136,6 @@ function validateTtl(ttlMs: number): void {
   }
 }
 
-function validateLadder(graduated: boolean | undefined, ladder: readonly AutonomyStep[] | undefined): void {
-  if (!graduated && ladder === undefined) return;
-  const steps = ladder ?? [];
-  if (steps.length > 4) {
-    throw new Error("A warrant's autonomy ladder may not exceed a depth of 4 rungs.");
-  }
-  for (const step of steps) {
-    if (step.unlock_after.min_sample < MIN_EVIDENCE_SAMPLE) {
-      throw new Error(
-        `A ladder rung needs at least ${MIN_EVIDENCE_SAMPLE} admitted calls before it can unlock.`,
-      );
-    }
-    if (!(step.unlock_after.success_ratio > 0 && step.unlock_after.success_ratio <= 1)) {
-      throw new Error("A ladder rung needs a success ratio greater than 0 and at most 1.");
-    }
-  }
-}
-
 function cloneGrants(grants: readonly ToolGrant[]): ToolGrant[] {
   return grants.map((grant) => ({
     ...grant,
@@ -201,7 +157,7 @@ function initialRemaining(grants: readonly ToolGrant[]): Map<string, number> {
 }
 
 /** True when the grant's arg constraints admit the given call args. Missing optional args pass. */
-function grantAcceptsArgs(
+export function grantAcceptsArgs(
   grant: ToolGrant,
   args: Readonly<Record<string, unknown>> | undefined,
 ): boolean {
@@ -218,7 +174,7 @@ function grantAcceptsArgs(
 }
 
 /** First arg key that violates its constraint across the covering grants (for the denial message). */
-function firstViolatedArgKey(
+export function firstViolatedArgKey(
   grants: readonly ToolGrant[],
   args: Readonly<Record<string, unknown>> | undefined,
 ): string {
@@ -235,39 +191,6 @@ function firstViolatedArgKey(
   return "";
 }
 
-/**
- * Pure graduated-autonomy math: which grants this warrant effectively holds
- * right now. Zero IO, no clock reads — time enters as `now`.
- */
-export function computeEffectiveGrants(
-  warrant: Warrant,
-  counters: {
-    admitted_count: number;
-    denied_count: number;
-    demoted_rungs: number;
-    cooldown_until_ms: number;
-  },
-  now: number,
-): ToolGrant[] {
-  if (counters.cooldown_until_ms > now) return [...warrant.grants];
-  const ladder = warrant.ladder ?? [];
-  let rung = 0;
-  for (const step of ladder) {
-    const ratio =
-      counters.denied_count === 0
-        ? 1
-        : counters.admitted_count / (counters.admitted_count + counters.denied_count);
-    if (
-      counters.admitted_count >= step.unlock_after.min_sample &&
-      ratio >= step.unlock_after.success_ratio
-    ) {
-      rung += 1;
-    }
-  }
-  const effectiveRung = Math.max(0, rung - counters.demoted_rungs);
-  return [...warrant.grants, ...ladder.slice(0, effectiveRung).flatMap((step) => [...step.grants])];
-}
-
 export class WarrantRegistry {
   private readonly records = new Map<string, WarrantRecord>();
 
@@ -282,12 +205,9 @@ export class WarrantRegistry {
     now: number;
     ttl_ms: number;
     seal?: boolean;
-    graduated?: boolean;
-    ladder?: readonly AutonomyStep[];
   }): IssuedWarrant {
     validateSubjectAndGrants(input.subject, input.grants);
     validateTtl(input.ttl_ms);
-    validateLadder(input.graduated, input.ladder);
 
     const warrantId = `wr_${randomUUID()}`;
     const bearer = input.seal === true ? `wb_${randomUUID().replaceAll("-", "")}` : undefined;
@@ -300,16 +220,10 @@ export class WarrantRegistry {
       root_warrant_id: warrantId,
       status: "active",
       ...(bearer === undefined ? {} : { sealed: true }),
-      ...(input.graduated ? { graduated: true } : {}),
-      ...(input.graduated && input.ladder !== undefined ? { ladder: input.ladder } : {}),
     };
     this.records.set(warrantId, {
       warrant,
       remaining: initialRemaining(warrant.grants),
-      admitted_count: 0,
-      denied_count: 0,
-      demoted_rungs: 0,
-      cooldown_until_ms: 0,
       ...(bearer === undefined ? {} : { bearer_hash: sha256Hex(bearer) }),
     });
     return { ...warrant, ...(bearer === undefined ? {} : { bearer }) };
@@ -332,8 +246,6 @@ export class WarrantRegistry {
     now: number;
     ttl_ms?: number;
     seal?: boolean;
-    graduated?: boolean;
-    ladder?: readonly AutonomyStep[];
   }): IssuedWarrant {
     const parent = this.records.get(input.parent_warrant_id);
     if (parent === undefined) {
@@ -348,7 +260,6 @@ export class WarrantRegistry {
 
     validateSubjectAndGrants(input.subject, input.grants);
     if (input.ttl_ms !== undefined) validateTtl(input.ttl_ms);
-    validateLadder(input.graduated, input.ladder);
 
     if (this.depthOf(input.parent_warrant_id) + 1 > MAX_CHAIN_DEPTH) {
       throw new Error(
@@ -356,14 +267,8 @@ export class WarrantRegistry {
       );
     }
 
-    // A graduated parent's authority is its CURRENT effective grants (base +
-    // unlocked ladder rungs, suppressed during cooldown) — not just its base
-    // grants. Budget remaining lookups below still use the record directly.
-    const parentEffective = parent.warrant.graduated
-      ? computeEffectiveGrants(parent.warrant, parent, input.now)
-      : parent.warrant.grants;
     for (const grant of input.grants) {
-      const parentGrant = parentEffective.find((candidate) => candidate.tool === grant.tool);
+      const parentGrant = parent.warrant.grants.find((candidate) => candidate.tool === grant.tool);
       if (parentGrant === undefined) {
         throw new Error(
           `Cannot attenuate: tool '${grant.tool}' is not covered by parent warrant '${input.parent_warrant_id}'.`,
@@ -411,19 +316,10 @@ export class WarrantRegistry {
       root_warrant_id: parent.warrant.root_warrant_id,
       status: "active",
       ...(bearer === undefined ? {} : { sealed: true }),
-      // A child under a graduated parent is a STATIC snapshot: it inherits no
-      // ladder and starts with exactly its own grants, unless a ladder was
-      // explicitly passed for it.
-      ...(input.graduated ? { graduated: true } : {}),
-      ...(input.graduated && input.ladder !== undefined ? { ladder: input.ladder } : {}),
     };
     this.records.set(warrant.warrant_id, {
       warrant,
       remaining: initialRemaining(warrant.grants),
-      admitted_count: 0,
-      denied_count: 0,
-      demoted_rungs: 0,
-      cooldown_until_ms: 0,
       ...(bearer === undefined ? {} : { bearer_hash: sha256Hex(bearer) }),
     });
     return { ...warrant, ...(bearer === undefined ? {} : { bearer }) };
@@ -451,31 +347,24 @@ export class WarrantRegistry {
       return deny("expired", "This warrant has expired.");
     }
     if (record.bearer_hash !== undefined && !hashesMatch(input.bearer, record.bearer_hash)) {
-      const decision = deny(
+      return deny(
         "bearer_mismatch",
         "This warrant is sealed; the call must prove possession with its bearer secret in _meta.warrant_bearer.",
       );
-      this.recordGraduatedEvidence(record, decision, input.now);
-      return decision;
     }
 
-    const effective = computeEffectiveGrants(record.warrant, record, input.now);
-    const covering = effective.filter((grant) => grant.tool === input.tool);
+    const covering = record.warrant.grants.filter((grant) => grant.tool === input.tool);
     if (covering.length === 0) {
-      const decision = deny("tool_not_covered", `This warrant does not cover the '${input.tool}' capability.`);
-      this.recordGraduatedEvidence(record, decision, input.now);
-      return decision;
+      return deny("tool_not_covered", `This warrant does not cover the '${input.tool}' capability.`);
     }
 
     const argsAccepted = covering.some((grant) => grantAcceptsArgs(grant, input.args));
     if (!argsAccepted) {
       const key = firstViolatedArgKey(covering, input.args);
-      const decision = deny(
+      return deny(
         "arg_out_of_scope",
         `This warrant restricts '${key}'; the requested value is outside it.`,
       );
-      this.recordGraduatedEvidence(record, decision, input.now);
-      return decision;
     }
 
     // Budgets are chain-wide: ancestors' allowances are consumed by descendants' use.
@@ -489,13 +378,7 @@ export class WarrantRegistry {
       }
     }
 
-    const decision: WarrantDecision = {
-      allowed: true,
-      warrant_id: record.warrant.warrant_id,
-    };
-
-    this.recordGraduatedEvidence(record, decision, input.now);
-    return decision;
+    return { allowed: true, warrant_id: record.warrant.warrant_id };
   }
 
   /**
@@ -513,57 +396,6 @@ export class WarrantRegistry {
         node.remaining.set(tool, Math.max(0, remaining - 1));
       }
     }
-  }
-
-  /**
-   * Live view of a graduated warrant: its effective grants, current rung
-   * (unlocked minus demoted), what remains before the next rung unlocks,
-   * demotion count, and whether the probe cooldown is active.
-   */
-  status(warrantId: string, now: number): WarrantStatusView {
-    const record = this.records.get(warrantId);
-    if (record === undefined) {
-      throw new Error(`Cannot report status: no warrant exists with identifier '${warrantId}'.`);
-    }
-    const effectiveGrants = computeEffectiveGrants(record.warrant, record, now);
-    const ladder = record.warrant.ladder ?? [];
-    const ratio =
-      record.denied_count === 0
-        ? 1
-        : record.admitted_count / (record.admitted_count + record.denied_count);
-    let unlocked = 0;
-    for (const step of ladder) {
-      if (
-        record.admitted_count >= step.unlock_after.min_sample &&
-        ratio >= step.unlock_after.success_ratio
-      ) {
-        unlocked += 1;
-      }
-    }
-    const currentRung = Math.max(0, unlocked - record.demoted_rungs);
-    const nextStep = ladder.find(
-      (step) =>
-        !(
-          record.admitted_count >= step.unlock_after.min_sample &&
-          ratio >= step.unlock_after.success_ratio
-        ),
-    );
-    return {
-      warrant: { ...record.warrant },
-      effective_grants: effectiveGrants,
-      current_rung: currentRung,
-      next_step:
-        nextStep === undefined
-          ? null
-          : {
-              checks_remaining: Math.max(
-                0,
-                nextStep.unlock_after.min_sample - record.admitted_count,
-              ),
-            },
-      demoted_rungs: record.demoted_rungs,
-      cooldown_active: record.cooldown_until_ms > now,
-    };
   }
 
   /** Revoke the warrant and every descendant. Returns how many were revoked. */
@@ -611,35 +443,6 @@ export class WarrantRegistry {
   /** Test isolation hook: drops every record. Never call outside unit tests. */
   resetForTests(): void {
     this.records.clear();
-  }
-
-  /**
-   * Graduated-autonomy evidence bookkeeping: admitted calls count toward
-   * unlocking the next rung; probe-shaped denials (tool_not_covered,
-   * arg_out_of_scope, bearer_mismatch) count against it and, at the
-   * threshold, demote one rung and start a cooldown. Non-graduated warrants
-   * and non-probe denials are ignored.
-   */
-  private recordGraduatedEvidence(
-    record: WarrantRecord,
-    decision: WarrantDecision,
-    now: number,
-  ): void {
-    if (!record.warrant.graduated) return;
-    if (decision.allowed) {
-      record.admitted_count += 1;
-      return;
-    }
-    const code = decision.reason_code;
-    if (code !== "tool_not_covered" && code !== "arg_out_of_scope" && code !== "bearer_mismatch") {
-      return;
-    }
-    record.denied_count += 1;
-    if (record.denied_count >= PROBE_DEMOTION_THRESHOLD) {
-      record.demoted_rungs = Math.min(record.demoted_rungs + 1, record.warrant.ladder?.length ?? 0);
-      record.denied_count = 0;
-      record.cooldown_until_ms = now + COOLDOWN_MS;
-    }
   }
 
   /** Records along the delegation chain from the given warrant up to its root. Cycle-safe. */

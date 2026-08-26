@@ -269,7 +269,9 @@ export const ADVERTISED_TOOLS = [
   "synthi_warrant_check",
   "synthi_warrant_revoke",
   "synthi_warrant_list",
-  "synthi_warrant_status",
+  "synthi_warrant_trust",
+  "synthi_warrant_bind_trust",
+  "synthi_warrant_policy_register",
   // Lifecycle
   "synthi_attach",
   "synthi_detach",

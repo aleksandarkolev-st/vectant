@@ -1406,7 +1406,9 @@ async function dispatchTool(
     synthi_warrant_check: async () => (await dispatchWarrantTool("synthi_warrant_check", args)) as CallToolResult,
     synthi_warrant_revoke: async () => (await dispatchWarrantTool("synthi_warrant_revoke", args)) as CallToolResult,
     synthi_warrant_list: async () => (await dispatchWarrantTool("synthi_warrant_list", args)) as CallToolResult,
-    synthi_warrant_status: async () => (await dispatchWarrantTool("synthi_warrant_status", args)) as CallToolResult,
+    synthi_warrant_trust: async () => (await dispatchWarrantTool("synthi_warrant_trust", args)) as CallToolResult,
+    synthi_warrant_bind_trust: async () => (await dispatchWarrantTool("synthi_warrant_bind_trust", args)) as CallToolResult,
+    synthi_warrant_policy_register: async () => (await dispatchWarrantTool("synthi_warrant_policy_register", args)) as CallToolResult,
   };
 
   const handler = handlers[toolName];
