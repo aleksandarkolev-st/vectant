@@ -121,6 +121,10 @@ export function resolveWarrantMode(): WarrantMode {
  */
 export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayload | null {
   const mode = resolveWarrantMode();
+  // Management-plane exemption: the warrant tools themselves must stay
+  // callable in enforce mode or no first warrant could ever be issued
+  // (bootstrap deadlock proven by live wire testing 2026-08-26).
+  if ((WARRANT_TOOL_NAMES as readonly string[]).includes(toolName)) return null;
   if (mode === "off") return null;
 
   const warrantId = metaWarrantId(params);

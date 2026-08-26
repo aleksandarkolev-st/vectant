@@ -2,10 +2,14 @@
 // Covers issue/check decisions, attenuation narrowing, expiry clamping,
 // revocation cascade, budgets, depth cap, and a seeded randomized sweep.
 
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { ToolGrant } from "../../src/security/warrant.js";
 import { WarrantRegistry, globMatch } from "../../src/security/warrant.js";
-import { dispatchWarrantTool } from "../../src/tools/warrant.js";
+import {
+  dispatchWarrantTool,
+  enforceWarrantGate,
+  resolveWarrantMode,
+} from "../../src/tools/warrant.js";
 
 const NOW = 1_000_000;
 const TTL = 60_000;
@@ -324,5 +328,35 @@ describe("warrant MCP dispatcher", () => {
     const bad = await dispatchWarrantTool("synthi_warrant_issue", { ttl_ms: 60_000 });
     expect(bad.isError).toBe(true);
     expect(JSON.parse(bad.content[0]!.text).human_reason).toBeTruthy();
+  });
+});
+
+describe("warrant enforcement gate", () => {
+  const ORIGINAL_MODE = process.env["SYNTHI_WARRANT_MODE"];
+
+  beforeEach(() => {
+    process.env["SYNTHI_WARRANT_MODE"] = "enforce";
+  });
+
+  afterAll(() => {
+    if (ORIGINAL_MODE === undefined) delete process.env["SYNTHI_WARRANT_MODE"];
+    else process.env["SYNTHI_WARRANT_MODE"] = ORIGINAL_MODE;
+  });
+
+  it("keeps warrant management tools callable in enforce mode (bootstrap)", () => {
+    expect(enforceWarrantGate("synthi_warrant_issue", { arguments: {} })).toBeNull();
+    expect(enforceWarrantGate("synthi_warrant_list", { arguments: {} })).toBeNull();
+  });
+
+  it("rejects non-warrant tools without _meta.warrant_id in enforce mode", () => {
+    const err = enforceWarrantGate("synthi_screenshot", { arguments: {} });
+    expect(err).not.toBeNull();
+    expect(err?.error ?? "").toBeTruthy();
+  });
+
+  it("is inert when mode is off", () => {
+    process.env["SYNTHI_WARRANT_MODE"] = "off";
+    expect(enforceWarrantGate("synthi_screenshot", { arguments: {} })).toBeNull();
+    expect(resolveWarrantMode()).toBe("off");
   });
 });
