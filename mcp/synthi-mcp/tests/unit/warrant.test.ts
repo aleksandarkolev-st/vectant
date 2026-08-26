@@ -602,3 +602,54 @@ describe("Patch G red-team hardening", () => {
     expect(Object.isFrozen(p.steps[0]!)).toBe(true);
   });
 });
+
+describe("Patch H - taint inheritance and escalating cooldowns", () => {
+  // Two rungs: record() still caps demoted_rungs at the policy's depth
+  // (pre-H semantics), so observing the second demotion / doubled cooldown
+  // requires a ladder deeper than one rung.
+  function setup() {
+    const reg = new WarrantRegistry();
+    const ledger = new TrustLedger();
+    ledger.registerPolicy({
+      policy_id: "std",
+      steps: [
+        { unlock_after: { min_sample: 5, success_ratio: 0.9 }, grants: [{ tool: "synthi_describe" }] },
+        { unlock_after: { min_sample: 8, success_ratio: 0.9 }, grants: [{ tool: "synthi_locate" }] },
+      ],
+    });
+    return { reg, ledger };
+  }
+
+  it("demotion taints the subject and inherited taint applies to future bindings", () => {
+    const { reg, ledger } = setup();
+    const w1 = reg.issue({ subject: "repeat-offender", grants: [{ tool: "synthi_screenshot" }], now: NOW, ttl_ms: TTL });
+    ledger.bind(w1.warrant_id, "std", NOW);
+    for (let i = 0; i < 5; i += 1) ledger.record(w1.warrant_id, { allowed: true }, NOW + 1, "repeat-offender");
+    for (let i = 0; i < 3; i += 1) ledger.record(w1.warrant_id, { allowed: false, reason_code: "tool_not_covered" }, NOW + 2, "repeat-offender");
+    expect(ledger.viewTaint("repeat-offender")).toBeGreaterThanOrEqual(1);
+    const w2 = reg.issue({ subject: "repeat-offender", grants: [{ tool: "synthi_screenshot" }], now: NOW + 10_000, ttl_ms: TTL });
+    ledger.bind(w2.warrant_id, "std", NOW + 10_000);
+    ledger.applyInheritedTaint(w2.warrant_id, "repeat-offender");
+    expect(ledger.view(w2.warrant_id, NOW + 10_001)?.current_rung ?? 0).toBe(0);
+  });
+
+  it("cooldown doubles with each subsequent demotion", () => {
+    const { ledger } = setup();
+    const reg = new WarrantRegistry();
+    const w = reg.issue({ subject: "escalator", grants: [{ tool: "synthi_screenshot" }], now: NOW, ttl_ms: TTL });
+    ledger.bind(w.warrant_id, "std", NOW);
+    for (let i = 0; i < 5; i += 1) ledger.record(w.warrant_id, { allowed: true }, NOW + 1, "escalator");
+    ledger.record(w.warrant_id, { allowed: false, reason_code: "tool_not_covered" }, NOW + 2, "escalator");
+    ledger.record(w.warrant_id, { allowed: false, reason_code: "tool_not_covered" }, NOW + 3, "escalator");
+    ledger.record(w.warrant_id, { allowed: false, reason_code: "tool_not_covered" }, NOW + 4, "escalator");
+    const first = ledger.view(w.warrant_id, NOW + 5)!;
+    expect(first.cooldown_active).toBe(true);
+    const afterFirstWindow = ledger.view(w.warrant_id, NOW + 5 + 60_000)!;
+    expect(afterFirstWindow.cooldown_active).toBe(false);
+    for (let i = 0; i < 3; i += 1) ledger.record(w.warrant_id, { allowed: false, reason_code: "arg_out_of_scope" }, NOW + 6 + 61_000, "escalator");
+    const second = ledger.view(w.warrant_id, NOW + 7 + 61_000)!;
+    expect(second.demoted_rungs).toBe(2);
+    expect(ledger.view(w.warrant_id, NOW + 8 + 61_000 + 60_000)!.cooldown_active).toBe(true);
+    expect(ledger.view(w.warrant_id, NOW + 8 + 61_000 + 120_000 + 1)!.cooldown_active).toBe(false);
+  });
+});

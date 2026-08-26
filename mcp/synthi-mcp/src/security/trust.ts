@@ -5,8 +5,12 @@
  * as a separately owned binding between a warrant and a registered
  * ProgressionPolicy (what a holder may GROW into). Admitted calls feed the
  * policy's evidence gates and unlock its steps as extra grants; probe-shaped
- * denials demote a rung and start a cooldown; unbinding drops progression
- * entirely and the warrant reverts to exactly its issued grants.
+ * denials demote a rung and start an escalating cooldown whose length doubles
+ * with each accumulated demotion (Patch H2). Demotions also TAINT the acting
+ * subject, and applyInheritedTaint lifts a warrant's binding to its subject's
+ * taint floor, so discipline earned under one lease follows the agent into
+ * the next (Patch H1). Unbinding drops progression entirely and the warrant
+ * reverts to exactly its issued grants.
  *
  * Pure module: zero IO, no clock reads — time enters as `now`. Nothing here
  * mutates warrants; composing trust with authorization happens in the tools
@@ -20,7 +24,11 @@ import { patternIsStricterOrEqual, type ToolGrant, type Warrant } from "./warran
 const MIN_EVIDENCE_SAMPLE = 5;
 /** Probe-shaped denials within a rung that trigger a one-rung demotion. */
 const PROBE_DEMOTION_THRESHOLD = 3;
-/** How long a demotion locks a warrant out of progression gains (and rebinding). */
+/**
+ * Base lockout for one probe-shaped demotion; the effective cooldown grows
+ * exponentially with the warrant's total demotions (Patch H2, see record):
+ * 1st demotion 60s, 2nd 120s, 3rd 240s, and so on.
+ */
 const COOLDOWN_MS = 60_000;
 export { MIN_EVIDENCE_SAMPLE, PROBE_DEMOTION_THRESHOLD, COOLDOWN_MS };
 
@@ -131,6 +139,14 @@ export function validateStepGrantsForBind(
 export class TrustLedger {
   private readonly policies = new Map<string, ProgressionPolicy>();
   private readonly bindings = new Map<string, Binding>();
+
+  /**
+   * Patch H1: demotion floors learned per acting subject, fed by
+   * `record(..., subject)` and enforced onto bindings by
+   * `applyInheritedTaint` — repeat offenders cannot launder their record
+   * simply by obtaining a fresh warrant.
+   */
+  private readonly subjectTaint = new Map<string, number>();
 
   /**
    * `warrantExists` is an optional pure probe (typically wired to the
@@ -275,14 +291,31 @@ export class TrustLedger {
    * count toward unlocking the next rung; probe-shaped denials
    * (tool_not_covered, arg_out_of_scope, bearer_mismatch) count against it
    * and, at PROBE_DEMOTION_THRESHOLD, demote one rung (capped at the
-   * policy's depth), reset the denial streak, and start a COOLDOWN_MS
-   * cooldown. Budget and lifecycle denials never touch trust. Unknown or
-   * unbound warrant ids are silently ignored — no binding, no progression.
+   * policy's depth), reset the denial streak, and start a cooldown. Budget
+   * and lifecycle denials never touch trust. Unknown or unbound warrant ids
+   * are silently ignored — no binding, no progression.
+   *
+   * Patch H2 — escalating cooldown: the lockout is no longer a flat
+   * COOLDOWN_MS but grows exponentially with the demotion total AFTER the
+   * increment,
+   *
+   *     cooldownMs = COOLDOWN_MS * 2 ** (demoted_rungs_total_after_increment - 1)
+   *
+   * i.e. the first demotion costs 60s, the second 120s, the third 240s, and
+   * so on: a single mistake stays cheap while sustained boundary probing
+   * becomes progressively more expensive. (Keying on the post-increment
+   * total minus one makes the FIRST demotion the base 60s.)
+   *
+   * Patch H1 — subject taint: when the caller supplies `subject` and a
+   * demotion fires, the subject inherits the new demotion total as a floor
+   * (`Math.max` over any taint already stored), queryable via viewTaint and
+   * enforceable onto other warrants via applyInheritedTaint.
    */
   record(
     warrantId: string,
     outcome: { allowed: true } | { allowed: false; reason_code: string },
     now: number,
+    subject?: string,
   ): void {
     const binding = this.bindings.get(warrantId);
     if (binding === undefined) return;
@@ -296,7 +329,39 @@ export class TrustLedger {
     const depth = this.policies.get(binding.policy_id)?.steps.length ?? 0;
     binding.demoted_rungs = Math.min(binding.demoted_rungs + 1, depth);
     binding.denied_count = 0;
-    binding.cooldown_until_ms = now + COOLDOWN_MS;
+    // Patch H2: escalate on the post-increment demotion total — every
+    // further demotion doubles the previous lockout (60s -> 120s -> 240s…).
+    binding.cooldown_until_ms =
+      now + COOLDOWN_MS * 2 ** Math.max(0, binding.demoted_rungs - 1);
+    // Patch H1: a demotion taints the acting subject, not just this binding.
+    if (subject !== undefined) {
+      this.subjectTaint.set(
+        subject,
+        Math.max(this.subjectTaint.get(subject) ?? 0, binding.demoted_rungs),
+      );
+    }
+  }
+
+  /**
+   * Patch H1: the demotion floor a subject has earned across every warrant
+   * they have held (0 when untainted). Read-only audit surface.
+   */
+  viewTaint(subject: string): number {
+    return this.subjectTaint.get(subject) ?? 0;
+  }
+
+  /**
+   * Patch H1: lift an existing binding up to its subject's taint floor — a
+   * demotion earned under one warrant follows the subject into the next.
+   * Max-only (never a reduction), and a silent no-op for unknown subjects
+   * or unbound warrants, so legitimate progress is never rolled back.
+   */
+  applyInheritedTaint(warrantId: string, subject: string): void {
+    const taint = this.subjectTaint.get(subject);
+    if (taint === undefined) return;
+    const binding = this.bindings.get(warrantId);
+    if (binding === undefined) return;
+    binding.demoted_rungs = Math.max(binding.demoted_rungs, taint);
   }
 
   /**
@@ -359,9 +424,10 @@ export class TrustLedger {
     ];
   }
 
-  /** Test isolation hook: drops every policy and binding. Never call outside unit tests. */
+  /** Test isolation hook: drops every policy, binding, and subject taint. Never call outside unit tests. */
   resetForTests(): void {
     this.policies.clear();
     this.bindings.clear();
+    this.subjectTaint.clear();
   }
 }

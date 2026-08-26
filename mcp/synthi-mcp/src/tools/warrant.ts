@@ -1,5 +1,5 @@
 /**
- * Agent-warrant MCP surface + enforcement gate (WI_WARRANTS_SPEC, Patches B/D/F/G).
+ * Agent-warrant MCP surface + enforcement gate (WI_WARRANTS_SPEC, Patches B/D/F/G/H).
  *
  * Nine tools expose the pure WarrantRegistry plus the separated TrustLedger
  * over MCP: issue a root lease, attenuate it into strictly narrower children,
@@ -189,6 +189,9 @@ function issueTool(args: unknown): ToolResponse {
     now,
     ttl_ms: Math.min(requiredNumber(a, "ttl_ms"), ceilings.max_ttl_ms),
   });
+  // Patch H1: a subject carrying taint from demotions earned under earlier
+  // warrants starts this warrant's progression at that floor, not from zero.
+  trustLedger.applyInheritedTaint(warrant.warrant_id, String(a["subject"]));
   return jsonResponse({ ok: true, warrant });
 }
 
@@ -282,6 +285,10 @@ export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayl
     const nowMs = Date.now();
     const argsRecord = recordOpt(args);
     const bearer = typeof metaValue(params, "warrant_bearer") === "string" ? metaValue(params, "warrant_bearer") as string : undefined;
+    // Patch H1: resolve the acting subject ONCE so every evidence write below
+    // tags the demotion-taint map with whoever holds this warrant.
+    const wSnap = warrantRegistry.listWarrants().find((w) => w.warrant_id === warrantId);
+    const subject = wSnap?.subject;
     // Patch G1 golden rule: registry.check runs UNCONDITIONALLY first —
     // lifecycle (revoked/expired/unknown), bearer possession, base coverage,
     // argument scope, and chain budgets all outrank trust. Any denial is used
@@ -295,7 +302,7 @@ export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayl
       now: nowMs,
     });
     if (decision.allowed) {
-      trustLedger.record(warrantId, { allowed: true }, nowMs);
+      trustLedger.record(warrantId, { allowed: true }, nowMs, subject);
     } else if (
       decision.reason_code === "tool_not_covered" &&
       trustLedger.view(warrantId, nowMs) !== null
@@ -306,7 +313,7 @@ export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayl
       const covering: ToolGrant[] = view.unlocked_grants.filter((grant) => grant.tool === toolName);
       if (covering.length > 0 && covering.some((grant) => grantAcceptsArgs(grant, argsRecord))) {
         decision = { allowed: true, warrant_id: warrantId };
-        trustLedger.record(warrantId, { allowed: true }, nowMs);
+        trustLedger.record(warrantId, { allowed: true }, nowMs, subject);
       } else {
         const reasonCode = covering.length === 0 ? "tool_not_covered" : "arg_out_of_scope";
         decision = {
@@ -321,6 +328,7 @@ export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayl
           warrantId,
           { allowed: false, reason_code: reasonCode },
           nowMs,
+          subject,
         );
       }
     } else {
@@ -330,6 +338,7 @@ export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayl
         warrantId,
         { allowed: false, reason_code: decision.reason_code },
         nowMs,
+        subject,
       );
     }
     if (decision.allowed) {
