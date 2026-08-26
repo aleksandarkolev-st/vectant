@@ -2333,6 +2333,13 @@ function knowledgeIdsFromInbox(inbox) {
 
 function visibleKnowledgeRowsForSession(rows, session, executionPlans, transactions, inbox) {
   const inboxKnowledgeIds = knowledgeIdsFromInbox(inbox);
+  // An answered question routed via an impact_notice wrapper must stay
+  // visible to the asker: the asker's inbox references the wrapper id, so
+  // also admit rows that are the wrapper's source question.
+  const wrapperSourceIds = asArray(inbox)
+    .map((item) => item.knowledgeItem?.sourceKnowledgeItemId || item.sourceKnowledgeItemId)
+    .filter(Boolean);
+  const admittedViaWrapper = new Set(wrapperSourceIds);
   return rows.filter((row) => {
     const visibility = knowledgeVisibility(row);
     const owned = row.createdByAgentSessionId === session.id
@@ -2341,7 +2348,7 @@ function visibleKnowledgeRowsForSession(rows, session, executionPlans, transacti
       || row.ownerUserId === session.ownerUserId;
     if (visibility === 'owner_private') return owned;
     if (visibility === 'restricted' && !owned && !inboxKnowledgeIds.has(row.id)) return false;
-    if (owned || inboxKnowledgeIds.has(row.id)) return true;
+    if (owned || inboxKnowledgeIds.has(row.id) || admittedViaWrapper.has(row.id)) return true;
     if (row.kind === 'shared_skill' && row.status === 'published') return true;
     const projected = projectKnowledgeRecord(row);
     if (!projected) return false;
@@ -2380,6 +2387,7 @@ async function loadRelevantKnowledgeForSession(session, queryInput = {}, state =
       where: { projectId: session.projectId, agentSessionId: session.id, knowledgeItemId: { not: null } },
       orderBy: { createdAt: 'desc' },
       take: 100,
+      include: { knowledgeItem: { select: { sourceKnowledgeItemId: true } } },
     }),
   ]);
   return visibleKnowledgeRowsForSession(rows, session, executionPlans, transactions, inbox)
@@ -3418,7 +3426,15 @@ export async function respondToAgentKnowledgeInbox(
       },
     });
     let nextKnowledge = inboxItem.knowledgeItem;
-    if (response.targetStatus) {
+    // When answering through an impact_notice wrapper, the status transition
+    // targets the underlying question record, not the wrapper itself.
+    if (response.targetStatus && responseKind !== inboxItem.knowledgeItem.kind) {
+      await db.codeSiteKnowledgeItem.update({
+        where: { id: inboxItem.knowledgeItem.sourceKnowledgeItemId },
+        data: { status: response.targetStatus },
+      });
+    }
+    if (response.targetStatus && responseKind === inboxItem.knowledgeItem.kind) {
       nextKnowledge = await db.codeSiteKnowledgeItem.update({
         where: { id: inboxItem.knowledgeItem.id },
         data: {
@@ -3437,16 +3453,25 @@ export async function respondToAgentKnowledgeInbox(
     // routes a durable acknowledgement back to the asking agent so the
     // answer survives as shared knowledge even after both sessions end.
     const isQuestionAnswer = responseKind === 'agent_question' && response.action === 'answer';
-    if (isQuestionAnswer && nextKnowledge.id === inboxItem.knowledgeItem.id) {
+    if (isQuestionAnswer) {
+      const answerTargetId = responseKind === inboxItem.knowledgeItem.kind
+        ? inboxItem.knowledgeItem.id
+        : inboxItem.knowledgeItem.sourceKnowledgeItemId;
       nextKnowledge = await db.codeSiteKnowledgeItem.update({
-        where: { id: inboxItem.knowledgeItem.id },
+        where: { id: answerTargetId },
         data: {
           status: 'answered',
           payloadJson: stringifyJson({
             ...parseJson(inboxItem.knowledgeItem.payloadJson, {}),
             answerText: response.answer,
             answeredByAgentSessionId: authority.session.id,
+            ...(responseKind === inboxItem.knowledgeItem.kind ? {} : {
+              fromAgentSessionId: null,
+              suggestedExpertAgentSessionIds: [],
+              questionUrgency: 'normal',
+            }),
           }),
+          updatedAt: now,
         },
       });
     }
