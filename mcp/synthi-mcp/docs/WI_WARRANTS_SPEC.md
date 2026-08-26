@@ -281,3 +281,42 @@ concerns with distinct owners and must not live in the same credential.
   passing unchanged (pure authorization restored).
 - Live-wire acceptance: default battery adapted to 8 warrant tools; graduation
   demo repeated via register->bind->calls->status flow.
+
+## Patch G — Red-team hardening of the authorization/trust composition
+
+Inputs: static audit (11 findings F1-F11) + live seam attack (70 attempts).
+Golden rule adopted: trust must be structurally incapable of outranking
+lifecycle. Gate order everywhere: registry lifecycle/bearer FIRST, then
+coverage over base UNION ledger-unlocked, then charge, then record.
+
+G1 (F1/F5/c, CRITICAL): enforceWarrantGate bound branch - registry.check runs
+  UNCONDITIONALLY FIRST (lifecycle + bearer + base coverage + chain budgets);
+  any denial => use it verbatim (and record it). Only when registry allows do
+  we extend: if bound and tool not covered by base, evaluate coverage against
+  view.unlocked_grants with grantAcceptsArgs/firstViolatedArgKey. Revoked,
+  expired, exhausted, wrong-bearer therefore always win over trust.
+G2 (F3/e, HIGH): progression requires proof-of-possession. bind_trust refuses
+  unsealed warrants (human error mentioning sealing). Evidence (record) only
+  ever accumulates for sealed warrants because only they can bind; kills
+  foreign-bind sabotage and cross-session evidence poisoning.
+G3 (F6): unbind during cooldown ALLOWED (escape valve), implemented as new
+  tool synthi_warrant_unbind {warrant_id, bearer} - bearer must match the
+  sealed warrant (holder-only by possession). Rebind after cooldown PRESERVES
+  demoted_rungs (only admitted/denied reset on policy change).
+G4 (d/F9a): registerPolicy hardening - reject empty steps, non-finite or
+  < MIN_EVIDENCE_SAMPLE min_sample, duplicate tools across rungs.
+G5 (F10): deep-freeze registered policies (steps objects + grants arrays).
+G6 (F8): synthi_warrant_check drops caller-supplied now (server clock only).
+G7 (F11): remove phantom synthi_warrant_status from WARRANT_TOOL_NAMES; add
+  synthi_warrant_unbind; fix header counts.
+Tests: revoked-but-bound denied with reason_code revoked; expired-but-bound
+denied; unlocked-tool admission works for bound+sealed; bind refuses
+unsealed; unbind requires matching bearer and works during cooldown;
+demotions survive rebind; policy validation new cases; phantom name gone.
+G8 (F2): progression grants stay authority-shaped: registerPolicy rejects any
+  step grant carrying max_invocations (budgets belong to issuance); at bind
+  time every step grant's arg_constraints must be equal-or-stricter per key
+  than the warrant's own grant for that tool (reuse patternIsStricterOrEqual,
+  exported from warrant.ts) - trust can narrow, never widen.
+Deferred (documented follow-ups, not defects shipped): F4 reserve/settle
+async budget accounting; F7 event-log redaction.

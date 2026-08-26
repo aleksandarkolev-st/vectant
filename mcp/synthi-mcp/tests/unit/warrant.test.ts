@@ -550,3 +550,55 @@ describe("separated trust progression (TrustLedger)", () => {
     expect(ledger.effectiveGrantsFor(warrant, id, NOW + 2).map((g) => g.tool)).toEqual(["synthi_screenshot"]);
   });
 });
+
+describe("Patch G red-team hardening", () => {
+  const STEPS = [{ unlock_after: { min_sample: 5, success_ratio: 0.9 }, grants: [{ tool: "synthi_describe" }] }];
+
+  function sealedSetup() {
+    const reg = new WarrantRegistry();
+    const ledger = new TrustLedger();
+    const w = reg.issue({ subject: "s", grants: [{ tool: "synthi_screenshot" }], now: NOW, ttl_ms: TTL, seal: true });
+    ledger.registerPolicy({ policy_id: "std", steps: STEPS });
+    return { reg, ledger, id: w.warrant_id, bearer: w.bearer! };
+  }
+
+  it("lifecycle outranks trust: revoked-but-bound stays denied by the pure registry", () => {
+    const { reg, ledger, id, bearer } = sealedSetup();
+    ledger.bind(id, "std", NOW);
+    for (let i = 0; i < 5; i += 1) {
+      expect(reg.check({ warrant_id: id, tool: "synthi_screenshot", bearer, now: NOW + 1 }).allowed).toBe(true);
+      ledger.record(id, { allowed: true }, NOW + 1);
+    }
+    reg.revoke(id);
+    const d = reg.check({ warrant_id: id, tool: "synthi_screenshot", bearer, now: NOW + 2 });
+    expect(d.allowed).toBe(false);
+    if (!d.allowed) expect(d.reason_code).toBe("revoked");
+  });
+
+  it("registerPolicy rejects empty ladders and non-finite min_sample and cross-rung duplicate tools", () => {
+    const ledger = new TrustLedger();
+    expect(() => ledger.registerPolicy({ policy_id: "e1", steps: [] })).toThrow(/empty/i);
+    expect(() =>
+      ledger.registerPolicy({
+        policy_id: "e2",
+        steps: [{ unlock_after: { min_sample: Number.NaN, success_ratio: 0.9 }, grants: [{ tool: "t" }] }],
+      }),
+    ).toThrow(/finite|at least/i);
+    expect(() =>
+      ledger.registerPolicy({
+        policy_id: "e3",
+        steps: [
+          { unlock_after: { min_sample: 9, success_ratio: 0.9 }, grants: [{ tool: "t" }] },
+          { unlock_after: { min_sample: 12, success_ratio: 0.9 }, grants: [{ tool: "t" }] },
+        ],
+      }),
+    ).toThrow(/duplicate/i);
+  });
+
+  it("registered policies are deeply frozen", () => {
+    const ledger = new TrustLedger();
+    const p = ledger.registerPolicy({ policy_id: "frozen", steps: STEPS });
+    expect(Object.isFrozen(p)).toBe(true);
+    expect(Object.isFrozen(p.steps[0]!)).toBe(true);
+  });
+});

@@ -1,11 +1,12 @@
 /**
- * Agent-warrant MCP surface + enforcement gate (WI_WARRANTS_SPEC, Patch B).
+ * Agent-warrant MCP surface + enforcement gate (WI_WARRANTS_SPEC, Patches B/D/F/G).
  *
- * Six tools expose the pure WarrantRegistry (Patch A) over MCP: issue a root
- * lease, attenuate it into strictly narrower children, check coverage, revoke
- * a subtree, list the full audit view, and inspect a warrant's bound trust
- * progression (rung, evidence, unlocked grants). One process-wide registry
- * backs them all; every mutating call stamps time at the boundary
+ * Nine tools expose the pure WarrantRegistry plus the separated TrustLedger
+ * over MCP: issue a root lease, attenuate it into strictly narrower children,
+ * check coverage, revoke a subtree, list the full audit view, inspect a
+ * warrant's bound trust progression, bind/unbind that progression to a
+ * registered policy, and register policies. One process-wide registry backs
+ * them all; every mutating call stamps time at the boundary
  * (`now: Date.now()`),
  * keeping the core clock-free per the house rules.
  *
@@ -20,6 +21,13 @@
  * When a warrant id is presented, the gate checks it and charges the
  * invocation before dispatch, so chain-wide budgets are consumed exactly once
  * per admitted call. Failures fail closed with plain-language reasons.
+ *
+ * Gate order (Patch G golden rule: trust can never outrank lifecycle):
+ * registry.check runs FIRST on every bound call — revocation, expiry, bearer
+ * possession, base coverage, arg scope, and chain budgets always win over any
+ * trust-unlocked grants; only an all-clear from the registry lets the ledger's
+ * unlocked grants extend coverage. Charge follows admission, evidence
+ * recording follows last.
  */
 
 import { timingSafeEqual } from "node:crypto";
@@ -35,7 +43,7 @@ import { errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
 import { buildError, type ErrorPayload } from "../correctness/errors.js";
 import { eventLog } from "../events/index.js";
 
-/** The six warrant tools this module owns (mirrored in tool_registry.ts). */
+/** The nine warrant tools this module owns (mirrored in tool_registry.ts). */
 export const WARRANT_TOOL_NAMES = [
   "synthi_warrant_issue",
   "synthi_warrant_attenuate",
@@ -45,7 +53,7 @@ export const WARRANT_TOOL_NAMES = [
   "synthi_warrant_trust",
   "synthi_warrant_bind_trust",
   "synthi_warrant_policy_register",
-  "synthi_warrant_status",
+  "synthi_warrant_unbind",
 ] as const;
 
 /** When set, warrant management tools additionally require this key in _meta.warrant_admin_key. */
@@ -98,7 +106,18 @@ export async function dispatchWarrantTool(
       }
       case "synthi_warrant_bind_trust": {
         const a = obj(args);
-        trustLedger.bind(requiredString(a, "warrant_id"), requiredString(a, "policy_id"), Date.now());
+        const warrantId = requiredString(a, "warrant_id");
+        // Patch G2: progression requires proof-of-possession. Binding is only
+        // meaningful for sealed warrants — evidence must never accumulate for
+        // a lease whose holder cannot even prove they hold it.
+        const warrant = warrantRegistry.listWarrants().find((w) => w.warrant_id === warrantId);
+        if (warrant === undefined || warrant.sealed !== true) {
+          return errorResponse("bind_requires_sealed", {
+            human_reason:
+              "Trust progression binds only sealed warrants; re-issue with seal:true so evidence is possession-proven.",
+          });
+        }
+        trustLedger.bind(warrantId, requiredString(a, "policy_id"), Date.now());
         return jsonResponse({ ok: true });
       }
       case "synthi_warrant_policy_register": {
@@ -116,6 +135,32 @@ export async function dispatchWarrantTool(
         const policyId = requiredString(a, "policy_id");
         trustLedger.registerPolicy({ policy_id: policyId, steps });
         return jsonResponse({ ok: true, policy_id: policyId });
+      }
+      case "synthi_warrant_unbind": {
+        // Patch G3: escape valve — unbinding is allowed even mid-cooldown,
+        // but stays holder-only by possession of the sealed bearer secret.
+        const a = obj(args);
+        const warrantId = requiredString(a, "warrant_id");
+        const warrant = warrantRegistry.listWarrants().find((w) => w.warrant_id === warrantId);
+        if (warrant === undefined || warrant.sealed !== true) {
+          return errorResponse("unbind_requires_sealed", {
+            human_reason:
+              "Trust detachment applies to sealed warrants; this identifier is unknown or was never sealed.",
+          });
+        }
+        const probe = warrantRegistry.check({
+          warrant_id: warrantId,
+          tool: "__unbind_probe__",
+          bearer: typeof a["bearer"] === "string" ? a["bearer"] : undefined,
+          now: Date.now(),
+        });
+        if (!probe.allowed && probe.reason_code === "bearer_mismatch") {
+          return errorResponse("bearer_mismatch", {
+            human_reason: probe.human_reason,
+          });
+        }
+        trustLedger.unbind(warrantId);
+        return jsonResponse({ ok: true });
       }
       default:
         throw new Error(`Unknown warrant tool '${toolName}'.`);
@@ -163,12 +208,14 @@ function attenuateTool(args: unknown): ToolResponse {
 
 function checkTool(args: unknown): ToolResponse {
   const a = obj(args);
+  // Patch G6: the caller never supplies time — expiry is judged by the
+  // server clock alone, so stale timestamps cannot revive a dead lease.
   const decision = warrantRegistry.check({
     warrant_id: requiredString(a, "warrant_id"),
     tool: requiredString(a, "tool"),
     args: recordOpt(a["args"]),
     bearer: typeof a["bearer"] === "string" ? a["bearer"] : undefined,
-    now: numberOpt(a["now"]) ?? Date.now(),
+    now: Date.now(),
   });
   return jsonResponse({ ok: decision.allowed, ...decision });
 }
@@ -233,57 +280,58 @@ export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayl
   if (warrantId !== undefined) {
     const args = (params as { arguments?: unknown } | undefined)?.arguments;
     const nowMs = Date.now();
+    const argsRecord = recordOpt(args);
     const bearer = typeof metaValue(params, "warrant_bearer") === "string" ? metaValue(params, "warrant_bearer") as string : undefined;
-    let decision: WarrantDecision;
-    const view = trustLedger.view(warrantId, nowMs);
-    if (view === null) {
-      // Unbound: authorization is the pure registry check, exactly as before.
-      decision = warrantRegistry.check({
-        warrant_id: warrantId,
-        tool: toolName,
-        args: recordOpt(args),
-        bearer,
-        now: nowMs,
-      });
-    } else {
-      // Bound: sealed warrants keep proving possession (and lifecycle) with
-      // the registry; coverage then follows the ledger's unlocked grants.
-      const warrant = warrantRegistry.listWarrants().find((w) => w.warrant_id === warrantId);
-      const sealedCheck = warrant?.sealed === true
-        ? warrantRegistry.check({
-            warrant_id: warrantId,
-            tool: toolName,
-            args: recordOpt(args),
-            bearer,
-            now: nowMs,
-          })
-        : undefined;
-      if (sealedCheck !== undefined && !sealedCheck.allowed) {
-        decision = sealedCheck;
+    // Patch G1 golden rule: registry.check runs UNCONDITIONALLY first —
+    // lifecycle (revoked/expired/unknown), bearer possession, base coverage,
+    // argument scope, and chain budgets all outrank trust. Any denial is used
+    // verbatim; only an all-clear lets the ledger's unlocked grants extend
+    // coverage to tools the base lease never named.
+    let decision: WarrantDecision = warrantRegistry.check({
+      warrant_id: warrantId,
+      tool: toolName,
+      args: argsRecord,
+      bearer,
+      now: nowMs,
+    });
+    if (decision.allowed) {
+      trustLedger.record(warrantId, { allowed: true }, nowMs);
+    } else if (
+      decision.reason_code === "tool_not_covered" &&
+      trustLedger.view(warrantId, nowMs) !== null
+    ) {
+      // Bound and base-blind: re-evaluate coverage over the ladder's
+      // currently unlocked grants, mirroring registry rules exactly.
+      const view = trustLedger.view(warrantId, nowMs)!;
+      const covering: ToolGrant[] = view.unlocked_grants.filter((grant) => grant.tool === toolName);
+      if (covering.length > 0 && covering.some((grant) => grantAcceptsArgs(grant, argsRecord))) {
+        decision = { allowed: true, warrant_id: warrantId };
+        trustLedger.record(warrantId, { allowed: true }, nowMs);
       } else {
-        const covering = view.unlocked_grants.filter((grant) => grant.tool === toolName);
-        if (covering.length === 0) {
-          decision = {
-            allowed: false,
-            reason_code: "tool_not_covered",
-            human_reason: `This warrant does not cover the '${toolName}' capability.`,
-          };
-        } else if (!covering.some((grant) => grantAcceptsArgs(grant, recordOpt(args)))) {
-          decision = {
-            allowed: false,
-            reason_code: "arg_out_of_scope",
-            human_reason: `This warrant restricts '${firstViolatedArgKey(covering, recordOpt(args))}'; the requested value is outside it.`,
-          };
-        } else {
-          decision = { allowed: true, warrant_id: warrantId };
-        }
+        const reasonCode = covering.length === 0 ? "tool_not_covered" : "arg_out_of_scope";
+        decision = {
+          allowed: false,
+          reason_code: reasonCode,
+          human_reason:
+            reasonCode === "tool_not_covered"
+              ? `This warrant does not cover the '${toolName}' capability.`
+              : `This warrant restricts '${firstViolatedArgKey(covering, argsRecord)}'; the requested value is outside it.`,
+        };
+        trustLedger.record(
+          warrantId,
+          { allowed: false, reason_code: reasonCode },
+          nowMs,
+        );
       }
+    } else {
+      // Lifecycle/bearer/base-scope/budget denial stands verbatim (and still
+      // feeds the ledger so probe-shaped denials demote as designed).
+      trustLedger.record(
+        warrantId,
+        { allowed: false, reason_code: decision.reason_code },
+        nowMs,
+      );
     }
-    trustLedger.record(
-      warrantId,
-      decision.allowed ? { allowed: true } : { allowed: false, reason_code: decision.reason_code },
-      nowMs,
-    );
     if (decision.allowed) {
       warrantRegistry.chargeInvocation(warrantId, toolName);
       return null;
@@ -419,7 +467,7 @@ export const WARRANT_TOOLS = [
   {
     name: "synthi_warrant_check",
     description: "Ask whether a warrant allows one tool call right now, with plain-language denial reasons.",
-    inputSchema: { type: "object", properties: { warrant_id: { type: "string" }, tool: { type: "string" }, args: { type: "object" }, bearer: { type: "string", description: "Bearer secret proving possession of a sealed warrant." }, now: { type: "number" } }, required: ["warrant_id", "tool"] },
+    inputSchema: { type: "object", properties: { warrant_id: { type: "string" }, tool: { type: "string" }, args: { type: "object" }, bearer: { type: "string", description: "Bearer secret proving possession of a sealed warrant." } }, required: ["warrant_id", "tool"] },
   },
   {
     name: "synthi_warrant_revoke",
@@ -438,13 +486,18 @@ export const WARRANT_TOOLS = [
   },
   {
     name: "synthi_warrant_bind_trust",
-    description: "Bind a warrant to a registered trust-progression policy so its authority grows with clean call evidence.",
+    description: "Bind a sealed warrant to a registered trust-progression policy so its authority grows with clean call evidence.",
     inputSchema: {"type":"object","properties":{"warrant_id":{"type":"string"},"policy_id":{"type":"string"}},"required":["warrant_id","policy_id"]},
   },
   {
     name: "synthi_warrant_policy_register",
     description: "Register a named trust-progression policy: ordered rungs with evidence gates unlocking extra grants.",
     inputSchema: {"type":"object","properties":{"policy_id":{"type":"string"},"steps":{"type":"array","description":"Ordered autonomy rungs.","items":{"type":"object","properties":{"unlock_after":{"type":"object","properties":{"min_sample":{"type":"number"},"success_ratio":{"type":"number"}},"required":["min_sample","success_ratio"]},"grants":{"type":"array","items":{"type":"object","properties":{"tool":{"type":"string"},"arg_constraints":{"type":"object","additionalProperties":{"type":"string"}},"max_invocations":{"type":"number"}},"required":["tool"]}}},"required":["unlock_after","grants"]}}},"required":["policy_id","steps"]},
+  },
+  {
+    name: "synthi_warrant_unbind",
+    description: "Detach a sealed warrant from its trust policy (holder-only; requires the warrant's bearer secret).",
+    inputSchema: { type: "object", properties: { warrant_id: { type: "string" }, bearer: { type: "string" } }, required: ["warrant_id", "bearer"] },
   },
 ] as const;
 

@@ -1,5 +1,5 @@
 /**
- * Trust progression ledger (WI_WARRANTS_SPEC, Patch F): earned-autonomy
+ * Trust progression ledger (WI_WARRANTS_SPEC, Patches F+G): earned-autonomy
  * ladders kept OUT of the credential. Authorization stays in the warrant
  * (what a holder may do, decided by WarrantRegistry.check); trust lives here
  * as a separately owned binding between a warrant and a registered
@@ -14,7 +14,7 @@
  * verify the target warrant without importing the registry.
  */
 
-import type { ToolGrant, Warrant } from "./warrant.js";
+import { patternIsStricterOrEqual, type ToolGrant, type Warrant } from "./warrant.js";
 
 /** Floor for any step's min_sample: smaller evidence samples prove nothing. */
 const MIN_EVIDENCE_SAMPLE = 5;
@@ -85,6 +85,49 @@ function computeProgress(
   return { currentRung: Math.max(0, unlocked - binding.demoted_rungs), nextStep };
 }
 
+/**
+ * Patch G8: keep progression grants authority-shaped. At bind time every
+ * step grant for a tool the warrant itself covers must carry arg constraints
+ * equal to or stricter than the warrant's own grant for that key (per-key
+ * literal comparison, mirroring attenuation rules) — trust may narrow a
+ * warrant, never widen it. Tools outside the warrant's own grants need no
+ * check here: they cannot widen the tool set because authorization always
+ * evaluates over the base grants UNION ledger-unlocked ones. Any step grant
+ * carrying max_invocations throws: budgets belong to issuance, not to trust
+ * ladders. Throws human Errors; call only after both sides are resolved.
+ */
+export function validateStepGrantsForBind(
+  steps: readonly ProgressionStep[],
+  warrant: Warrant | undefined,
+): void {
+  for (const step of steps) {
+    for (const grant of step.grants) {
+      if (grant.max_invocations !== undefined) {
+        throw new Error(
+          `A progression step grant for tool '${grant.tool}' carries max_invocations; invocation budgets belong to issuance, not to trust ladders.`,
+        );
+      }
+      if (warrant === undefined) continue;
+      const baseGrant = warrant.grants.find((candidate) => candidate.tool === grant.tool);
+      if (baseGrant === undefined) continue;
+      const constraints = grant.arg_constraints;
+      if (constraints === undefined) continue;
+      for (const key of Object.keys(constraints)) {
+        const stepPattern = constraints[key]!;
+        const warrantPattern =
+          baseGrant.arg_constraints === undefined ? undefined : baseGrant.arg_constraints[key];
+        if (!patternIsStricterOrEqual(stepPattern, warrantPattern)) {
+          throw new Error(
+            `Cannot bind trust: arg constraint '${key}' on tool '${grant.tool}' (${JSON.stringify(stepPattern)}) is not equal to or stricter than the warrant's own (${
+              warrantPattern === undefined ? "unrestricted" : JSON.stringify(warrantPattern)
+            }); trust may narrow a warrant, never widen it.`,
+          );
+        }
+      }
+    }
+  }
+}
+
 export class TrustLedger {
   private readonly policies = new Map<string, ProgressionPolicy>();
   private readonly bindings = new Map<string, Binding>();
@@ -98,9 +141,11 @@ export class TrustLedger {
 
   /**
    * Register an organization's trust ladder. Validates the ladder's shape
-   * (depth cap, evidence floor, ratio range) and freezes the policy, so
-   * bound warrants always progress under the exact rules they were bound
-   * to. Duplicate policy identifiers throw. All failures are human Errors.
+   * (non-empty, depth cap, finite evidence floor, ratio range, no duplicate
+   * tools across rungs — Patch G4) and deep-freezes the policy on copies
+   * (Patch G5), so bound warrants always progress under the exact rules they
+   * were bound to and nobody can mutate a rule underneath them. Duplicate
+   * policy identifiers throw. All failures are human Errors.
    */
   registerPolicy(input: { policy_id: string; steps: readonly ProgressionStep[] }): ProgressionPolicy {
     const policyId = input.policy_id;
@@ -110,10 +155,17 @@ export class TrustLedger {
     if (!Array.isArray(input.steps)) {
       throw new Error("A progression policy needs an array of steps.");
     }
+    if (input.steps.length === 0) {
+      throw new Error("A progression policy needs at least one step; an empty ladder unlocks nothing.");
+    }
     if (input.steps.length > MAX_POLICY_DEPTH) {
       throw new Error(`A progression policy may not exceed a depth of ${MAX_POLICY_DEPTH} steps.`);
     }
+    const seenTools = new Set<string>();
     for (const step of input.steps) {
+      if (!Number.isFinite(step.unlock_after.min_sample)) {
+        throw new Error("A progression step needs a finite 'min_sample'.");
+      }
       if (step.unlock_after.min_sample < MIN_EVIDENCE_SAMPLE) {
         throw new Error(
           `A progression step needs at least ${MIN_EVIDENCE_SAMPLE} admitted calls before it can unlock.`,
@@ -122,13 +174,30 @@ export class TrustLedger {
       if (!(step.unlock_after.success_ratio > 0 && step.unlock_after.success_ratio <= 1)) {
         throw new Error("A progression step needs a success ratio greater than 0 and at most 1.");
       }
+      for (const grant of step.grants) {
+        if (seenTools.has(grant.tool)) {
+          throw new Error(
+            `A progression policy has a duplicate grant for tool '${grant.tool}' across its rungs.`,
+          );
+        }
+        seenTools.add(grant.tool);
+      }
     }
     if (this.policies.has(policyId)) {
       throw new Error(`A progression policy with identifier '${policyId}' is already registered.`);
     }
+    // Deep-frozen copies: neither the registering org nor anyone holding the
+    // returned reference can change a rule under already-bound warrants.
     const policy: ProgressionPolicy = Object.freeze({
       policy_id: policyId,
-      steps: Object.freeze([...input.steps]),
+      steps: Object.freeze(
+        input.steps.map((step) =>
+          Object.freeze({
+            unlock_after: Object.freeze({ ...step.unlock_after }),
+            grants: Object.freeze([...step.grants]),
+          }),
+        ),
+      ),
     });
     this.policies.set(policyId, policy);
     return policy;
@@ -137,16 +206,28 @@ export class TrustLedger {
   /**
    * Bind an EXISTING warrant to a registered policy: from here on its call
    * outcomes feed that policy's evidence gates. Unknown warrant or policy
-   * identifiers throw. Rebinding is blocked while the warrant is cooling
-   * down from a probe demotion (a policy switch must not become a cooldown
-   * escape); the guard defaults to fail-closed when no `now` is supplied.
+   * identifiers throw. When the caller supplies the resolved `warrant`,
+   * every step grant must stay authority-shaped relative to it (Patch G8:
+   * equal-or-stricter arg constraints per key, never max_invocations) so a
+   * ladder can only ever narrow what the warrant itself allows. Rebinding
+   * is blocked while the warrant is cooling down from a probe demotion (a
+   * policy switch must not become a cooldown escape); the guard defaults to
+   * fail-closed when no `now` is supplied.
    *
-   * Counter semantics on rebind: switching to a DIFFERENT policy resets the
-   * accumulated counters to zero — fresh evidence must be earned under the
-   * new policy's own rules — while rebinding to the SAME policy preserves
-   * the evidence so far (an idempotent re-affirmation).
+   * Counter semantics on rebind (Patch G3): switching to a DIFFERENT policy
+   * resets admitted/denied to zero — fresh evidence must be earned under
+   * the new policy's own rules — while PRESERVING demoted_rungs, so a
+   * probe-shaped demotion cannot be laundered away by switching ladders.
+   * Rebinding to the SAME policy preserves everything (an idempotent
+   * re-affirmation); unbind() remains the deliberate escape valve that
+   * drops progression state entirely.
    */
-  bind(warrantId: string, policyId: string, now: number = Number.POSITIVE_INFINITY): void {
+  bind(
+    warrantId: string,
+    policyId: string,
+    now: number = Number.POSITIVE_INFINITY,
+    warrant?: Warrant,
+  ): void {
     const policy = this.policies.get(policyId);
     if (policy === undefined) {
       throw new Error(`Cannot bind trust: no progression policy registered under '${policyId}'.`);
@@ -154,6 +235,7 @@ export class TrustLedger {
     if (this.warrantExists !== undefined && !this.warrantExists(warrantId)) {
       throw new Error(`Cannot bind trust: no warrant exists with identifier '${warrantId}'.`);
     }
+    validateStepGrantsForBind(policy.steps, warrant);
     const existing = this.bindings.get(warrantId);
     if (existing !== undefined && existing.cooldown_until_ms > now) {
       throw new Error(
@@ -161,12 +243,13 @@ export class TrustLedger {
       );
     }
     if (existing === undefined || existing.policy_id !== policyId) {
-      // Policy change (or first bind): evidence starts from zero, by design.
+      // Policy change (or first bind): evidence starts from zero, by design,
+      // but demotions carry over — they are discipline, not evidence.
       this.bindings.set(warrantId, {
         policy_id: policyId,
         admitted_count: 0,
         denied_count: 0,
-        demoted_rungs: 0,
+        demoted_rungs: existing?.demoted_rungs ?? 0,
         cooldown_until_ms: 0,
       });
     }
@@ -174,7 +257,10 @@ export class TrustLedger {
 
   /**
    * Detach a warrant from its policy: it reverts to exactly its issued
-   * grants and stops accumulating evidence. Unbound or unknown ids throw.
+   * grants and stops accumulating evidence. Deliberately ALLOWED even while
+   * the warrant is cooling down from a probe demotion — unbinding is the
+   * Patch G3 escape valve (progression drops entirely, authority reverts to
+   * base), whereas rebinding stays blocked. Unbound or unknown ids throw.
    */
   unbind(warrantId: string): void {
     if (!this.bindings.delete(warrantId)) {
