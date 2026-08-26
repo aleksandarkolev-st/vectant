@@ -3580,7 +3580,8 @@ class GitService {
             let current = '';
             try {
                 const repoPath = this.getEffectiveRepoPath(slug, userId);
-                const fullPath = path.join(repoPath, filePath);
+                const safeRel = normalizeRepoRelativePath(filePath);
+                const fullPath = path.join(repoPath, safeRel);
                 current = await fs.promises.readFile(fullPath, 'utf8');
             } catch (e) { /* ignore */ }
             
@@ -4166,8 +4167,15 @@ class GitService {
 
     async readFile(slug, filePath, userId, options = {}) {
         const repoPath = this.getEffectiveRepoPath(slug, userId);
-        // Normalize backslashes → forward slashes and strip leading slash
-        const safePath = (filePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+        let safePath;
+        try {
+            safePath = normalizeRepoRelativePath(filePath);
+        } catch (_) {
+            throw new Error('Invalid file path');
+        }
+        if (safePath.split('/').some((segment) => /(^|[^.])\.$/.test(segment))) {
+            throw new Error('Invalid file path');
+        }
         const fullPath = path.join(repoPath, safePath);
         const readActualFile = async () => {
             try {
@@ -4350,7 +4358,8 @@ class GitService {
                 if (ref === 'HEAD' || !ref) {
                      try {
                         const repoPath = this.getEffectiveRepoPath(slug, userId);
-                        const fullPath = path.join(repoPath, filePath);
+                        const safeRel = normalizeRepoRelativePath(filePath);
+                        const fullPath = path.join(repoPath, safeRel);
                         if (fs.existsSync(fullPath)) {
                              console.log(`[GitService] Serving untracked content for ${filePath}`);
                              return await fs.promises.readFile(fullPath, 'utf8');

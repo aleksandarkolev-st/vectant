@@ -30,6 +30,7 @@ const { runtimeRunOnce, runtimeExecOnce, createRuntimePodProgram, codeSiteProgra
 const { createContainerPortProxy } = require('./containerPortProxy');
 const config = require('./config');
 const gitService = require('./gitService');
+const { resolveCorsPolicy } = require('./corsPolicy');
 const {
   COMMAND_SCOPES,
   authorizeCollabGatewayRequest,
@@ -518,6 +519,23 @@ function enforceOrigin(req, res) {
     return false;
   }
   return true;
+}
+
+function isLocalControlPlaneBypass() {
+  return Boolean(
+    config.SYNTHI_WORKSPACE_AUTH_BYPASS &&
+    !process.env.KUBERNETES_SERVICE_HOST &&
+    process.env.NODE_ENV !== 'production'
+  );
+}
+
+function requireInternalControlPlaneToken(req, res) {
+  if (hasTrustedInternalToken(req, { config }) || isLocalControlPlaneBypass()) {
+    return true;
+  }
+  res.writeHead(403, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'forbidden', detail: 'internal token required' }));
+  return false;
 }
 
 /**
@@ -2186,9 +2204,17 @@ const server = http.createServer(async (req, res) => {
   }
 
   // CORS headers — must echo the exact Origin (not '*') when credentials are included
-  const requestOrigin = req.headers.origin;
-  res.setHeader('Access-Control-Allow-Origin', requestOrigin || '*');
-  if (requestOrigin) res.setHeader('Access-Control-Allow-Credentials', 'true');
+  const cors = resolveCorsPolicy({
+    origin: req.headers.origin,
+    allowedOrigins: ALLOWED_ORIGINS,
+    devBypass: isLocalControlPlaneBypass(),
+  });
+  if (cors.allowOrigin !== null) {
+    res.setHeader('Access-Control-Allow-Origin', cors.allowOrigin);
+  }
+  if (cors.credentials) {
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-user-id, x-session-id, x-user-name, x-user-email, x-runtime-scope, x-runtime-fs-user-id, x-synthi-internal-token, x-collab-internal-token');
@@ -2213,6 +2239,7 @@ const server = http.createServer(async (req, res) => {
   // Called by the signaling server when all peers disconnect from a session.
   // ========================================================================
   if (req.url === '/api/spawner/session-ended') {
+    if (!requireInternalControlPlaneToken(req, res)) return;
     return spawner.handleSessionEnded(req, res);
   }
 
@@ -2484,6 +2511,7 @@ const server = http.createServer(async (req, res) => {
 
   // GET /ports — list active dev-server ports
   if (req.method === 'GET' && (req.url === '/ports' || req.url.startsWith('/ports?'))) {
+    if (!requireInternalControlPlaneToken(req, res)) return;
     proxyService.handlePortsStatus(req, res);
     return;
   }
@@ -2514,6 +2542,7 @@ const server = http.createServer(async (req, res) => {
 
   // Debug endpoint to check collab server state
   if (req.url === '/debug/status' && req.method === 'GET') {
+    if (!requireInternalControlPlaneToken(req, res)) return;
     const status = {
       server: 'running',
       persistence: 'Y-Sweet',
@@ -2646,6 +2675,7 @@ const server = http.createServer(async (req, res) => {
   // TELEMETRY ENDPOINT — /telemetry/metrics — Performance metrics snapshot
   // ========================================================================
   if (req.url === '/telemetry/metrics' && req.method === 'GET') {
+    if (!requireInternalControlPlaneToken(req, res)) return;
     const metrics = getMetrics();
     const elBlocks = getEventLoopBlockCount();
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -2655,6 +2685,7 @@ const server = http.createServer(async (req, res) => {
 
   // POST /telemetry/reset — Reset performance counters
   if (req.url === '/telemetry/reset' && req.method === 'POST') {
+    if (!requireInternalControlPlaneToken(req, res)) return;
     resetMetrics();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, message: 'Metrics reset' }));
@@ -2670,6 +2701,7 @@ const server = http.createServer(async (req, res) => {
   
   // Debug endpoint to validate a specific file
   if (req.url.startsWith('/debug/validate/') && req.method === 'GET') {
+    if (!requireInternalControlPlaneToken(req, res)) return;
     const urlObj = new URL(req.url, `http://${req.headers.host}`);
     const parts = urlObj.pathname.split('/');
     // /debug/validate/:slug/:filePath
@@ -2802,6 +2834,7 @@ const server = http.createServer(async (req, res) => {
   // GET /available-shells
   // Returns: { shells: [{ key, label, executable }], default: string }
   if (req.url === '/available-shells' && req.method === 'GET') {
+    if (!requireInternalControlPlaneToken(req, res)) return;
     const shells = getAvailableShells();
     const { getDefaultShell } = require('./terminalService');
     const defaultShell = getDefaultShell();

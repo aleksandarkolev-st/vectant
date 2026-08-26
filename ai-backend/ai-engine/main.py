@@ -1505,13 +1505,20 @@ async def refactor_split(req: AnalyzeAiRequest):
         "lang": req.lang,
     }
 
+
+INTERNAL_SPLIT_URL = "http://localhost:8000/refactor/split"
+
+
 @app.post("/refactor/split_file")
 def split_file(
     file_path: str,
-    api_url: str = "http://localhost:8000/refactor/split",
-    workspace_root: Optional[str] = None,
 ):
-    root = workspace_root or os.environ.get("SPLIT_WORKSPACE_ROOT") or os.getcwd()
+    """Split a file under the server-configured workspace.
+
+    The workspace root and internal split endpoint are intentionally fixed on
+    the server so callers cannot redirect filesystem access or HTTP requests.
+    """
+    root = os.environ.get("SPLIT_WORKSPACE_ROOT") or os.getcwd()
     try:
         source_path = resolve_under_workspace(root, file_path)
     except ValueError as exc:
@@ -1519,7 +1526,7 @@ def split_file(
 
     if not source_path.exists() or not source_path.is_file():
         print(f"File not found: {file_path}")
-        return
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
 
     with source_path.open('r') as f:
         content = f.read()
@@ -1539,7 +1546,7 @@ def split_file(
     
     print(f"Sending {source_path} to AI for analysis...")
     try:
-        response = requests.post(api_url, json=payload, timeout=30)
+        response = requests.post(INTERNAL_SPLIT_URL, json=payload, timeout=30)
         response.raise_for_status()
         result = response.json().get("result")
         
@@ -1578,8 +1585,11 @@ def split_file(
             print("\nExplanation:")
             print(data["explanation"])
             
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error: {e}")
+        raise HTTPException(status_code=502, detail=f"Split request failed: {e}")
 
 
 # ============================================================
