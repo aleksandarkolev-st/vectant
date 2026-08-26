@@ -120,6 +120,7 @@ const CONTROL_ARG_KEYS = new Set([
   "incident_id",
   "include",
   "include_muted",
+  "include_own",
   "inspection_run_id",
   "line_anchor",
   "line_number",

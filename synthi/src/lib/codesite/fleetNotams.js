@@ -119,20 +119,59 @@ export async function publishFleetNotam(workspaceSlug, projectId, body = {}, act
     digestSha256: notamDigest(payload),
     expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
   };
-  const notam = await (existing
-    ? prisma.codeSiteFleetNotam.update({ where: { id: existing.id }, data })
-    : prisma.codeSiteFleetNotam.create({ data }));
-  await recordFleetEvent(projectId, {
-    eventType: 'fleet_notam_published',
-    actorType: actorTypeFor(actor),
-    actorId: decisionActor(actor),
-    details: {
-      notamId: notam.id,
-      advisoryKey,
-      sourcePolicyDeltaId,
-      digest: notam.digestSha256,
-    },
-  });
+  let notam;
+  let lostPublishRace = false;
+  if (existing) {
+    notam = await prisma.codeSiteFleetNotam.update({ where: { id: existing.id }, data });
+  } else {
+    try {
+      notam = await prisma.codeSiteFleetNotam.create({ data });
+    } catch (error) {
+      if (error?.code !== 'P2002') throw error;
+      notam = await prisma.codeSiteFleetNotam.findUnique({
+        where: { projectId_advisoryKey: { projectId, advisoryKey } },
+      });
+      if (!notam) throw error;
+      lostPublishRace = true;
+    }
+  }
+  if (lostPublishRace) {
+    return { ...fleetNotamProjection(notam), alreadyPublished: true };
+  }
+  try {
+    await recordFleetEvent(projectId, {
+      eventType: 'fleet_notam_published',
+      actorType: actorTypeFor(actor),
+      actorId: decisionActor(actor),
+      details: {
+        notamId: notam.id,
+        advisoryKey,
+        sourcePolicyDeltaId,
+        digest: notam.digestSha256,
+      },
+    });
+  } catch (error) {
+    await delay(25);
+    try {
+      await recordFleetEvent(projectId, {
+        eventType: 'fleet_notam_published',
+        actorType: actorTypeFor(actor),
+        actorId: decisionActor(actor),
+        details: {
+          notamId: notam.id,
+          advisoryKey,
+          sourcePolicyDeltaId,
+          digest: notam.digestSha256,
+        },
+      });
+    } catch {
+      const uncommittedError = new Error('fleet_notam_event_uncommitted');
+      uncommittedError.status = 500;
+      uncommittedError.code = 'fleet_notam_event_uncommitted';
+      uncommittedError.cause = error;
+      throw uncommittedError;
+    }
+  }
   return fleetNotamProjection(notam);
 }
 
@@ -290,7 +329,9 @@ export async function fleetNotamClearanceGate({
     requiredTowerActions.push(...['requiredTowerActions', 'required_tower_actions', 'actions']
       .flatMap((field) => asArray(ruleCandidate?.[field])).map(String));
   }
-  const zoneKeys = uniqueStrings(applied.map((notam) => notam.affectedZoneKey));
+  const zoneKeys = uniqueStrings(applied
+    .map((n) => n.affectedZoneKey)
+    .filter((z) => typeof z === 'string' && z.trim()));
   return {
     appliedNotams: applied.map((notam) => notam.id).filter(Boolean),
     reasonCodes: uniqueStrings([
@@ -304,7 +345,7 @@ export async function fleetNotamClearanceGate({
     matchedRoutes: [matchedRouteForNotams(applied, requestRoute)].filter(Boolean),
     status: 'enforced',
     decision: null,
-    towerInstruction: `Adopted fleet advisories in effect: ${applied.length} NOTAM(s) overlap this route (${zoneKeys.join(', ')}). Required radar added before landing.`,
+    towerInstruction: `Adopted fleet advisories in effect: ${applied.length} NOTAM(s) overlap this route (${zoneKeys.length ? zoneKeys.join(', ') : 'unzoned'}). Required radar added before landing.`,
   };
 }
 
@@ -453,7 +494,7 @@ async function recordFleetEvent(projectId, input) {
     error.status = 422;
     throw error;
   }
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
     const logicalTime = await prisma.codeSiteEvent.count({ where: { projectId } });
     try {
       return await prisma.codeSiteEvent.create({
@@ -471,6 +512,8 @@ async function recordFleetEvent(projectId, input) {
       });
     } catch (error) {
       if (!String(error?.message || '').includes('Unique constraint')) throw error;
+      const retryDelay = 25 * (2 ** attempt) + Math.floor(Math.random() * 40);
+      await delay(retryDelay);
     }
   }
   throw new Error('codesite_event_logical_time_conflict');
@@ -482,6 +525,10 @@ function badRequest(code, detail) {
   error.code = code;
   if (detail !== undefined) error.detail = detail;
   return error;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function notFound(code) {
