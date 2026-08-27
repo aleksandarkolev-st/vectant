@@ -63,14 +63,27 @@ export interface ProgressionPolicy {
   steps: readonly ProgressionStep[];
 }
 
-/** Runtime trust state for one bound warrant (never part of the warrant itself). */
-interface Binding {
+/** Durable runtime trust state for one bound warrant (never part of the credential). */
+export interface TrustBindingSnapshot {
   policy_id: string;
   admitted_count: number;
   denied_count: number;
   demoted_rungs: number;
   cooldown_until_ms: number;
 }
+
+/**
+ * Patch K1 trust journal vocabulary. Snapshot-shaped events carry the full
+ * state of one logical entry after the mutation, so replay is a plain
+ * overwrite with no ordering subtleties inside an entry kind.
+ */
+export type TrustJournalEvent =
+  | { k: "policy"; policy: ProgressionPolicy }
+  | { k: "bind"; warrant_id: string; binding: TrustBindingSnapshot }
+  | { k: "unbind"; warrant_id: string }
+  | { k: "record"; warrant_id: string; binding: TrustBindingSnapshot }
+  | { k: "tombstone"; warrant_id: string; demoted_rungs: number; cooldown_until_ms: number }
+  | { k: "taint"; subject: string; demoted_rungs: number };
 
 /**
  * Denial reason codes counted as probing: repeated, they signal boundary
@@ -91,7 +104,7 @@ const PROBE_REASON_CODES: ReadonlySet<string> = new Set([
  * (before demotion) plus the first locked rung, if any. Zero IO.
  */
 function computeProgress(
-  binding: Binding,
+  binding: TrustBindingSnapshot,
   policy: ProgressionPolicy,
 ): { currentRung: number; nextStep: ProgressionStep | undefined } {
   const ratio =
@@ -157,8 +170,16 @@ export function validateStepGrantsForBind(
 }
 
 export class TrustLedger {
+  /**
+   * Patch K1: optional persistence sink, same contract as the registry's.
+   * Trust mutations that must survive a restart (policy registration,
+   * binding changes, evidence counters, demotions, taint, tombstones) are
+   * emitted as generic snapshot events; replay restores them verbatim.
+   */
+  onMutate?: (event: TrustJournalEvent) => void;
+
   private readonly policies = new Map<string, ProgressionPolicy>();
-  private readonly bindings = new Map<string, Binding>();
+  private readonly bindings = new Map<string, TrustBindingSnapshot>();
 
   /**
    * Patch H1: demotion floors learned per acting subject, fed by
@@ -188,6 +209,11 @@ export class TrustLedger {
    * warrant identifiers; without it, bind verifies policies only.
    */
   constructor(private readonly warrantExists?: (warrantId: string) => boolean) {}
+
+  /** Emit a trust journal event when persistence is wired. */
+  private emit(event: TrustJournalEvent): void {
+    this.onMutate?.(event);
+  }
 
   /**
    * Register an organization's trust ladder. Validates the ladder's shape
@@ -250,6 +276,7 @@ export class TrustLedger {
       ),
     });
     this.policies.set(policyId, policy);
+    this.emit({ k: "policy", policy });
     return policy;
   }
 
@@ -338,6 +365,7 @@ export class TrustLedger {
     if (subject !== undefined) {
       this.applyInheritedTaint(warrantId, subject.toLowerCase());
     }
+    this.emit({ k: "bind", warrant_id: warrantId, binding: { ...this.bindings.get(warrantId)! } });
   }
 
   /**
@@ -373,8 +401,15 @@ export class TrustLedger {
         if (oldest.done === true) break;
         this.tombstones.delete(oldest.value);
       }
+      this.emit({
+        k: "tombstone",
+        warrant_id: warrantId,
+        demoted_rungs: binding.demoted_rungs,
+        cooldown_until_ms: binding.cooldown_until_ms,
+      });
     }
     this.bindings.delete(warrantId);
+    this.emit({ k: "unbind", warrant_id: warrantId });
   }
 
   /**
@@ -412,11 +447,15 @@ export class TrustLedger {
     if (binding === undefined) return;
     if (outcome.allowed) {
       binding.admitted_count += 1;
+      this.emit({ k: "record", warrant_id: warrantId, binding: { ...binding } });
       return;
     }
     if (!PROBE_REASON_CODES.has(outcome.reason_code)) return;
     binding.denied_count += 1;
-    if (binding.denied_count < PROBE_DEMOTION_THRESHOLD) return;
+    if (binding.denied_count < PROBE_DEMOTION_THRESHOLD) {
+      this.emit({ k: "record", warrant_id: warrantId, binding: { ...binding } });
+      return;
+    }
     const depth = this.policies.get(binding.policy_id)?.steps.length ?? 0;
     binding.demoted_rungs = Math.min(binding.demoted_rungs + 1, depth);
     binding.denied_count = 0;
@@ -442,7 +481,10 @@ export class TrustLedger {
         key,
         Math.max(this.subjectTaint.get(key) ?? 0, binding.demoted_rungs),
       );
+      this.emit({ k: "taint", subject: key, demoted_rungs: this.subjectTaint.get(key)! });
     }
+    // The demotion itself changed counters + cooldown; journal the binding.
+    this.emit({ k: "record", warrant_id: warrantId, binding: { ...binding } });
   }
 
   /**
@@ -466,7 +508,10 @@ export class TrustLedger {
     if (taint === undefined) return;
     const binding = this.bindings.get(warrantId);
     if (binding === undefined) return;
-    binding.demoted_rungs = Math.max(binding.demoted_rungs, taint);
+    const demotedRungs = Math.max(binding.demoted_rungs, taint);
+    if (demotedRungs === binding.demoted_rungs) return;
+    binding.demoted_rungs = demotedRungs;
+    this.emit({ k: "record", warrant_id: warrantId, binding: { ...binding } });
   }
 
   /**
@@ -535,5 +580,73 @@ export class TrustLedger {
     this.bindings.clear();
     this.subjectTaint.clear();
     this.tombstones.clear();
+  }
+
+  // ---------------------------------------------------------------------
+  // Patch K1 restore paths: used ONLY by journal replay. They write state
+  // directly without emitting, so replayed history is not re-journaled.
+  // ---------------------------------------------------------------------
+
+  /** Re-register a policy from a journaled snapshot (idempotent overwrite). */
+  restorePolicy(policy: ProgressionPolicy): void {
+    this.policies.set(policy.policy_id, {
+      ...policy,
+      steps: policy.steps.map((step) => ({
+        unlock_after: { ...step.unlock_after },
+        grants: step.grants.map((grant) => ({ ...grant })),
+      })),
+    });
+  }
+
+  /** Restore one binding from a journaled snapshot. */
+  restoreBinding(warrantId: string, binding: TrustBindingSnapshot): void {
+    this.bindings.set(warrantId, { ...binding });
+  }
+
+  /** Restore an unbind exactly; needed when replay follows a prior bind. */
+  restoreUnbind(warrantId: string): void {
+    this.bindings.delete(warrantId);
+  }
+
+  /** Restore one tombstone from a journaled snapshot. */
+  restoreTombstone(warrantId: string, demotedRungs: number, cooldownUntilMs: number): void {
+    this.tombstones.set(warrantId, { demoted_rungs: demotedRungs, cooldown_until_ms: cooldownUntilMs });
+  }
+
+  /** Restore one subject-taint floor from a journaled snapshot. */
+  restoreTaint(subject: string, demotedRungs: number): void {
+    this.subjectTaint.set(String(subject).toLowerCase(), demotedRungs);
+  }
+
+  /** Full state snapshot for a periodic journal checkpoint. */
+  snapshotForJournal(): {
+    policies: ProgressionPolicy[];
+    bindings: Array<{ warrant_id: string; binding: TrustBindingSnapshot }>;
+    tombstones: Array<{ warrant_id: string; demoted_rungs: number; cooldown_until_ms: number }>;
+    taints: Array<{ subject: string; demoted_rungs: number }>;
+  } {
+    return {
+      policies: Array.from(this.policies.values(), (policy) => ({
+        ...policy,
+        steps: policy.steps.map((step) => ({
+          unlock_after: { ...step.unlock_after },
+          grants: step.grants.map((grant) => ({ ...grant })),
+        })),
+      })),
+      bindings: Array.from(this.bindings, ([warrant_id, binding]) => ({ warrant_id, binding: { ...binding } })),
+      tombstones: Array.from(this.tombstones, ([warrant_id, tombstone]) => ({ warrant_id, ...tombstone })),
+      taints: Array.from(this.subjectTaint, ([subject, demoted_rungs]) => ({ subject, demoted_rungs })),
+    };
+  }
+
+  /** Replace state from a checkpoint without emitting replay events. */
+  restoreSnapshot(snapshot: ReturnType<TrustLedger["snapshotForJournal"]>): void {
+    this.resetForTests();
+    for (const policy of snapshot.policies) this.restorePolicy(policy);
+    for (const entry of snapshot.bindings) this.restoreBinding(entry.warrant_id, entry.binding);
+    for (const entry of snapshot.tombstones) {
+      this.restoreTombstone(entry.warrant_id, entry.demoted_rungs, entry.cooldown_until_ms);
+    }
+    for (const entry of snapshot.taints) this.restoreTaint(entry.subject, entry.demoted_rungs);
   }
 }

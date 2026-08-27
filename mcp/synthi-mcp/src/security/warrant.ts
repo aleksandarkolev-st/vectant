@@ -58,6 +58,26 @@ interface WarrantRecord {
   readonly bearer_hash?: string;
 }
 
+/** Durable, secret-free snapshot of a registry record. */
+export interface WarrantRecordSnapshot {
+  warrant: Warrant;
+  remaining: Record<string, number>;
+  bearer_hash?: string;
+}
+
+/**
+ * Patch K1 journal vocabulary. Events describe state CHANGES only (never
+ * bearer secrets — sealed warrants persist their sha256 hash); a fresh
+ * process replays them in order to reconstruct the exact registry and
+ * ledger contents. Discriminated on `k`.
+ */
+export type WarrantJournalEvent =
+  | { k: "issue"; record: WarrantRecordSnapshot }
+  | { k: "attenuate"; record: WarrantRecordSnapshot }
+  | { k: "revoke"; warrant_id: string }
+  | { k: "record"; warrant_id: string; remaining: Record<string, number> }
+  | { k: "renew"; warrant_id: string; expires_at_ms: number; remaining: Record<string, number> };
+
 /**
  * Tiny glob matcher supporting `*` (any characters except ".") and `**`
  * (any characters). Everything else is matched literally.
@@ -192,7 +212,22 @@ export function firstViolatedArgKey(
 }
 
 export class WarrantRegistry {
+  /**
+   * Patch K1: optional persistence sink. When set (by the tools layer's
+   * journal wiring), every successful mutation appends one event describing
+   * the change so a fresh process can replay the exact state. Restore paths
+   * never emit — replayed history must not be re-journaled.
+   */
+  onMutate?: (event: WarrantJournalEvent) => void;
+
   private readonly records = new Map<string, WarrantRecord>();
+  /** Outstanding reservations are process-local; a restart safely keeps their debit. */
+  private readonly reservations = new Map<string, number>();
+
+  /** Emit a journal event when persistence is wired. */
+  private emit(event: WarrantJournalEvent): void {
+    this.onMutate?.(event);
+  }
 
   /**
    * Issue a fresh root warrant (no parent). Throws on bad input. With `seal`,
@@ -226,6 +261,7 @@ export class WarrantRegistry {
       remaining: initialRemaining(warrant.grants),
       ...(bearer === undefined ? {} : { bearer_hash: sha256Hex(bearer) }),
     });
+    this.emit({ k: "issue", record: this.snapshotRecord(warrantId)! });
     return { ...warrant, ...(bearer === undefined ? {} : { bearer }) };
   }
 
@@ -322,6 +358,7 @@ export class WarrantRegistry {
       remaining: initialRemaining(warrant.grants),
       ...(bearer === undefined ? {} : { bearer_hash: sha256Hex(bearer) }),
     });
+    this.emit({ k: "attenuate", record: this.snapshotRecord(warrant.warrant_id)! });
     return { ...warrant, ...(bearer === undefined ? {} : { bearer }) };
   }
 
@@ -396,6 +433,7 @@ export class WarrantRegistry {
         node.remaining.set(tool, Math.max(0, remaining - 1));
       }
     }
+    this.emit({ k: "record", warrant_id: warrantId, remaining: this.remainingSnapshot(warrantId) });
   }
 
   /**
@@ -416,29 +454,43 @@ export class WarrantRegistry {
         return { reserved: false };
       }
     }
+    let charged = false;
     for (const node of chain) {
       const remaining = node.remaining.get(tool);
       if (remaining !== undefined) {
         node.remaining.set(tool, Math.max(0, remaining - 1));
+        charged = true;
       }
+    }
+    if (charged) {
+      const reservationKey = this.reservationKey(warrantId, tool);
+      this.reservations.set(reservationKey, (this.reservations.get(reservationKey) ?? 0) + 1);
+      this.emit({ k: "record", warrant_id: warrantId, remaining: this.remainingSnapshot(warrantId) });
     }
     return { reserved: true };
   }
 
   /**
-   * Refund a reservation after a failed dispatch: restores one invocation on
-   * every budgeted node of the chain. Only meaningful after a successful
-   * tryReserve.
+   * Settle one reservation. Every completed dispatch clears its bookkeeping
+   * token; a failed dispatch (`commit=false`) also restores each budgeted
+   * node. Only meaningful after a successful budgeted tryReserve.
    */
-  settleReserved(warrantId: string, tool: string): void {
+  settleReserved(warrantId: string, tool: string, keepCharge = false): boolean {
     const record = this.records.get(warrantId);
-    if (record === undefined) return;
+    const reservationKey = this.reservationKey(warrantId, tool);
+    const outstanding = this.reservations.get(reservationKey) ?? 0;
+    if (record === undefined || outstanding <= 0) return false;
+    if (outstanding === 1) this.reservations.delete(reservationKey);
+    else this.reservations.set(reservationKey, outstanding - 1);
+    if (keepCharge) return true;
     for (const node of this.chainUp(warrantId)) {
       const remaining = node.remaining.get(tool);
       if (remaining !== undefined) {
         node.remaining.set(tool, remaining + 1);
       }
     }
+    this.emit({ k: "record", warrant_id: warrantId, remaining: this.remainingSnapshot(warrantId) });
+    return true;
   }
 
   /** Direct O(1) snapshot lookup by id (cloned; safe to hand to callers). */
@@ -462,6 +514,7 @@ export class WarrantRegistry {
       if (current.warrant.status !== "revoked") {
         current.warrant.status = "revoked";
         revokedCount += 1;
+        this.emit({ k: "revoke", warrant_id: currentId });
       }
       for (const record of this.records.values()) {
         if (record.warrant.parent_warrant_id === currentId) {
@@ -492,6 +545,115 @@ export class WarrantRegistry {
   /** Test isolation hook: drops every record. Never call outside unit tests. */
   resetForTests(): void {
     this.records.clear();
+    this.reservations.clear();
+  }
+
+  /**
+   * Patch K2: renew an existing warrant. Sealed warrants require their bearer
+   * (possession = authority to extend); revoked warrants can never be
+   * renewed. The new expiry is clamped so the extension request cannot exceed
+   * `max_ttl_ms` of total lifetime from issuance — the caller passes its org's
+   * configured ceiling, keeping this core free of environment lookups.
+   * Optional top-ups replenish a bounded tool budget, never beyond the lesser
+   * of its issued ceiling and the organization-wide ceiling.
+   * Progression state lives in the ledger and is untouched by design.
+   */
+  renewTo(input: {
+    warrant_id: string;
+    bearer?: string;
+    ttl_ms: number;
+    now: number;
+    max_ttl_ms: number;
+    add_invocations?: Record<string, number>;
+    max_invocations_per_grant?: number;
+  }): Warrant {
+    const record = this.records.get(input.warrant_id);
+    if (record === undefined) {
+      throw new Error(`Cannot renew: no warrant exists with identifier '${input.warrant_id}'.`);
+    }
+    if (record.warrant.status !== "active") {
+      throw new Error(`Cannot renew: warrant '${input.warrant_id}' has been revoked.`);
+    }
+    if (input.now >= record.warrant.expires_at_ms) {
+      throw new Error(`Cannot renew: warrant '${input.warrant_id}' has expired. Issue a fresh warrant instead.`);
+    }
+    if (record.bearer_hash !== undefined && !hashesMatch(input.bearer, record.bearer_hash)) {
+      throw new Error(
+        "Cannot renew: this warrant is sealed; present its bearer secret in 'bearer' to prove possession.",
+      );
+    }
+    validateTtl(input.ttl_ms);
+    const ancestorExpiry = this.chainUp(input.warrant_id)
+      .slice(1)
+      .reduce((ceiling, node) => Math.min(ceiling, node.warrant.expires_at_ms), Number.POSITIVE_INFINITY);
+    const ceilingExpiry = Math.min(record.warrant.issued_at_ms + input.max_ttl_ms, ancestorExpiry);
+    const remainingHeadroom = Math.max(0, ceilingExpiry - record.warrant.expires_at_ms);
+    const newExpiry = record.warrant.expires_at_ms + Math.min(input.ttl_ms, remainingHeadroom);
+    if (newExpiry <= record.warrant.expires_at_ms) {
+      throw new Error("Cannot renew: this warrant is already at its organization or parent expiry ceiling.");
+    }
+    record.warrant.expires_at_ms = newExpiry;
+    for (const [tool, count] of Object.entries(input.add_invocations ?? {})) {
+      const grant = record.warrant.grants.find((candidate) => candidate.tool === tool);
+      if (grant === undefined || grant.max_invocations === undefined) {
+        throw new Error(`Cannot renew: '${tool}' is not an invocation-capped grant on this warrant.`);
+      }
+      if (!Number.isSafeInteger(count) || count <= 0) {
+        throw new Error(`Cannot renew: top-up for '${tool}' must be a positive integer.`);
+      }
+      const cap = Math.min(grant.max_invocations, input.max_invocations_per_grant ?? Number.MAX_SAFE_INTEGER);
+      const current = record.remaining.get(tool) ?? 0;
+      record.remaining.set(tool, Math.min(current + count, cap));
+    }
+    this.emit({
+      k: "renew",
+      warrant_id: input.warrant_id,
+      expires_at_ms: record.warrant.expires_at_ms,
+      remaining: this.remainingSnapshot(input.warrant_id),
+    });
+    return { ...record.warrant, grants: record.warrant.grants.map((grant) => ({ ...grant })) };
+  }
+
+  /**
+   * Patch K1 restore path: reconstruct one record exactly as journaled.
+   * Used only by journal replay; never emits.
+   */
+  restoreRecord(input: WarrantRecordSnapshot): void {
+    this.records.set(input.warrant.warrant_id, {
+      warrant: { ...input.warrant, grants: input.warrant.grants.map((grant) => ({ ...grant })) },
+      remaining: new Map(Object.entries(input.remaining)),
+      ...(input.bearer_hash === undefined ? {} : { bearer_hash: input.bearer_hash }),
+    });
+  }
+
+  /** Patch K1 replay helper: mark one restored warrant revoked. */
+  restoreRevoked(warrantId: string): void {
+    const record = this.records.get(warrantId);
+    if (record !== undefined && record.warrant.status !== "revoked") {
+      record.warrant.status = "revoked";
+    }
+  }
+
+  /** Patch K1 replay helper: replace a record's remaining budgets exactly. */
+  restoreRemaining(warrantId: string, remaining: Record<string, number>): void {
+    const record = this.records.get(warrantId);
+    if (record === undefined) return;
+    record.remaining.clear();
+    for (const [tool, count] of Object.entries(remaining)) record.remaining.set(tool, count);
+  }
+
+  /** Patch K1 replay helper: restore a renewed deadline and its budget snapshot. */
+  restoreRenewal(warrantId: string, expiresAtMs: number, remaining: Record<string, number>): void {
+    const record = this.records.get(warrantId);
+    if (record !== undefined) {
+      (record.warrant as { expires_at_ms: number }).expires_at_ms = expiresAtMs;
+      this.restoreRemaining(warrantId, remaining);
+    }
+  }
+
+  /** Full state snapshot for a periodic journal checkpoint. */
+  snapshotForJournal(): WarrantRecordSnapshot[] {
+    return Array.from(this.records.keys(), (warrantId) => this.snapshotRecord(warrantId)!);
   }
 
   /** Records along the delegation chain from the given warrant up to its root. Cycle-safe. */
@@ -511,5 +673,23 @@ export class WarrantRegistry {
 
   private depthOf(warrantId: string): number {
     return this.chainUp(warrantId).length;
+  }
+
+  private snapshotRecord(warrantId: string): WarrantRecordSnapshot | undefined {
+    const record = this.records.get(warrantId);
+    if (record === undefined) return undefined;
+    return {
+      warrant: { ...record.warrant, grants: record.warrant.grants.map((grant) => ({ ...grant })) },
+      remaining: this.remainingSnapshot(warrantId),
+      ...(record.bearer_hash === undefined ? {} : { bearer_hash: record.bearer_hash }),
+    };
+  }
+
+  private remainingSnapshot(warrantId: string): Record<string, number> {
+    return Object.fromEntries(this.records.get(warrantId)?.remaining ?? []);
+  }
+
+  private reservationKey(warrantId: string, tool: string): string {
+    return `${warrantId}\u0000${tool}`;
   }
 }

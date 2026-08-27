@@ -37,13 +37,16 @@ import {
   firstViolatedArgKey,
   type ToolGrant,
   type WarrantDecision,
+  type WarrantJournalEvent,
+  type WarrantRecordSnapshot,
 } from "../security/warrant.js";
-import { TrustLedger } from "../security/trust.js";
+import { TrustLedger, type TrustJournalEvent } from "../security/trust.js";
+import { WarrantStore } from "../security/warrant_store.js";
 import { errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
 import { buildError, type ErrorPayload } from "../correctness/errors.js";
 import { eventLog } from "../events/index.js";
 
-/** The nine warrant tools this module owns (mirrored in tool_registry.ts). */
+/** The warrant management tools this module owns (mirrored in tool_registry.ts). */
 export const WARRANT_TOOL_NAMES = [
   "synthi_warrant_issue",
   "synthi_warrant_attenuate",
@@ -54,6 +57,7 @@ export const WARRANT_TOOL_NAMES = [
   "synthi_warrant_bind_trust",
   "synthi_warrant_policy_register",
   "synthi_warrant_unbind",
+  "synthi_warrant_renew",
 ] as const;
 
 /** When set, warrant management tools additionally require this key in _meta.warrant_admin_key. */
@@ -63,7 +67,7 @@ export function resolveWarrantAdminKey(): string | null {
 }
 
 /** Organization-level ceilings over how many warrants may exist and how long they may run. */
-export function resolveOrgCeilings(): { max_active: number; max_ttl_ms: number } {
+export function resolveOrgCeilings(): { max_active: number; max_ttl_ms: number; max_invocations_per_grant: number } {
   const parsePositive = (raw: string | undefined, fallback: number): number => {
     const parsed = Number(raw);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -71,6 +75,7 @@ export function resolveOrgCeilings(): { max_active: number; max_ttl_ms: number }
   return {
     max_active: parsePositive(process.env["SYNTHI_WARRANT_MAX_ACTIVE"], 100),
     max_ttl_ms: parsePositive(process.env["SYNTHI_WARRANT_MAX_TTL_MS"], 86_400_000),
+    max_invocations_per_grant: parsePositive(process.env["SYNTHI_WARRANT_MAX_INVOCATIONS"], 10_000),
   };
 }
 
@@ -80,9 +85,85 @@ function adminKeyPresented(params: unknown): unknown {
 
 /** Process-wide registry behind the MCP surface. Singleton by design. */
 const warrantRegistry = new WarrantRegistry();
-
 /** Process-wide progression ledger behind the separated trust surface. */
 const trustLedger = new TrustLedger();
+
+type TrustJournalSnapshot = ReturnType<TrustLedger["snapshotForJournal"]>;
+type DurableWarrantJournalEvent =
+  | WarrantJournalEvent
+  | TrustJournalEvent
+  | { k: "checkpoint"; registry: WarrantRecordSnapshot[]; trust: TrustJournalSnapshot };
+
+/**
+ * Patch K1 — durable state. When SYNTHI_WARRANT_STORE names a file, every
+ * mutation of the registry or ledger is appended (AES-256-GCM encrypted,
+ * fsync'd) to that journal, and on module init the journal is replayed into
+ * the singletons before this module serves any call. No path, no persistence:
+ * behavior is exactly as before. The key comes from SYNTHI_WARRANT_STORE_KEY
+ * when set; otherwise a 0600 machine-local key file under os.tmpdir() does.
+ */
+const journalPath = process.env["SYNTHI_WARRANT_STORE"];
+let warrantStore: WarrantStore | undefined;
+if (journalPath !== undefined && journalPath.trim().length > 0) {
+  warrantStore = new WarrantStore({ file: journalPath.trim(), key: process.env["SYNTHI_WARRANT_STORE_KEY"] });
+  // Replay first: restore must not re-emit (restore paths never emit).
+  const journal = warrantStore.replay<DurableWarrantJournalEvent>();
+  for (const { event } of journal) {
+    switch (event.k) {
+      case "issue":
+      case "attenuate":
+        warrantRegistry.restoreRecord({
+          ...event.record,
+        });
+        break;
+      case "revoke":
+        warrantRegistry.restoreRevoked(event.warrant_id);
+        break;
+      case "renew":
+        warrantRegistry.restoreRenewal(event.warrant_id, event.expires_at_ms, event.remaining);
+        break;
+      case "record":
+        if ("remaining" in event) warrantRegistry.restoreRemaining(event.warrant_id, event.remaining);
+        else trustLedger.restoreBinding(event.warrant_id, event.binding);
+        break;
+      case "policy":
+        trustLedger.restorePolicy(event.policy);
+        break;
+      case "bind":
+        trustLedger.restoreBinding(event.warrant_id, event.binding);
+        break;
+      case "unbind":
+        trustLedger.restoreUnbind(event.warrant_id);
+        break;
+      case "tombstone":
+        trustLedger.restoreTombstone(event.warrant_id, event.demoted_rungs, event.cooldown_until_ms);
+        break;
+      case "taint":
+        trustLedger.restoreTaint(event.subject, event.demoted_rungs);
+        break;
+      case "checkpoint":
+        warrantRegistry.resetForTests();
+        for (const record of event.registry) warrantRegistry.restoreRecord(record);
+        trustLedger.restoreSnapshot(event.trust);
+        break;
+    }
+  }
+  // Then wire live emissions so new mutations persist.
+  const appendJournalEvent = (event: WarrantJournalEvent | TrustJournalEvent): void => {
+    warrantStore!.append<DurableWarrantJournalEvent>(event);
+    if (warrantStore!.needsCheckpoint() || warrantStore!.needsRotation()) {
+      const checkpoint: DurableWarrantJournalEvent = {
+        k: "checkpoint",
+        registry: warrantRegistry.snapshotForJournal(),
+        trust: trustLedger.snapshotForJournal(),
+      };
+      if (warrantStore!.needsRotation()) warrantStore!.rotate(checkpoint);
+      else warrantStore!.append(checkpoint);
+    }
+  };
+  warrantRegistry.onMutate = appendJournalEvent;
+  trustLedger.onMutate = appendJournalEvent;
+}
 
 /**
  * Patch I4: security events must not carry raw warrant identifiers — they are
@@ -175,6 +256,8 @@ export async function dispatchWarrantTool(
         trustLedger.unbind(warrantId);
         return jsonResponse({ ok: true });
       }
+      case "synthi_warrant_renew":
+        return renewTool(args);
       default:
         throw new Error(`Unknown warrant tool '${toolName}'.`);
     }
@@ -241,6 +324,21 @@ function revokeTool(args: unknown): ToolResponse {
   return jsonResponse({ ok: true, revoked_count: revokedCount });
 }
 
+function renewTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  const ceilings = resolveOrgCeilings();
+  const warrant = warrantRegistry.renewTo({
+    warrant_id: requiredString(a, "warrant_id"),
+    bearer: typeof a["bearer"] === "string" ? a["bearer"] : undefined,
+    ttl_ms: requiredNumber(a, "ttl_ms"),
+    now: Date.now(),
+    max_ttl_ms: ceilings.max_ttl_ms,
+    add_invocations: invocationTopUps(a["add_invocations"]),
+    max_invocations_per_grant: ceilings.max_invocations_per_grant,
+  });
+  return jsonResponse({ ok: true, warrant });
+}
+
 export type WarrantMode = "off" | "warn" | "enforce";
 
 export function resolveWarrantMode(): WarrantMode {
@@ -279,6 +377,10 @@ export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayl
     // Unconfigured (local/dev) posture keeps the historical open management plane.
     if (adminKey === null) return null;
     if (adminKeyMatches(adminKeyPresented(params), adminKey)) return null;
+    // Patch K2: a holder of a sealed warrant can renew only that credential
+    // by presenting its bearer. Other lifecycle and policy operations remain
+    // strictly on the admin-gated management plane.
+    if (toolName === "synthi_warrant_renew" && hasSealedRenewalBearer(params)) return null;
     eventLog.push({
       kind: "security",
       code: "rate_limit_warning",
@@ -314,45 +416,41 @@ export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayl
       bearer,
       now: nowMs,
     });
-    if (decision.allowed) {
-      trustLedger.record(warrantId, { allowed: true }, nowMs, subject);
-    } else if (
-      decision.reason_code === "tool_not_covered" &&
-      trustLedger.view(warrantId, nowMs) !== null
-    ) {
-      // Bound and base-blind: re-evaluate coverage over the ladder's
-      // currently unlocked grants, mirroring registry rules exactly.
-      const view = trustLedger.view(warrantId, nowMs)!;
-      const covering: ToolGrant[] = view.unlocked_grants.filter((grant) => grant.tool === toolName);
-      if (covering.length > 0 && covering.some((grant) => grantAcceptsArgs(grant, argsRecord))) {
-        decision = { allowed: true, warrant_id: warrantId };
-        trustLedger.record(warrantId, { allowed: true }, nowMs, subject);
+    if (!decision.allowed) {
+      if (decision.reason_code === "tool_not_covered" && trustLedger.view(warrantId, nowMs) !== null) {
+        // Bound and base-blind: re-evaluate coverage over the ladder's
+        // currently unlocked grants, mirroring registry rules exactly.
+        const view = trustLedger.view(warrantId, nowMs)!;
+        const covering: ToolGrant[] = view.unlocked_grants.filter((grant) => grant.tool === toolName);
+        if (covering.length > 0 && covering.some((grant) => grantAcceptsArgs(grant, argsRecord))) {
+          decision = { allowed: true, warrant_id: warrantId };
+        } else {
+          const reasonCode = covering.length === 0 ? "tool_not_covered" : "arg_out_of_scope";
+          decision = {
+            allowed: false,
+            reason_code: reasonCode,
+            human_reason:
+              reasonCode === "tool_not_covered"
+                ? `This warrant does not cover the '${toolName}' capability.`
+                : `This warrant restricts '${firstViolatedArgKey(covering, argsRecord)}'; the requested value is outside it.`,
+          };
+          trustLedger.record(
+            warrantId,
+            { allowed: false, reason_code: reasonCode },
+            nowMs,
+            subject,
+          );
+        }
       } else {
-        const reasonCode = covering.length === 0 ? "tool_not_covered" : "arg_out_of_scope";
-        decision = {
-          allowed: false,
-          reason_code: reasonCode,
-          human_reason:
-            reasonCode === "tool_not_covered"
-              ? `This warrant does not cover the '${toolName}' capability.`
-              : `This warrant restricts '${firstViolatedArgKey(covering, argsRecord)}'; the requested value is outside it.`,
-        };
+        // Lifecycle/bearer/base-scope/budget denial stands verbatim (and still
+        // feeds the ledger so probe-shaped denials demote as designed).
         trustLedger.record(
           warrantId,
-          { allowed: false, reason_code: reasonCode },
+          { allowed: false, reason_code: decision.reason_code },
           nowMs,
           subject,
         );
       }
-    } else {
-      // Lifecycle/bearer/base-scope/budget denial stands verbatim (and still
-      // feeds the ledger so probe-shaped denials demote as designed).
-      trustLedger.record(
-        warrantId,
-        { allowed: false, reason_code: decision.reason_code },
-        nowMs,
-        subject,
-      );
     }
     if (decision.allowed) {
       // Patch J1: reserve atomically across the chain (closes the concurrent
@@ -366,6 +464,9 @@ export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayl
         };
         trustLedger.record(warrantId, { allowed: false, reason_code: "invocations_exhausted" }, nowMs, subject);
       } else {
+        // Evidence is recorded only after the atomic reservation succeeds;
+        // a parallel budget race must not produce a phantom admitted call.
+        trustLedger.record(warrantId, { allowed: true }, nowMs, subject);
         return null;
       }
     }
@@ -409,9 +510,20 @@ export function metaWarrantIdFromParams(params: unknown): string | undefined {
   return metaWarrantId(params);
 }
 
-export function settleWarrant(_toolName: string, warrantId: string | undefined, commit: boolean): void {
-  if (!warrantId || commit) return;
-  warrantRegistry.settleReserved(warrantId, _toolName);
+export function settleWarrant(_toolName: string, warrantId: string | undefined, keepCharge: boolean): void {
+  if (!warrantId) return;
+  warrantRegistry.settleReserved(warrantId, _toolName, keepCharge);
+}
+
+function hasSealedRenewalBearer(params: unknown): boolean {
+  const args = recordOpt((params as { arguments?: unknown } | undefined)?.arguments);
+  const warrantId = args?.["warrant_id"];
+  const bearer = args?.["bearer"];
+  if (typeof warrantId !== "string" || typeof bearer !== "string") return false;
+  const snapshot = warrantRegistry.get(warrantId);
+  if (snapshot?.sealed !== true) return false;
+  const probe = warrantRegistry.check({ warrant_id: warrantId, tool: "__renew_probe__", bearer, now: Date.now() });
+  return probe.allowed || probe.reason_code === "tool_not_covered";
 }
 
 /**
@@ -511,6 +623,21 @@ function toolGrants(value: unknown): ToolGrant[] {
   });
 }
 
+function invocationTopUps(value: unknown): Record<string, number> | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("'add_invocations' must be an object mapping tool names to positive integers.");
+  }
+  const result: Record<string, number> = {};
+  for (const [tool, count] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof count !== "number" || !Number.isSafeInteger(count) || count <= 0) {
+      throw new Error(`Top-up for '${tool}' must be a positive integer.`);
+    }
+    result[tool] = count;
+  }
+  return result;
+}
+
 function obj(args: unknown): Record<string, unknown> {
   return (args ?? {}) as Record<string, unknown>;
 }
@@ -586,9 +713,15 @@ export const WARRANT_TOOLS = [
     description: "Detach a sealed warrant from its trust policy (holder-only; requires the warrant's bearer secret).",
     inputSchema: { type: "object", properties: { warrant_id: { type: "string" }, bearer: { type: "string" } }, required: ["warrant_id", "bearer"] },
   },
+  {
+    name: "synthi_warrant_renew",
+    description: "Extend an active warrant without resetting its earned trust, demotions, or remaining budget. Sealed warrants may self-renew by presenting their bearer secret; administrators may renew any active warrant within organization ceilings.",
+    inputSchema: { type: "object", properties: { warrant_id: { type: "string" }, bearer: { type: "string", description: "Required to self-renew a sealed warrant without the admin key." }, ttl_ms: { type: "number", description: "Requested extension, clamped to remaining organization and parent-warrant lifetime." }, add_invocations: { type: "object", additionalProperties: { type: "integer", minimum: 1 }, description: "Optional replenishment for invocation-capped grants, bounded by their original organization-approved ceiling." } }, required: ["warrant_id", "ttl_ms"] },
+  },
 ] as const;
 
 /** Test isolation hook for the process-wide registry. */
 export function __resetWarrantRegistryForTests(): void {
   warrantRegistry.resetForTests();
+  trustLedger.resetForTests();
 }

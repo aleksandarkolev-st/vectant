@@ -10,10 +10,14 @@ import {
   __resetWarrantRegistryForTests,
   dispatchWarrantTool,
   enforceWarrantGate,
+  authorizeResourceRead,
   resolveOrgCeilings,
   resolveWarrantAdminKey,
   resolveWarrantMode,
+  WARRANT_TOOL_NAMES,
+  WARRANT_TOOLS,
 } from "../../src/tools/warrant.js";
+import { ADVERTISED_TOOLS } from "../../src/tool_registry.js";
 
 const NOW = 1_000_000;
 const TTL = 60_000;
@@ -361,6 +365,7 @@ describe("warrant enforcement gate", () => {
   it("is inert when mode is off", () => {
     process.env["SYNTHI_WARRANT_MODE"] = "off";
     expect(enforceWarrantGate("synthi_screenshot", { arguments: {} })).toBeNull();
+    expect(authorizeResourceRead("synthi://events", {})).toBeNull();
     expect(resolveWarrantMode()).toBe("off");
   });
 });
@@ -398,6 +403,24 @@ describe("warrant admin gate and org ceilings", () => {
     expect(right).toBeNull();
   });
 
+  it("allows a sealed holder to self-renew only with its bearer", async () => {
+    process.env["SYNTHI_WARRANT_ADMIN_KEY"] = "sekrit";
+    const issued = await dispatchWarrantTool("synthi_warrant_issue", {
+      subject: "renew-holder",
+      grants: [{ tool: "synthi_screenshot" }],
+      ttl_ms: 60_000,
+      seal: true,
+    });
+    const warrant = JSON.parse(issued.content[0]!.text).warrant as { warrant_id: string; bearer: string };
+    expect(enforceWarrantGate("synthi_warrant_renew", {
+      arguments: { warrant_id: warrant.warrant_id, bearer: warrant.bearer, ttl_ms: 1_000 },
+    })).toBeNull();
+    const blocked = enforceWarrantGate("synthi_warrant_renew", {
+      arguments: { warrant_id: warrant.warrant_id, ttl_ms: 1_000 },
+    });
+    expect(blocked?.error ?? blocked?.code).toBe("warrant_admin_required");
+  });
+
   it("still gates ordinary tools even when the admin key is presented", () => {
     process.env["SYNTHI_WARRANT_ADMIN_KEY"] = "sekrit";
     const r = enforceWarrantGate("synthi_screenshot", { arguments: {}, _meta: { warrant_admin_key: "sekrit" } });
@@ -410,7 +433,7 @@ describe("warrant admin gate and org ceilings", () => {
     expect(defaults.max_ttl_ms).toBeGreaterThan(0);
     process.env["SYNTHI_WARRANT_MAX_ACTIVE"] = "1";
     process.env["SYNTHI_WARRANT_MAX_TTL_MS"] = "5000";
-    expect(resolveOrgCeilings()).toEqual({ max_active: 1, max_ttl_ms: 5000 });
+    expect(resolveOrgCeilings()).toMatchObject({ max_active: 1, max_ttl_ms: 5000 });
   });
 
   it("enforces the active-warrant ceiling through the dispatcher", async () => {
@@ -731,6 +754,23 @@ describe("Patch J - reserve/settle budgets and O(1) lookup", () => {
     expect(reg.tryReserve(id, "synthi_screenshot").reserved).toBe(false); // budget of 2 spent
   });
 
+  it("settles a successful dispatch without refunding its reservation", () => {
+    const { reg, id } = budgeted();
+    expect(reg.tryReserve(id, "synthi_screenshot").reserved).toBe(true);
+    expect(reg.settleReserved(id, "synthi_screenshot", true)).toBe(true); // successful dispatch keeps the charge
+    expect(reg.settleReserved(id, "synthi_screenshot", true)).toBe(false); // reservation is cleared
+    expect(reg.tryReserve(id, "synthi_screenshot").reserved).toBe(true); // one invocation remains
+    expect(reg.tryReserve(id, "synthi_screenshot").reserved).toBe(false);
+  });
+
+  it("never refunds a call that did not hold a reservation", () => {
+    const { reg, id } = budgeted();
+    expect(reg.settleReserved(id, "synthi_screenshot")).toBe(false);
+    expect(reg.tryReserve(id, "synthi_screenshot").reserved).toBe(true);
+    expect(reg.tryReserve(id, "synthi_screenshot").reserved).toBe(true);
+    expect(reg.tryReserve(id, "synthi_screenshot").reserved).toBe(false);
+  });
+
   it("unbudgeted tools always reserve and get() returns an O(1) snapshot", () => {
     const { reg, id } = budgeted();
     for (let i = 0; i < 5; i += 1) {
@@ -739,5 +779,76 @@ describe("Patch J - reserve/settle budgets and O(1) lookup", () => {
     const snap = reg.get(id);
     expect(snap?.warrant_id).toBe(id);
     expect(snap?.grants.length).toBeGreaterThan(0);
+  });
+});
+
+describe("Patch K - renewal and MCP catalogue", () => {
+  it("extends within the lifetime ceiling and preserves the remaining invocation budget", () => {
+    const reg = new WarrantRegistry();
+    const warrant = reg.issue({
+      subject: "renewable",
+      grants: [{ tool: "fs.read", max_invocations: 3 }],
+      now: NOW,
+      ttl_ms: 1_000,
+    });
+    expect(reg.tryReserve(warrant.warrant_id, "fs.read").reserved).toBe(true);
+    const renewed = reg.renewTo({
+      warrant_id: warrant.warrant_id,
+      ttl_ms: 5_000,
+      now: NOW + 100,
+      max_ttl_ms: 2_000,
+      add_invocations: { "fs.read": 1 },
+      max_invocations_per_grant: 10,
+    });
+    expect(renewed.expires_at_ms).toBe(NOW + 2_000);
+    expect(reg.snapshotForJournal()[0]!.remaining["fs.read"]).toBe(3);
+    expect(reg.tryReserve(warrant.warrant_id, "fs.read").reserved).toBe(true);
+    expect(reg.tryReserve(warrant.warrant_id, "fs.read").reserved).toBe(true);
+    expect(reg.tryReserve(warrant.warrant_id, "fs.read").reserved).toBe(true);
+    expect(reg.tryReserve(warrant.warrant_id, "fs.read").reserved).toBe(false);
+  });
+
+  it("requires the holder bearer for sealed renewal", () => {
+    const reg = new WarrantRegistry();
+    const warrant = reg.issue({ subject: "sealed", grants: [{ tool: "fs.read" }], now: NOW, ttl_ms: TTL, seal: true });
+    expect(() => reg.renewTo({ warrant_id: warrant.warrant_id, ttl_ms: 1_000, now: NOW + 1, max_ttl_ms: TTL * 2 })).toThrow("bearer");
+    expect(reg.renewTo({ warrant_id: warrant.warrant_id, bearer: warrant.bearer, ttl_ms: 1_000, now: NOW + 1, max_ttl_ms: TTL * 2 }).expires_at_ms).toBe(NOW + TTL + 1_000);
+  });
+
+  it("leaves trust rungs, demotions, and subject taint untouched by renewal", () => {
+    const reg = new WarrantRegistry();
+    const ledger = new TrustLedger();
+    ledger.registerPolicy({
+      policy_id: "renew-policy",
+      steps: [{ unlock_after: { min_sample: 5, success_ratio: 1 }, grants: [{ tool: "fs.stat" }] }],
+    });
+    const warrant = reg.issue({
+      subject: "renew-taint",
+      grants: [{ tool: "fs.read", max_invocations: 3 }],
+      now: NOW,
+      ttl_ms: TTL,
+      seal: true,
+    });
+    ledger.bind(warrant.warrant_id, "renew-policy", NOW, undefined, warrant.subject);
+    for (let index = 0; index < 5; index += 1) ledger.record(warrant.warrant_id, { allowed: true }, NOW + index, warrant.subject);
+    for (let index = 0; index < 3; index += 1) ledger.record(warrant.warrant_id, { allowed: false, reason_code: "tool_not_covered" }, NOW + 10 + index, warrant.subject);
+    const before = ledger.view(warrant.warrant_id, NOW + 20);
+    const taintBefore = ledger.viewTaint(warrant.subject);
+    reg.renewTo({
+      warrant_id: warrant.warrant_id,
+      bearer: warrant.bearer,
+      ttl_ms: 1_000,
+      now: NOW + 20,
+      max_ttl_ms: TTL * 2,
+    });
+    expect(ledger.view(warrant.warrant_id, NOW + 20)).toEqual(before);
+    expect(ledger.viewTaint(warrant.subject)).toBe(taintBefore);
+  });
+
+  it("advertises every warrant tool through the MCP surface and canonical catalogue", () => {
+    for (const name of WARRANT_TOOL_NAMES) {
+      expect(WARRANT_TOOLS.some((tool) => tool.name === name)).toBe(true);
+      expect(ADVERTISED_TOOLS).toContain(name);
+    }
   });
 });

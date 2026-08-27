@@ -275,6 +275,7 @@ export const ADVERTISED_TOOLS = [
   "synthi_warrant_bind_trust",
   "synthi_warrant_policy_register",
   "synthi_warrant_unbind",
+  "synthi_warrant_renew",
   // Lifecycle
   "synthi_attach",
   "synthi_detach",
