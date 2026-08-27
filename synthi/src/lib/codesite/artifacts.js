@@ -48,6 +48,8 @@ export const CODESITE_MCP_TOOLS = [
   'synthi_codesite_get_metrics',
   'synthi_codesite_get_agent_manifest',
   'synthi_codesite_get_relevant_context',
+  'synthi_codesite_find_experts',
+  'synthi_codesite_ask_expert_question',
   'synthi_codesite_record_discovery',
   'synthi_codesite_record_lead',
   'synthi_codesite_publish_shared_skill',
@@ -436,9 +438,12 @@ const PRIVATE_KEY_MATERIAL = /-----BEGIN [A-Z ]*PRIVATE KEY-----/;
 
 function repoKnowledgeProjection(item) {
   try {
-    const projected = item?.payloadJson != null || item?.scopeJson != null
-      ? projectKnowledgeRecord(item)
-      : safeKnowledgeProjection(item);
+    // Artifact sync projects persisted rows, so preserve an already-stored
+    // unrouted question instead of rejecting historical facts during resync.
+    const storedItem = item?.kind === 'agent_question' ? { ...item, allowUnrouted: true } : item;
+    const projected = storedItem?.payloadJson != null || storedItem?.scopeJson != null
+      ? projectKnowledgeRecord(storedItem)
+      : safeKnowledgeProjection(storedItem);
     if (!projected
       || projected.visibility !== 'project'
       || projected.redactionClass === 'owner_private'

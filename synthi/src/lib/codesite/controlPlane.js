@@ -69,6 +69,13 @@ import {
 import { buildKnowledgeDeliveryPlan } from './knowledgeRouting';
 import { validateKnowledgeResponse } from './knowledgeResponses';
 import {
+  buildExpertiseIndex,
+  normalizeExpertiseQuery,
+  rankExperts,
+  suggestExpertsForReferences,
+  EXPERTISE_CONTEXT_VERSION,
+} from './agentExpertise';
+import {
   LEARNING_SCOPE,
   learningPreferences,
   portableLearningCatalog,
@@ -2376,7 +2383,7 @@ export async function adoptAgentLearningCatalogEntry(workspaceSlug, sessionId, a
 }
 
 const KNOWLEDGE_CREATE_KINDS = new Set(['discovery', 'lead', 'shared_skill', 'handoff']);
-const KNOWLEDGE_QUERY_KINDS = new Set([...KNOWLEDGE_CREATE_KINDS, 'impact_notice']);
+const KNOWLEDGE_QUERY_KINDS = new Set([...KNOWLEDGE_CREATE_KINDS, 'impact_notice', 'agent_question']);
 
 function nextKnowledgeId(prefix = 'knw') {
   return `${prefix}_${randomBytes(18).toString('base64url')}`;
@@ -2627,7 +2634,9 @@ async function persistKnowledgeAndImpacts(authority, record, deliveryPlan) {
   const projectId = authority.session?.projectId || record.normalized.projectId;
   return prisma.$transaction(async (db) => {
     const persistedSource = await createKnowledgeWithClient(db, record, sourceKnowledgeId, {
-      eventType: knowledgeEventType(record.normalized),
+      eventType: record.normalized.kind === 'agent_question'
+        ? 'agent_question_asked'
+        : knowledgeEventType(record.normalized),
       displayCallsign: authority.session?.displayCallsign || null,
       actorType: source.actorType === 'agent' ? 'agent_session' : source.actorType,
       actorId: source.actorId,
@@ -3262,6 +3271,186 @@ export async function getAgentSharedKnowledge(workspaceSlug, sessionId, agentAcc
   return loadRelevantKnowledgeForSession(session, query);
 }
 
+async function loadExpertiseRoutingState(projectId) {
+  const [sessions, executionPlans, transactions, knowledgeItems] = await Promise.all([
+    prisma.codeSiteAgentSession.findMany({
+      where: { projectId, endedAt: null },
+      select: {
+        id: true,
+        displayCallsign: true,
+        ownerUserId: true,
+        agentProvider: true,
+        status: true,
+        endedAt: true,
+      },
+    }),
+    prisma.codeSiteExecutionPlan.findMany({
+      where: { projectId, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
+      select: { id: true, agentSessionId: true, status: true, routeJson: true, filedAt: true },
+      orderBy: { filedAt: 'desc' },
+      take: 200,
+    }),
+    prisma.codeSiteMutationTransaction.findMany({
+      where: { projectId, status: { in: ['open', 'prepared', 'blocked', 'validated'] } },
+      select: {
+        id: true,
+        agentSessionId: true,
+        status: true,
+        readSetJson: true,
+        observedReadSetJson: true,
+        writeSetJson: true,
+        observedWriteSetJson: true,
+        semanticDependencyRefsJson: true,
+        openedAt: true,
+      },
+      orderBy: { openedAt: 'desc' },
+      take: 200,
+    }),
+    prisma.codeSiteKnowledgeItem.findMany({
+      where: {
+        projectId,
+        kind: { in: ['discovery', 'lead', 'shared_skill', 'handoff', 'agent_question'] },
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      },
+      select: {
+        id: true,
+        kind: true,
+        createdByAgentSessionId: true,
+        scopeJson: true,
+        updatedAt: true,
+      },
+      orderBy: { updatedAt: 'desc' },
+      take: 400,
+    }),
+  ]);
+  return { sessions, executionPlans, transactions, knowledgeItems };
+}
+
+export async function findAgentExperts(workspaceSlug, sessionId, agentAccessToken, query = {}) {
+  const { session } = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.context.read',
+  });
+  const normalized = normalizeExpertiseQuery(query);
+  const routingState = await loadExpertiseRoutingState(session.projectId);
+  const index = buildExpertiseIndex(routingState);
+  const experts = rankExperts(index, normalized, {
+    sessions: routingState.sessions,
+    excludeSessionId: session.id,
+    limit: normalized.limit,
+  });
+  return {
+    contextVersion: EXPERTISE_CONTEXT_VERSION,
+    generatedAt: new Date().toISOString(),
+    projectId: session.projectId,
+    query: {
+      paths: normalized.paths,
+      symbols: normalized.symbols,
+      contracts: normalized.contracts,
+    },
+    experts,
+  };
+}
+
+export async function askAgentQuestion(workspaceSlug, sessionId, agentAccessToken, body = {}) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.knowledge.write',
+  });
+  if (body.projectId && body.projectId !== authority.session.projectId) throw forbidden('knowledge_project_mismatch');
+  const input = {
+    ...body,
+    kind: 'agent_question',
+    projectId: authority.session.projectId,
+    source: {
+      ...(body.source && typeof body.source === 'object' ? body.source : {}),
+      actorType: 'agent',
+      actorId: authority.session.id,
+      agentSessionId: authority.session.id,
+      terminalSessionId: authority.session.terminalSessionId || null,
+    },
+  };
+
+  const routingState = await loadExpertiseRoutingState(authority.session.projectId);
+  const suggested = suggestExpertsForReferences(
+    {
+      paths: asArray(input.references?.paths ?? input.references?.pathRefs ?? []),
+      symbols: asArray(input.references?.symbols ?? []),
+      contracts: asArray(input.references?.contracts ?? []),
+    },
+    {
+      sessions: routingState.sessions,
+      executionPlans: routingState.executionPlans,
+      transactions: routingState.transactions,
+      knowledgeItems: routingState.knowledgeItems,
+      excludeSessionId: authority.session.id,
+      limit: 3,
+    },
+  );
+  const requestedSuggestions = unique(asArray(
+    input.suggestedExpertAgentSessionIds ?? input.suggested_expert_agent_session_ids ?? [],
+  ).map((value) => String(value || '').trim()).filter(Boolean));
+  const knownSessionIds = new Set(routingState.sessions.map((peer) => peer.id));
+  let finalSuggestions;
+  if (requestedSuggestions.length) {
+    const unknown = requestedSuggestions.filter((id) => !knownSessionIds.has(id));
+    if (unknown.length) {
+      throw badRequest('knowledge_reference_outside_project', {
+        projectId: authority.session.projectId,
+        missing: { agentSessionIds: unknown },
+      });
+    }
+    finalSuggestions = requestedSuggestions.slice(0, 8);
+  } else {
+    finalSuggestions = suggested.map((entry) => entry.agentSessionId);
+    if (finalSuggestions.length) input.allowUnrouted = true;
+  }
+
+  const record = buildKnowledgeRecord({
+    ...input,
+    suggestedExpertAgentSessionIds: finalSuggestions,
+    allowUnrouted: input.allowUnrouted === true,
+  }, {
+    projectId: authority.session.projectId,
+    agentSessionId: authority.session.id,
+    userId: authority.session.ownerUserId,
+  });
+
+  const existing = await prisma.codeSiteKnowledgeItem.findFirst({
+    where: { projectId: authority.session.projectId, dedupeKey: record.data.dedupeKey },
+    include: { references: true },
+  });
+  if (existing) {
+    return { question: projectKnowledgeRecord(existing), event: null, routedTo: [], duplicate: true };
+  }
+
+  const deliveryPlan = buildKnowledgeDeliveryPlan({
+    item: {
+      ...record.normalized,
+      id: 'pending',
+      createdByAgentSessionId: authority.session.id,
+      recipientAgentSessionIds: finalSuggestions,
+    },
+    sessions: routingState.sessions,
+    executionPlans: routingState.executionPlans,
+    transactions: routingState.transactions,
+  });
+  const result = await persistKnowledgeAndImpacts(authority, record, deliveryPlan);
+  await syncArtifactsForProject(authority.session.projectId, {
+    reason: 'agent_question_asked',
+    eventId: result.event?.id,
+  });
+  return {
+    question: result.knowledge,
+    event: result.event,
+    routedTo: result.impacts.map((impact) => ({
+      knowledgeItemId: impact.knowledge?.id || null,
+      inboxItem: impact.inboxItem,
+      agentSessionId: impact.inboxItem?.agentSessionId || null,
+    })),
+    suggestedExperts: suggested,
+    duplicate: false,
+  };
+}
+
 export async function listProjectKnowledge(workspaceSlug, projectId, query = {}, actor = null) {
   const project = await requireProject(workspaceSlug, projectId, actor, 'read');
   const normalized = validateKnowledgeQuery(query);
@@ -3339,8 +3528,24 @@ export async function respondToAgentKnowledgeInbox(
         },
       });
     }
+    const isQuestionAnswer = inboxItem.knowledgeItem.kind === 'agent_question' && response.action === 'answer';
+    if (isQuestionAnswer && nextKnowledge.id === inboxItem.knowledgeItem.id) {
+      nextKnowledge = await db.codeSiteKnowledgeItem.update({
+        where: { id: inboxItem.knowledgeItem.id },
+        data: {
+          status: 'answered',
+          payloadJson: stringifyJson({
+            ...parseJson(inboxItem.knowledgeItem.payloadJson, {}),
+            answerText: response.answer,
+            answeredByAgentSessionId: authority.session.id,
+          }),
+        },
+      });
+    }
     const event = await recordEventWithClient(db, authority.session.projectId, {
-      eventType: knowledgeResponseEventType(inboxItem.knowledgeItem.kind, response.action),
+      eventType: inboxItem.knowledgeItem.kind === 'agent_question' && response.action === 'answer'
+        ? 'agent_question_answered'
+        : knowledgeResponseEventType(inboxItem.knowledgeItem.kind, response.action),
       displayCallsign: authority.session.displayCallsign,
       actorType: 'agent_session',
       actorId: authority.session.id,
@@ -3354,6 +3559,36 @@ export async function respondToAgentKnowledgeInbox(
         targetStatus: response.targetStatus,
       },
     }, { syncArtifacts: false });
+    if (inboxItem.knowledgeItem.kind === 'agent_question') {
+      const askerPayload = parseJson(inboxItem.knowledgeItem.payloadJson, {});
+      const askerSessionId = askerPayload?.fromAgentSessionId || inboxItem.knowledgeItem.createdByAgentSessionId;
+      if (askerSessionId && askerSessionId !== authority.session.id) {
+        const asker = await db.codeSiteAgentSession.findFirst({
+          where: { id: askerSessionId, projectId: authority.session.projectId },
+          select: { id: true, ownerUserId: true },
+        });
+        if (asker) {
+          await db.codeSiteAgentInboxItem.create({
+            data: {
+              projectId: authority.session.projectId,
+              agentSessionId: asker.id,
+              recipientUserId: asker.ownerUserId,
+              eventId: event.id,
+              knowledgeItemId: inboxItem.knowledgeItem.id,
+              kind: 'agent_question_answered',
+              requiresResponse: false,
+              status: 'unread',
+              redactedPayloadJson: stringifyJson({
+                knowledgeItemId: inboxItem.knowledgeItem.id,
+                title: `Answered: ${inboxItem.knowledgeItem.title}`.slice(0, 160),
+                answerText: response.answer,
+                answeredByAgentSessionId: authority.session.id,
+              }),
+            },
+          });
+        }
+      }
+    }
     return { nextInbox, nextKnowledge, event };
   });
   await syncArtifactsForProject(authority.session.projectId, {

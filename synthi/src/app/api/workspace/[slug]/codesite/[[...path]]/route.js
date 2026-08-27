@@ -20,6 +20,7 @@
   createPolicyDelta,
   createProject,
   applyRouteRevision,
+  askAgentQuestion,
   dryRunTransactionWrites,
   detachAgentSession,
   eventCursor,
@@ -27,6 +28,7 @@
   getAgentInbox,
   getAgentInboxForAgent,
   getAgentManifest,
+  findAgentExperts,
   getAgentSharedKnowledge,
   getControlState,
   getEvents,
@@ -117,6 +119,13 @@ export const dynamic = 'force-dynamic';
 export async function GET(request, { params }) {
   const { slug, path } = await params;
   const route = parsePath(path);
+  if (route[0] === 'agent-sessions' && route[2] === 'experts' && route.length === 3) {
+    try {
+      return okJson(await findAgentExperts(slug, route[1], bearerToken(request), requestQuery(request)));
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
   if (route[0] === 'agent-sessions' && route[2] === 'relevant-context' && route.length === 3) {
     try {
       return okJson(await getRelevantAgentContext(slug, route[1], bearerToken(request)));
@@ -369,6 +378,16 @@ function requestQuery(request) {
 export async function POST(request, { params }) {
   const { slug, path } = await params;
   const route = parsePath(path);
+  if (route[0] === 'agent-sessions' && route[2] === 'questions' && route.length === 3) {
+    try {
+      return okJson(
+        await askAgentQuestion(slug, route[1], bearerToken(request), await readJson(request)),
+        { status: 201 },
+      );
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
   if (route[0] === 'agent-sessions'
     && route[2] === 'inbox'
     && route[4] === 'respond'

@@ -126,6 +126,8 @@ export const CODE_SITE_EVENT_TYPES = [
   'impact_notice_responded',
   'handoff_ready',
   'handoff_acknowledged',
+  'agent_question_asked',
+  'agent_question_answered',
   'source_changed_observed',
   'runtime_observed',
   'inspection_failed',
