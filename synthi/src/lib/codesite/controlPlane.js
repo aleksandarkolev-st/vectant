@@ -69,6 +69,7 @@ import {
   suggestExpertsForReferences,
   EXPERTISE_CONTEXT_VERSION,
 } from './agentExpertise';
+import { EXPERTISE_POLICY } from './expertisePolicy';
 import {
   deliveryAllowedOrigins,
   endpointDeliveryAllowed,
@@ -3227,16 +3228,18 @@ export async function findAgentExperts(workspaceSlug, sessionId, agentAccessToke
   const { session } = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
     requiredCapability: 'codesite.context.read',
   });
-  const normalized = normalizeExpertiseQuery(query);
+  const normalized = normalizeExpertiseQuery(query, EXPERTISE_POLICY);
   const routingState = await loadExpertiseRoutingState(session.projectId);
-  const index = buildExpertiseIndex({ ...routingState });
+  const index = buildExpertiseIndex({ ...routingState, policy: EXPERTISE_POLICY });
   const experts = rankExperts(index, normalized, {
     sessions: routingState.sessions,
     excludeSessionId: session.id,
     limit: normalized.limit,
+    policy: EXPERTISE_POLICY,
   });
   return {
     contextVersion: EXPERTISE_CONTEXT_VERSION,
+    policyVersion: EXPERTISE_POLICY.version,
     generatedAt: new Date().toISOString(),
     projectId: session.projectId,
     query: {
@@ -3279,7 +3282,8 @@ export async function askAgentQuestion(workspaceSlug, sessionId, agentAccessToke
       transactions: routingState.transactions,
       knowledgeItems: routingState.knowledgeItems,
       excludeSessionId: authority.session.id,
-      limit: 3,
+      limit: EXPERTISE_POLICY.limits.suggestionLimit,
+      policy: EXPERTISE_POLICY,
     },
   );
   // Caller-suggested experts are validated against the live project roster;

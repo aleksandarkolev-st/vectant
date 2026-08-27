@@ -1,29 +1,16 @@
 import { asArray, parseJson } from './json';
+import { EXPERTISE_POLICY, resolveExpertisePolicy } from './expertisePolicy';
 import { isKnowledgeExpertiseEligible } from './knowledgePolicy';
 import { knowledgePathsOverlap } from './knowledgeRouting';
 
 // Derived, evidence-weighted expertise. Nothing here is provider-aware and
 // nothing is hand-authored: every signal comes from control-plane records the
 // agents themselves produced (transactions, flight plans, shared knowledge).
-export const EXPERTISE_CONTEXT_VERSION = 'synthi.codesite.expertise.v1';
-
-export const EXPERTISE_SIGNAL_WEIGHTS = Object.freeze({
-  transaction_write: 3,
-  transaction_read: 2,
-  knowledge_reference: 2,
-  plan_route: 1.5,
-  knowledge_authorship: 1,
-});
-
-export const EXPERTISE_RECENCY_HALF_LIFE_MS = 14 * 24 * 60 * 60 * 1000;
-
-export const EXPERTISE_DEFAULT_LIMIT = 5;
-export const EXPERTISE_MAX_LIMIT = 10;
-
-const ELIGIBLE_SESSION_STATUSES = new Set(['attached', 'detached']);
-const ACTIVE_PLAN_STATUSES = new Set(['filed', 'active', 'holding', 'blocked']);
-const ACTIVE_TRANSACTION_STATUSES = new Set(['open', 'prepared', 'blocked', 'validated']);
-const SIGNAL_KNOWLEDGE_KINDS = new Set(['discovery', 'lead', 'shared_skill', 'handoff', 'agent_question']);
+export const EXPERTISE_CONTEXT_VERSION = EXPERTISE_POLICY.contextVersion;
+export const EXPERTISE_SIGNAL_WEIGHTS = EXPERTISE_POLICY.scoring.signalWeights;
+export const EXPERTISE_RECENCY_HALF_LIFE_MS = EXPERTISE_POLICY.scoring.recencyHalfLifeMs;
+export const EXPERTISE_DEFAULT_LIMIT = EXPERTISE_POLICY.limits.defaultLimit;
+export const EXPERTISE_MAX_LIMIT = EXPERTISE_POLICY.limits.maxLimit;
 
 function unique(values) {
   return [...new Set(values.filter(Boolean))];
@@ -51,23 +38,29 @@ function timestampMs(value) {
   return Number.isFinite(ms) ? ms : null;
 }
 
-export function normalizeExpertiseQuery(query = {}) {
+export function normalizeExpertiseQuery(query = {}, policy = EXPERTISE_POLICY) {
+  const config = resolveExpertisePolicy(policy);
+  const maxReferencesPerType = config.limits.maxReferencesPerType;
   const rawPaths = asArray(query.paths ?? query.path);
   const rawSymbols = asArray(query.symbols ?? query.symbol);
   const rawContracts = asArray(query.contracts ?? query.contract);
-  if (rawPaths.length > 32 || rawSymbols.length > 32 || rawContracts.length > 32) {
+  if (rawPaths.length > maxReferencesPerType
+    || rawSymbols.length > maxReferencesPerType
+    || rawContracts.length > maxReferencesPerType) {
     throw Object.assign(new Error('expertise_query_limit_exceeded'), { code: 'expertise_query_limit_exceeded', status: 422 });
   }
   const paths = unique(rawPaths.map((value) => String(value || '').replace(/\\/g, '/').replace(/^\/+/, '').trim()).filter(Boolean));
   const symbols = unique(rawSymbols.map((value) => String(value || '').trim()).filter(Boolean));
   const contracts = unique(rawContracts.map((value) => String(value || '').trim()).filter(Boolean));
-  if (paths.length > 32 || symbols.length > 32 || contracts.length > 32) {
+  if (paths.length > maxReferencesPerType
+    || symbols.length > maxReferencesPerType
+    || contracts.length > maxReferencesPerType) {
     throw Object.assign(new Error('expertise_query_limit_exceeded'), { code: 'expertise_query_limit_exceeded', status: 422 });
   }
-  const limitValue = Number(query.limit ?? EXPERTISE_DEFAULT_LIMIT);
+  const limitValue = Number(query.limit ?? config.limits.defaultLimit);
   const limit = Number.isFinite(limitValue)
-    ? Math.min(Math.max(Math.floor(limitValue), 1), EXPERTISE_MAX_LIMIT)
-    : EXPERTISE_DEFAULT_LIMIT;
+    ? Math.min(Math.max(Math.floor(limitValue), 1), config.limits.maxLimit)
+    : config.limits.defaultLimit;
   if (!paths.length && !symbols.length && !contracts.length) {
     throw Object.assign(new Error('expertise_query_refs_required'), { code: 'expertise_query_refs_required', status: 422 });
   }
@@ -132,7 +125,13 @@ export function buildExpertiseIndex({
   transactions = [],
   knowledgeItems = [],
   now = new Date(),
+  policy = EXPERTISE_POLICY,
 } = {}) {
+  const config = resolveExpertisePolicy(policy);
+  const eligibleSessionStatuses = new Set(config.statuses.eligibleSession);
+  const activePlanStatuses = new Set(config.statuses.activePlan);
+  const activeTransactionStatuses = new Set(config.statuses.activeTransaction);
+  const signalKnowledgeKinds = new Set(config.statuses.signalKnowledgeKinds);
   const nowMs = timestampMs(now) ?? Date.now();
   const signalsBySession = new Map();
 
@@ -142,7 +141,7 @@ export function buildExpertiseIndex({
   };
 
   for (const plan of executionPlans) {
-    if (!ACTIVE_PLAN_STATUSES.has(String(plan.status || ''))) continue;
+    if (!activePlanStatuses.has(String(plan.status || ''))) continue;
     const atMs = timestampMs(plan.filedAt) ?? nowMs;
     const routes = (asArray(plan.route || jsonList(plan.routeJson)))
       .map((value) => (typeof value === 'string' ? value : value?.path || value?.pattern))
@@ -161,7 +160,7 @@ export function buildExpertiseIndex({
   }
 
   for (const transaction of transactions) {
-    if (!ACTIVE_TRANSACTION_STATUSES.has(String(transaction.status || ''))) continue;
+    if (!activeTransactionStatuses.has(String(transaction.status || ''))) continue;
     const refs = transactionExpertiseRefs(transaction);
     const atMs = timestampMs(transaction.openedAt) ?? nowMs;
     if (refs.write.length) {
@@ -201,7 +200,7 @@ export function buildExpertiseIndex({
 
   for (const itemRow of knowledgeItems) {
     const kind = String(itemRow.kind || '');
-    if (!SIGNAL_KNOWLEDGE_KINDS.has(kind)) continue;
+    if (!signalKnowledgeKinds.has(kind)) continue;
     if (!isKnowledgeExpertiseEligible(itemRow)) continue;
     const references = itemRow.references || parseJson(itemRow.scopeJson, {})?.references || {};
     const paths = unique(asArray(references.paths));
@@ -238,7 +237,7 @@ export function buildExpertiseIndex({
     }
   }
 
-  return { nowMs, signalsBySession };
+  return { nowMs, signalsBySession, policy: config };
 }
 
 /**
@@ -249,16 +248,19 @@ export function buildExpertiseIndex({
 export function rankExperts(index, query, {
   sessions = [],
   excludeSessionId = null,
-  limit = EXPERTISE_DEFAULT_LIMIT,
+  limit,
+  policy = null,
 } = {}) {
+  const config = resolveExpertisePolicy(policy || index?.policy || EXPERTISE_POLICY);
+  const eligibleSessionStatuses = new Set(config.statuses.eligibleSession);
   const normalizedLimit = Number.isFinite(Number(limit))
-    ? Math.min(Math.max(Math.floor(Number(limit)), 1), EXPERTISE_MAX_LIMIT)
-    : EXPERTISE_DEFAULT_LIMIT;
+    ? Math.min(Math.max(Math.floor(Number(limit)), 1), config.limits.maxLimit)
+    : config.limits.defaultLimit;
   const results = [];
 
   for (const session of sessions) {
     if (!session || session.endedAt) continue;
-    if (!ELIGIBLE_SESSION_STATUSES.has(String(session.status || '').toLowerCase())) continue;
+    if (!eligibleSessionStatuses.has(String(session.status || '').toLowerCase())) continue;
     if (session.id === excludeSessionId) continue;
 
     const signals = index.signalsBySession.get(session.id) || [];
@@ -271,8 +273,8 @@ export function rankExperts(index, query, {
       const symbolMatch = query.symbols.length && Boolean(signal.symbols.length && query.symbols.some((symbol) => signal.symbols.includes(symbol)));
       const contractMatch = query.contracts.length && Boolean(signal.contracts.length && query.contracts.some((contract) => signal.contracts.includes(contract)));
       if (!pathMatch && !symbolMatch && !contractMatch) continue;
-      const weight = EXPERTISE_SIGNAL_WEIGHTS[signal.weightSource] ?? 1;
-      const recency = recencyMultiplier(signal.ageMs);
+      const weight = config.scoring.signalWeights[signal.weightSource] ?? config.scoring.defaultSignalWeight;
+      const recency = recencyMultiplier(signal.ageMs, config.scoring.recencyHalfLifeMs);
       score += weight * recency;
       evidence.push(`${signal.type}:${signal.ref}`);
       if (signal.atMs != null && (lastMatchMs == null || signal.atMs > lastMatchMs)) lastMatchMs = signal.atMs;
@@ -287,7 +289,7 @@ export function rankExperts(index, query, {
       status: session.status,
       score: Math.round(score * 1000) / 1000,
       lastInteractionAt: lastMatchMs != null ? new Date(lastMatchMs).toISOString() : null,
-      evidence: unique(evidence).sort().slice(0, 16),
+      evidence: unique(evidence).sort().slice(0, config.limits.maxEvidencePerExpert),
     });
   }
 
@@ -302,17 +304,19 @@ export function suggestExpertsForReferences(references, {
   transactions = [],
   knowledgeItems = [],
   excludeSessionId = null,
-  limit = 3,
+  limit,
   now = new Date(),
+  policy = EXPERTISE_POLICY,
 } = {}) {
+  const config = resolveExpertisePolicy(policy);
   const query = normalizeExpertiseQuery({
     paths: asArray(references?.paths),
     symbols: asArray(references?.symbols),
     contracts: asArray(references?.contracts),
-    limit,
-  });
-  const index = buildExpertiseIndex({ executionPlans, transactions, knowledgeItems, now });
-  return rankExperts(index, query, { sessions, excludeSessionId, limit: query.limit });
+    limit: limit ?? config.limits.suggestionLimit,
+  }, config);
+  const index = buildExpertiseIndex({ executionPlans, transactions, knowledgeItems, now, policy: config });
+  return rankExperts(index, query, { sessions, excludeSessionId, limit: query.limit, policy: config });
 }
 
 export function emptyExpertiseReferences() {

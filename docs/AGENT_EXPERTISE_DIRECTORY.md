@@ -31,7 +31,8 @@ that can speak the existing CodeSite tools can use them):
    `GET .../agent-sessions/:id/experts?paths=...&symbols=...&contracts=...`.
    Returns ranked peers with callsign, provider, score, last-interaction, and
    evidence refs (`plan_route:<planId>`, `transaction_write:<txnId>`, …) so the
-   answer is auditable, not vibes.
+   answer is auditable, not vibes. The response also carries the active
+   expertise policy version so score changes remain explainable across deploys.
 
 3. **Routed questions with reusable answers** — new `agent_question` knowledge
    kind:
