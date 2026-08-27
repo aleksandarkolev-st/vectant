@@ -2652,6 +2652,33 @@ async function persistKnowledgeAndImpacts(authority, record, deliveryPlan) {
     });
     const impacts = [];
     for (const target of deliveryPlan) {
+      if (record.normalized.kind === 'agent_question') {
+        const inboxItem = await db.codeSiteAgentInboxItem.create({
+          data: {
+            projectId,
+            agentSessionId: target.agentSessionId,
+            recipientUserId: target.recipientUserId,
+            eventId: persistedSource.event.id,
+            knowledgeItemId: sourceKnowledgeId,
+            kind: 'agent_question',
+            requiresResponse: true,
+            status: 'pending',
+            redactedPayloadJson: stringifyJson({
+              knowledgeItemId: sourceKnowledgeId,
+              title: record.normalized.title,
+              summary: record.normalized.summary,
+              references: record.normalized.references,
+              urgency: record.normalized.questionUrgency,
+              reasons: target.reasons,
+            }),
+          },
+        });
+        impacts.push({
+          knowledge: projectKnowledgeRecord(persistedSource.row),
+          inboxItem: inboxProjection(inboxItem),
+        });
+        continue;
+      }
       const impactId = nextKnowledgeId('imp');
       const impactInput = {
         kind: 'impact_notice',
