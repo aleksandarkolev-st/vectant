@@ -1,4 +1,5 @@
 import fs from 'fs/promises';
+import { getCodeSiteRuntimeConfig } from './runtimeConfig';
 import path from 'path';
 import crypto from 'crypto';
 import { asArray, stableJson } from './json';
@@ -1365,8 +1366,7 @@ async function compactArtifactPathHistory(target) {
 }
 
 function artifactPathHistoryMaxBytes() {
-  const configured = Number(process.env.SYNTHI_CODESITE_ARTIFACT_PATH_HISTORY_MAX_BYTES);
-  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_ARTIFACT_PATH_HISTORY_MAX_BYTES;
+  return getCodeSiteRuntimeConfig().artifactPathHistoryMaxBytes;
 }
 
 function resolveRepoRootCandidate() {

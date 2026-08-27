@@ -5,7 +5,6 @@ import { stableJson } from './json';
 
 const PROOF_SIGNATURE_SCHEMA_VERSION = 'synthi.codesite.proofSignature.v1';
 const DEFAULT_PROOF_AUTHORITY_ID = 'codesite-local-proof-authority';
-const DEFAULT_PROOF_AUTHORITY_SECRET = 'synthi-codesite-local-proof-authority-development-only';
 
 export function buildProofBundle({
   project,
@@ -233,6 +232,15 @@ export function verifyProofSignatureEnvelope(unsignedBundle, proofSignature, opt
 
 function verifyHmacSignature(signingPayload, envelope, options = {}) {
   const hmac = resolveHmacProofAuthoritySecret(options);
+  if (!hmac.secret) {
+    return {
+      ok: false,
+      reasonCodes: ['proof_bundle_signature_authority_unconfigured'],
+      warnings: [],
+      keyId: envelope.keyId,
+      algorithm: envelope.algorithm,
+    };
+  }
   if (options.requireTrustedAuthority && !hmac.trustedForProofAuthority) {
     return {
       ok: false,
@@ -251,7 +259,7 @@ function verifyHmacSignature(signingPayload, envelope, options = {}) {
   return {
     ok,
     reasonCodes: ok ? ['proof_bundle_signature_valid'] : ['proof_bundle_signature_invalid'],
-    warnings: hmac.source === 'default' ? ['proof_bundle_signature_default_development_secret'] : [],
+    warnings: [],
     keyId: envelope.keyId,
     algorithm: envelope.algorithm,
   };
@@ -343,6 +351,9 @@ function resolveProofAuthority(options = {}) {
     };
   }
   const hmac = resolveHmacProofAuthoritySecret(options);
+  if (!hmac.secret) {
+    throw proofAuthorityUnconfiguredError();
+  }
   if (requiresTrustedProofAuthority(options) && !hmac.trustedForProofAuthority) {
     throw new Error('trusted CodeSite proof authority requires an Ed25519 key or explicit SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET');
   }
@@ -370,7 +381,14 @@ function resolveHmacProofAuthoritySecret(options = {}) {
   if (nextAuthSecret) {
     return { secret: nextAuthSecret, source: 'NEXTAUTH_SECRET', trustedForProofAuthority: false };
   }
-  return { secret: DEFAULT_PROOF_AUTHORITY_SECRET, source: 'default', trustedForProofAuthority: false };
+  return { secret: null, source: 'unconfigured', trustedForProofAuthority: false };
+}
+
+function proofAuthorityUnconfiguredError() {
+  const error = new Error('CodeSite proof authority is unconfigured; set an Ed25519 authority or SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET');
+  error.code = 'codesite_proof_authority_unconfigured';
+  error.status = 503;
+  return error;
 }
 
 function resolveTrustedEd25519PublicKey(envelope, options = {}) {

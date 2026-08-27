@@ -93,6 +93,7 @@ import {
   probeCodeSiteActivityBridge,
   probeCodeSiteDeploymentStatus,
 } from '@/lib/codesite/activityBridgeReadiness';
+import { getCodeSiteRuntimeConfig } from '@/lib/codesite/runtimeConfig';
 import {
   enforceRateLimit,
   errorJson,
@@ -931,17 +932,18 @@ const windowSetInterval = globalThis.setInterval.bind(globalThis);
 const windowClearInterval = globalThis.clearInterval.bind(globalThis);
 
 async function proxyCodeSiteQuarantine(request, slug, route, actor, body = null) {
-  const collabBase = resolveServerCollabHttpUrl();
   const sourceUrl = new URL(request.url);
   const action = route[2] || null;
   const quarantineId = route[1] || null;
   const targetPath = quarantineId
     ? `/codesitefs/quarantines/${encodeURIComponent(slug)}/${encodeURIComponent(quarantineId)}${action ? `/${action}` : ''}`
     : `/codesitefs/quarantines/${encodeURIComponent(slug)}`;
-  const targetUrl = new URL(`${collabBase}${targetPath}`);
+  const collabBase = resolveServerCollabHttpUrl();
+  const targetUrl = collabBase ? new URL(`${collabBase}${targetPath}`) : null;
   const identity = quarantineRuntimeIdentity(body, sourceUrl, actor);
   if (identity.error) return identity.error;
   const { actorUserId, filesystemUserId, runtimeScope } = identity;
+  if (!action && !targetUrl) return errorJson(503, 'codesite_collab_runtime_unconfigured');
 
   if (!action) {
     if (actorUserId) targetUrl.searchParams.set('userId', actorUserId);
@@ -1031,6 +1033,7 @@ async function proxyCodeSiteQuarantine(request, slug, route, actor, body = null)
     });
   }
 
+  if (!targetUrl) return errorJson(503, 'codesite_collab_runtime_unconfigured');
   let response;
   try {
     response = await fetch(targetUrl, {
@@ -1095,24 +1098,14 @@ function quarantineRuntimeIdentity(body, sourceUrl, actor) {
 }
 
 function resolveServerCollabHttpUrl() {
-  return String(
-    process.env.COLLAB_SERVER_URL
-    || process.env.SYNTHI_COLLAB_SERVER_URL
-    || process.env.NEXT_PUBLIC_COLLAB_SERVER_URL
-    || process.env.COLLAB_URL
-    || 'http://localhost:1234'
-  ).replace(/\/+$/, '').replace(/^ws/i, 'http');
+  return getCodeSiteRuntimeConfig().collabServerUrl;
 }
 
 function resolveConfiguredCollabHttpUrl() {
-  const configured = process.env.COLLAB_SERVER_URL
-    || process.env.SYNTHI_COLLAB_SERVER_URL
-    || process.env.NEXT_PUBLIC_COLLAB_SERVER_URL
-    || process.env.COLLAB_URL;
-  return configured ? String(configured).replace(/\/+$/, '').replace(/^ws/i, 'http') : '';
+  return getCodeSiteRuntimeConfig().collabServerUrl;
 }
 
-function shortNotificationSignal(ms = 1500) {
+function shortNotificationSignal(ms = getCodeSiteRuntimeConfig().activityNotificationTimeoutMs) {
   if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
     return AbortSignal.timeout(ms);
   }
@@ -1124,7 +1117,7 @@ async function notifyCollabCodeSiteActivity(request, slug, payload = {}) {
   if (!collabUrl || typeof fetch !== 'function') return null;
   const requestUrl = new URL(request.url);
   const targetUrl = new URL(`/codesite/activity/${encodeURIComponent(slug)}`, `${collabUrl}/`);
-  const internalToken = process.env.COLLAB_INTERNAL_TOKEN || process.env.SYNTHI_COLLAB_INTERNAL_TOKEN || '';
+  const internalToken = getCodeSiteRuntimeConfig().collabInternalToken;
   const headers = {
     'content-type': 'application/json',
     'x-user-id': payload.actorUserId || '',

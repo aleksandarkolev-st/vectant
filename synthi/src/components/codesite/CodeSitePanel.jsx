@@ -89,6 +89,8 @@ const CHANNEL_MODE_OPTIONS = [
 const POLL_MS = 30000;
 const EVIDENCE_POLL_MS = 5000;
 const STREAM_REFRESH_DEBOUNCE_MS = 400;
+const STREAM_EVENT_BUFFER_LIMIT = 12;
+const TOWER_EVENT_FEED_LIMIT = 24;
 
 const EMPTY_DEPLOYMENT_STATUS = {
   status: "loading",
@@ -398,7 +400,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
             const withoutDuplicate = current.filter(
               (item) => (item?.id || item?.eventId) !== id,
             );
-            return [event, ...withoutDuplicate].slice(0, 12);
+            return [event, ...withoutDuplicate].slice(0, STREAM_EVENT_BUFFER_LIMIT);
           });
           scheduleRefresh();
         },
@@ -706,7 +708,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
   const events = uniqueByEvent([
     ...streamEvents,
     ...asArray(radarState.events).slice().reverse(),
-  ]).slice(0, 24);
+  ]).slice(0, TOWER_EVENT_FEED_LIMIT);
   const allEvents = asArray(radarState.events);
   const fetchedQuarantines = viewSlices.quarantines ?? radarState.quarantines;
   const quarantineRecords = useMemo(
