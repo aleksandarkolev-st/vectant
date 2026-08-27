@@ -7,8 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   applyCodeSiteRouteRevision: vi.fn(),
   applyCodeSiteQuarantine: vi.fn(),
+  answerCodeSiteProjectQuestion: vi.fn(),
   createCodeSiteProject: vi.fn(),
   exportCodeSiteArtifacts: vi.fn(),
+  fetchCodeSiteProjectExperts: vi.fn(),
+  fetchCodeSiteProjectKnowledge: vi.fn(),
   fetchCodeSiteCoreState: vi.fn(),
   fetchCodeSiteDeploymentStatus: vi.fn(),
   fetchCodeSiteEvidenceSlice: vi.fn(),
@@ -22,6 +25,7 @@ const h = vi.hoisted(() => ({
   reviewCodeSiteDocument: vi.fn(),
   reviewCodeSiteRouteRevision: vi.fn(),
   simulateCodeSiteShadowMerge: vi.fn(),
+  submitCodeSiteProjectQuestionFeedback: vi.fn(),
   subscribeCodeSiteProjectEvents: vi.fn(),
 }));
 
@@ -53,9 +57,12 @@ function emptyState(workspaceSlug = 'acme') {
 vi.mock('../codesiteClient', () => ({
   applyCodeSiteRouteRevision: h.applyCodeSiteRouteRevision,
   applyCodeSiteQuarantine: h.applyCodeSiteQuarantine,
+  answerCodeSiteProjectQuestion: h.answerCodeSiteProjectQuestion,
   createCodeSiteProject: h.createCodeSiteProject,
   createEmptyCodeSiteRadarState: emptyState,
   exportCodeSiteArtifacts: h.exportCodeSiteArtifacts,
+  fetchCodeSiteProjectExperts: h.fetchCodeSiteProjectExperts,
+  fetchCodeSiteProjectKnowledge: h.fetchCodeSiteProjectKnowledge,
   fetchCodeSiteCoreState: h.fetchCodeSiteCoreState,
   fetchCodeSiteDeploymentStatus: h.fetchCodeSiteDeploymentStatus,
   fetchCodeSiteEvidenceSlice: h.fetchCodeSiteEvidenceSlice,
@@ -69,6 +76,7 @@ vi.mock('../codesiteClient', () => ({
   reviewCodeSiteDocument: h.reviewCodeSiteDocument,
   reviewCodeSiteRouteRevision: h.reviewCodeSiteRouteRevision,
   simulateCodeSiteShadowMerge: h.simulateCodeSiteShadowMerge,
+  submitCodeSiteProjectQuestionFeedback: h.submitCodeSiteProjectQuestionFeedback,
   subscribeCodeSiteProjectEvents: h.subscribeCodeSiteProjectEvents,
 }));
 

@@ -2,6 +2,7 @@ export { default as OverviewView } from "./OverviewView";
 export { default as GraphView } from "./GraphView";
 export { default as ActivityView } from "./ActivityView";
 export { default as ChannelsView } from "./channels/ChannelsView";
+export { default as ExpertiseView } from "./ExpertiseView";
 export { default as GovernanceView } from "./GovernanceView";
 export { default as LocksView } from "./LocksView";
 export { default as QuarantineView } from "./QuarantineView";

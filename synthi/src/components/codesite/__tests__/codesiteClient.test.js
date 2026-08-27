@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as codeSiteClient from '../codesiteClient';
 import {
   CODE_SITE_LIVE_EVENT_TYPES,
+  answerCodeSiteProjectQuestion,
+  fetchCodeSiteProjectExperts,
   fetchCodeSiteProjectKnowledge,
+  submitCodeSiteProjectQuestionFeedback,
   subscribeCodeSiteProjectEvents,
 } from '../codesiteClient';
 
@@ -60,6 +63,9 @@ describe('CodeSite live event subscription', () => {
       'impact_notice_responded',
       'handoff_ready',
       'handoff_acknowledged',
+      'agent_question_asked',
+      'agent_question_answered',
+      'agent_question_feedback_submitted',
     ];
     const onEvent = vi.fn();
 
@@ -116,6 +122,42 @@ describe('CodeSite project knowledge client', () => {
     expect(fetch.mock.calls[0][1].headers).not.toHaveProperty('authorization');
   });
 
+  it('forwards the project-safe agent question kind filter', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ knowledge: [] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetch);
+
+    await fetchCodeSiteProjectKnowledge('team', 'project-1', {
+      kind: 'agent_question',
+      status: 'open',
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/workspace/team/codesite/projects/project-1/knowledge?kind=agent_question&status=open',
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+  });
+
+  it('forwards a cursor and exposes the next page token without changing the array contract', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({
+      knowledge: [{ id: 'question-2', kind: 'agent_question', status: 'open' }],
+      nextCursor: 'cursor/next',
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetch);
+
+    const knowledge = await fetchCodeSiteProjectKnowledge('team', 'project-1', {
+      kind: 'agent_question',
+      status: 'open',
+      cursor: 'cursor/current',
+    });
+
+    expect(knowledge).toEqual([{ id: 'question-2', kind: 'agent_question', status: 'open' }]);
+    expect(knowledge.nextCursor).toBe('cursor/next');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/workspace/team/codesite/projects/project-1/knowledge?kind=agent_question&status=open&cursor=cursor%2Fcurrent',
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+  });
+
   it('drops invalid knowledge filters instead of forwarding arbitrary values', async () => {
     const fetch = vi.fn(async () => new Response(JSON.stringify({ knowledge: 'invalid' }), { status: 200 }));
     vi.stubGlobal('fetch', fetch);
@@ -141,6 +183,70 @@ describe('CodeSite project knowledge client', () => {
 
     await expect(fetchCodeSiteProjectKnowledge('', 'project-1')).resolves.toEqual([]);
     await expect(fetchCodeSiteProjectKnowledge('team', '')).resolves.toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('requests project experts with repeated, encoded reference parameters', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({
+      projectId: 'project/1',
+      experts: [{ agentSessionId: 'session-1', score: 2 }],
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetch);
+
+    const result = await fetchCodeSiteProjectExperts('team/a', 'project/1', {
+      paths: ['src/a.ts', 'src/a.ts', 'src/b.ts'],
+      symbols: ['build?Plan'],
+      contracts: ['route/v2'],
+    });
+
+    expect(result.experts).toEqual([{ agentSessionId: 'session-1', score: 2 }]);
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/workspace/team%2Fa/codesite/projects/project%2F1/experts?path=src%2Fa.ts&path=src%2Fb.ts&symbol=build%3FPlan&contract=route%2Fv2',
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+  });
+
+  it('uses human project routes for answering and reviewing a question', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal('fetch', fetch);
+
+    await answerCodeSiteProjectQuestion('team', 'project-1', 'question/1', 'Use the shared route.', ['proof:1', 'proof:1']);
+    await submitCodeSiteProjectQuestionFeedback('team', 'project-1', 'question/1', {
+      verdict: 'needs_correction',
+      correction: 'Prefer the versioned contract.',
+      evidenceRefs: ['contract:2'],
+    });
+
+    expect(fetch.mock.calls).toEqual([
+      [
+        '/api/workspace/team/codesite/projects/project-1/questions/question%2F1/answer',
+        {
+          method: 'POST',
+          body: JSON.stringify({ answer: 'Use the shared route.', evidenceRefs: ['proof:1'] }),
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ],
+      [
+        '/api/workspace/team/codesite/projects/project-1/knowledge/question%2F1/feedback',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            verdict: 'needs_correction',
+            correction: 'Prefer the versioned contract.',
+            evidenceRefs: ['contract:2'],
+          }),
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ],
+    ]);
+  });
+
+  it('does not request project experts without both human route identifiers', async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+
+    await expect(fetchCodeSiteProjectExperts('', 'project-1', { paths: ['src/a.ts'] })).resolves.toBeNull();
+    await expect(fetchCodeSiteProjectExperts('team', '', { paths: ['src/a.ts'] })).resolves.toBeNull();
     expect(fetch).not.toHaveBeenCalled();
   });
 

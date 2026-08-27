@@ -62,13 +62,18 @@ import {
 } from './knowledgeRecords';
 import { buildKnowledgeDeliveryPlan } from './knowledgeRouting';
 import { validateKnowledgeResponse } from './knowledgeResponses';
+import { validateKnowledgeFeedback } from './knowledgeFeedback';
 import {
   buildExpertiseIndex,
   normalizeExpertiseQuery,
   rankExperts,
   suggestExpertsForReferences,
-  EXPERTISE_CONTEXT_VERSION,
 } from './agentExpertise';
+import { loadExpertisePolicy } from './expertisePolicyRuntime';
+import {
+  getCachedExpertiseRoutingState,
+  invalidateExpertiseRoutingState,
+} from './expertiseIndexCache';
 import {
   deliveryAllowedOrigins,
   endpointDeliveryAllowed,
@@ -83,6 +88,9 @@ import {
   normalizeRuntimeObservedObservation,
   normalizeSourceChangedObservation,
 } from './projectObservation';
+
+const ACTIVE_EXPERTISE_POLICY = loadExpertisePolicy();
+const projectActiveKnowledgeRecord = (row) => projectKnowledgeRecord(row, ACTIVE_EXPERTISE_POLICY);
 
 const EVENT_ORDER_BY = [{ logicalTime: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }];
 const ACTIVE_FLIGHT_STATUSES = ['filed', 'preflight', 'cleared', 'taxiing', 'airborne', 'holding', 'rerouted', 'landing_requested'];
@@ -2166,7 +2174,7 @@ export async function getRelevantAgentContext(workspaceSlug, sessionId, agentAcc
     workstreams,
     transactions,
     inbox,
-  ).map(projectKnowledgeRecord).filter(Boolean);
+  ).map(projectActiveKnowledgeRecord).filter(Boolean);
 
   const projectControl = boundedAgentContextValue(parseJson(session.project.controlPlanJson, {}));
   const zonePolicy = boundedAgentContextValue(parseJson(session.project.zonePolicyJson, {}));
@@ -2308,15 +2316,51 @@ function validateKnowledgeQuery(input = {}) {
   if (kind && !KNOWLEDGE_QUERY_KINDS.has(kind)) throw badRequest('knowledge_kind_invalid');
   const status = String(input.status || '').trim().toLowerCase();
   if (status && !/^[a-z][a-z0-9_]{0,63}$/.test(status)) throw badRequest('knowledge_status_invalid');
-  const limitValue = Number(input.limit || 50);
-  const limit = Number.isInteger(limitValue) ? Math.min(Math.max(limitValue, 1), 100) : 50;
+  const referenceFilters = {
+    paths: normalizeKnowledgeQueryReferences(input, ['path', 'paths'], 'path'),
+    symbols: normalizeKnowledgeQueryReferences(input, ['symbol', 'symbols'], 'symbol'),
+    contracts: normalizeKnowledgeQueryReferences(input, ['contract', 'contracts'], 'contract'),
+    workstreamIds: normalizeKnowledgeQueryReferences(input, ['workstream_id', 'workstreamId', 'workstreamIds'], 'workstream_id'),
+  };
+  const pagePolicy = ACTIVE_EXPERTISE_POLICY.knowledge;
+  const limitValue = Number(input.limit || pagePolicy.pageDefaultLimit);
+  const limit = Number.isInteger(limitValue)
+    ? Math.min(Math.max(limitValue, 1), pagePolicy.pageMaxLimit)
+    : pagePolicy.pageDefaultLimit;
   const since = input.since ? new Date(input.since) : null;
   if (since && !Number.isFinite(since.getTime())) throw badRequest('knowledge_since_invalid');
-  return { kind: kind || null, status: status || null, limit, since };
+  const cursor = typeof input.cursor === 'string' && input.cursor.trim() ? input.cursor.trim() : null;
+  return { kind: kind || null, status: status || null, limit, since, cursor, ...referenceFilters };
+}
+
+function normalizeKnowledgeQueryReferences(input, keys, field) {
+  const key = keys.find((candidate) => input[candidate] !== undefined);
+  if (!key) return [];
+  const values = asArray(input[key]);
+  if (values.length > ACTIVE_EXPERTISE_POLICY.limits.maxReferencesPerType) {
+    throw badRequest('knowledge_reference_filter_limit_exceeded', {
+      field,
+      limit: ACTIVE_EXPERTISE_POLICY.limits.maxReferencesPerType,
+    });
+  }
+  const normalized = [];
+  for (const value of values) {
+    if (typeof value !== 'string') throw badRequest('knowledge_reference_filter_invalid', { field });
+    const trimmed = value.trim();
+    if (!trimmed
+      || trimmed.length > ACTIVE_EXPERTISE_POLICY.knowledge.filterMaxValueLength
+      || trimmed.includes('\u0000')) {
+      throw badRequest('knowledge_reference_filter_invalid', { field });
+    }
+    const normalizedValue = field === 'path' ? normalizePath(trimmed) : trimmed;
+    if (!normalizedValue) throw badRequest('knowledge_reference_filter_invalid', { field });
+    if (!normalized.includes(normalizedValue)) normalized.push(normalizedValue);
+  }
+  return normalized;
 }
 
 function knowledgeWhere(projectId, query) {
-  return {
+  const base = {
     projectId,
     ...(query.kind ? { kind: query.kind } : {}),
     ...(query.status ? { status: query.status } : {}),
@@ -2326,6 +2370,98 @@ function knowledgeWhere(projectId, query) {
       { expiresAt: { gt: new Date() } },
     ],
   };
+  const referenceFilters = [
+    ['path', query.paths],
+    ['symbol', query.symbols],
+    ['contract', query.contracts],
+    ['workstream', query.workstreamIds],
+  ].filter(([, values]) => values?.length);
+  if (!referenceFilters.length) return base;
+  return {
+    AND: [
+      base,
+      ...referenceFilters.map(([refType, values]) => ({
+        references: { some: { refType, refKey: { in: values } } },
+      })),
+    ],
+  };
+}
+
+function encodeProjectKnowledgeCursor(row) {
+  const updatedAt = row?.updatedAt instanceof Date ? row.updatedAt : new Date(row?.updatedAt);
+  if (!row?.id || !Number.isFinite(updatedAt.getTime())) return null;
+  return Buffer.from(JSON.stringify({
+    v: ACTIVE_EXPERTISE_POLICY.knowledge.cursorVersion,
+    updatedAt: updatedAt.toISOString(),
+    id: row.id,
+  })).toString('base64url');
+}
+
+function decodeProjectKnowledgeCursor(cursor) {
+  try {
+    const parsed = JSON.parse(Buffer.from(String(cursor), 'base64url').toString('utf8'));
+    if (parsed?.v !== ACTIVE_EXPERTISE_POLICY.knowledge.cursorVersion
+      || typeof parsed.updatedAt !== 'string'
+      || typeof parsed.id !== 'string'
+      || !parsed.id.trim()) {
+      throw new Error('knowledge_cursor_shape_invalid');
+    }
+    const updatedAt = new Date(parsed.updatedAt);
+    if (!Number.isFinite(updatedAt.getTime())) throw new Error('knowledge_cursor_value_invalid');
+    return { updatedAt, id: parsed.id };
+  } catch (_) {
+    throw badRequest('knowledge_cursor_invalid');
+  }
+}
+
+function projectKnowledgeWhere(projectId, query, cursor = null) {
+  const base = knowledgeWhere(projectId, query);
+  if (!cursor) return base;
+  return {
+    AND: [
+      base,
+      {
+        OR: [
+          { updatedAt: { lt: cursor.updatedAt } },
+          { updatedAt: cursor.updatedAt, id: { lt: cursor.id } },
+        ],
+      },
+    ],
+  };
+}
+
+function descendingKeysetCursor(row, field) {
+  if (!row?.id || row[field] == null) return null;
+  return { [field]: row[field], id: row.id };
+}
+
+function descendingKeysetWhere(base, cursor, field) {
+  if (!cursor) return base;
+  return {
+    AND: [
+      base,
+      {
+        OR: [
+          { [field]: { lt: cursor[field] } },
+          { [field]: cursor[field], id: { lt: cursor.id } },
+        ],
+      },
+    ],
+  };
+}
+
+async function loadAllOrderedRows({ fetchPage, orderField, pageSize }) {
+  const rows = [];
+  let cursor = null;
+  while (true) {
+    const page = await fetchPage(cursor, pageSize);
+    if (!Array.isArray(page) || !page.length) break;
+    rows.push(...page);
+    if (page.length < pageSize) break;
+    cursor = descendingKeysetCursor(page.at(-1), orderField);
+    if (!cursor) break;
+  }
+  return rows;
 }
 
 function knowledgeIdsFromInbox(inbox) {
@@ -2351,7 +2487,7 @@ function visibleKnowledgeRowsForSession(rows, session, executionPlans, transacti
     if (visibility === 'restricted' && !owned && !inboxKnowledgeIds.has(row.id)) return false;
     if (owned || inboxKnowledgeIds.has(row.id) || admittedViaWrapper.has(row.id)) return true;
     if (row.kind === 'shared_skill' && row.status === 'published') return true;
-    const projected = projectKnowledgeRecord(row);
+    const projected = projectActiveKnowledgeRecord(row);
     if (!projected) return false;
     return buildKnowledgeDeliveryPlan({
       item: {
@@ -2361,39 +2497,76 @@ function visibleKnowledgeRowsForSession(rows, session, executionPlans, transacti
       sessions: [session],
       executionPlans,
       transactions,
+      policy: ACTIVE_EXPERTISE_POLICY,
     }).length > 0;
   });
 }
 
 async function loadRelevantKnowledgeForSession(session, queryInput = {}, state = {}) {
   const query = validateKnowledgeQuery(queryInput);
-  const [rows, executionPlans, transactions, inbox] = await Promise.all([
-    state.rows || prisma.codeSiteKnowledgeItem.findMany({
-      where: knowledgeWhere(session.projectId, query),
-      include: { references: true },
-      orderBy: { updatedAt: 'desc' },
-      take: 200,
+  const pageSize = query.limit;
+  const [executionPlans, transactions, inbox] = await Promise.all([
+    state.executionPlans || loadAllOrderedRows({
+      orderField: 'filedAt',
+      pageSize,
+      fetchPage: (cursor, take) => prisma.codeSiteExecutionPlan.findMany({
+        where: descendingKeysetWhere({
+          projectId: session.projectId,
+          agentSessionId: session.id,
+          status: { in: ['filed', 'active', 'holding', 'blocked'] },
+        }, cursor, 'filedAt'),
+        orderBy: [{ filedAt: 'desc' }, { id: 'desc' }],
+        take,
+      }),
     }),
-    state.executionPlans || prisma.codeSiteExecutionPlan.findMany({
-      where: { projectId: session.projectId, agentSessionId: session.id, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
-      orderBy: { filedAt: 'desc' },
-      take: 32,
+    state.transactions || loadAllOrderedRows({
+      orderField: 'openedAt',
+      pageSize,
+      fetchPage: (cursor, take) => prisma.codeSiteMutationTransaction.findMany({
+        where: descendingKeysetWhere({
+          projectId: session.projectId,
+          agentSessionId: session.id,
+          status: { in: ['open', 'prepared', 'blocked', 'validated'] },
+        }, cursor, 'openedAt'),
+        orderBy: [{ openedAt: 'desc' }, { id: 'desc' }],
+        take,
+      }),
     }),
-    state.transactions || prisma.codeSiteMutationTransaction.findMany({
-      where: { projectId: session.projectId, agentSessionId: session.id, status: { in: ['open', 'prepared', 'blocked', 'validated'] } },
-      orderBy: { openedAt: 'desc' },
-      take: 32,
-    }),
-    state.inbox || prisma.codeSiteAgentInboxItem.findMany({
-      where: { projectId: session.projectId, agentSessionId: session.id, knowledgeItemId: { not: null } },
-      orderBy: { createdAt: 'desc' },
-      take: 100,
-      include: { knowledgeItem: { select: { sourceKnowledgeItemId: true } } },
+    state.inbox || loadAllOrderedRows({
+      orderField: 'createdAt',
+      pageSize,
+      fetchPage: (cursor, take) => prisma.codeSiteAgentInboxItem.findMany({
+        where: descendingKeysetWhere({
+          projectId: session.projectId,
+          agentSessionId: session.id,
+          knowledgeItemId: { not: null },
+        }, cursor, 'createdAt'),
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        take,
+        include: { knowledgeItem: { select: { sourceKnowledgeItemId: true } } },
+      }),
     }),
   ]);
-  return visibleKnowledgeRowsForSession(rows, session, executionPlans, transactions, inbox)
+
+  const visible = [];
+  let cursor = null;
+  while (visible.length < query.limit) {
+    const page = state.rows || await prisma.codeSiteKnowledgeItem.findMany({
+      where: projectKnowledgeWhere(session.projectId, query, cursor),
+      include: { references: true },
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+      take: pageSize,
+    });
+    if (!Array.isArray(page) || !page.length) break;
+    visible.push(...visibleKnowledgeRowsForSession(page, session, executionPlans, transactions, inbox));
+    if (state.rows || page.length < pageSize) break;
+    cursor = descendingKeysetCursor(page.at(-1), 'updatedAt');
+    if (!cursor) break;
+  }
+
+  return visible
     .slice(0, query.limit)
-    .map(projectKnowledgeRecord)
+    .map(projectActiveKnowledgeRecord)
     .filter(Boolean);
 }
 
@@ -2422,7 +2595,7 @@ async function createKnowledgeWithClient(db, record, knowledgeId, eventInput) {
   const created = await db.codeSiteKnowledgeItem.create({
     data: { id: knowledgeId, ...record.data },
   });
-  const referenceRows = buildKnowledgeReferenceRecords(record.normalized, knowledgeId);
+  const referenceRows = buildKnowledgeReferenceRecords(record.normalized, knowledgeId, ACTIVE_EXPERTISE_POLICY);
   if (referenceRows.length) await db.codeSiteKnowledgeReference.createMany({ data: referenceRows });
   const event = await publishKnowledgeCoordinationEventWithClient(
     db,
@@ -2567,7 +2740,7 @@ async function persistKnowledgeAndImpacts(authority, record, deliveryPlan) {
         recipientAgentSessionIds: [target.agentSessionId],
         requiresResponse: true,
       };
-      const impactRecord = buildKnowledgeRecord(impactInput, { projectId });
+      const impactRecord = buildKnowledgeRecord(impactInput, { projectId }, ACTIVE_EXPERTISE_POLICY);
       impactRecord.data.dedupeKey = target.dedupeKey;
       impactRecord.data.targetTransactionId = target.transactionIds[0] || null;
       const impact = await createKnowledgeWithClient(db, impactRecord, impactId, {
@@ -2605,10 +2778,10 @@ async function persistKnowledgeAndImpacts(authority, record, deliveryPlan) {
           }),
         },
       });
-      impacts.push({ knowledge: projectKnowledgeRecord(impact.row), inboxItem: inboxProjection(inboxItem) });
+      impacts.push({ knowledge: projectActiveKnowledgeRecord(impact.row), inboxItem: inboxProjection(inboxItem) });
     }
     return {
-      knowledge: projectKnowledgeRecord(persistedSource.row),
+      knowledge: projectActiveKnowledgeRecord(persistedSource.row),
       event: eventProjection(persistedSource.event),
       impacts,
     };
@@ -2639,7 +2812,7 @@ export async function createAgentKnowledgeItem(workspaceSlug, sessionId, agentAc
     projectId: authority.session.projectId,
     agentSessionId: authority.session.id,
     userId: authority.session.ownerUserId,
-  });
+  }, ACTIVE_EXPERTISE_POLICY);
   const [sessions, executionPlans, transactions] = await Promise.all([
     prisma.codeSiteAgentSession.findMany({
       where: { projectId: authority.session.projectId, endedAt: null, status: { in: ['attached', 'detached'] } },
@@ -2657,12 +2830,13 @@ export async function createAgentKnowledgeItem(workspaceSlug, sessionId, agentAc
     where: { projectId: authority.session.projectId, dedupeKey: record.data.dedupeKey },
     include: { references: true },
   });
-  if (existing) return { knowledge: projectKnowledgeRecord(existing), event: null, impacts: [], duplicate: true };
+  if (existing) return { knowledge: projectActiveKnowledgeRecord(existing), event: null, impacts: [], duplicate: true };
   const deliveryPlan = buildKnowledgeDeliveryPlan({
     item: { ...record.normalized, id: 'pending', createdByAgentSessionId: authority.session.id },
     sessions,
     executionPlans,
     transactions,
+    policy: ACTIVE_EXPERTISE_POLICY,
   });
   const result = await persistKnowledgeAndImpacts(authority, record, deliveryPlan);
   await syncArtifactsForProject(authority.session.projectId, { reason: 'knowledge_recorded', eventId: result.event?.id });
@@ -2687,6 +2861,7 @@ function runtimeObservationInboxTargets(projectId, observation, { sessions, exec
     sessions,
     executionPlans,
     transactions,
+    policy: ACTIVE_EXPERTISE_POLICY,
   });
 }
 
@@ -2778,6 +2953,7 @@ async function deliverCoordinationImpacts(projectId, { eventType, normalized, ac
         sessions,
         executionPlans,
         transactions,
+        policy: ACTIVE_EXPERTISE_POLICY,
       }).slice(0, MAX_ROUTE_TARGETS);
       for (const target of targets) {
         const inboxItem = await prisma.codeSiteAgentInboxItem.create({
@@ -3167,10 +3343,10 @@ export async function getAgentSharedKnowledge(workspaceSlug, sessionId, agentAcc
   return loadRelevantKnowledgeForSession(session, query);
 }
 
-async function loadExpertiseRoutingState(projectId) {
-  const [sessions, executionPlans, transactions, knowledgeItems] = await Promise.all([
+async function loadFreshExpertiseRoutingState(projectId) {
+  const [sessions, executionPlans, transactions, knowledgeItems, feedbackEvents] = await Promise.all([
     prisma.codeSiteAgentSession.findMany({
-      where: { projectId, endedAt: null },
+      where: { projectId, endedAt: null, status: { in: ACTIVE_EXPERTISE_POLICY.statuses.eligibleSession } },
       select: {
         id: true,
         displayCallsign: true,
@@ -3181,13 +3357,12 @@ async function loadExpertiseRoutingState(projectId) {
       },
     }),
     prisma.codeSiteExecutionPlan.findMany({
-      where: { projectId, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
+      where: { projectId, status: { in: ACTIVE_EXPERTISE_POLICY.statuses.activePlan } },
       select: { id: true, agentSessionId: true, status: true, routeJson: true, filedAt: true },
       orderBy: { filedAt: 'desc' },
-      take: 200,
     }),
     prisma.codeSiteMutationTransaction.findMany({
-      where: { projectId, status: { in: ['open', 'prepared', 'blocked', 'validated'] } },
+      where: { projectId, status: { in: ACTIVE_EXPERTISE_POLICY.statuses.activeTransaction } },
       select: {
         id: true,
         agentSessionId: true,
@@ -3200,12 +3375,11 @@ async function loadExpertiseRoutingState(projectId) {
         openedAt: true,
       },
       orderBy: { openedAt: 'desc' },
-      take: 200,
     }),
     prisma.codeSiteKnowledgeItem.findMany({
       where: {
         projectId,
-        kind: { in: ['discovery', 'lead', 'shared_skill', 'handoff', 'agent_question'] },
+        kind: { in: ACTIVE_EXPERTISE_POLICY.statuses.signalKnowledgeKinds },
         OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
       },
       select: {
@@ -3218,28 +3392,83 @@ async function loadExpertiseRoutingState(projectId) {
         updatedAt: true,
       },
       orderBy: { updatedAt: 'desc' },
-      take: 400,
+    }),
+    prisma.codeSiteEvent.findMany({
+      where: { projectId, eventType: 'agent_question_feedback_submitted' },
+      select: {
+        id: true,
+        eventType: true,
+        actorType: true,
+        actorId: true,
+        detailsJson: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: 'desc' },
     }),
   ]);
-  return { sessions, executionPlans, transactions, knowledgeItems };
+  return { sessions, executionPlans, transactions, knowledgeItems, feedbackEvents };
+}
+
+async function loadExpertiseRoutingState(projectId, options = {}) {
+  return getCachedExpertiseRoutingState(
+    projectId,
+    async () => {
+      const state = await loadFreshExpertiseRoutingState(projectId);
+      return {
+        ...state,
+        index: buildExpertiseIndex({ ...state, policy: ACTIVE_EXPERTISE_POLICY }),
+      };
+    },
+    {
+      forceRefresh: options.forceRefresh === true,
+      ttlMs: ACTIVE_EXPERTISE_POLICY.cache.ttlMs,
+      maxEntries: ACTIVE_EXPERTISE_POLICY.cache.maxEntries,
+    },
+  );
 }
 
 export async function findAgentExperts(workspaceSlug, sessionId, agentAccessToken, query = {}) {
   const { session } = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
     requiredCapability: 'codesite.context.read',
   });
-  const normalized = normalizeExpertiseQuery(query);
+  const normalized = normalizeExpertiseQuery(query, ACTIVE_EXPERTISE_POLICY);
   const routingState = await loadExpertiseRoutingState(session.projectId);
-  const index = buildExpertiseIndex({ ...routingState });
+  const index = routingState.index;
   const experts = rankExperts(index, normalized, {
     sessions: routingState.sessions,
     excludeSessionId: session.id,
     limit: normalized.limit,
+    policy: ACTIVE_EXPERTISE_POLICY,
   });
   return {
-    contextVersion: EXPERTISE_CONTEXT_VERSION,
+    contextVersion: ACTIVE_EXPERTISE_POLICY.contextVersion,
+    policyVersion: ACTIVE_EXPERTISE_POLICY.version,
     generatedAt: new Date().toISOString(),
     projectId: session.projectId,
+    query: {
+      paths: normalized.paths,
+      symbols: normalized.symbols,
+      contracts: normalized.contracts,
+    },
+    experts,
+  };
+}
+
+export async function findProjectExperts(workspaceSlug, projectId, query = {}, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'read');
+  const normalized = normalizeExpertiseQuery(query, ACTIVE_EXPERTISE_POLICY);
+  const routingState = await loadExpertiseRoutingState(project.id);
+  const index = routingState.index;
+  const experts = rankExperts(index, normalized, {
+    sessions: routingState.sessions,
+    limit: normalized.limit,
+    policy: ACTIVE_EXPERTISE_POLICY,
+  });
+  return {
+    contextVersion: ACTIVE_EXPERTISE_POLICY.contextVersion,
+    policyVersion: ACTIVE_EXPERTISE_POLICY.version,
+    generatedAt: new Date().toISOString(),
+    projectId: project.id,
     query: {
       paths: normalized.paths,
       symbols: normalized.symbols,
@@ -3279,8 +3508,11 @@ export async function askAgentQuestion(workspaceSlug, sessionId, agentAccessToke
       executionPlans: routingState.executionPlans,
       transactions: routingState.transactions,
       knowledgeItems: routingState.knowledgeItems,
+      feedbackEvents: routingState.feedbackEvents,
+      index: routingState.index,
       excludeSessionId: authority.session.id,
-      limit: 3,
+      limit: ACTIVE_EXPERTISE_POLICY.limits.suggestionLimit,
+      policy: ACTIVE_EXPERTISE_POLICY,
     },
   );
   // Caller-suggested experts are validated against the live project roster;
@@ -3293,7 +3525,7 @@ export async function askAgentQuestion(workspaceSlug, sessionId, agentAccessToke
   if (requestedSuggestions.length) {
     const unknown = requestedSuggestions.filter((id) => !knownSessionIds.has(id));
     if (unknown.length) throw badRequest('knowledge_reference_outside_project', { projectId: authority.session.projectId, missing: { agentSessionIds: unknown } });
-    finalSuggestions = requestedSuggestions.slice(0, 8);
+    finalSuggestions = requestedSuggestions.slice(0, ACTIVE_EXPERTISE_POLICY.limits.maxSuggestedExperts);
   } else {
     finalSuggestions = suggested.map((entry) => entry.agentSessionId);
     if (finalSuggestions.length) input.allowUnrouted = true;
@@ -3307,7 +3539,7 @@ export async function askAgentQuestion(workspaceSlug, sessionId, agentAccessToke
     projectId: authority.session.projectId,
     agentSessionId: authority.session.id,
     userId: authority.session.ownerUserId,
-  });
+  }, ACTIVE_EXPERTISE_POLICY);
 
   const existing = await prisma.codeSiteKnowledgeItem.findFirst({
     where: { projectId: authority.session.projectId, dedupeKey: record.data.dedupeKey },
@@ -3315,7 +3547,7 @@ export async function askAgentQuestion(workspaceSlug, sessionId, agentAccessToke
   });
   if (existing) {
     return {
-      question: projectKnowledgeRecord(existing),
+      question: projectActiveKnowledgeRecord(existing),
       event: null,
       routedTo: [],
       duplicate: true,
@@ -3332,15 +3564,10 @@ export async function askAgentQuestion(workspaceSlug, sessionId, agentAccessToke
       createdByAgentSessionId: authority.session.id,
       recipientAgentSessionIds: finalSuggestions,
     },
-    sessions: await prisma.codeSiteAgentSession.findMany({
-      where: { projectId: authority.session.projectId, endedAt: null, status: { in: ['attached', 'detached'] } },
-    }),
-    executionPlans: await prisma.codeSiteExecutionPlan.findMany({
-      where: { projectId: authority.session.projectId, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
-    }),
-    transactions: await prisma.codeSiteMutationTransaction.findMany({
-      where: { projectId: authority.session.projectId, status: { in: ['open', 'prepared', 'blocked', 'validated'] } },
-    }),
+    sessions: routingState.sessions,
+    executionPlans: routingState.executionPlans,
+    transactions: routingState.transactions,
+    policy: ACTIVE_EXPERTISE_POLICY,
   });
   const result = await persistKnowledgeAndImpacts(authority, record, deliveryPlan);
   await syncArtifactsForProject(authority.session.projectId, {
@@ -3360,21 +3587,340 @@ export async function askAgentQuestion(workspaceSlug, sessionId, agentAccessToke
   };
 }
 
-export async function listProjectKnowledge(workspaceSlug, projectId, query = {}, actor = null) {
+export async function listProjectKnowledgePage(workspaceSlug, projectId, query = {}, actor = null) {
   const project = await requireProject(workspaceSlug, projectId, actor, 'read');
   const normalized = validateKnowledgeQuery(query);
-  const rows = await prisma.codeSiteKnowledgeItem.findMany({
-    where: knowledgeWhere(project.id, normalized),
-    include: { references: true },
-    orderBy: { updatedAt: 'desc' },
-    take: normalized.limit,
-  });
   const userId = actorUserId(actor);
-  return rows.filter((row) => {
-    const visibility = knowledgeVisibility(row);
-    if (visibility === 'project') return true;
-    return Boolean(userId && (row.createdByUserId === userId || row.ownerUserId === userId));
-  }).map(projectKnowledgeRecord).filter(Boolean);
+  const knowledge = [];
+  let cursor = normalized.cursor ? decodeProjectKnowledgeCursor(normalized.cursor) : null;
+  let hasMore = false;
+  let lastConsumedRow = null;
+
+  while (knowledge.length < normalized.limit) {
+    const remaining = normalized.limit - knowledge.length;
+    const rows = await prisma.codeSiteKnowledgeItem.findMany({
+      where: projectKnowledgeWhere(project.id, normalized, cursor),
+      include: { references: true },
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+      take: remaining + 1,
+    });
+    if (!Array.isArray(rows) || !rows.length) break;
+
+    hasMore = rows.length > remaining;
+    const pageRows = hasMore ? rows.slice(0, remaining) : rows;
+    lastConsumedRow = pageRows.at(-1) || lastConsumedRow;
+    knowledge.push(...pageRows.filter((row) => {
+      const visibility = knowledgeVisibility(row);
+      if (visibility === 'project') return true;
+      return Boolean(userId && (row.createdByUserId === userId || row.ownerUserId === userId));
+    }).map(projectActiveKnowledgeRecord).filter(Boolean));
+
+    if (!hasMore) break;
+    const nextCursor = descendingKeysetCursor(lastConsumedRow, 'updatedAt');
+    if (!nextCursor
+      || (cursor
+        && cursor.id === nextCursor.id
+        && new Date(cursor.updatedAt).getTime() === new Date(nextCursor.updatedAt).getTime())) {
+      hasMore = false;
+      break;
+    }
+    cursor = nextCursor;
+  }
+
+  const nextCursor = hasMore && lastConsumedRow ? encodeProjectKnowledgeCursor(lastConsumedRow) : null;
+  return {
+    knowledge,
+    ...(nextCursor ? { nextCursor } : {}),
+  };
+}
+
+export async function listProjectKnowledge(workspaceSlug, projectId, query = {}, actor = null) {
+  const page = await listProjectKnowledgePage(workspaceSlug, projectId, query, actor);
+  return page.knowledge;
+}
+
+function questionAskerSessionId(question) {
+  const payload = parseJson(question?.payloadJson, {});
+  return payload?.fromAgentSessionId || question?.createdByAgentSessionId || null;
+}
+
+async function actorCanAccessQuestion(
+  question,
+  {
+    actorType,
+    actorId,
+    actorUserIdValue = null,
+    bypass = false,
+  } = {},
+) {
+  if (bypass) return true;
+  const visibility = knowledgeVisibility(question);
+  if (visibility === 'project') return true;
+
+  const owned = Boolean(
+    (actorUserIdValue && [question.createdByUserId, question.ownerUserId].includes(actorUserIdValue))
+      || (actorType === 'agent_session'
+        && actorId
+        && [question.createdByAgentSessionId, question.ownerAgentSessionId].includes(actorId)),
+  );
+  if (owned) return true;
+  if (visibility !== 'restricted' || actorType !== 'agent_session' || !actorId) return false;
+
+  const payload = parseJson(question.payloadJson, {});
+  const scope = knowledgeScope(question);
+  const restrictedRecipients = new Set([
+    ...asArray(payload.suggestedExpertAgentSessionIds),
+    ...asArray(scope.references?.agentSessionIds),
+  ].filter(Boolean));
+  if (restrictedRecipients.has(actorId)) return true;
+
+  const inboxItem = await prisma.codeSiteAgentInboxItem.findFirst({
+    where: {
+      projectId: question.projectId,
+      agentSessionId: actorId,
+      OR: [
+        { knowledgeItemId: question.id },
+        { knowledgeItem: { sourceKnowledgeItemId: question.id } },
+      ],
+    },
+    select: { id: true },
+  }).catch(() => null);
+  return Boolean(inboxItem);
+}
+
+function questionFeedbackProjection(event, details) {
+  return {
+    id: event.id,
+    knowledgeItemId: details.knowledgeItemId || details.questionId || null,
+    verdict: details.verdict,
+    correctionText: details.correctionText || null,
+    evidenceRefs: asArray(details.evidenceRefs),
+    reviewerType: event.actorType || null,
+    createdAt: event.createdAt,
+  };
+}
+
+export async function answerProjectQuestion(
+  workspaceSlug,
+  projectId,
+  knowledgeItemId,
+  body = {},
+  actor = null,
+) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
+  const response = validateKnowledgeResponse('agent_question', { ...body, action: 'answer' });
+  const actorId = actorUserId(actor);
+  if (!actorId && !actor?.bypass) throw forbidden('knowledge_answer_actor_required');
+  const question = await prisma.codeSiteKnowledgeItem.findFirst({
+    where: { id: knowledgeItemId, projectId: project.id, kind: 'agent_question' },
+    include: { references: true },
+  });
+  if (!question) throw notFound('knowledge_question_not_found');
+  if (!await actorCanAccessQuestion(question, {
+    actorType: 'human',
+    actorId,
+    actorUserIdValue: actorId,
+    bypass: actor?.bypass === true,
+  })) {
+    throw notFound('knowledge_question_not_found');
+  }
+  if (question.status === 'answered') {
+    const payload = parseJson(question.payloadJson, {});
+    if (payload.answerText === response.answer) {
+      return {
+        question: projectActiveKnowledgeRecord(question),
+        response,
+        event: null,
+        duplicate: true,
+      };
+    }
+    throw conflict('knowledge_question_already_answered', { knowledgeItemId });
+  }
+  if (question.status !== 'open') {
+    throw conflict('knowledge_question_not_open', { knowledgeItemId, status: question.status });
+  }
+
+  const now = new Date();
+  const updated = await prisma.$transaction(async (db) => {
+    const current = await db.codeSiteKnowledgeItem.findFirst({
+      where: { id: knowledgeItemId, projectId: project.id, kind: 'agent_question', status: 'open' },
+      include: { references: true },
+    });
+    if (!current) throw conflict('knowledge_question_not_open', { knowledgeItemId });
+    const currentPayload = parseJson(current.payloadJson, {});
+    const nextQuestion = await db.codeSiteKnowledgeItem.update({
+      where: { id: current.id },
+      data: {
+        status: 'answered',
+        payloadJson: stringifyJson({
+          ...currentPayload,
+          answerText: response.answer,
+          answeredByUserId: actorId || null,
+        }),
+        updatedAt: now,
+      },
+    });
+    const event = await recordEventWithClient(db, project.id, {
+      eventType: 'agent_question_answered',
+      actorType: 'human',
+      actorId,
+      evidenceRefs: response.evidenceRefs,
+      details: {
+        knowledgeItemId: current.id,
+        kind: current.kind,
+        action: response.action,
+        answererType: 'human',
+        reason: response.reason,
+      },
+    }, { syncArtifacts: false });
+    const askerSessionId = questionAskerSessionId(current);
+    if (askerSessionId) {
+      const asker = await db.codeSiteAgentSession.findFirst({
+        where: { id: askerSessionId, projectId: project.id },
+        select: { id: true, ownerUserId: true },
+      });
+      if (asker) {
+        await db.codeSiteAgentInboxItem.create({
+          data: {
+            projectId: project.id,
+            agentSessionId: asker.id,
+            recipientUserId: asker.ownerUserId,
+            eventId: event.id,
+            knowledgeItemId: current.id,
+            kind: 'agent_question_answered',
+            requiresResponse: false,
+            status: 'unread',
+            redactedPayloadJson: stringifyJson({
+              knowledgeItemId: current.id,
+              title: `Answered: ${current.title}`.slice(0, 160),
+              answerText: response.answer,
+              answeredByUserId: actorId || null,
+            }),
+          },
+        });
+      }
+    }
+    return { nextQuestion, event };
+  });
+  await syncArtifactsForProject(project.id, {
+    reason: 'project_question_answered',
+    eventId: updated.event.id,
+  });
+  return {
+    question: projectActiveKnowledgeRecord({
+      ...question,
+      ...updated.nextQuestion,
+      references: question.references,
+    }),
+    response,
+    event: eventProjection(updated.event),
+    duplicate: false,
+  };
+}
+
+async function persistQuestionFeedback({
+  projectId,
+  knowledgeItemId,
+  body,
+  actorType,
+  actorId,
+  actorUserIdValue = null,
+  bypass = false,
+  displayCallsign = null,
+}) {
+  const feedback = validateKnowledgeFeedback(body, ACTIVE_EXPERTISE_POLICY);
+  const question = await prisma.codeSiteKnowledgeItem.findFirst({
+    where: { id: knowledgeItemId, projectId, kind: 'agent_question' },
+    include: { references: true },
+  });
+  if (!question) throw notFound('knowledge_question_not_found');
+  if (!await actorCanAccessQuestion(question, {
+    actorType,
+    actorId,
+    actorUserIdValue,
+    bypass,
+  })) {
+    throw notFound('knowledge_question_not_found');
+  }
+  const answerPayload = parseJson(question.payloadJson, {});
+  const reviewedByAnswerer = Boolean(
+    (actorUserIdValue && answerPayload.answeredByUserId === actorUserIdValue)
+      || (actorType === 'agent_session'
+        && actorId
+        && answerPayload.answeredByAgentSessionId === actorId),
+  );
+  if (reviewedByAnswerer) throw forbidden('knowledge_feedback_self_review_forbidden');
+  if (question.status !== 'answered') {
+    throw conflict('knowledge_feedback_question_not_answered', {
+      knowledgeItemId,
+      status: question.status,
+    });
+  }
+  if (!actorId) throw forbidden('knowledge_feedback_actor_required');
+
+  const event = await recordEvent(projectId, {
+    eventType: 'agent_question_feedback_submitted',
+    displayCallsign,
+    actorType,
+    actorId,
+    evidenceRefs: feedback.evidenceRefs,
+    details: {
+      knowledgeItemId: question.id,
+      kind: question.kind,
+      verdict: feedback.verdict,
+      correctionText: feedback.correctionText,
+      evidenceRefs: feedback.evidenceRefs,
+    },
+  });
+  return {
+    feedback: questionFeedbackProjection(event, {
+      knowledgeItemId: question.id,
+      ...feedback,
+    }),
+    question: projectActiveKnowledgeRecord(question),
+    event: eventProjection(event),
+    duplicate: false,
+  };
+}
+
+export async function submitProjectQuestionFeedback(
+  workspaceSlug,
+  projectId,
+  knowledgeItemId,
+  body = {},
+  actor = null,
+) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
+  return persistQuestionFeedback({
+    projectId: project.id,
+    knowledgeItemId,
+    body,
+    actorType: 'human',
+    actorId: actorUserId(actor),
+    actorUserIdValue: actorUserId(actor),
+    bypass: actor?.bypass === true,
+  });
+}
+
+export async function submitAgentQuestionFeedback(
+  workspaceSlug,
+  sessionId,
+  knowledgeItemId,
+  agentAccessToken,
+  body = {},
+) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.knowledge.write',
+  });
+  return persistQuestionFeedback({
+    projectId: authority.session.projectId,
+    knowledgeItemId,
+    body,
+    actorType: 'agent_session',
+    actorId: authority.session.id,
+    actorUserIdValue: authority.session.ownerUserId,
+    displayCallsign: authority.session.displayCallsign,
+  });
 }
 
 export async function respondToAgentKnowledgeInbox(
@@ -3415,7 +3961,7 @@ export async function respondToAgentKnowledgeInbox(
     if (inboxItem.responseAction === response.action && stableJson(previous) === stableJson(response)) {
       return {
         inboxItem: inboxProjection(inboxItem),
-        knowledge: projectKnowledgeRecord(inboxItem.knowledgeItem),
+        knowledge: projectActiveKnowledgeRecord(inboxItem.knowledgeItem),
         response,
         duplicate: true,
       };
@@ -3558,7 +4104,7 @@ export async function respondToAgentKnowledgeInbox(
   });
   return {
     inboxItem: inboxProjection(updated.nextInbox),
-    knowledge: projectKnowledgeRecord({
+    knowledge: projectActiveKnowledgeRecord({
       ...inboxItem.knowledgeItem,
       ...updated.nextKnowledge,
       references: inboxItem.knowledgeItem.references,
@@ -5272,17 +5818,18 @@ async function publishAssumptionInvalidationKnowledge(projectId, {
     verification: 'verified',
     tags: ['assumption', 'invalidation'],
   };
-  const record = buildKnowledgeRecord(knowledgeInput, { projectId });
+  const record = buildKnowledgeRecord(knowledgeInput, { projectId }, ACTIVE_EXPERTISE_POLICY);
   const existing = await prisma.codeSiteKnowledgeItem.findFirst({
     where: { projectId, dedupeKey: record.data.dedupeKey },
     include: { references: true },
   });
-  if (existing) return { knowledge: projectKnowledgeRecord(existing), duplicate: true, impacts: [] };
+  if (existing) return { knowledge: projectActiveKnowledgeRecord(existing), duplicate: true, impacts: [] };
   const deliveryPlan = buildKnowledgeDeliveryPlan({
     item: { ...record.normalized, id: 'pending-assumption-invalidation' },
     sessions,
     executionPlans,
     transactions: dependentTransactions,
+    policy: ACTIVE_EXPERTISE_POLICY,
   });
   const result = await persistKnowledgeAndImpacts({ session: { projectId } }, record, deliveryPlan);
   await syncArtifactsForProject(projectId, {
@@ -12528,6 +13075,7 @@ async function recordEventWithClient(db, projectId, input, options = {}) {
       if (options.syncArtifacts !== false) {
         await syncArtifactsForProject(projectId, { reason: 'event_recorded', eventId: event.id });
       }
+      invalidateExpertiseRoutingState(projectId);
       return event;
     } catch (error) {
       if (!isLogicalTimeConflict(error)) throw error;

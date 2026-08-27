@@ -1,4 +1,9 @@
 import { errorFromException, errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
+import {
+  EXPERTISE_POLICY_LIMITS,
+  optionalSchemaMaxItems,
+  optionalSchemaMaximum,
+} from "./expertise_policy.js";
 
 export const CODESITE_TOOL_NAMES = [
   "synthi_codesite_list_projects",
@@ -30,6 +35,7 @@ export const CODESITE_TOOL_NAMES = [
   "synthi_codesite_get_relevant_context",
   "synthi_codesite_find_experts",
   "synthi_codesite_ask_expert_question",
+  "synthi_codesite_submit_question_feedback",
   "synthi_codesite_record_discovery",
   "synthi_codesite_record_lead",
   "synthi_codesite_publish_shared_skill",
@@ -84,7 +90,8 @@ type AgentBoundKnowledgeToolName =
   | "synthi_codesite_get_shared_knowledge"
   | "synthi_codesite_respond_impact_notice"
   | "synthi_codesite_find_experts"
-  | "synthi_codesite_ask_expert_question";
+  | "synthi_codesite_ask_expert_question"
+  | "synthi_codesite_submit_question_feedback";
 type RoutedCodeSiteToolName = Exclude<
   CodeSiteToolName,
   "synthi_codesite_get_relevant_context" | AgentBoundKnowledgeToolName
@@ -172,11 +179,11 @@ const COMMON_PROPERTIES = {
 } as const;
 
 const KNOWLEDGE_REFERENCE_PROPERTIES = {
-  paths: { type: "array", items: { type: "string" }, maxItems: 32 },
-  symbols: { type: "array", items: { type: "string" }, maxItems: 32 },
-  contracts: { type: "array", items: { type: "string" }, maxItems: 32 },
-  workstream_ids: { type: "array", items: { type: "string" }, maxItems: 32 },
-  transaction_ids: { type: "array", items: { type: "string" }, maxItems: 32 },
+  paths: { type: "array", items: { type: "string" }, ...optionalSchemaMaxItems(EXPERTISE_POLICY_LIMITS.maxReferencesPerType) },
+  symbols: { type: "array", items: { type: "string" }, ...optionalSchemaMaxItems(EXPERTISE_POLICY_LIMITS.maxReferencesPerType) },
+  contracts: { type: "array", items: { type: "string" }, ...optionalSchemaMaxItems(EXPERTISE_POLICY_LIMITS.maxReferencesPerType) },
+  workstream_ids: { type: "array", items: { type: "string" }, ...optionalSchemaMaxItems(EXPERTISE_POLICY_LIMITS.maxReferencesPerType) },
+  transaction_ids: { type: "array", items: { type: "string" }, ...optionalSchemaMaxItems(EXPERTISE_POLICY_LIMITS.maxReferencesPerType) },
 } as const;
 
 const KNOWLEDGE_COMMON_PROPERTIES = {
@@ -205,8 +212,9 @@ const SHARED_SKILL_RECIPE_PROPERTIES = {
 } as const;
 
 const IMPACT_NOTICE_ACTIONS = ["acknowledge", "refresh", "rebase_requested", "abort", "dismiss"] as const;
-const QUESTION_ACTIONS = ["answer", "claim", "defer", "dismiss"] as const;
+const QUESTION_ACTIONS = ["answer", "claim", "defer"] as const;
 const KNOWLEDGE_RESPONSE_ACTIONS = [...new Set([...IMPACT_NOTICE_ACTIONS, ...QUESTION_ACTIONS])] as const;
+const QUESTION_FEEDBACK_VERDICTS = EXPERTISE_POLICY_LIMITS.verdicts || [];
 const SHARED_KNOWLEDGE_STATUSES = [
   "draft", "verified", "rejected", "invalidated", "archived",
   "open", "claimed", "escalated", "resolved", "dismissed",
@@ -230,12 +238,13 @@ export const CODESITE_TOOLS = [
     "synthi_codesite_find_experts",
     "Find project agents with demonstrated expertise on given paths/symbols/contracts.",
     {
-      paths: { type: "array", items: { type: "string" }, maxItems: 32 },
-      symbols: { type: "array", items: { type: "string" }, maxItems: 32 },
-      contracts: { type: "array", items: { type: "string" }, maxItems: 32 },
-      limit: { type: "integer", minimum: 1, maximum: 10 },
+      paths: { type: "array", items: { type: "string" }, ...optionalSchemaMaxItems(EXPERTISE_POLICY_LIMITS.maxReferencesPerType) },
+      symbols: { type: "array", items: { type: "string" }, ...optionalSchemaMaxItems(EXPERTISE_POLICY_LIMITS.maxReferencesPerType) },
+      contracts: { type: "array", items: { type: "string" }, ...optionalSchemaMaxItems(EXPERTISE_POLICY_LIMITS.maxReferencesPerType) },
+      limit: { type: "integer", minimum: 1, ...optionalSchemaMaximum(EXPERTISE_POLICY_LIMITS.maxLimit) },
     },
     [],
+    { anyOf: [{ required: ["paths"] }, { required: ["symbols"] }, { required: ["contracts"] }] },
   ),
   agentBoundCodeSiteTool(
     "synthi_codesite_record_discovery",
@@ -294,7 +303,7 @@ export const CODESITE_TOOLS = [
       kind: { type: "string", enum: ["discovery", "lead", "shared_skill", "impact_notice", "handoff", "agent_question"] },
       status: { type: "string", enum: SHARED_KNOWLEDGE_STATUSES },
       since: { type: "string", format: "date-time" },
-      limit: { type: "integer", minimum: 1, maximum: 100 },
+      limit: { type: "integer", minimum: 1, ...optionalSchemaMaximum(EXPERTISE_POLICY_LIMITS.pageMaxLimit) },
       path: { type: "string" },
       symbol: { type: "string" },
       contract: { type: "string" },
@@ -320,10 +329,25 @@ export const CODESITE_TOOLS = [
     {
       ...KNOWLEDGE_COMMON_PROPERTIES,
       urgency: { type: "string", enum: ["low", "normal", "high"] },
-      suggested_expert_agent_session_ids: { type: "array", items: { type: "string" }, maxItems: 8 },
+      suggested_expert_agent_session_ids: { type: "array", items: { type: "string" }, ...optionalSchemaMaxItems(EXPERTISE_POLICY_LIMITS.maxSuggestedExperts) },
       allow_unrouted: { type: "boolean" },
     },
     ["title", "summary", "references"],
+  ),
+  agentBoundCodeSiteTool(
+    "synthi_codesite_submit_question_feedback",
+    "Submit a usefulness or correction signal for an answered project question; the server attributes it to this attached agent.",
+    {
+      knowledge_item_id: { type: "string", minLength: 1, maxLength: 128 },
+      verdict: { type: "string", ...(QUESTION_FEEDBACK_VERDICTS.length ? { enum: QUESTION_FEEDBACK_VERDICTS } : {}) },
+      correction: { type: "string", minLength: 1, ...optionalSchemaMaximum(EXPERTISE_POLICY_LIMITS.maxCorrectionLength) },
+      evidence_refs: {
+        type: "array",
+        items: { type: "string", minLength: 1, ...optionalSchemaMaximum(EXPERTISE_POLICY_LIMITS.maxEvidenceRefLength) },
+        ...optionalSchemaMaxItems(EXPERTISE_POLICY_LIMITS.maxEvidenceRefs),
+      },
+    },
+    ["knowledge_item_id", "verdict"],
   ),
   codeSiteTool("synthi_codesite_list_projects", "List visible CodeSite projects for a workspace.", {}, []),
   codeSiteTool("synthi_codesite_create_project", "Create a CodeSite project and owner membership for a workspace.", {
@@ -791,7 +815,11 @@ async function dispatchAgentBoundKnowledgeTool(
     url = new URL(`${apiBase}${path}`);
     for (const key of ["paths", "symbols", "contracts"] as const) {
       if (args[key] === undefined) continue;
-      const values = boundedStringListArg(args[key], "codesite_agent_knowledge_arguments_invalid", 32);
+      const values = boundedStringListArg(
+        args[key],
+        "codesite_agent_knowledge_arguments_invalid",
+        EXPERTISE_POLICY_LIMITS.maxReferencesPerType,
+      );
       for (const value of values) url.searchParams.append(key, value);
     }
     if (args["limit"] !== undefined) url.searchParams.set("limit", String(args["limit"]));
@@ -806,6 +834,14 @@ async function dispatchAgentBoundKnowledgeTool(
       urgency: args["urgency"],
       suggested_expert_agent_session_ids: args["suggested_expert_agent_session_ids"],
       allow_unrouted: args["allow_unrouted"],
+    });
+  } else if (toolName === "synthi_codesite_submit_question_feedback") {
+    path = `${basePath}/knowledge/${encodeURIComponent(requiredString(args, "knowledge_item_id"))}/feedback`;
+    url = new URL(`${apiBase}${path}`);
+    body = withoutUndefined({
+      verdict: args["verdict"],
+      correction: args["correction"],
+      evidence_refs: args["evidence_refs"],
     });
   } else {
     body = { ...args, kind: knowledgeKindForTool(toolName) };
@@ -895,6 +931,7 @@ function agentBoundCodeSiteTool(
   description: string,
   properties: JsonObject,
   required: string[],
+  schemaExtras: JsonObject = {},
 ): { name: AgentBoundKnowledgeToolName; description: string; inputSchema: JsonObject } {
   return {
     name,
@@ -903,6 +940,7 @@ function agentBoundCodeSiteTool(
       type: "object",
       properties,
       required,
+      ...schemaExtras,
       additionalProperties: false,
     },
   };
@@ -1540,6 +1578,7 @@ const AGENT_BOUND_WRITER_ARGUMENTS: Record<
     | "synthi_codesite_respond_impact_notice"
     | "synthi_codesite_find_experts"
     | "synthi_codesite_ask_expert_question"
+    | "synthi_codesite_submit_question_feedback"
   >,
   { allowed: readonly string[]; required: readonly string[] }
 > = {
@@ -1576,12 +1615,12 @@ const KNOWLEDGE_KINDS = new Set(["discovery", "lead", "shared_skill", "impact_no
 const KNOWLEDGE_STATUSES = new Set<string>(SHARED_KNOWLEDGE_STATUSES);
 const IMPACT_ACTIONS_REQUIRING_EVIDENCE = new Set(["rebase_requested", "abort", "dismiss"]);
 
-function boundedStringListArg(value: unknown, error: string, maximum: number): string[] {
+function boundedStringListArg(value: unknown, error: string, maximum?: number): string[] {
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
     throw new Error(error);
   }
   const entries = value.map((item) => (item as string).trim()).filter(Boolean);
-  if (entries.length !== value.length || entries.length > maximum) {
+  if (entries.length !== value.length || (maximum !== undefined && entries.length > maximum)) {
     throw new Error(error);
   }
   return entries;
@@ -1590,11 +1629,22 @@ function boundedStringListArg(value: unknown, error: string, maximum: number): s
 function validateAgentBoundKnowledgeArguments(toolName: AgentBoundKnowledgeToolName, args: JsonObject): void {
   if (toolName === "synthi_codesite_find_experts") {
     assertAllowedKeys(args, ["paths", "symbols", "contracts", "limit"]);
+    let hasReference = false;
     for (const key of ["paths", "symbols", "contracts"] as const) {
-      if (args[key] !== undefined) boundedStringListArg(args[key], "codesite_agent_knowledge_arguments_invalid", 32);
+      if (args[key] !== undefined) {
+        const values = boundedStringListArg(
+          args[key],
+          "codesite_agent_knowledge_arguments_invalid",
+          EXPERTISE_POLICY_LIMITS.maxReferencesPerType,
+        );
+        hasReference ||= values.length > 0;
+      }
     }
+    if (!hasReference) throw new Error("codesite_agent_knowledge_references_required");
     const limit = args["limit"];
-    if (limit !== undefined && (!Number.isInteger(limit) || Number(limit) < 1 || Number(limit) > 10)) {
+    if (limit !== undefined && (!Number.isInteger(limit)
+      || Number(limit) < 1
+      || (EXPERTISE_POLICY_LIMITS.maxLimit !== undefined && Number(limit) > EXPERTISE_POLICY_LIMITS.maxLimit))) {
       throw new Error("codesite_agent_knowledge_arguments_invalid");
     }
     return;
@@ -1615,17 +1665,68 @@ function validateAgentBoundKnowledgeArguments(toolName: AgentBoundKnowledgeToolN
     assertAllowedKeys(references, Object.keys(KNOWLEDGE_REFERENCE_PROPERTIES));
     for (const value of Object.values(references)) {
       if (value === undefined) continue;
-      boundedStringListArg(value, "codesite_knowledge_references_invalid", 32);
+      boundedStringListArg(
+        value,
+        "codesite_knowledge_references_invalid",
+        EXPERTISE_POLICY_LIMITS.maxReferencesPerType,
+      );
+    }
+    if (!Object.values(references).some((value) => Array.isArray(value) && value.length > 0)) {
+      throw new Error("codesite_agent_knowledge_references_required");
     }
     const urgency = args["urgency"];
     if (urgency !== undefined && !["low", "normal", "high"].includes(urgency as string)) {
       throw new Error("codesite_agent_knowledge_arguments_invalid");
     }
     if (args["suggested_expert_agent_session_ids"] !== undefined) {
-      boundedStringListArg(args["suggested_expert_agent_session_ids"], "codesite_agent_knowledge_arguments_invalid", 8);
+      boundedStringListArg(
+        args["suggested_expert_agent_session_ids"],
+        "codesite_agent_knowledge_arguments_invalid",
+        EXPERTISE_POLICY_LIMITS.maxSuggestedExperts,
+      );
     }
     if (args["allow_unrouted"] !== undefined && typeof args["allow_unrouted"] !== "boolean") {
       throw new Error("codesite_agent_knowledge_arguments_invalid");
+    }
+    return;
+  }
+  if (toolName === "synthi_codesite_submit_question_feedback") {
+    assertAllowedKeys(args, ["knowledge_item_id", "verdict", "correction", "evidence_refs"]);
+    requireArguments(args, ["knowledge_item_id", "verdict"]);
+    const knowledgeItemId = args["knowledge_item_id"];
+    const verdict = args["verdict"];
+    if (typeof knowledgeItemId !== "string" || knowledgeItemId.trim().length < 1 || knowledgeItemId.length > 128) {
+      throw new Error("codesite_agent_knowledge_arguments_invalid");
+    }
+    if (typeof verdict !== "string" || verdict.trim().length < 1 || verdict.length > 64) {
+      throw new Error("codesite_agent_knowledge_arguments_invalid");
+    }
+    const normalizedVerdict = verdict.trim().toLowerCase().replace(/[ -]+/g, "_");
+    if (QUESTION_FEEDBACK_VERDICTS.length && !QUESTION_FEEDBACK_VERDICTS.includes(normalizedVerdict)) {
+      throw new Error("codesite_agent_knowledge_arguments_invalid");
+    }
+    if (args["correction"] !== undefined
+      && (typeof args["correction"] !== "string"
+        || !args["correction"].trim()
+        || (EXPERTISE_POLICY_LIMITS.maxCorrectionLength !== undefined
+          && args["correction"].length > EXPERTISE_POLICY_LIMITS.maxCorrectionLength))) {
+      throw new Error("codesite_agent_knowledge_arguments_invalid");
+    }
+    if (normalizedVerdict === "needs_correction"
+      && (typeof args["correction"] !== "string" || !args["correction"].trim())) {
+      throw new Error("codesite_agent_knowledge_arguments_invalid");
+    }
+    if (args["evidence_refs"] !== undefined) {
+      const maxEvidenceRefLength = EXPERTISE_POLICY_LIMITS.maxEvidenceRefLength;
+      const evidenceRefs = boundedStringListArg(
+        args["evidence_refs"],
+        "codesite_agent_knowledge_arguments_invalid",
+        EXPERTISE_POLICY_LIMITS.maxEvidenceRefs,
+      );
+      if (maxEvidenceRefLength !== undefined
+        && evidenceRefs.some((reference) => reference.length > maxEvidenceRefLength)) {
+        throw new Error("codesite_agent_knowledge_arguments_invalid");
+      }
     }
     return;
   }
@@ -1636,7 +1737,10 @@ function validateAgentBoundKnowledgeArguments(toolName: AgentBoundKnowledgeToolN
     if (kind && !KNOWLEDGE_KINDS.has(kind)) throw new Error("codesite_shared_knowledge_kind_invalid");
     if (status && !KNOWLEDGE_STATUSES.has(status)) throw new Error("codesite_shared_knowledge_status_invalid");
     const limit = args["limit"];
-    if (limit !== undefined && (!Number.isInteger(limit) || Number(limit) < 1 || Number(limit) > 100)) {
+    if (limit !== undefined && (!Number.isInteger(limit)
+      || Number(limit) < 1
+      || (EXPERTISE_POLICY_LIMITS.pageMaxLimit !== undefined
+        && Number(limit) > EXPERTISE_POLICY_LIMITS.pageMaxLimit))) {
       throw new Error("codesite_shared_knowledge_limit_invalid");
     }
     return;
@@ -1681,7 +1785,12 @@ function validateAgentBoundKnowledgeArguments(toolName: AgentBoundKnowledgeToolN
 }
 
 function knowledgeKindForTool(
-  toolName: Exclude<AgentBoundKnowledgeToolName, "synthi_codesite_get_shared_knowledge" | "synthi_codesite_respond_impact_notice">,
+  toolName: Exclude<
+    AgentBoundKnowledgeToolName,
+    | "synthi_codesite_get_shared_knowledge"
+    | "synthi_codesite_respond_impact_notice"
+    | "synthi_codesite_submit_question_feedback"
+  >,
 ): "discovery" | "lead" | "shared_skill" | "handoff" {
   if (toolName === "synthi_codesite_record_discovery") return "discovery";
   if (toolName === "synthi_codesite_record_lead") return "lead";
@@ -1757,6 +1866,7 @@ function isAgentBoundKnowledgeToolName(toolName: CodeSiteToolName): toolName is 
     "synthi_codesite_get_shared_knowledge",
     "synthi_codesite_respond_impact_notice",
     "synthi_codesite_ask_expert_question",
+    "synthi_codesite_submit_question_feedback",
   ].includes(toolName as AgentBoundKnowledgeToolName);
 }
 

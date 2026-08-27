@@ -221,6 +221,7 @@ export const ADVERTISED_TOOLS = [
   "synthi_codesite_get_source_state_since",
   "synthi_codesite_get_relevant_context",
   "synthi_codesite_find_experts",
+  "synthi_codesite_submit_question_feedback",
   "synthi_codesite_record_discovery",
   "synthi_codesite_record_lead",
   "synthi_codesite_publish_shared_skill",

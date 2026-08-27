@@ -14,8 +14,8 @@ multi-agent session: attention.
 
 ## Feature
 
-Three pieces, all provider-agnostic (pure control plane + MCP; any agent host
-that can speak the existing CodeSite tools can use them):
+Five pieces, all provider-agnostic (the same control-plane contracts serve
+agents and the signed-in project operator):
 
 1. **Derived expertise index** (`synthi/src/lib/codesite/agentExpertise.js`).
    Expertise is *inferred from evidence the control plane already persists* —
@@ -24,14 +24,17 @@ that can speak the existing CodeSite tools can use them):
    - typed semantic refs on transactions (symbols/contracts)
    - execution-plan routes (weight 1.5)
    - knowledge-item references (weight 2) and authorship (weight 1)
-   Scores decay with a 14-day half-life so stale experts sink. Ranking is
-   deterministic (score desc, session id asc) and never returns the asker.
+   Scores decay with a 14-day half-life so stale experts sink. The routing
+   inputs are cached per project and loaded without a fixed row-count cutoff;
+   the active policy version travels with each result. Ranking is deterministic
+   (score desc, session id asc) and never returns the asker.
 
 2. **`synthi_codesite_find_experts`** — agent-bound MCP tool + HTTP endpoint
    `GET .../agent-sessions/:id/experts?paths=...&symbols=...&contracts=...`.
    Returns ranked peers with callsign, provider, score, last-interaction, and
    evidence refs (`plan_route:<planId>`, `transaction_write:<txnId>`, …) so the
-   answer is auditable, not vibes.
+   answer is auditable, not vibes. The response also carries the active
+   expertise policy version so score changes remain explainable across deploys.
 
 3. **Routed questions with reusable answers** — new `agent_question` knowledge
    kind:
@@ -50,6 +53,30 @@ that can speak the existing CodeSite tools can use them):
      the next agent with the same question finds the answered thread via
      `get_shared_knowledge` without interrupting anyone.
 
+4. **Answer feedback and corrections** — reviewers can mark an answered
+   question `useful`, `needs_correction`, or `not_useful`. Feedback is stored
+   as an ordinary `CodeSiteEvent` so it follows the existing durable event-log
+   and artifact-sync path; no second feedback table or migration is required.
+   Ranking keeps only the newest verdict from each reviewer for a question and
+   credits the resulting positive/negative signal to the agent that answered
+   it. An asker or human reviewer never receives expertise credit merely for
+   submitting feedback.
+
+5. **CodeSite operator UI** — the Expertise section in the Operations panel
+   searches by arbitrary project paths, symbols, and contracts; lists open or
+   answered project questions; lets an authorized human answer an open
+   question; and records feedback on an answered one. The view uses the
+   versioned expertise policy for feedback choices, renders only safe API
+   projections, and refreshes from server state after mutations.
+
+The checked-in policy is the browser-safe default. A deployment may select a
+different, explicitly versioned policy at server startup with
+`SYNTHI_CODESITE_EXPERTISE_POLICY_JSON` containing the policy JSON. The server
+validates the override through `resolveExpertisePolicy`; malformed or
+unversioned overrides fail closed, and request/agent data cannot change it.
+Expert ranking responses report the active policy version so cached scores and
+operator decisions remain explainable across deployments.
+
 ## API surface
 
 | Surface | Detail |
@@ -57,8 +84,14 @@ that can speak the existing CodeSite tools can use them):
 | `GET /api/workspace/:slug/codesite/agent-sessions/:id/experts` | agent-token auth, `codesite.context.read`; query `paths`/`symbols`/`contracts`/`limit` (1–10) |
 | `POST /api/workspace/:slug/codesite/agent-sessions/:id/questions` | agent-token auth, `codesite.knowledge.write`; body `{title, summary, references, urgency?, suggested_expert_agent_session_ids?, allow_unrouted?}` |
 | `POST .../agent-sessions/:id/inbox/:itemId/respond` | widened for questions: `answer` (requires answer text), `claim`, `defer`, `dismiss`; works through the impact_notice wrapper |
-| MCP | `synthi_codesite_find_experts`, `synthi_codesite_ask_expert_question` (agent-bound, environment identity only) |
-| Events | `agent_question_asked`, `agent_question_answered` on the causal timeline |
+| `GET /api/workspace/:slug/codesite/projects/:id/experts` | ordinary project-member auth for the operator UI; same path/symbol/contract query and derived ranking |
+| `GET /api/workspace/:slug/codesite/projects/:id/knowledge` | ordinary project-member auth; filters by kind/status and returns an opaque `nextCursor` for keyset pagination |
+| `POST /api/workspace/:slug/codesite/projects/:id/questions/:knowledgeId/answer` | ordinary project-member auth; records a human answer and notifies the asking agent when one exists |
+| `POST /api/workspace/:slug/codesite/projects/:id/knowledge/:knowledgeId/feedback` | ordinary project-member auth; stores a useful/correction/not-useful verdict in the event log |
+| CodeSite Operations → Expertise | browser UI for project expert search, unanswered questions, human responses, and answer feedback |
+| `POST .../agent-sessions/:id/knowledge/:knowledgeId/feedback` | agent-token auth, `codesite.knowledge.write`; same feedback contract |
+| MCP | `synthi_codesite_find_experts`, `synthi_codesite_ask_expert_question`, `synthi_codesite_get_shared_knowledge`, `synthi_codesite_respond_impact_notice`, `synthi_codesite_submit_question_feedback` (agent-bound, environment identity only) |
+| Events | `agent_question_asked`, `agent_question_answered`, and `agent_question_feedback_submitted` on the causal timeline |
 
 ## Security / privacy posture
 
@@ -71,6 +104,14 @@ that can speak the existing CodeSite tools can use them):
   `sourceKnowledgeItemId` admission in `visibleKnowledgeRowsForSession`.
 - Artifact projection tolerates stored unrouted questions (creation-time policy
   still refuses new unrouted questions).
+- Human answer and feedback actions re-apply owner-private/restricted visibility
+  instead of treating project write access as a question disclosure grant.
+- The answerer cannot submit feedback on their own answer, so ranking signals
+  remain independent of the credited answer identity.
+
+- Feedback events are project-scoped and bounded by the versioned expertise
+  policy; repeated feedback from one reviewer replaces its ranking effect by
+  latest-event selection rather than accumulating reputation indefinitely.
 
 ## Validation evidence (2026-08-26)
 
@@ -88,10 +129,10 @@ that can speak the existing CodeSite tools can use them):
   transcript in `.visual-proof/expertise-live-transcript-*.json`, all four
   assertions true).
 - UI: CodeSite Operations panel renders in the browser (screenshot
-  `.visual-proof/ui-1-chrome-codesite-panel-404-state.png`); note the panel is
-  workspace-scoped, so it must be viewed under a workspace the signed-in user
-  belongs to (e.g. `/workspace/acme-chan-fuzz/codesite`), not the
-  service-token-only `acme-proof` workspace.
+  `.visual-proof/ui-1-chrome-codesite-panel-404-state.png`); the Expertise
+  section is workspace-scoped and must be viewed under a workspace the
+  signed-in user belongs to (e.g. `/workspace/acme-chan-fuzz/codesite`), not
+  the service-token-only `acme-proof` workspace.
 
 ## Bugs found and fixed during live proving (each its own commit)
 

@@ -205,6 +205,93 @@ describe('expertise ranking', () => {
     expect(questionExperts[0].evidence).toContain('knowledge_answer:question-answered');
   });
 
+  it('uses the latest answer feedback to reward useful answers and penalize corrections', () => {
+    const answeredQuestion = {
+      id: 'question-feedback',
+      kind: 'agent_question',
+      status: 'answered',
+      createdByAgentSessionId: 'agent-alice',
+      payloadJson: JSON.stringify({ answeredByAgentSessionId: 'agent-cara' }),
+      scopeJson: JSON.stringify({ references: { paths: ['src/question.ts'] } }),
+      updatedAt: RECENT,
+    };
+    const base = index({
+      transactions: [transaction({ agentSessionId: 'agent-cara', writeSetJson: JSON.stringify(['src/question.ts']) })],
+      knowledgeItems: [answeredQuestion],
+    });
+    const useful = index({
+      transactions: [transaction({ agentSessionId: 'agent-cara', writeSetJson: JSON.stringify(['src/question.ts']) })],
+      knowledgeItems: [answeredQuestion],
+      feedbackEvents: [{
+        id: 'feedback-useful',
+        eventType: 'agent_question_feedback_submitted',
+        actorType: 'human',
+        actorId: 'reviewer-1',
+        detailsJson: JSON.stringify({ knowledgeItemId: 'question-feedback', verdict: 'useful' }),
+        createdAt: RECENT,
+      }],
+    });
+    const correction = index({
+      transactions: [transaction({ agentSessionId: 'agent-cara', writeSetJson: JSON.stringify(['src/question.ts']) })],
+      knowledgeItems: [answeredQuestion],
+      feedbackEvents: [{
+        id: 'feedback-correction',
+        eventType: 'agent_question_feedback_submitted',
+        actorType: 'human',
+        actorId: 'reviewer-1',
+        detailsJson: JSON.stringify({ knowledgeItemId: 'question-feedback', verdict: 'needs_correction' }),
+        createdAt: RECENT,
+      }],
+    });
+    const query = { paths: ['src/question.ts'], symbols: [], contracts: [] };
+    const baseScore = rankExperts(base, query, { sessions }).find((entry) => entry.agentSessionId === 'agent-cara').score;
+    const usefulScore = rankExperts(useful, query, { sessions }).find((entry) => entry.agentSessionId === 'agent-cara').score;
+    const correctionScore = rankExperts(correction, query, { sessions }).find((entry) => entry.agentSessionId === 'agent-cara').score;
+
+    expect(usefulScore).toBeGreaterThan(baseScore);
+    expect(correctionScore).toBeLessThan(baseScore);
+    expect(rankExperts(useful, query, { sessions })[0].evidence).toContain('knowledge_feedback:useful:feedback-useful');
+  });
+
+  it('uses only the newest feedback from the same reviewer for a question', () => {
+    const question = {
+      id: 'question-latest-feedback',
+      kind: 'agent_question',
+      status: 'answered',
+      payloadJson: JSON.stringify({ answeredByAgentSessionId: 'agent-cara' }),
+      scopeJson: JSON.stringify({ references: { paths: ['src/question.ts'] } }),
+      updatedAt: RECENT,
+    };
+    const built = index({
+      knowledgeItems: [question],
+      feedbackEvents: [
+        {
+          id: 'feedback-old',
+          eventType: 'agent_question_feedback_submitted',
+          actorType: 'human',
+          actorId: 'reviewer-1',
+          detailsJson: JSON.stringify({ knowledgeItemId: question.id, verdict: 'needs_correction' }),
+          createdAt: new Date(NOW.getTime() - 2 * 24 * 60 * 60 * 1000),
+        },
+        {
+          id: 'feedback-new',
+          eventType: 'agent_question_feedback_submitted',
+          actorType: 'human',
+          actorId: 'reviewer-1',
+          detailsJson: JSON.stringify({ knowledgeItemId: question.id, verdict: 'useful' }),
+          createdAt: RECENT,
+        },
+      ],
+    });
+    const ranked = rankExperts(
+      built,
+      { paths: ['src/question.ts'], symbols: [], contracts: [] },
+      { sessions },
+    );
+    expect(ranked[0].evidence).toContain('knowledge_feedback:useful:feedback-new');
+    expect(ranked[0].evidence).not.toContain('knowledge_feedback:needs_correction:feedback-old');
+  });
+
   it('combines plan routes with knowledge signals and applies recency decay', () => {
     const fresh = index({
       executionPlans: [plan({ agentSessionId: 'agent-cara' })],
@@ -254,6 +341,24 @@ describe('expertise ranking', () => {
         executionPlans: [plan({ agentSessionId: 'agent-alice', routeJson: JSON.stringify(['src/door/**']) })],
         transactions: [transaction()],
         excludeSessionId: 'agent-ben',
+        now: NOW,
+      },
+    );
+    expect(suggested.map((e) => e.agentSessionId)).toEqual(['agent-alice']);
+  });
+
+  it('can rank suggestions from a materialized index without rescanning source rows', () => {
+    const materialized = index({
+      executionPlans: [plan({ routeJson: JSON.stringify(['src/materialized/**']) })],
+    });
+    const suggested = suggestExpertsForReferences(
+      { paths: ['src/materialized/file.ts'] },
+      {
+        sessions,
+        index: materialized,
+        executionPlans: [],
+        transactions: [],
+        knowledgeItems: [],
         now: NOW,
       },
     );
