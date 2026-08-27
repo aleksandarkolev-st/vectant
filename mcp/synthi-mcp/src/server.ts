@@ -1419,6 +1419,7 @@ async function dispatchTool(
     synthi_warrant_bind_trust: async () => (await dispatchWarrantTool("synthi_warrant_bind_trust", args)) as CallToolResult,
     synthi_warrant_policy_register: async () => (await dispatchWarrantTool("synthi_warrant_policy_register", args)) as CallToolResult,
     synthi_warrant_unbind: async () => (await dispatchWarrantTool("synthi_warrant_unbind", args)) as CallToolResult,
+    synthi_warrant_renew: async () => (await dispatchWarrantTool("synthi_warrant_renew", args)) as CallToolResult,
   };
 
   const handler = handlers[toolName];
@@ -1473,11 +1474,12 @@ async function dispatchTool(
         ) as CallToolResult;
       } catch (err) {
         // Patch J1 settle: a dispatch that THREW never produced a response,
-        // so its reservation is refunded. Business errors (isError results)
-        // keep the charge - the attempt was consumed.
+        // so its reservation is refunded. Structured isError responses are
+        // settled below with the same rollback semantics.
         settleWarrant(toolName, metaWarrantIdFromParams(request.params), false);
         throw err;
       }
+      settleWarrant(toolName, metaWarrantIdFromParams(request.params), !result.isError);
       recordToolCall(toolName, result.isError ? "error" : "ok");
       return result;
     }
@@ -1485,10 +1487,11 @@ async function dispatchTool(
     try {
       response = await dispatchTool(toolName, args, signal);
     } catch (err) {
-      // Patch J1 settle: same refund-on-throw semantics as above.
+      // Patch J1 settle: same refund-on-failed-dispatch semantics as above.
       settleWarrant(toolName, metaWarrantIdFromParams(request.params), false);
       throw err;
     }
+    settleWarrant(toolName, metaWarrantIdFromParams(request.params), !response.isError);
     // Record the outcome for Prometheus. Most tools return structured error
     // payloads via `isError: true` rather than throwing — respect that.
     recordToolCall(toolName, response.isError ? "error" : "ok");

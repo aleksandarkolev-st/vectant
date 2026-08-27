@@ -320,3 +320,54 @@ G8 (F2): progression grants stay authority-shaped: registerPolicy rejects any
   exported from warrant.ts) - trust can narrow, never widen.
 Deferred (documented follow-ups, not defects shipped): F4 reserve/settle
 async budget accounting; F7 event-log redaction.
+
+## Patch J - production-grade safety (close deferred findings)
+
+J1 RESERVE/SETTLE: enforceWarrantGate charges synchronously pre-dispatch;
+concurrent calls interleave between check and charge => budget double-spend
+(round-2 audit finding F4). Fix: WarrantRegistry gains
+tryReserve(warrant_id, tool): { reserved: boolean } - atomically decrement ALL
+chain remaining counters for the tool when every node has remaining undefined
+or > 0; settleReserved(warrant_id, tool, commit: boolean) restores counters
+when the dispatch failed. Gate: on an allowed decision call tryReserve BEFORE
+dispatch; false => deny invocations_exhausted. server.ts CallTool handler
+calls settleWarrant(toolName, warrantId, !response.isError) after dispatchTool
+(no-op without a warrant id). External-tool proxy path settles too.
+J2 O(1) LOOKUPS: registry exposes get(warrant_id): Warrant | undefined
+(cloned snapshot); tools/warrant.ts replaces every listWarrants().find(...)
+with registry.get(...).
+J3 RESOURCES GATING: server.ts ReadResourceRequestSchema handler consults new
+exported authorizeResourceRead(uri, params): in warn/enforce modes URIs whose
+path contains "events" require _meta.warrant_id referencing an ACTIVE warrant
+OR a matching _meta.warrant_admin_key; otherwise isError
+"resource_access_denied". off mode unchanged. Round-3 finding: security events
+(warrant ids) leaked via resources/read ungated.
+J4 REDACTION COMPLETION: grep src for raw warrant ids in eventLog pushes
+outside tools/warrant.ts rid() helper; route any stragglers through it.
+Tests: parallel 10x calls vs max_invocations=2 => exactly 2 reserved-admitted;
+settle(commit=false) restores budget; resources/read denied unbound in
+enforce, allowed with valid warrant, off mode unaffected.
+
+## Patch K - durable warrants + renewal (feature on top)
+
+Motivation: all warrant state is memory-only; a restart orphans live agents
+mid-task and erases earned trust. Production credentials must survive the
+process that issued them.
+
+K1 PERSISTENCE: src/security/warrant_store.ts - append-only JSONL journal,
+encrypted at rest with AES-256-GCM keyed by SYNTHI_WARRANT_STORE_KEY (when
+unset: fall back to machine-derived key file under os.tmpdir() with 0600).
+Events appended: issue/attenuate/revoke/bind/unbind/record/taint snapshots +
+periodic checkpoint every 500 appends. On module init (opt-in via
+SYNTHI_WARRANT_STORE=path), tools/warrant.ts replays into registry+ledger
+before serving; replay is idempotent by event seq. fsync per append.
+K2 RENEWAL: synthi_warrant_renew {warrant_id, bearer?, ttl_ms} -
+holder-bearer-gated for sealed warrants; extends expires_at_ms by min(ttl_ms,
+org max_ttl_ms remaining headroom); PRESERVES rungs/demotions/taint/budgets
+(budgets optionally topped up via add_invocations <= org ceiling); emits
+journal event. Management-plane gated like other lifecycle tools EXCEPT the
+bearer path allows self-renewal of sealed warrants (possession = authority to
+extend, within ceilings).
+K3 Tests: restart-replay round-trip (issue/bind/evidence -> new TrustLedger
+replays -> identical view), renew extends within ceiling and preserves
+progression, bearer-gating of self-renewal.
