@@ -164,6 +164,7 @@ import {
   commitTransaction,
   acknowledgeInboxItem,
   acknowledgeInboxItemForAgent,
+  answerProjectQuestion,
   collisionPredict,
   applyRouteRevision,
   createAgentSession,
@@ -217,6 +218,7 @@ import {
   reviewDocument,
   reviewRouteRevision,
   shadowMergeSimulate,
+  submitProjectQuestionFeedback,
   updateZonePolicy,
   validateTransaction,
 } from '../controlPlane.js';
@@ -3674,6 +3676,61 @@ describe('CodeSite control plane transaction validation', () => {
       ]);
       const items = await listProjectKnowledge('acme', 'project-1', {}, { userId: 'user-1' });
       expect(items.map((item) => item.id)).toEqual(['knowledge-1']);
+    });
+
+    it.each(['owner_private', 'restricted'])('does not let a project writer answer a %s question they cannot view', async (visibility) => {
+      const question = knowledgeRow({
+        id: `${visibility}-question`,
+        kind: 'agent_question',
+        status: 'open',
+        createdByUserId: 'user-2',
+        ownerUserId: 'user-2',
+        createdByAgentSessionId: 'agent-2',
+        redactionClass: visibility === 'owner_private' ? 'owner_private' : 'project_fact',
+        scopeJson: JSON.stringify({
+          visibility,
+          references: JSON.parse(knowledgeRow().scopeJson).references,
+          tags: [],
+        }),
+      });
+      prisma.codeSiteKnowledgeItem.findFirst.mockResolvedValue(question);
+
+      await expect(answerProjectQuestion(
+        'acme',
+        'project-1',
+        question.id,
+        { answer: 'Private answer' },
+        { userId: 'reviewer-1' },
+      )).rejects.toMatchObject({ status: 404, code: 'knowledge_question_not_found' });
+      expect(prisma.codeSiteKnowledgeItem.update).not.toHaveBeenCalled();
+      expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+    });
+
+    it.each(['owner_private', 'restricted'])('does not let a project writer review an inaccessible %s answer', async (visibility) => {
+      const question = knowledgeRow({
+        id: `${visibility}-answered-question`,
+        kind: 'agent_question',
+        status: 'answered',
+        createdByUserId: 'user-2',
+        ownerUserId: 'user-2',
+        createdByAgentSessionId: 'agent-2',
+        redactionClass: visibility === 'owner_private' ? 'owner_private' : 'project_fact',
+        scopeJson: JSON.stringify({
+          visibility,
+          references: JSON.parse(knowledgeRow().scopeJson).references,
+          tags: [],
+        }),
+      });
+      prisma.codeSiteKnowledgeItem.findFirst.mockResolvedValue(question);
+
+      await expect(submitProjectQuestionFeedback(
+        'acme',
+        'project-1',
+        question.id,
+        { verdict: 'useful' },
+        { userId: 'reviewer-1' },
+      )).rejects.toMatchObject({ status: 404, code: 'knowledge_question_not_found' });
+      expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
     });
   });
 

@@ -3437,6 +3437,50 @@ function questionAskerSessionId(question) {
   return payload?.fromAgentSessionId || question?.createdByAgentSessionId || null;
 }
 
+async function actorCanAccessQuestion(
+  question,
+  {
+    actorType,
+    actorId,
+    actorUserIdValue = null,
+    bypass = false,
+  } = {},
+) {
+  if (bypass) return true;
+  const visibility = knowledgeVisibility(question);
+  if (visibility === 'project') return true;
+
+  const owned = Boolean(
+    (actorUserIdValue && [question.createdByUserId, question.ownerUserId].includes(actorUserIdValue))
+      || (actorType === 'agent_session'
+        && actorId
+        && [question.createdByAgentSessionId, question.ownerAgentSessionId].includes(actorId)),
+  );
+  if (owned) return true;
+  if (visibility !== 'restricted' || actorType !== 'agent_session' || !actorId) return false;
+
+  const payload = parseJson(question.payloadJson, {});
+  const scope = knowledgeScope(question);
+  const restrictedRecipients = new Set([
+    ...asArray(payload.suggestedExpertAgentSessionIds),
+    ...asArray(scope.references?.agentSessionIds),
+  ].filter(Boolean));
+  if (restrictedRecipients.has(actorId)) return true;
+
+  const inboxItem = await prisma.codeSiteAgentInboxItem.findFirst({
+    where: {
+      projectId: question.projectId,
+      agentSessionId: actorId,
+      OR: [
+        { knowledgeItemId: question.id },
+        { knowledgeItem: { sourceKnowledgeItemId: question.id } },
+      ],
+    },
+    select: { id: true },
+  }).catch(() => null);
+  return Boolean(inboxItem);
+}
+
 function questionFeedbackProjection(event, details) {
   return {
     id: event.id,
@@ -3465,6 +3509,14 @@ export async function answerProjectQuestion(
     include: { references: true },
   });
   if (!question) throw notFound('knowledge_question_not_found');
+  if (!await actorCanAccessQuestion(question, {
+    actorType: 'human',
+    actorId,
+    actorUserIdValue: actorId,
+    bypass: actor?.bypass === true,
+  })) {
+    throw notFound('knowledge_question_not_found');
+  }
   if (question.status === 'answered') {
     const payload = parseJson(question.payloadJson, {});
     if (payload.answerText === response.answer) {
@@ -3565,6 +3617,8 @@ async function persistQuestionFeedback({
   body,
   actorType,
   actorId,
+  actorUserIdValue = null,
+  bypass = false,
   displayCallsign = null,
 }) {
   const feedback = validateKnowledgeFeedback(body, EXPERTISE_POLICY);
@@ -3573,6 +3627,14 @@ async function persistQuestionFeedback({
     include: { references: true },
   });
   if (!question) throw notFound('knowledge_question_not_found');
+  if (!await actorCanAccessQuestion(question, {
+    actorType,
+    actorId,
+    actorUserIdValue,
+    bypass,
+  })) {
+    throw notFound('knowledge_question_not_found');
+  }
   if (question.status !== 'answered') {
     throw conflict('knowledge_feedback_question_not_answered', {
       knowledgeItemId,
@@ -3620,6 +3682,8 @@ export async function submitProjectQuestionFeedback(
     body,
     actorType: 'human',
     actorId: actorUserId(actor),
+    actorUserIdValue: actorUserId(actor),
+    bypass: actor?.bypass === true,
   });
 }
 
@@ -3639,6 +3703,7 @@ export async function submitAgentQuestionFeedback(
     body,
     actorType: 'agent_session',
     actorId: authority.session.id,
+    actorUserIdValue: authority.session.ownerUserId,
     displayCallsign: authority.session.displayCallsign,
   });
 }
