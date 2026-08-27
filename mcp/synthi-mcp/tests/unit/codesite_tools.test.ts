@@ -18,6 +18,7 @@ const AGENT_BOUND_KNOWLEDGE_TOOLS = [
   "synthi_codesite_file_handoff",
   "synthi_codesite_get_shared_knowledge",
   "synthi_codesite_respond_impact_notice",
+  "synthi_codesite_submit_question_feedback",
 ] as const;
 
 const REFERENCES = {
@@ -66,6 +67,9 @@ function validAgentBoundArgs(toolName: (typeof AGENT_BOUND_KNOWLEDGE_TOOLS)[numb
   }
   if (toolName === "synthi_codesite_respond_impact_notice") {
     return { notice_id: "notice-1", action: "acknowledge" };
+  }
+  if (toolName === "synthi_codesite_submit_question_feedback") {
+    return { knowledge_item_id: "question-1", verdict: "useful" };
   }
   return {};
 }
@@ -118,6 +122,12 @@ describe("CodeSite MCP tool surface", () => {
       "answer",
       "claim",
       "defer",
+    ]);
+    const feedback = CODESITE_TOOLS.find((tool) => tool.name === "synthi_codesite_submit_question_feedback");
+    expect((feedback?.inputSchema.properties as Record<string, any>).verdict.enum).toEqual([
+      "useful",
+      "needs_correction",
+      "not_useful",
     ]);
   });
 
@@ -381,6 +391,61 @@ describe("CodeSite MCP tool surface", () => {
       "http://codesite.test/api/workspace/workspace-env/codesite/agent-sessions/agent-1/questions",
     );
     expect(JSON.parse(String(init?.body))).toEqual(args);
+  });
+
+  it("submits question feedback through the attached agent route", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent/alice";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({ feedback: { verdict: "useful" } }, 201));
+    const args = {
+      knowledge_item_id: "question/1",
+      verdict: "useful",
+      evidence_refs: ["answer-proof:1"],
+    };
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_submit_question_feedback", args);
+
+    expect(response?.isError).toBeUndefined();
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    expect(url).toEqual(new URL(
+      "http://codesite.test/api/workspace/workspace-env/codesite/agent-sessions/agent%2Falice/knowledge/question%2F1/feedback",
+    ));
+    expect(init).toMatchObject({
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        authorization: "Bearer csa_agent-secret-token",
+        "content-type": "application/json",
+      },
+    });
+    expect(JSON.parse(String(init?.body))).toEqual(args);
+    expect(JSON.stringify(response)).not.toContain("csa_agent-secret-token");
+  });
+
+  it("rejects invalid question feedback before fetch", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-alice";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+
+    const invalidVerdict = await dispatchCodeSiteTool("synthi_codesite_submit_question_feedback", {
+      knowledge_item_id: "question-1",
+      verdict: "maybe",
+    });
+    const invalidEvidence = await dispatchCodeSiteTool("synthi_codesite_submit_question_feedback", {
+      knowledge_item_id: "question-1",
+      verdict: "useful",
+      evidence_refs: "not-an-array",
+    });
+    const missingQuestion = await dispatchCodeSiteTool("synthi_codesite_submit_question_feedback", {
+      verdict: "useful",
+    });
+
+    for (const response of [invalidVerdict, invalidEvidence, missingQuestion]) {
+      expect(response?.isError).toBe(true);
+      expect(response?.structuredContent).toEqual(expect.objectContaining({
+        error: "codesite_tool_failed",
+      }));
+    }
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("requires a question summary before fetch", async () => {

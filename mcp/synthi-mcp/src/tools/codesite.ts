@@ -30,6 +30,7 @@ export const CODESITE_TOOL_NAMES = [
   "synthi_codesite_get_relevant_context",
   "synthi_codesite_find_experts",
   "synthi_codesite_ask_expert_question",
+  "synthi_codesite_submit_question_feedback",
   "synthi_codesite_record_discovery",
   "synthi_codesite_record_lead",
   "synthi_codesite_publish_shared_skill",
@@ -84,7 +85,8 @@ type AgentBoundKnowledgeToolName =
   | "synthi_codesite_get_shared_knowledge"
   | "synthi_codesite_respond_impact_notice"
   | "synthi_codesite_find_experts"
-  | "synthi_codesite_ask_expert_question";
+  | "synthi_codesite_ask_expert_question"
+  | "synthi_codesite_submit_question_feedback";
 type RoutedCodeSiteToolName = Exclude<
   CodeSiteToolName,
   "synthi_codesite_get_relevant_context" | AgentBoundKnowledgeToolName
@@ -207,6 +209,7 @@ const SHARED_SKILL_RECIPE_PROPERTIES = {
 const IMPACT_NOTICE_ACTIONS = ["acknowledge", "refresh", "rebase_requested", "abort", "dismiss"] as const;
 const QUESTION_ACTIONS = ["answer", "claim", "defer", "dismiss"] as const;
 const KNOWLEDGE_RESPONSE_ACTIONS = [...new Set([...IMPACT_NOTICE_ACTIONS, ...QUESTION_ACTIONS])] as const;
+const QUESTION_FEEDBACK_VERDICTS = ["useful", "needs_correction", "not_useful"] as const;
 const SHARED_KNOWLEDGE_STATUSES = [
   "draft", "verified", "rejected", "invalidated", "archived",
   "open", "claimed", "escalated", "resolved", "dismissed",
@@ -324,6 +327,17 @@ export const CODESITE_TOOLS = [
       allow_unrouted: { type: "boolean" },
     },
     ["title", "summary", "references"],
+  ),
+  agentBoundCodeSiteTool(
+    "synthi_codesite_submit_question_feedback",
+    "Submit a usefulness or correction signal for an answered project question; the server attributes it to this attached agent.",
+    {
+      knowledge_item_id: { type: "string", minLength: 1, maxLength: 128 },
+      verdict: { type: "string", enum: QUESTION_FEEDBACK_VERDICTS },
+      correction: { type: "string", maxLength: 4096 },
+      evidence_refs: { type: "array", items: { type: "string" }, maxItems: 32 },
+    },
+    ["knowledge_item_id", "verdict"],
   ),
   codeSiteTool("synthi_codesite_list_projects", "List visible CodeSite projects for a workspace.", {}, []),
   codeSiteTool("synthi_codesite_create_project", "Create a CodeSite project and owner membership for a workspace.", {
@@ -806,6 +820,14 @@ async function dispatchAgentBoundKnowledgeTool(
       urgency: args["urgency"],
       suggested_expert_agent_session_ids: args["suggested_expert_agent_session_ids"],
       allow_unrouted: args["allow_unrouted"],
+    });
+  } else if (toolName === "synthi_codesite_submit_question_feedback") {
+    path = `${basePath}/knowledge/${encodeURIComponent(requiredString(args, "knowledge_item_id"))}/feedback`;
+    url = new URL(`${apiBase}${path}`);
+    body = withoutUndefined({
+      verdict: args["verdict"],
+      correction: args["correction"],
+      evidence_refs: args["evidence_refs"],
     });
   } else {
     body = { ...args, kind: knowledgeKindForTool(toolName) };
@@ -1540,6 +1562,7 @@ const AGENT_BOUND_WRITER_ARGUMENTS: Record<
     | "synthi_codesite_respond_impact_notice"
     | "synthi_codesite_find_experts"
     | "synthi_codesite_ask_expert_question"
+    | "synthi_codesite_submit_question_feedback"
   >,
   { allowed: readonly string[]; required: readonly string[] }
 > = {
@@ -1629,6 +1652,29 @@ function validateAgentBoundKnowledgeArguments(toolName: AgentBoundKnowledgeToolN
     }
     return;
   }
+  if (toolName === "synthi_codesite_submit_question_feedback") {
+    assertAllowedKeys(args, ["knowledge_item_id", "verdict", "correction", "evidence_refs"]);
+    requireArguments(args, ["knowledge_item_id", "verdict"]);
+    const knowledgeItemId = args["knowledge_item_id"];
+    const verdict = args["verdict"];
+    if (typeof knowledgeItemId !== "string" || knowledgeItemId.trim().length < 1 || knowledgeItemId.length > 128) {
+      throw new Error("codesite_agent_knowledge_arguments_invalid");
+    }
+    if (typeof verdict !== "string" || verdict.trim().length < 1 || verdict.length > 64) {
+      throw new Error("codesite_agent_knowledge_arguments_invalid");
+    }
+    if (!(QUESTION_FEEDBACK_VERDICTS as readonly string[]).includes(verdict.trim().toLowerCase())) {
+      throw new Error("codesite_agent_knowledge_arguments_invalid");
+    }
+    if (args["correction"] !== undefined
+      && (typeof args["correction"] !== "string" || args["correction"].length > 4096)) {
+      throw new Error("codesite_agent_knowledge_arguments_invalid");
+    }
+    if (args["evidence_refs"] !== undefined) {
+      boundedStringListArg(args["evidence_refs"], "codesite_agent_knowledge_arguments_invalid", 32);
+    }
+    return;
+  }
   if (toolName === "synthi_codesite_get_shared_knowledge") {
     assertAllowedKeys(args, SHARED_KNOWLEDGE_FILTER_KEYS);
     const kind = optionalString(args["kind"]);
@@ -1681,7 +1727,12 @@ function validateAgentBoundKnowledgeArguments(toolName: AgentBoundKnowledgeToolN
 }
 
 function knowledgeKindForTool(
-  toolName: Exclude<AgentBoundKnowledgeToolName, "synthi_codesite_get_shared_knowledge" | "synthi_codesite_respond_impact_notice">,
+  toolName: Exclude<
+    AgentBoundKnowledgeToolName,
+    | "synthi_codesite_get_shared_knowledge"
+    | "synthi_codesite_respond_impact_notice"
+    | "synthi_codesite_submit_question_feedback"
+  >,
 ): "discovery" | "lead" | "shared_skill" | "handoff" {
   if (toolName === "synthi_codesite_record_discovery") return "discovery";
   if (toolName === "synthi_codesite_record_lead") return "lead";
@@ -1757,6 +1808,7 @@ function isAgentBoundKnowledgeToolName(toolName: CodeSiteToolName): toolName is 
     "synthi_codesite_get_shared_knowledge",
     "synthi_codesite_respond_impact_notice",
     "synthi_codesite_ask_expert_question",
+    "synthi_codesite_submit_question_feedback",
   ].includes(toolName as AgentBoundKnowledgeToolName);
 }
 
