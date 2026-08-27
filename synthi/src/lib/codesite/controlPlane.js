@@ -3241,7 +3241,13 @@ async function loadFreshExpertiseRoutingState(projectId) {
 async function loadExpertiseRoutingState(projectId, options = {}) {
   return getCachedExpertiseRoutingState(
     projectId,
-    () => loadFreshExpertiseRoutingState(projectId),
+    async () => {
+      const state = await loadFreshExpertiseRoutingState(projectId);
+      return {
+        ...state,
+        index: buildExpertiseIndex({ ...state, policy: EXPERTISE_POLICY }),
+      };
+    },
     {
       forceRefresh: options.forceRefresh === true,
       ttlMs: EXPERTISE_POLICY.cache.ttlMs,
@@ -3256,7 +3262,7 @@ export async function findAgentExperts(workspaceSlug, sessionId, agentAccessToke
   });
   const normalized = normalizeExpertiseQuery(query, EXPERTISE_POLICY);
   const routingState = await loadExpertiseRoutingState(session.projectId);
-  const index = buildExpertiseIndex({ ...routingState, policy: EXPERTISE_POLICY });
+  const index = routingState.index;
   const experts = rankExperts(index, normalized, {
     sessions: routingState.sessions,
     excludeSessionId: session.id,
@@ -3281,7 +3287,7 @@ export async function findProjectExperts(workspaceSlug, projectId, query = {}, a
   const project = await requireProject(workspaceSlug, projectId, actor, 'read');
   const normalized = normalizeExpertiseQuery(query, EXPERTISE_POLICY);
   const routingState = await loadExpertiseRoutingState(project.id);
-  const index = buildExpertiseIndex({ ...routingState, policy: EXPERTISE_POLICY });
+  const index = routingState.index;
   const experts = rankExperts(index, normalized, {
     sessions: routingState.sessions,
     limit: normalized.limit,
@@ -3332,6 +3338,7 @@ export async function askAgentQuestion(workspaceSlug, sessionId, agentAccessToke
       transactions: routingState.transactions,
       knowledgeItems: routingState.knowledgeItems,
       feedbackEvents: routingState.feedbackEvents,
+      index: routingState.index,
       excludeSessionId: authority.session.id,
       limit: EXPERTISE_POLICY.limits.suggestionLimit,
       policy: EXPERTISE_POLICY,

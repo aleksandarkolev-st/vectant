@@ -346,4 +346,22 @@ describe('expertise ranking', () => {
     );
     expect(suggested.map((e) => e.agentSessionId)).toEqual(['agent-alice']);
   });
+
+  it('can rank suggestions from a materialized index without rescanning source rows', () => {
+    const materialized = index({
+      executionPlans: [plan({ routeJson: JSON.stringify(['src/materialized/**']) })],
+    });
+    const suggested = suggestExpertsForReferences(
+      { paths: ['src/materialized/file.ts'] },
+      {
+        sessions,
+        index: materialized,
+        executionPlans: [],
+        transactions: [],
+        knowledgeItems: [],
+        now: NOW,
+      },
+    );
+    expect(suggested.map((e) => e.agentSessionId)).toEqual(['agent-alice']);
+  });
 });

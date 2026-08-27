@@ -352,6 +352,7 @@ export function suggestExpertsForReferences(references, {
   transactions = [],
   knowledgeItems = [],
   feedbackEvents = [],
+  index = null,
   excludeSessionId = null,
   limit,
   now = new Date(),
@@ -364,7 +365,7 @@ export function suggestExpertsForReferences(references, {
     contracts: asArray(references?.contracts),
     limit: limit ?? config.limits.suggestionLimit,
   }, config);
-  const index = buildExpertiseIndex({
+  const expertiseIndex = index || buildExpertiseIndex({
     executionPlans,
     transactions,
     knowledgeItems,
@@ -372,7 +373,7 @@ export function suggestExpertsForReferences(references, {
     now,
     policy: config,
   });
-  return rankExperts(index, query, { sessions, excludeSessionId, limit: query.limit, policy: config });
+  return rankExperts(expertiseIndex, query, { sessions, excludeSessionId, limit: query.limit, policy: config });
 }
 
 export function emptyExpertiseReferences() {
