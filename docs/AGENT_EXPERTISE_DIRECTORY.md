@@ -14,8 +14,8 @@ multi-agent session: attention.
 
 ## Feature
 
-Three pieces, all provider-agnostic (pure control plane + MCP; any agent host
-that can speak the existing CodeSite tools can use them):
+Five pieces, all provider-agnostic (the same control-plane contracts serve
+agents and the signed-in project operator):
 
 1. **Derived expertise index** (`synthi/src/lib/codesite/agentExpertise.js`).
    Expertise is *inferred from evidence the control plane already persists* —
@@ -62,6 +62,13 @@ that can speak the existing CodeSite tools can use them):
    it. An asker or human reviewer never receives expertise credit merely for
    submitting feedback.
 
+5. **CodeSite operator UI** — the Expertise section in the Operations panel
+   searches by arbitrary project paths, symbols, and contracts; lists open or
+   answered project questions; lets an authorized human answer an open
+   question; and records feedback on an answered one. The view uses the
+   versioned expertise policy for feedback choices, renders only safe API
+   projections, and refreshes from server state after mutations.
+
 ## API surface
 
 | Surface | Detail |
@@ -72,6 +79,7 @@ that can speak the existing CodeSite tools can use them):
 | `GET /api/workspace/:slug/codesite/projects/:id/experts` | ordinary project-member auth for the operator UI; same path/symbol/contract query and derived ranking |
 | `POST /api/workspace/:slug/codesite/projects/:id/questions/:knowledgeId/answer` | ordinary project-member auth; records a human answer and notifies the asking agent when one exists |
 | `POST /api/workspace/:slug/codesite/projects/:id/knowledge/:knowledgeId/feedback` | ordinary project-member auth; stores a useful/correction/not-useful verdict in the event log |
+| CodeSite Operations → Expertise | browser UI for project expert search, unanswered questions, human responses, and answer feedback |
 | `POST .../agent-sessions/:id/knowledge/:knowledgeId/feedback` | agent-token auth, `codesite.knowledge.write`; same feedback contract |
 | MCP | `synthi_codesite_find_experts`, `synthi_codesite_ask_expert_question` (agent-bound, environment identity only) |
 | Events | `agent_question_asked`, `agent_question_answered`, and `agent_question_feedback_submitted` on the causal timeline |
@@ -108,10 +116,10 @@ that can speak the existing CodeSite tools can use them):
   transcript in `.visual-proof/expertise-live-transcript-*.json`, all four
   assertions true).
 - UI: CodeSite Operations panel renders in the browser (screenshot
-  `.visual-proof/ui-1-chrome-codesite-panel-404-state.png`); note the panel is
-  workspace-scoped, so it must be viewed under a workspace the signed-in user
-  belongs to (e.g. `/workspace/acme-chan-fuzz/codesite`), not the
-  service-token-only `acme-proof` workspace.
+  `.visual-proof/ui-1-chrome-codesite-panel-404-state.png`); the Expertise
+  section is workspace-scoped and must be viewed under a workspace the
+  signed-in user belongs to (e.g. `/workspace/acme-chan-fuzz/codesite`), not
+  the service-token-only `acme-proof` workspace.
 
 ## Bugs found and fixed during live proving (each its own commit)
 
