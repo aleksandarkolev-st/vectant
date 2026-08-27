@@ -435,11 +435,20 @@ describe("CodeSite MCP tool surface", () => {
       verdict: "useful",
       evidence_refs: "not-an-array",
     });
+    const missingCorrection = await dispatchCodeSiteTool("synthi_codesite_submit_question_feedback", {
+      knowledge_item_id: "question-1",
+      verdict: "needs_correction",
+    });
+    const oversizedEvidenceRef = await dispatchCodeSiteTool("synthi_codesite_submit_question_feedback", {
+      knowledge_item_id: "question-1",
+      verdict: "useful",
+      evidence_refs: ["x".repeat(513)],
+    });
     const missingQuestion = await dispatchCodeSiteTool("synthi_codesite_submit_question_feedback", {
       verdict: "useful",
     });
 
-    for (const response of [invalidVerdict, invalidEvidence, missingQuestion]) {
+    for (const response of [invalidVerdict, invalidEvidence, missingCorrection, oversizedEvidenceRef, missingQuestion]) {
       expect(response?.isError).toBe(true);
       expect(response?.structuredContent).toEqual(expect.objectContaining({
         error: "codesite_tool_failed",

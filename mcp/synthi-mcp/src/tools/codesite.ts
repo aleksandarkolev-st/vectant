@@ -334,8 +334,8 @@ export const CODESITE_TOOLS = [
     {
       knowledge_item_id: { type: "string", minLength: 1, maxLength: 128 },
       verdict: { type: "string", enum: QUESTION_FEEDBACK_VERDICTS },
-      correction: { type: "string", maxLength: 4096 },
-      evidence_refs: { type: "array", items: { type: "string" }, maxItems: 32 },
+      correction: { type: "string", minLength: 1, maxLength: 4096 },
+      evidence_refs: { type: "array", items: { type: "string", minLength: 1, maxLength: 512 }, maxItems: 32 },
     },
     ["knowledge_item_id", "verdict"],
   ),
@@ -1663,15 +1663,25 @@ function validateAgentBoundKnowledgeArguments(toolName: AgentBoundKnowledgeToolN
     if (typeof verdict !== "string" || verdict.trim().length < 1 || verdict.length > 64) {
       throw new Error("codesite_agent_knowledge_arguments_invalid");
     }
-    if (!(QUESTION_FEEDBACK_VERDICTS as readonly string[]).includes(verdict.trim().toLowerCase())) {
+    const normalizedVerdict = verdict.trim().toLowerCase().replace(/[ -]+/g, "_");
+    if (!(QUESTION_FEEDBACK_VERDICTS as readonly string[]).includes(normalizedVerdict)) {
       throw new Error("codesite_agent_knowledge_arguments_invalid");
     }
     if (args["correction"] !== undefined
-      && (typeof args["correction"] !== "string" || args["correction"].length > 4096)) {
+      && (typeof args["correction"] !== "string"
+        || !args["correction"].trim()
+        || args["correction"].length > 4096)) {
+      throw new Error("codesite_agent_knowledge_arguments_invalid");
+    }
+    if (normalizedVerdict === "needs_correction"
+      && (typeof args["correction"] !== "string" || !args["correction"].trim())) {
       throw new Error("codesite_agent_knowledge_arguments_invalid");
     }
     if (args["evidence_refs"] !== undefined) {
-      boundedStringListArg(args["evidence_refs"], "codesite_agent_knowledge_arguments_invalid", 32);
+      const evidenceRefs = boundedStringListArg(args["evidence_refs"], "codesite_agent_knowledge_arguments_invalid", 32);
+      if (evidenceRefs.some((reference) => reference.length > 512)) {
+        throw new Error("codesite_agent_knowledge_arguments_invalid");
+      }
     }
     return;
   }
