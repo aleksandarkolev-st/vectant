@@ -546,9 +546,22 @@ export function authorizeResourceRead(uri: string, params: unknown): ErrorPayloa
   if (adminKey !== null && adminKeyMatches(adminKeyPresented(params), adminKey)) return null;
   const warrantId = metaValue(params, "warrant_id");
   if (typeof warrantId === "string" && warrantId.length > 0) {
+    const now = Date.now();
     const snapshot = warrantRegistry.get(warrantId);
-    if (snapshot !== undefined && snapshot.status === "active" && snapshot.expires_at_ms > Date.now()) {
-      return null;
+    if (snapshot !== undefined && snapshot.status === "active" && snapshot.expires_at_ms > now) {
+      // A sealed warrant is a bearer capability. Resource reads are just as
+      // sensitive as tool calls, so an id by itself must not reveal telemetry.
+      // Use a probe tool that cannot be granted: `tool_not_covered` means the
+      // lifecycle and bearer checks passed, while every other denial is unsafe.
+      if (!snapshot.sealed) return null;
+      const bearer = metaValue(params, "warrant_bearer");
+      const probe = warrantRegistry.check({
+        warrant_id: warrantId,
+        tool: "__resource_events_read__",
+        bearer: typeof bearer === "string" ? bearer : undefined,
+        now,
+      });
+      if (probe.allowed || probe.reason_code === "tool_not_covered") return null;
     }
   }
   eventLog.push({

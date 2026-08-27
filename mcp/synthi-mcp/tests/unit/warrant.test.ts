@@ -370,6 +370,49 @@ describe("warrant enforcement gate", () => {
   });
 });
 
+describe("sealed resource reads", () => {
+  const ORIGINAL_MODE = process.env["SYNTHI_WARRANT_MODE"];
+  const ORIGINAL_ADMIN_KEY = process.env["SYNTHI_WARRANT_ADMIN_KEY"];
+
+  beforeEach(() => {
+    __resetWarrantRegistryForTests();
+    process.env["SYNTHI_WARRANT_MODE"] = "enforce";
+    delete process.env["SYNTHI_WARRANT_ADMIN_KEY"];
+  });
+
+  afterAll(() => {
+    if (ORIGINAL_MODE === undefined) delete process.env["SYNTHI_WARRANT_MODE"];
+    else process.env["SYNTHI_WARRANT_MODE"] = ORIGINAL_MODE;
+    if (ORIGINAL_ADMIN_KEY === undefined) delete process.env["SYNTHI_WARRANT_ADMIN_KEY"];
+    else process.env["SYNTHI_WARRANT_ADMIN_KEY"] = ORIGINAL_ADMIN_KEY;
+  });
+
+  it("requires bearer possession before a sealed warrant can read event telemetry", async () => {
+    const issued = await dispatchWarrantTool("synthi_warrant_issue", {
+      subject: "resource-holder",
+      grants: [{ tool: "synthi_health" }],
+      ttl_ms: 60_000,
+      seal: true,
+    });
+    const warrant = JSON.parse(issued.content[0]!.text).warrant as { warrant_id: string; bearer: string };
+    const uri = "synthi://preview/events";
+
+    expect(authorizeResourceRead(uri, { _meta: { warrant_id: warrant.warrant_id } })?.error).toBe("resource_access_denied");
+    expect(authorizeResourceRead(uri, { _meta: { warrant_id: warrant.warrant_id, warrant_bearer: "wrong" } })?.error).toBe("resource_access_denied");
+    expect(authorizeResourceRead(uri, { _meta: { warrant_id: warrant.warrant_id, warrant_bearer: warrant.bearer } })).toBeNull();
+  });
+
+  it("keeps event telemetry available to an active unsealed warrant", async () => {
+    const issued = await dispatchWarrantTool("synthi_warrant_issue", {
+      subject: "unsealed-resource-holder",
+      grants: [{ tool: "synthi_health" }],
+      ttl_ms: 60_000,
+    });
+    const warrant = JSON.parse(issued.content[0]!.text).warrant as { warrant_id: string };
+    expect(authorizeResourceRead("synthi://preview/events", { _meta: { warrant_id: warrant.warrant_id } })).toBeNull();
+  });
+});
+
 describe("warrant admin gate and org ceilings", () => {
   const ORIGINALS = { mode: process.env["SYNTHI_WARRANT_MODE"], key: process.env["SYNTHI_WARRANT_ADMIN_KEY"], active: process.env["SYNTHI_WARRANT_MAX_ACTIVE"], ttl: process.env["SYNTHI_WARRANT_MAX_TTL_MS"] };
 

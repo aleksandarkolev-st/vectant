@@ -339,14 +339,16 @@ with registry.get(...).
 J3 RESOURCES GATING: server.ts ReadResourceRequestSchema handler consults new
 exported authorizeResourceRead(uri, params): in warn/enforce modes URIs whose
 path contains "events" require _meta.warrant_id referencing an ACTIVE warrant
-OR a matching _meta.warrant_admin_key; otherwise isError
+(and, when that warrant is sealed, its matching _meta.warrant_bearer) OR a
+matching _meta.warrant_admin_key; otherwise isError
 "resource_access_denied". off mode unchanged. Round-3 finding: security events
 (warrant ids) leaked via resources/read ungated.
 J4 REDACTION COMPLETION: grep src for raw warrant ids in eventLog pushes
 outside tools/warrant.ts rid() helper; route any stragglers through it.
 Tests: parallel 10x calls vs max_invocations=2 => exactly 2 reserved-admitted;
 settle(commit=false) restores budget; resources/read denied unbound in
-enforce, allowed with valid warrant, off mode unaffected.
+enforce, sealed reads deny absent/wrong bearer and allow matching bearer, off
+mode unaffected.
 
 ## Patch K - durable warrants + renewal (feature on top)
 
