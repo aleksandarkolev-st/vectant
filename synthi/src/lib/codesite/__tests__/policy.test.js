@@ -30,6 +30,7 @@ describe('CodeSite airspace policy', () => {
       'impact_notice_responded',
       'handoff_ready',
       'handoff_acknowledged',
+      'agent_question_feedback_submitted',
     ]));
     expect(() => validateCodeSiteEventType('agent_chat_message')).toThrow(/codesite_event_type_invalid:agent_chat_message/);
   });

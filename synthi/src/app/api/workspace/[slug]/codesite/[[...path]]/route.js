@@ -2,6 +2,7 @@
   abortTransaction,
   adoptAgentLearningCatalogEntry,
   adoptProjectLearningCatalogEntry,
+  answerProjectQuestion,
   acknowledgeInboxItem,
   acknowledgeInboxItemForAgent,
   attachAgentSession,
@@ -29,6 +30,7 @@
   getAgentInboxForAgent,
   getAgentManifest,
   findAgentExperts,
+  findProjectExperts,
   getAgentSharedKnowledge,
   getControlState,
   getEvents,
@@ -59,6 +61,7 @@
   listPermits,
   listProjectKnowledge,
   listProjectLearningCatalog,
+  listProjectKnowledgePage,
   listProjectMembers,
   listProjects,
   listRouteRevisions,
@@ -76,6 +79,8 @@
   requestMutationLease,
   resumeMaydayIncident,
   respondToAgentKnowledgeInbox,
+  submitAgentQuestionFeedback,
+  submitProjectQuestionFeedback,
   previewArtifacts,
   promotePolicyDelta,
   revokeProjectMember,
@@ -190,9 +195,16 @@ export async function GET(request, { params }) {
     }
 
     if (route[0] === 'projects' && route[2] === 'knowledge' && route.length === 3) {
-      return okJson({
-        knowledge: await listProjectKnowledge(slug, route[1], requestQuery(request), access.actor),
-      });
+      return okJson(await listProjectKnowledgePage(
+        slug,
+        route[1],
+        requestQuery(request),
+        access.actor,
+      ));
+    }
+
+    if (route[0] === 'projects' && route[2] === 'experts' && route.length === 3) {
+      return okJson(await findProjectExperts(slug, route[1], requestQuery(request), access.actor));
     }
 
     if (route[0] === 'projects' && route[2] === 'learning-catalog' && route.length === 3) {
@@ -372,7 +384,17 @@ function bearerToken(request) {
 }
 
 function requestQuery(request) {
-  return Object.fromEntries(new URL(request.url).searchParams.entries());
+  const query = {};
+  for (const [key, value] of new URL(request.url).searchParams.entries()) {
+    if (query[key] === undefined) {
+      query[key] = value;
+    } else if (Array.isArray(query[key])) {
+      query[key].push(value);
+    } else {
+      query[key] = [query[key], value];
+    }
+  }
+  return query;
 }
 
 export async function POST(request, { params }) {
@@ -400,6 +422,22 @@ export async function POST(request, { params }) {
         bearerToken(request),
         await readJson(request),
       ));
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
+  if (route[0] === 'agent-sessions'
+    && route[2] === 'knowledge'
+    && route[4] === 'feedback'
+    && route.length === 5) {
+    try {
+      return okJson(await submitAgentQuestionFeedback(
+        slug,
+        route[1],
+        route[3],
+        bearerToken(request),
+        await readJson(request),
+      ), { status: 201 });
     } catch (error) {
       return handleCodesiteError(error);
     }
@@ -578,6 +616,12 @@ export async function POST(request, { params }) {
       && route[4] === 'adopt'
       && route.length === 5) {
       return okJson(await adoptProjectLearningCatalogEntry(slug, route[1], route[3], access.actor));
+    if (route[0] === 'projects' && route[2] === 'questions' && route[4] === 'answer' && route.length === 5) {
+      return okJson(await answerProjectQuestion(slug, route[1], route[3], body, access.actor));
+    }
+
+    if (route[0] === 'projects' && route[2] === 'knowledge' && route[4] === 'feedback' && route.length === 5) {
+      return okJson(await submitProjectQuestionFeedback(slug, route[1], route[3], body, access.actor), { status: 201 });
     }
 
     if (route[0] === 'projects' && route[2] === 'zone-policy') {

@@ -11,6 +11,7 @@ import {
 import { eventLog } from "./events/index.js";
 import { recordToolCall } from "./observability/metrics.js";
 import { enforceQuota } from "./observability/quota.js";
+import { dispatchWarrantTool, enforceWarrantGate, authorizeResourceRead, settleWarrant, metaWarrantIdFromParams, WARRANT_TOOLS } from "./tools/warrant.js";
 import {
   RESOURCES,
   RESOURCE_URIS,
@@ -122,6 +123,7 @@ export const STATIC_TOOL_DEFINITIONS = [
   ...BROWSER_TOOLS,
   ...DOJO_TOOLS,
   ...AUTH_TOOLS,
+  ...WARRANT_TOOLS,
   ...SOURCE_TOOLS,
   ...SAFETY_TOOLS,
   ...PROGRAM_TOOLS,
@@ -1264,6 +1266,15 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
 
   server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
     const uri = req.params.uri;
+    // Patch J3: security-event telemetry is warrant/admin-key gated in
+    // warn/enforce modes; off mode (and non-event resources) pass through.
+    const resourceError = authorizeResourceRead(uri, req.params);
+    if (resourceError) {
+      return {
+        contents: [{ type: "text" as const, text: JSON.stringify(resourceError) }],
+        isError: true,
+      };
+    }
     const contents = await readResource(uri);
     if (!contents) throw new Error(`unknown_resource: ${uri}`);
     const out: Record<string, unknown> = { uri: contents.uri, mimeType: contents.mimeType };
@@ -1399,6 +1410,16 @@ async function dispatchTool(
     synthi_restore: async () => (await restoreTool(args)) as CallToolResult,
     synthi_list_snapshots: async () => (await listSnapshotsTool(args)) as CallToolResult,
     synthi_answer_escape_hatch: async () => (await answerEscapeHatchTool(args)) as CallToolResult,
+    synthi_warrant_issue: async () => (await dispatchWarrantTool("synthi_warrant_issue", args)) as CallToolResult,
+    synthi_warrant_attenuate: async () => (await dispatchWarrantTool("synthi_warrant_attenuate", args)) as CallToolResult,
+    synthi_warrant_check: async () => (await dispatchWarrantTool("synthi_warrant_check", args)) as CallToolResult,
+    synthi_warrant_revoke: async () => (await dispatchWarrantTool("synthi_warrant_revoke", args)) as CallToolResult,
+    synthi_warrant_list: async () => (await dispatchWarrantTool("synthi_warrant_list", args)) as CallToolResult,
+    synthi_warrant_trust: async () => (await dispatchWarrantTool("synthi_warrant_trust", args)) as CallToolResult,
+    synthi_warrant_bind_trust: async () => (await dispatchWarrantTool("synthi_warrant_bind_trust", args)) as CallToolResult,
+    synthi_warrant_policy_register: async () => (await dispatchWarrantTool("synthi_warrant_policy_register", args)) as CallToolResult,
+    synthi_warrant_unbind: async () => (await dispatchWarrantTool("synthi_warrant_unbind", args)) as CallToolResult,
+    synthi_warrant_renew: async () => (await dispatchWarrantTool("synthi_warrant_renew", args)) as CallToolResult,
   };
 
   const handler = handlers[toolName];
@@ -1431,18 +1452,46 @@ async function dispatchTool(
         isError: true,
       };
     }
+    // Agent-warrant gate (WI_WARRANTS_SPEC Patch B). off=default|warn|enforce;
+    // combined check+charge pre-dispatch, mirroring the quota gate above.
+    const warrantError = enforceWarrantGate(toolName, request.params);
+    if (warrantError) {
+      recordToolCall(toolName, "error");
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(warrantError) }],
+        isError: true,
+      };
+    }
     // External MCP tools (ext_<i>) are proxied through the hub (Slice 1b),
     // sourced from the same connection registry the in-app AI uses.
     if (isExternalToolName(toolName)) {
-      const result = await callExternalTool(
-        toolName,
-        (args ?? {}) as Record<string, unknown>,
-        options.externalTools?.aliasMap ?? {},
-      );
+      let result: CallToolResult;
+      try {
+        result = await callExternalTool(
+          toolName,
+          (args ?? {}) as Record<string, unknown>,
+          options.externalTools?.aliasMap ?? {},
+        ) as CallToolResult;
+      } catch (err) {
+        // Patch J1 settle: a dispatch that THREW never produced a response,
+        // so its reservation is refunded. Structured isError responses are
+        // settled below with the same rollback semantics.
+        settleWarrant(toolName, metaWarrantIdFromParams(request.params), false);
+        throw err;
+      }
+      settleWarrant(toolName, metaWarrantIdFromParams(request.params), !result.isError);
       recordToolCall(toolName, result.isError ? "error" : "ok");
-      return result as CallToolResult;
+      return result;
     }
-    const response = await dispatchTool(toolName, args, signal);
+    let response: CallToolResult;
+    try {
+      response = await dispatchTool(toolName, args, signal);
+    } catch (err) {
+      // Patch J1 settle: same refund-on-failed-dispatch semantics as above.
+      settleWarrant(toolName, metaWarrantIdFromParams(request.params), false);
+      throw err;
+    }
+    settleWarrant(toolName, metaWarrantIdFromParams(request.params), !response.isError);
     // Record the outcome for Prometheus. Most tools return structured error
     // payloads via `isError: true` rather than throwing — respect that.
     recordToolCall(toolName, response.isError ? "error" : "ok");

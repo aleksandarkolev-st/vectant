@@ -13,8 +13,8 @@ import {
 } from "./lib/sectionGroups";
 import { causalReplayHandovers } from "./views/replay/handovers";
 import {
-  ActivityView, ChannelsView, EvidenceView, FleetNotamsView, GovernanceView, GraphView, InspectionsView, LearningCatalogView,
-  LocksView, OverviewView, QuarantineView, ReplayView, SimulatorView,
+ActivityView, ChannelsView, EvidenceView, FleetNotamsView, GovernanceView, GraphView, InspectionsView,
+LearningCatalogView, ExpertiseView, LocksView, OverviewView, QuarantineView, ReplayView, SimulatorView,
 } from "./views";
 import { IconButton, LoadingSkeleton, Pill } from "./ui";
 import {
@@ -115,6 +115,7 @@ const VIEWS = {
   radar: GraphView,
   tower: ActivityView,
   channels: ChannelsView,
+  expertise: ExpertiseView,
   governance: GovernanceView,
   notams: FleetNotamsView,
   learning: LearningCatalogView,
@@ -1062,6 +1063,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
       { key: "radar", label: "Graph", icon: CodeSiteIcons.workspaceGraph },
       { key: "tower", label: "Activity", icon: CodeSiteIcons.activity },
       { key: "channels", label: "Channels", icon: CodeSiteIcons.workspaceGraph },
+      { key: "expertise", label: "Expertise", icon: CodeSiteIcons.agents },
       { key: "governance", label: "Governance", icon: CodeSiteIcons.governance },
       { key: "notams", label: "Fleet advisories", icon: CodeSiteIcons.fleetNotams },
       { key: "learning", label: "Learning", icon: CodeSiteIcons.learning },
@@ -1106,6 +1108,7 @@ export default function CodeSitePanel({ workspaceSlug }) {
     counts: radarState.counts,
     status: latestStatus,
     streamStatus,
+    streamEvents,
     deploymentStatus,
     collisionForecast,
     risks,

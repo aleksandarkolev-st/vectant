@@ -1,3 +1,5 @@
+import { EXPERTISE_POLICY } from '../../lib/codesite/expertisePolicy';
+
 const BASE = '/api/workspace';
 
 export const CODE_SITE_LIVE_EVENT_TYPES = Object.freeze([
@@ -59,6 +61,9 @@ export const CODE_SITE_LIVE_EVENT_TYPES = Object.freeze([
   'impact_notice_responded',
   'handoff_ready',
   'handoff_acknowledged',
+  'agent_question_asked',
+  'agent_question_answered',
+  'agent_question_feedback_submitted',
   'codesite_stream_error',
 ]);
 
@@ -68,6 +73,7 @@ const PROJECT_KNOWLEDGE_KINDS = new Set([
   'shared_skill',
   'impact_notice',
   'handoff',
+  'agent_question',
 ]);
 const PROJECT_KNOWLEDGE_STATUS_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 
@@ -96,7 +102,12 @@ async function request(path, init = {}) {
 }
 
 function uniqueValues(values) {
-  return [...new Set((Array.isArray(values) ? values : []).filter(Boolean).map((value) => String(value)))];
+  const input = Array.isArray(values) ? values : values == null ? [] : [values];
+  return [...new Set(input.filter(Boolean).map((value) => String(value)))];
+}
+
+function appendQueryValues(search, key, value) {
+  for (const entry of uniqueValues(value)) search.append(key, entry);
 }
 
 function codeSiteBase(workspaceSlug) {
@@ -306,15 +317,80 @@ export async function fetchCodeSiteProjectKnowledge(workspaceSlug, projectId, fi
   const status = typeof input.status === 'string' ? input.status.trim().toLowerCase() : '';
   if (PROJECT_KNOWLEDGE_KINDS.has(kind)) search.set('kind', kind);
   if (PROJECT_KNOWLEDGE_STATUS_PATTERN.test(status)) search.set('status', status);
-  if (Number.isInteger(input.limit) && input.limit >= 1 && input.limit <= 100) {
+  if (
+    Number.isInteger(input.limit) &&
+    input.limit >= 1 &&
+    input.limit <= EXPERTISE_POLICY.knowledge.pageMaxLimit
+  ) {
     search.set('limit', String(input.limit));
+  }
+  if (typeof input.cursor === 'string' && input.cursor.trim()) {
+    search.set('cursor', input.cursor.trim());
   }
   const since = safeKnowledgeSince(input.since);
   if (since) search.set('since', since);
   const query = search.toString();
   const suffix = query ? `?${query}` : '';
   const body = await request(`${projectBase(workspaceSlug, projectId)}/knowledge${suffix}`);
-  return Array.isArray(body.knowledge) ? body.knowledge : [];
+  const knowledge = Array.isArray(body.knowledge) ? body.knowledge : [];
+  if (typeof body.nextCursor === 'string' && body.nextCursor.trim()) {
+    Object.defineProperty(knowledge, 'nextCursor', {
+      value: body.nextCursor.trim(),
+      enumerable: false,
+      configurable: true,
+    });
+  }
+  return knowledge;
+}
+
+export async function fetchCodeSiteProjectExperts(workspaceSlug, projectId, references = {}, options = {}) {
+  if (!workspaceSlug || !projectId) return null;
+  const input = references && typeof references === 'object' && !Array.isArray(references)
+    ? references
+    : {};
+  const search = new URLSearchParams();
+  appendQueryValues(search, 'path', input.paths ?? input.path);
+  appendQueryValues(search, 'symbol', input.symbols ?? input.symbol);
+  appendQueryValues(search, 'contract', input.contracts ?? input.contract);
+  if (Number.isInteger(options?.limit) && options.limit >= 1) {
+    search.set('limit', String(options.limit));
+  }
+  const query = search.toString();
+  return request(`${projectBase(workspaceSlug, projectId)}/experts${query ? `?${query}` : ''}`);
+}
+
+export async function answerCodeSiteProjectQuestion(
+  workspaceSlug,
+  projectId,
+  knowledgeItemId,
+  answer,
+  evidenceRefs = [],
+) {
+  if (!workspaceSlug || !projectId || !knowledgeItemId) return null;
+  return request(`${projectBase(workspaceSlug, projectId)}/questions/${encodeURIComponent(knowledgeItemId)}/answer`, {
+    method: 'POST',
+    body: JSON.stringify({
+      answer: typeof answer === 'string' ? answer : String(answer ?? ''),
+      evidenceRefs: uniqueValues(evidenceRefs),
+    }),
+  });
+}
+
+export async function submitCodeSiteProjectQuestionFeedback(
+  workspaceSlug,
+  projectId,
+  knowledgeItemId,
+  { verdict, correction, evidenceRefs = [] } = {},
+) {
+  if (!workspaceSlug || !projectId || !knowledgeItemId) return null;
+  return request(`${projectBase(workspaceSlug, projectId)}/knowledge/${encodeURIComponent(knowledgeItemId)}/feedback`, {
+    method: 'POST',
+    body: JSON.stringify({
+      verdict: typeof verdict === 'string' ? verdict : String(verdict ?? ''),
+      ...(correction == null ? {} : { correction: typeof correction === 'string' ? correction : String(correction) }),
+      evidenceRefs: uniqueValues(evidenceRefs),
+    }),
+  });
 }
 
 function safeKnowledgeSince(value) {

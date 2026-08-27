@@ -10,12 +10,14 @@ import { buildPilotLicenseHealthRecords, pilotLicenseHealthSummary } from './pil
 import { buildFilesystemBoundaryProofRecords } from './filesystemBoundaryProof';
 import { projectKnowledgeRecord } from './knowledgeRecords';
 import { safeKnowledgeProjection } from './knowledgePolicy';
+import { loadExpertisePolicy } from './expertisePolicyRuntime';
 
 export const CODESITE_ARTIFACT_VERSION = 1;
 const ARTIFACT_FILE_INDEX = '.codesite-projection-files.json';
 const ARTIFACT_PATH_HISTORY = 'artifact-path-history.jsonl';
 const DEFAULT_ARTIFACT_PATH_HISTORY_MAX_BYTES = 4 * 1024 * 1024;
 const artifactWriteQueues = new Map();
+const ACTIVE_EXPERTISE_POLICY = loadExpertisePolicy();
 
 export const CODESITE_MCP_TOOLS = [
   'synthi_codesite_list_projects',
@@ -442,8 +444,8 @@ function repoKnowledgeProjection(item) {
     // unrouted question instead of rejecting historical facts during resync.
     const storedItem = item?.kind === 'agent_question' ? { ...item, allowUnrouted: true } : item;
     const projected = storedItem?.payloadJson != null || storedItem?.scopeJson != null
-      ? projectKnowledgeRecord(storedItem)
-      : safeKnowledgeProjection(storedItem);
+      ? projectKnowledgeRecord(storedItem, ACTIVE_EXPERTISE_POLICY)
+      : safeKnowledgeProjection(storedItem, ACTIVE_EXPERTISE_POLICY);
     if (!projected
       || projected.visibility !== 'project'
       || projected.redactionClass === 'owner_private'

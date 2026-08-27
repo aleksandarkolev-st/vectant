@@ -623,6 +623,8 @@ describe('agent_question knowledge kind', () => {
   });
 
   it('rejects unrouted broadcast questions unless explicitly allowed', () => {
+    // Stored rows are resynced through artifact projection, which must bypass
+    // this creation-time routing rule; newly-created questions still cannot.
     expectPolicyError(
       () => validateKnowledgeItem(question({ suggestedExpertAgentSessionIds: [] })),
       'knowledge_question_experts_or_unrouted_required',
@@ -630,6 +632,13 @@ describe('agent_question knowledge kind', () => {
     expect(validateKnowledgeItem(question({
       suggestedExpertAgentSessionIds: [],
       allowUnrouted: true,
+    })).suggestedExpertAgentSessionIds).toEqual([]);
+  });
+
+  it('accepts the documented snake_case unrouted flag', () => {
+    expect(validateKnowledgeItem(question({
+      suggestedExpertAgentSessionIds: [],
+      allow_unrouted: true,
     })).suggestedExpertAgentSessionIds).toEqual([]);
   });
 
@@ -643,13 +652,28 @@ describe('agent_question knowledge kind', () => {
     );
   });
 
-  it('dedupes identical re-asks by asker and references', () => {
+  it('dedupes re-asks by asker and references even when wording changes', () => {
     const first = knowledgeDedupeKey(question());
     const second = knowledgeDedupeKey(question());
+    const reworded = knowledgeDedupeKey(question({
+      title: 'Which agent owns this consumer?',
+      summary: 'The wording changed, but the asker and referenced code are unchanged.',
+    }));
     const otherAsker = knowledgeDedupeKey(question({
       source: { ...SOURCE, agentSessionId: 'agent-someone-else' },
     }));
     expect(first).toBe(second);
+    expect(first).toBe(reworded);
     expect(first).not.toBe(otherAsker);
+  });
+
+  it('projects an answered question without exposing response routing metadata', () => {
+    const projection = validateKnowledgeItem(question({
+      status: 'answered',
+      answerText: 'Yes, clamped at maxTurnRate.',
+      answeredByAgentSessionId: 'agent-alice',
+    }));
+    expect(projection.answerText).toBe('Yes, clamped at maxTurnRate.');
+    expect(safeKnowledgeProjection(projection).answerText).toBe('Yes, clamped at maxTurnRate.');
   });
 });
