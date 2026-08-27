@@ -3553,6 +3553,31 @@ describe('CodeSite control plane transaction validation', () => {
       expect(JSON.stringify(items)).not.toMatch(/private-knowledge|providerSessionRef|rawPrompt/i);
     });
 
+    it('applies shared-knowledge path and semantic filters in the database query', async () => {
+      const session = bindKnowledgeAuthority({ id: 'consumer-agent' });
+      prisma.codeSiteKnowledgeItem.findMany.mockResolvedValue([knowledgeRow()]);
+      prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([]);
+      prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([]);
+      prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([]);
+
+      await getAgentSharedKnowledge('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        path: 'src/rotation/Spin.cpp',
+        symbol: 'Spin::advance',
+        contract: 'rotation.completed@v2',
+        workstream_id: 'workstream-rotation',
+      });
+
+      const knowledgeQuery = prisma.codeSiteKnowledgeItem.findMany.mock.calls
+        .map(([args]) => args)
+        .find((args) => args?.include?.references);
+      expect(knowledgeQuery.where.AND).toEqual(expect.arrayContaining([
+        { references: { some: { refType: 'path', refKey: { in: ['src/rotation/Spin.cpp'] } } } },
+        { references: { some: { refType: 'symbol', refKey: { in: ['Spin::advance'] } } } },
+        { references: { some: { refType: 'contract', refKey: { in: ['rotation.completed@v2'] } } } },
+        { references: { some: { refType: 'workstream', refKey: { in: ['workstream-rotation'] } } } },
+      ]));
+    });
+
     it('hydrates relevant discoveries into fresh agent and resume context', async () => {
       const session = bindKnowledgeAuthority({
         id: 'consumer-agent',

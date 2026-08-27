@@ -41,6 +41,7 @@ export const EXPERTISE_POLICY = Object.freeze({
     pageDefaultLimit: 50,
     pageMaxLimit: 100,
     cursorVersion: 'v1',
+    filterMaxValueLength: 512,
   }),
   statuses: Object.freeze({
     eligibleSession: Object.freeze(['attached', 'detached']),
@@ -115,6 +116,11 @@ export function resolveExpertisePolicy(input = EXPERTISE_POLICY) {
     Math.min(EXPERTISE_POLICY.knowledge.pageDefaultLimit, pageMaxLimit),
     { minimum: 1, maximum: pageMaxLimit },
   );
+  const filterMaxValueLength = boundedInteger(
+    knowledgeInput.filterMaxValueLength,
+    EXPERTISE_POLICY.knowledge.filterMaxValueLength,
+    { minimum: 1, maximum: 4096 },
+  );
   const signalWeightsInput = scoringInput.signalWeights && typeof scoringInput.signalWeights === 'object'
     ? scoringInput.signalWeights
     : {};
@@ -182,6 +188,7 @@ export function resolveExpertisePolicy(input = EXPERTISE_POLICY) {
       cursorVersion: typeof knowledgeInput.cursorVersion === 'string' && knowledgeInput.cursorVersion.trim()
         ? knowledgeInput.cursorVersion.trim()
         : EXPERTISE_POLICY.knowledge.cursorVersion,
+      filterMaxValueLength,
     }),
     statuses: Object.freeze({
       eligibleSession: Object.freeze(stringList(statusesInput.eligibleSession, EXPERTISE_POLICY.statuses.eligibleSession)),

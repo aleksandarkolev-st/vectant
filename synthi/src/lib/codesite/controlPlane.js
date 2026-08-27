@@ -2313,6 +2313,12 @@ function validateKnowledgeQuery(input = {}) {
   if (kind && !KNOWLEDGE_QUERY_KINDS.has(kind)) throw badRequest('knowledge_kind_invalid');
   const status = String(input.status || '').trim().toLowerCase();
   if (status && !/^[a-z][a-z0-9_]{0,63}$/.test(status)) throw badRequest('knowledge_status_invalid');
+  const referenceFilters = {
+    paths: normalizeKnowledgeQueryReferences(input, ['path', 'paths'], 'path'),
+    symbols: normalizeKnowledgeQueryReferences(input, ['symbol', 'symbols'], 'symbol'),
+    contracts: normalizeKnowledgeQueryReferences(input, ['contract', 'contracts'], 'contract'),
+    workstreamIds: normalizeKnowledgeQueryReferences(input, ['workstream_id', 'workstreamId', 'workstreamIds'], 'workstream_id'),
+  };
   const pagePolicy = EXPERTISE_POLICY.knowledge;
   const limitValue = Number(input.limit || pagePolicy.pageDefaultLimit);
   const limit = Number.isInteger(limitValue)
@@ -2321,11 +2327,37 @@ function validateKnowledgeQuery(input = {}) {
   const since = input.since ? new Date(input.since) : null;
   if (since && !Number.isFinite(since.getTime())) throw badRequest('knowledge_since_invalid');
   const cursor = typeof input.cursor === 'string' && input.cursor.trim() ? input.cursor.trim() : null;
-  return { kind: kind || null, status: status || null, limit, since, cursor };
+  return { kind: kind || null, status: status || null, limit, since, cursor, ...referenceFilters };
+}
+
+function normalizeKnowledgeQueryReferences(input, keys, field) {
+  const key = keys.find((candidate) => input[candidate] !== undefined);
+  if (!key) return [];
+  const values = asArray(input[key]);
+  if (values.length > EXPERTISE_POLICY.limits.maxReferencesPerType) {
+    throw badRequest('knowledge_reference_filter_limit_exceeded', {
+      field,
+      limit: EXPERTISE_POLICY.limits.maxReferencesPerType,
+    });
+  }
+  const normalized = [];
+  for (const value of values) {
+    if (typeof value !== 'string') throw badRequest('knowledge_reference_filter_invalid', { field });
+    const trimmed = value.trim();
+    if (!trimmed
+      || trimmed.length > EXPERTISE_POLICY.knowledge.filterMaxValueLength
+      || trimmed.includes('\u0000')) {
+      throw badRequest('knowledge_reference_filter_invalid', { field });
+    }
+    const normalizedValue = field === 'path' ? normalizePath(trimmed) : trimmed;
+    if (!normalizedValue) throw badRequest('knowledge_reference_filter_invalid', { field });
+    if (!normalized.includes(normalizedValue)) normalized.push(normalizedValue);
+  }
+  return normalized;
 }
 
 function knowledgeWhere(projectId, query) {
-  return {
+  const base = {
     projectId,
     ...(query.kind ? { kind: query.kind } : {}),
     ...(query.status ? { status: query.status } : {}),
@@ -2333,6 +2365,21 @@ function knowledgeWhere(projectId, query) {
     OR: [
       { expiresAt: null },
       { expiresAt: { gt: new Date() } },
+    ],
+  };
+  const referenceFilters = [
+    ['path', query.paths],
+    ['symbol', query.symbols],
+    ['contract', query.contracts],
+    ['workstream', query.workstreamIds],
+  ].filter(([, values]) => values?.length);
+  if (!referenceFilters.length) return base;
+  return {
+    AND: [
+      base,
+      ...referenceFilters.map(([refType, values]) => ({
+        references: { some: { refType, refKey: { in: values } } },
+      })),
     ],
   };
 }
