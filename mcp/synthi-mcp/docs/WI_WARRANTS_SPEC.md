@@ -339,14 +339,16 @@ with registry.get(...).
 J3 RESOURCES GATING: server.ts ReadResourceRequestSchema handler consults new
 exported authorizeResourceRead(uri, params): in warn/enforce modes URIs whose
 path contains "events" require _meta.warrant_id referencing an ACTIVE warrant
-OR a matching _meta.warrant_admin_key; otherwise isError
+(and, when that warrant is sealed, its matching _meta.warrant_bearer) OR a
+matching _meta.warrant_admin_key; otherwise isError
 "resource_access_denied". off mode unchanged. Round-3 finding: security events
 (warrant ids) leaked via resources/read ungated.
 J4 REDACTION COMPLETION: grep src for raw warrant ids in eventLog pushes
 outside tools/warrant.ts rid() helper; route any stragglers through it.
 Tests: parallel 10x calls vs max_invocations=2 => exactly 2 reserved-admitted;
 settle(commit=false) restores budget; resources/read denied unbound in
-enforce, allowed with valid warrant, off mode unaffected.
+enforce, sealed reads deny absent/wrong bearer and allow matching bearer, off
+mode unaffected.
 
 ## Patch K - durable warrants + renewal (feature on top)
 
@@ -371,3 +373,37 @@ extend, within ceilings).
 K3 Tests: restart-replay round-trip (issue/bind/evidence -> new TrustLedger
 replays -> identical view), renew extends within ceiling and preserves
 progression, bearer-gating of self-renewal.
+
+## Patch L - generic holder-driven delegation
+
+Motivation: attenuation already proves that authority can only shrink down a
+chain, but a production admin gate meant only an administrator could create
+that child. A holder could renew its lease but could not safely delegate part
+of it to another generic worker.
+
+L1 EXPLICIT POLICY: root issuance optionally accepts
+`delegation { max_depth, max_child_ttl_ms?, max_child_invocations? }`. A
+delegation policy requires `seal:true`; possession of a sealed bearer is the
+authority to delegate. `max_depth` counts child hops below the policy root.
+The policy is copied unchanged to children with a monotonically increasing
+`delegation_depth`, so no descendant can widen its delegation envelope.
+Child TTL is clamped to `max_child_ttl_ms` when supplied and
+`max_child_invocations` requires each child grant to declare a bounded budget
+at or below that ceiling.
+
+L2 HOLDER PATH: `synthi_warrant_attenuate` accepts `bearer`. In warn/enforce
+mode the existing admin key still admits administrator attenuation; otherwise
+the handler admits the call only when `canDelegate(parent_warrant_id, bearer)`
+proves an active, sealed parent, matching bearer, policy opt-in, and remaining
+delegation depth. The core repeats that holder check before mutation. Existing
+strict tool/argument/budget/expiry narrowing, fresh child bearers, and cascade
+revocation remain unchanged. This protocol intentionally contains no
+Luna-specific agent type, endpoint, or identity field.
+
+L3 DURABILITY/PROOF: delegation policy and depth are warrant state and are
+therefore included in encrypted journal snapshots. Live MCP proof issues a
+sealed delegable root under an admin key, lets its holder attenuate without
+that key, uses the fresh child bearer, restarts, and repeats holder delegation.
+An audience/task binding is deferred until the host has an authenticated,
+generic workload identity to bind; an unverified caller-supplied label would
+not be a security control.

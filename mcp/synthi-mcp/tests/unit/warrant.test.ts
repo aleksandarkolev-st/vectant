@@ -128,6 +128,79 @@ describe("WarrantRegistry", () => {
     ).toBe("tool_not_covered");
   });
 
+  it("lets an opted-in sealed holder delegate only within its inherited generic policy", () => {
+    const reg = new WarrantRegistry();
+    const root = reg.issue({
+      subject: "generic-parent",
+      grants: [{ tool: "fs.read", max_invocations: 3 }],
+      now: NOW,
+      ttl_ms: TTL,
+      seal: true,
+      delegation: { max_depth: 1, max_child_ttl_ms: 1_000, max_child_invocations: 1 },
+    });
+
+    expect(codeOf(reg.canDelegate({ warrant_id: root.warrant_id, now: NOW + 1 }))).toBe("bearer_mismatch");
+    const child = reg.attenuate({
+      parent_warrant_id: root.warrant_id,
+      subject: "any-recipient-label",
+      grants: [{ tool: "fs.read", max_invocations: 1 }],
+      bearer: root.bearer,
+      now: NOW + 10,
+      ttl_ms: 10_000,
+    });
+    expect(child.sealed).toBe(true);
+    expect(child.bearer).not.toBe(root.bearer);
+    expect(child.expires_at_ms).toBe(NOW + 1_010);
+    expect(child.delegation).toEqual(root.delegation);
+    expect(child.delegation_depth).toBe(1);
+    expect(codeOf(reg.canDelegate({ warrant_id: child.warrant_id, bearer: child.bearer, now: NOW + 11 }))).toBe("delegation_depth_exhausted");
+    expect(() => reg.attenuate({
+      parent_warrant_id: child.warrant_id,
+      subject: "grandchild",
+      grants: [{ tool: "fs.read", max_invocations: 1 }],
+      bearer: child.bearer,
+      now: NOW + 11,
+      ttl_ms: 100,
+    })).toThrow(/depth limit/);
+  });
+
+  it("rejects holder delegation without a sealed opt-in policy or bounded child grants", () => {
+    const reg = new WarrantRegistry();
+    expect(() => reg.issue({
+      subject: "unsealed",
+      grants: [{ tool: "fs.read" }],
+      now: NOW,
+      ttl_ms: TTL,
+      delegation: { max_depth: 1 },
+    })).toThrow(/requires seal/);
+
+    const root = reg.issue({
+      subject: "restricted-parent",
+      grants: [{ tool: "fs.read", max_invocations: 3 }],
+      now: NOW,
+      ttl_ms: TTL,
+      seal: true,
+      delegation: { max_depth: 1, max_child_invocations: 1 },
+    });
+    expect(() => reg.attenuate({
+      parent_warrant_id: root.warrant_id,
+      subject: "unbounded-child",
+      grants: [{ tool: "fs.read" }],
+      bearer: root.bearer,
+      now: NOW + 1,
+      ttl_ms: 100,
+    })).toThrow(/declare at most 1 invocations/);
+
+    const noPolicy = reg.issue({
+      subject: "no-policy",
+      grants: [{ tool: "fs.read" }],
+      now: NOW,
+      ttl_ms: TTL,
+      seal: true,
+    });
+    expect(codeOf(reg.canDelegate({ warrant_id: noPolicy.warrant_id, bearer: noPolicy.bearer, now: NOW + 1 }))).toBe("delegation_not_permitted");
+  });
+
   it("rejects attenuation that widens the tool set", () => {
     const reg = new WarrantRegistry();
     const parent = reg.issue({ subject: "p", grants: [{ tool: "fs.read" }], now: NOW, ttl_ms: TTL });
@@ -370,6 +443,49 @@ describe("warrant enforcement gate", () => {
   });
 });
 
+describe("sealed resource reads", () => {
+  const ORIGINAL_MODE = process.env["SYNTHI_WARRANT_MODE"];
+  const ORIGINAL_ADMIN_KEY = process.env["SYNTHI_WARRANT_ADMIN_KEY"];
+
+  beforeEach(() => {
+    __resetWarrantRegistryForTests();
+    process.env["SYNTHI_WARRANT_MODE"] = "enforce";
+    delete process.env["SYNTHI_WARRANT_ADMIN_KEY"];
+  });
+
+  afterAll(() => {
+    if (ORIGINAL_MODE === undefined) delete process.env["SYNTHI_WARRANT_MODE"];
+    else process.env["SYNTHI_WARRANT_MODE"] = ORIGINAL_MODE;
+    if (ORIGINAL_ADMIN_KEY === undefined) delete process.env["SYNTHI_WARRANT_ADMIN_KEY"];
+    else process.env["SYNTHI_WARRANT_ADMIN_KEY"] = ORIGINAL_ADMIN_KEY;
+  });
+
+  it("requires bearer possession before a sealed warrant can read event telemetry", async () => {
+    const issued = await dispatchWarrantTool("synthi_warrant_issue", {
+      subject: "resource-holder",
+      grants: [{ tool: "synthi_health" }],
+      ttl_ms: 60_000,
+      seal: true,
+    });
+    const warrant = JSON.parse(issued.content[0]!.text).warrant as { warrant_id: string; bearer: string };
+    const uri = "synthi://preview/events";
+
+    expect(authorizeResourceRead(uri, { _meta: { warrant_id: warrant.warrant_id } })?.error).toBe("resource_access_denied");
+    expect(authorizeResourceRead(uri, { _meta: { warrant_id: warrant.warrant_id, warrant_bearer: "wrong" } })?.error).toBe("resource_access_denied");
+    expect(authorizeResourceRead(uri, { _meta: { warrant_id: warrant.warrant_id, warrant_bearer: warrant.bearer } })).toBeNull();
+  });
+
+  it("keeps event telemetry available to an active unsealed warrant", async () => {
+    const issued = await dispatchWarrantTool("synthi_warrant_issue", {
+      subject: "unsealed-resource-holder",
+      grants: [{ tool: "synthi_health" }],
+      ttl_ms: 60_000,
+    });
+    const warrant = JSON.parse(issued.content[0]!.text).warrant as { warrant_id: string };
+    expect(authorizeResourceRead("synthi://preview/events", { _meta: { warrant_id: warrant.warrant_id } })).toBeNull();
+  });
+});
+
 describe("warrant admin gate and org ceilings", () => {
   const ORIGINALS = { mode: process.env["SYNTHI_WARRANT_MODE"], key: process.env["SYNTHI_WARRANT_ADMIN_KEY"], active: process.env["SYNTHI_WARRANT_MAX_ACTIVE"], ttl: process.env["SYNTHI_WARRANT_MAX_TTL_MS"] };
 
@@ -419,6 +535,43 @@ describe("warrant admin gate and org ceilings", () => {
       arguments: { warrant_id: warrant.warrant_id, ttl_ms: 1_000 },
     });
     expect(blocked?.error ?? blocked?.code).toBe("warrant_admin_required");
+  });
+
+  it("allows a sealed holder to attenuate only an opted-in parent", async () => {
+    process.env["SYNTHI_WARRANT_ADMIN_KEY"] = "sekrit";
+    const issued = await dispatchWarrantTool("synthi_warrant_issue", {
+      subject: "holder-parent",
+      grants: [{ tool: "synthi_health", max_invocations: 2 }],
+      ttl_ms: 60_000,
+      seal: true,
+      delegation: { max_depth: 1, max_child_invocations: 1 },
+    });
+    const parent = JSON.parse(issued.content[0]!.text).warrant as { warrant_id: string; bearer: string };
+    const params = {
+      arguments: {
+        parent_warrant_id: parent.warrant_id,
+        subject: "generic-worker",
+        grants: [{ tool: "synthi_health", max_invocations: 1 }],
+        bearer: parent.bearer,
+      },
+    };
+    expect(enforceWarrantGate("synthi_warrant_attenuate", params)).toBeNull();
+    const childResult = await dispatchWarrantTool("synthi_warrant_attenuate", params.arguments);
+    const child = JSON.parse(childResult.content[0]!.text).warrant as { sealed: boolean; bearer: string };
+    expect(childResult.isError).not.toBe(true);
+    expect(child.sealed).toBe(true);
+    expect(child.bearer).not.toBe(parent.bearer);
+
+    const notDelegable = await dispatchWarrantTool("synthi_warrant_issue", {
+      subject: "ordinary-holder",
+      grants: [{ tool: "synthi_health" }],
+      ttl_ms: 60_000,
+      seal: true,
+    });
+    const ordinary = JSON.parse(notDelegable.content[0]!.text).warrant as { warrant_id: string; bearer: string };
+    expect(enforceWarrantGate("synthi_warrant_attenuate", {
+      arguments: { ...params.arguments, parent_warrant_id: ordinary.warrant_id, bearer: ordinary.bearer },
+    })?.error).toBe("warrant_admin_required");
   });
 
   it("still gates ordinary tools even when the admin key is presented", () => {
