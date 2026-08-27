@@ -3578,6 +3578,54 @@ describe('CodeSite control plane transaction validation', () => {
       ]));
     });
 
+    it('continues shared-knowledge scans beyond a full page until relevant rows are found', async () => {
+      const session = bindKnowledgeAuthority({
+        id: 'consumer-agent',
+        subscriptionsJson: JSON.stringify(['contract:rotation-event.v2']),
+      });
+      const unrelated = knowledgeRow({
+        id: 'unrelated-page-one',
+        createdByAgentSessionId: 'producer-agent',
+        createdByUserId: 'producer-user',
+        scopeJson: JSON.stringify({
+          visibility: 'project',
+          references: {
+            paths: ['src/unrelated.js'], symbols: [], contracts: [], runtimeSessionIds: [],
+            agentSessionIds: [], workstreamIds: [], transactionIds: [],
+          },
+          tags: [],
+        }),
+      });
+      const relevant = knowledgeRow({
+        id: 'relevant-page-two',
+        createdByAgentSessionId: 'producer-agent',
+        createdByUserId: 'producer-user',
+      });
+      let knowledgePage = 0;
+      prisma.codeSiteKnowledgeItem.findMany.mockImplementation(async ({ include } = {}) => {
+        if (!include?.references) return [];
+        knowledgePage += 1;
+        if (knowledgePage === 1) return [unrelated];
+        if (knowledgePage === 2) return [relevant];
+        return [];
+      });
+      prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([]);
+      prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([]);
+      prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([]);
+
+      const items = await getAgentSharedKnowledge('acme', session.id, AGENT_AUTHORITY_TOKEN, { limit: 1 });
+
+      expect(items.map((item) => item.id)).toEqual(['relevant-page-two']);
+      const knowledgeCalls = prisma.codeSiteKnowledgeItem.findMany.mock.calls
+        .map(([args]) => args)
+        .filter((args) => args?.include?.references);
+      expect(knowledgeCalls).toHaveLength(2);
+      expect(knowledgeCalls.every((args) => args.take === 1)).toBe(true);
+      expect(knowledgeCalls[1].where.AND).toEqual(expect.arrayContaining([
+        expect.objectContaining({ OR: expect.any(Array) }),
+      ]));
+    });
+
     it('hydrates relevant discoveries into fresh agent and resume context', async () => {
       const session = bindKnowledgeAuthority({
         id: 'consumer-agent',

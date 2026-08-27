@@ -2427,6 +2427,40 @@ function projectKnowledgeWhere(projectId, query, cursor = null) {
   };
 }
 
+function descendingKeysetCursor(row, field) {
+  if (!row?.id || row[field] == null) return null;
+  return { [field]: row[field], id: row.id };
+}
+
+function descendingKeysetWhere(base, cursor, field) {
+  if (!cursor) return base;
+  return {
+    AND: [
+      base,
+      {
+        OR: [
+          { [field]: { lt: cursor[field] } },
+          { [field]: cursor[field], id: { lt: cursor.id } },
+        ],
+      },
+    ],
+  };
+}
+
+async function loadAllOrderedRows({ fetchPage, orderField, pageSize }) {
+  const rows = [];
+  let cursor = null;
+  while (true) {
+    const page = await fetchPage(cursor, pageSize);
+    if (!Array.isArray(page) || !page.length) break;
+    rows.push(...page);
+    if (page.length < pageSize) break;
+    cursor = descendingKeysetCursor(page.at(-1), orderField);
+    if (!cursor) break;
+  }
+  return rows;
+}
+
 function knowledgeIdsFromInbox(inbox) {
   return new Set(asArray(inbox).map((item) => item.knowledgeItemId).filter(Boolean));
 }
@@ -2466,31 +2500,67 @@ function visibleKnowledgeRowsForSession(rows, session, executionPlans, transacti
 
 async function loadRelevantKnowledgeForSession(session, queryInput = {}, state = {}) {
   const query = validateKnowledgeQuery(queryInput);
-  const [rows, executionPlans, transactions, inbox] = await Promise.all([
-    state.rows || prisma.codeSiteKnowledgeItem.findMany({
-      where: knowledgeWhere(session.projectId, query),
-      include: { references: true },
-      orderBy: { updatedAt: 'desc' },
-      take: 200,
+  const pageSize = query.limit;
+  const [executionPlans, transactions, inbox] = await Promise.all([
+    state.executionPlans || loadAllOrderedRows({
+      orderField: 'filedAt',
+      pageSize,
+      fetchPage: (cursor, take) => prisma.codeSiteExecutionPlan.findMany({
+        where: descendingKeysetWhere({
+          projectId: session.projectId,
+          agentSessionId: session.id,
+          status: { in: ['filed', 'active', 'holding', 'blocked'] },
+        }, cursor, 'filedAt'),
+        orderBy: [{ filedAt: 'desc' }, { id: 'desc' }],
+        take,
+      }),
     }),
-    state.executionPlans || prisma.codeSiteExecutionPlan.findMany({
-      where: { projectId: session.projectId, agentSessionId: session.id, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
-      orderBy: { filedAt: 'desc' },
-      take: 32,
+    state.transactions || loadAllOrderedRows({
+      orderField: 'openedAt',
+      pageSize,
+      fetchPage: (cursor, take) => prisma.codeSiteMutationTransaction.findMany({
+        where: descendingKeysetWhere({
+          projectId: session.projectId,
+          agentSessionId: session.id,
+          status: { in: ['open', 'prepared', 'blocked', 'validated'] },
+        }, cursor, 'openedAt'),
+        orderBy: [{ openedAt: 'desc' }, { id: 'desc' }],
+        take,
+      }),
     }),
-    state.transactions || prisma.codeSiteMutationTransaction.findMany({
-      where: { projectId: session.projectId, agentSessionId: session.id, status: { in: ['open', 'prepared', 'blocked', 'validated'] } },
-      orderBy: { openedAt: 'desc' },
-      take: 32,
-    }),
-    state.inbox || prisma.codeSiteAgentInboxItem.findMany({
-      where: { projectId: session.projectId, agentSessionId: session.id, knowledgeItemId: { not: null } },
-      orderBy: { createdAt: 'desc' },
-      take: 100,
-      include: { knowledgeItem: { select: { sourceKnowledgeItemId: true } } },
+    state.inbox || loadAllOrderedRows({
+      orderField: 'createdAt',
+      pageSize,
+      fetchPage: (cursor, take) => prisma.codeSiteAgentInboxItem.findMany({
+        where: descendingKeysetWhere({
+          projectId: session.projectId,
+          agentSessionId: session.id,
+          knowledgeItemId: { not: null },
+        }, cursor, 'createdAt'),
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        take,
+        include: { knowledgeItem: { select: { sourceKnowledgeItemId: true } } },
+      }),
     }),
   ]);
-  return visibleKnowledgeRowsForSession(rows, session, executionPlans, transactions, inbox)
+
+  const visible = [];
+  let cursor = null;
+  while (visible.length < query.limit) {
+    const page = state.rows || await prisma.codeSiteKnowledgeItem.findMany({
+      where: projectKnowledgeWhere(session.projectId, query, cursor),
+      include: { references: true },
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+      take: pageSize,
+    });
+    if (!Array.isArray(page) || !page.length) break;
+    visible.push(...visibleKnowledgeRowsForSession(page, session, executionPlans, transactions, inbox));
+    if (state.rows || page.length < pageSize) break;
+    cursor = descendingKeysetCursor(page.at(-1), 'updatedAt');
+    if (!cursor) break;
+  }
+
+  return visible
     .slice(0, query.limit)
     .map(projectKnowledgeRecord)
     .filter(Boolean);
