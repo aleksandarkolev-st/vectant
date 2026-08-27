@@ -3753,6 +3753,51 @@ describe('CodeSite control plane transaction validation', () => {
       expect(items.map((item) => item.id)).toEqual(['knowledge-1']);
     });
 
+    it('fills a human knowledge page past hidden rows before returning a cursor', async () => {
+      const hidden = knowledgeRow({
+        id: 'private-newest',
+        createdByUserId: 'user-2',
+        updatedAt: new Date('2026-08-22T04:03:00.000Z'),
+        redactionClass: 'owner_private',
+        scopeJson: JSON.stringify({
+          visibility: 'owner_private',
+          references: JSON.parse(knowledgeRow().scopeJson).references,
+          tags: [],
+        }),
+      });
+      const visible = knowledgeRow({
+        id: 'project-after-private',
+        updatedAt: new Date('2026-08-22T04:02:00.000Z'),
+      });
+      prisma.codeSiteKnowledgeItem.findMany
+        .mockResolvedValueOnce([hidden, visible])
+        .mockResolvedValueOnce([visible]);
+
+      const page = await listProjectKnowledgePage(
+        'acme',
+        'project-1',
+        { kind: 'discovery', limit: 1 },
+        { userId: 'user-1' },
+      );
+
+      expect(page.knowledge.map((item) => item.id)).toEqual(['project-after-private']);
+      expect(page).not.toHaveProperty('nextCursor');
+      expect(prisma.codeSiteKnowledgeItem.findMany).toHaveBeenCalledTimes(2);
+      expect(prisma.codeSiteKnowledgeItem.findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+        take: 2,
+        where: expect.objectContaining({
+          AND: expect.arrayContaining([
+            expect.objectContaining({
+              OR: expect.arrayContaining([
+                { updatedAt: { lt: hidden.updatedAt } },
+                { updatedAt: hidden.updatedAt, id: { lt: hidden.id } },
+              ]),
+            }),
+          ]),
+        }),
+      }));
+    });
+
     it('pages project knowledge with a stable updated-at and id cursor', async () => {
       const newest = knowledgeRow({
         id: 'knowledge-newest',

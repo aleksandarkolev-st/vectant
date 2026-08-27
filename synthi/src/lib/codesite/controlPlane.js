@@ -3582,22 +3582,44 @@ export async function askAgentQuestion(workspaceSlug, sessionId, agentAccessToke
 export async function listProjectKnowledgePage(workspaceSlug, projectId, query = {}, actor = null) {
   const project = await requireProject(workspaceSlug, projectId, actor, 'read');
   const normalized = validateKnowledgeQuery(query);
-  const cursor = normalized.cursor ? decodeProjectKnowledgeCursor(normalized.cursor) : null;
-  const rows = await prisma.codeSiteKnowledgeItem.findMany({
-    where: projectKnowledgeWhere(project.id, normalized, cursor),
-    include: { references: true },
-    orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
-    take: normalized.limit + 1,
-  });
-  const hasMore = rows.length > normalized.limit;
-  const pageRows = hasMore ? rows.slice(0, normalized.limit) : rows;
   const userId = actorUserId(actor);
-  const knowledge = pageRows.filter((row) => {
-    const visibility = knowledgeVisibility(row);
-    if (visibility === 'project') return true;
-    return Boolean(userId && (row.createdByUserId === userId || row.ownerUserId === userId));
-  }).map(projectKnowledgeRecord).filter(Boolean);
-  const nextCursor = hasMore && pageRows.length ? encodeProjectKnowledgeCursor(pageRows.at(-1)) : null;
+  const knowledge = [];
+  let cursor = normalized.cursor ? decodeProjectKnowledgeCursor(normalized.cursor) : null;
+  let hasMore = false;
+  let lastConsumedRow = null;
+
+  while (knowledge.length < normalized.limit) {
+    const remaining = normalized.limit - knowledge.length;
+    const rows = await prisma.codeSiteKnowledgeItem.findMany({
+      where: projectKnowledgeWhere(project.id, normalized, cursor),
+      include: { references: true },
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+      take: remaining + 1,
+    });
+    if (!Array.isArray(rows) || !rows.length) break;
+
+    hasMore = rows.length > remaining;
+    const pageRows = hasMore ? rows.slice(0, remaining) : rows;
+    lastConsumedRow = pageRows.at(-1) || lastConsumedRow;
+    knowledge.push(...pageRows.filter((row) => {
+      const visibility = knowledgeVisibility(row);
+      if (visibility === 'project') return true;
+      return Boolean(userId && (row.createdByUserId === userId || row.ownerUserId === userId));
+    }).map(projectKnowledgeRecord).filter(Boolean));
+
+    if (!hasMore) break;
+    const nextCursor = descendingKeysetCursor(lastConsumedRow, 'updatedAt');
+    if (!nextCursor
+      || (cursor
+        && cursor.id === nextCursor.id
+        && new Date(cursor.updatedAt).getTime() === new Date(nextCursor.updatedAt).getTime())) {
+      hasMore = false;
+      break;
+    }
+    cursor = nextCursor;
+  }
+
+  const nextCursor = hasMore && lastConsumedRow ? encodeProjectKnowledgeCursor(lastConsumedRow) : null;
   return {
     knowledge,
     ...(nextCursor ? { nextCursor } : {}),
