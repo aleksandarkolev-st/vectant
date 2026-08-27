@@ -55,9 +55,9 @@ function finiteNumber(value, fallback, { minimum = Number.NEGATIVE_INFINITY } = 
   return Number.isFinite(Number(value)) && Number(value) >= minimum ? Number(value) : fallback;
 }
 
-function boundedInteger(value, fallback, { minimum, maximum }) {
+function boundedInteger(value, fallback, { minimum = 1, maximum = Number.MAX_SAFE_INTEGER } = {}) {
   const number = Number(value);
-  if (!Number.isInteger(number)) return fallback;
+  if (!Number.isSafeInteger(number)) return fallback;
   return Math.min(Math.max(number, minimum), maximum);
 }
 
@@ -80,7 +80,7 @@ export function resolveExpertisePolicy(input = EXPERTISE_POLICY) {
   const feedbackInput = input.feedback && typeof input.feedback === 'object' ? input.feedback : {};
   const knowledgeInput = input.knowledge && typeof input.knowledge === 'object' ? input.knowledge : {};
   const statusesInput = input.statuses && typeof input.statuses === 'object' ? input.statuses : {};
-  const maxLimit = boundedInteger(limitsInput.maxLimit, EXPERTISE_POLICY.limits.maxLimit, { minimum: 1, maximum: 100 });
+  const maxLimit = boundedInteger(limitsInput.maxLimit, EXPERTISE_POLICY.limits.maxLimit, { minimum: 1 });
   const defaultLimit = boundedInteger(
     limitsInput.defaultLimit,
     EXPERTISE_POLICY.limits.defaultLimit,
@@ -89,12 +89,12 @@ export function resolveExpertisePolicy(input = EXPERTISE_POLICY) {
   const maxReferencesPerType = boundedInteger(
     limitsInput.maxReferencesPerType,
     EXPERTISE_POLICY.limits.maxReferencesPerType,
-    { minimum: 1, maximum: 256 },
+    { minimum: 1 },
   );
   const maxEvidencePerExpert = boundedInteger(
     limitsInput.maxEvidencePerExpert,
     EXPERTISE_POLICY.limits.maxEvidencePerExpert,
-    { minimum: 1, maximum: 128 },
+    { minimum: 1 },
   );
   const suggestionLimit = boundedInteger(
     limitsInput.suggestionLimit,
@@ -104,12 +104,12 @@ export function resolveExpertisePolicy(input = EXPERTISE_POLICY) {
   const maxSuggestedExperts = boundedInteger(
     limitsInput.maxSuggestedExperts,
     EXPERTISE_POLICY.limits.maxSuggestedExperts,
-    { minimum: 1, maximum: 32 },
+    { minimum: 1 },
   );
   const pageMaxLimit = boundedInteger(
     knowledgeInput.pageMaxLimit,
     EXPERTISE_POLICY.knowledge.pageMaxLimit,
-    { minimum: 1, maximum: 1000 },
+    { minimum: 1 },
   );
   const pageDefaultLimit = boundedInteger(
     knowledgeInput.pageDefaultLimit,
@@ -119,7 +119,7 @@ export function resolveExpertisePolicy(input = EXPERTISE_POLICY) {
   const filterMaxValueLength = boundedInteger(
     knowledgeInput.filterMaxValueLength,
     EXPERTISE_POLICY.knowledge.filterMaxValueLength,
-    { minimum: 1, maximum: 4096 },
+    { minimum: 1 },
   );
   const signalWeightsInput = scoringInput.signalWeights && typeof scoringInput.signalWeights === 'object'
     ? scoringInput.signalWeights
@@ -162,24 +162,24 @@ export function resolveExpertisePolicy(input = EXPERTISE_POLICY) {
     }),
     cache: Object.freeze({
       ttlMs: finiteNumber(cacheInput.ttlMs, EXPERTISE_POLICY.cache.ttlMs, { minimum: 1 }),
-      maxEntries: boundedInteger(cacheInput.maxEntries, EXPERTISE_POLICY.cache.maxEntries, { minimum: 1, maximum: 1024 }),
+      maxEntries: boundedInteger(cacheInput.maxEntries, EXPERTISE_POLICY.cache.maxEntries, { minimum: 1 }),
     }),
     feedback: Object.freeze({
       verdicts: Object.freeze(stringList(feedbackInput.verdicts, EXPERTISE_POLICY.feedback.verdicts)),
       maxCorrectionLength: boundedInteger(
         feedbackInput.maxCorrectionLength,
         EXPERTISE_POLICY.feedback.maxCorrectionLength,
-        { minimum: 1, maximum: 16384 },
+        { minimum: 1 },
       ),
       maxEvidenceRefs: boundedInteger(
         feedbackInput.maxEvidenceRefs,
         EXPERTISE_POLICY.feedback.maxEvidenceRefs,
-        { minimum: 1, maximum: 128 },
+        { minimum: 1 },
       ),
       maxEvidenceRefLength: boundedInteger(
         feedbackInput.maxEvidenceRefLength,
         EXPERTISE_POLICY.feedback.maxEvidenceRefLength,
-        { minimum: 1, maximum: 2048 },
+        { minimum: 1 },
       ),
     }),
     knowledge: Object.freeze({

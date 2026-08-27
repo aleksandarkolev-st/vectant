@@ -13,7 +13,7 @@ export interface ExpertisePolicyLimits {
 
 function positiveInteger(value: unknown): number | undefined {
   const number = Number(value);
-  return Number.isInteger(number) && number > 0 ? number : undefined;
+  return Number.isSafeInteger(number) && number > 0 ? number : undefined;
 }
 
 function objectValue(value: unknown): Record<string, unknown> {
@@ -40,13 +40,12 @@ export function loadExpertisePolicyLimits(
   }
 
   const root = objectValue(policy);
+  if (typeof root["version"] !== "string" || !root["version"].trim()) return {};
   const limits = objectValue(root["limits"]);
   const knowledge = objectValue(root["knowledge"]);
   const feedback = objectValue(root["feedback"]);
-  const verdicts = Array.isArray(feedback["verdicts"])
-    ? [...new Set(feedback["verdicts"].filter((value): value is string => (
-      typeof value === "string" && Boolean(value.trim())
-    )).map((value) => value.trim()))]
+  const verdicts = Array.isArray(feedback["verdicts"]) && feedback["verdicts"].length
+    ? [...new Set(feedback["verdicts"].map((value) => String(value)))]
     : undefined;
 
   return {
