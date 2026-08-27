@@ -81,7 +81,7 @@ agents and the signed-in project operator):
 | `POST /api/workspace/:slug/codesite/projects/:id/knowledge/:knowledgeId/feedback` | ordinary project-member auth; stores a useful/correction/not-useful verdict in the event log |
 | CodeSite Operations → Expertise | browser UI for project expert search, unanswered questions, human responses, and answer feedback |
 | `POST .../agent-sessions/:id/knowledge/:knowledgeId/feedback` | agent-token auth, `codesite.knowledge.write`; same feedback contract |
-| MCP | `synthi_codesite_find_experts`, `synthi_codesite_ask_expert_question` (agent-bound, environment identity only) |
+| MCP | `synthi_codesite_find_experts`, `synthi_codesite_ask_expert_question`, `synthi_codesite_get_shared_knowledge`, `synthi_codesite_respond_impact_notice`, `synthi_codesite_submit_question_feedback` (agent-bound, environment identity only) |
 | Events | `agent_question_asked`, `agent_question_answered`, and `agent_question_feedback_submitted` on the causal timeline |
 
 ## Security / privacy posture
@@ -95,6 +95,10 @@ agents and the signed-in project operator):
   `sourceKnowledgeItemId` admission in `visibleKnowledgeRowsForSession`.
 - Artifact projection tolerates stored unrouted questions (creation-time policy
   still refuses new unrouted questions).
+- Human answer and feedback actions re-apply owner-private/restricted visibility
+  instead of treating project write access as a question disclosure grant.
+- The answerer cannot submit feedback on their own answer, so ranking signals
+  remain independent of the credited answer identity.
 
 - Feedback events are project-scoped and bounded by the versioned expertise
   policy; repeated feedback from one reviewer replaces its ranking effect by
