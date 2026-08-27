@@ -553,8 +553,13 @@ describe("CodeSite MCP tool surface", () => {
       action: "abort",
       reason: "Cannot safely continue.",
     });
+    const missingDismissEvidence = await dispatchCodeSiteTool("synthi_codesite_respond_impact_notice", {
+      notice_id: "notice-1",
+      action: "dismiss",
+      reason: "The notice is no longer actionable.",
+    });
 
-    for (const response of [unknownFilter, callerKind, invalidAction, missingEvidence]) {
+    for (const response of [unknownFilter, callerKind, invalidAction, missingEvidence, missingDismissEvidence]) {
       expect(response?.isError).toBe(true);
     }
     expect(fetch).not.toHaveBeenCalled();

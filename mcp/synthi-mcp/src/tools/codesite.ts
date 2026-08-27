@@ -207,7 +207,7 @@ const SHARED_SKILL_RECIPE_PROPERTIES = {
 } as const;
 
 const IMPACT_NOTICE_ACTIONS = ["acknowledge", "refresh", "rebase_requested", "abort", "dismiss"] as const;
-const QUESTION_ACTIONS = ["answer", "claim", "defer", "dismiss"] as const;
+const QUESTION_ACTIONS = ["answer", "claim", "defer"] as const;
 const KNOWLEDGE_RESPONSE_ACTIONS = [...new Set([...IMPACT_NOTICE_ACTIONS, ...QUESTION_ACTIONS])] as const;
 const QUESTION_FEEDBACK_VERDICTS = ["useful", "needs_correction", "not_useful"] as const;
 const SHARED_KNOWLEDGE_STATUSES = [
