@@ -10,8 +10,14 @@ describe('expertise policy configuration', () => {
   it('publishes a versioned default policy for scoring and query limits', () => {
     expect(EXPERTISE_POLICY.version).toBe(EXPERTISE_POLICY_VERSION);
     expect(EXPERTISE_POLICY.scoring.signalWeights.transaction_write).toBe(3);
+    expect(EXPERTISE_POLICY.scoring.signalWeights.knowledge_feedback_useful).toBe(2);
     expect(EXPERTISE_POLICY.scoring.recencyHalfLifeMs).toBe(14 * 24 * 60 * 60 * 1000);
-    expect(EXPERTISE_POLICY.limits).toMatchObject({ defaultLimit: 5, maxLimit: 10, maxReferencesPerType: 32 });
+    expect(EXPERTISE_POLICY.limits).toMatchObject({ defaultLimit: 5, maxLimit: 10, maxReferencesPerType: 32, maxSuggestedExperts: 8 });
+    expect(EXPERTISE_POLICY.feedback).toMatchObject({
+      verdicts: ['useful', 'needs_correction', 'not_useful'],
+      maxCorrectionLength: 4096,
+      maxEvidenceRefs: 32,
+    });
   });
 
   it('merges deployment-owned overrides without allowing unsafe bounds', () => {

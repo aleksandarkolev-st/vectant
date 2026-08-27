@@ -53,6 +53,15 @@ that can speak the existing CodeSite tools can use them):
      the next agent with the same question finds the answered thread via
      `get_shared_knowledge` without interrupting anyone.
 
+4. **Answer feedback and corrections** — reviewers can mark an answered
+   question `useful`, `needs_correction`, or `not_useful`. Feedback is stored
+   as an ordinary `CodeSiteEvent` so it follows the existing durable event-log
+   and artifact-sync path; no second feedback table or migration is required.
+   Ranking keeps only the newest verdict from each reviewer for a question and
+   credits the resulting positive/negative signal to the agent that answered
+   it. An asker or human reviewer never receives expertise credit merely for
+   submitting feedback.
+
 ## API surface
 
 | Surface | Detail |
@@ -60,8 +69,12 @@ that can speak the existing CodeSite tools can use them):
 | `GET /api/workspace/:slug/codesite/agent-sessions/:id/experts` | agent-token auth, `codesite.context.read`; query `paths`/`symbols`/`contracts`/`limit` (1–10) |
 | `POST /api/workspace/:slug/codesite/agent-sessions/:id/questions` | agent-token auth, `codesite.knowledge.write`; body `{title, summary, references, urgency?, suggested_expert_agent_session_ids?, allow_unrouted?}` |
 | `POST .../agent-sessions/:id/inbox/:itemId/respond` | widened for questions: `answer` (requires answer text), `claim`, `defer`, `dismiss`; works through the impact_notice wrapper |
+| `GET /api/workspace/:slug/codesite/projects/:id/experts` | ordinary project-member auth for the operator UI; same path/symbol/contract query and derived ranking |
+| `POST /api/workspace/:slug/codesite/projects/:id/questions/:knowledgeId/answer` | ordinary project-member auth; records a human answer and notifies the asking agent when one exists |
+| `POST /api/workspace/:slug/codesite/projects/:id/knowledge/:knowledgeId/feedback` | ordinary project-member auth; stores a useful/correction/not-useful verdict in the event log |
+| `POST .../agent-sessions/:id/knowledge/:knowledgeId/feedback` | agent-token auth, `codesite.knowledge.write`; same feedback contract |
 | MCP | `synthi_codesite_find_experts`, `synthi_codesite_ask_expert_question` (agent-bound, environment identity only) |
-| Events | `agent_question_asked`, `agent_question_answered` on the causal timeline |
+| Events | `agent_question_asked`, `agent_question_answered`, and `agent_question_feedback_submitted` on the causal timeline |
 
 ## Security / privacy posture
 
@@ -74,6 +87,10 @@ that can speak the existing CodeSite tools can use them):
   `sourceKnowledgeItemId` admission in `visibleKnowledgeRowsForSession`.
 - Artifact projection tolerates stored unrouted questions (creation-time policy
   still refuses new unrouted questions).
+
+- Feedback events are project-scoped and bounded by the versioned expertise
+  policy; repeated feedback from one reviewer replaces its ranking effect by
+  latest-event selection rather than accumulating reputation indefinitely.
 
 ## Validation evidence (2026-08-26)
 

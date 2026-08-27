@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { EXPERTISE_POLICY } from './expertisePolicy';
 
 export const KNOWLEDGE_KINDS = Object.freeze([
   'discovery',
@@ -588,7 +589,7 @@ function normalizeAgentQuestion(input, common) {
     : normalizedTextList(
       input.suggestedExpertAgentSessionIds || input.suggested_expert_agent_session_ids,
       'question_suggested_expert_agent_session_ids',
-      { limit: 8, maxLength: KNOWLEDGE_REFERENCE_LIMITS.idLength, allowEmpty: true },
+      { limit: EXPERTISE_POLICY.limits.maxSuggestedExperts, maxLength: KNOWLEDGE_REFERENCE_LIMITS.idLength, allowEmpty: true },
     ).map((value) => normalizeId(value, 'question_suggested_expert_agent_session_id'));
   const allowUnrouted = input.allowUnrouted === true || input.allow_unrouted === true;
   if (!suggested.length && !input.skipSuggestionValidation && !allowUnrouted) {

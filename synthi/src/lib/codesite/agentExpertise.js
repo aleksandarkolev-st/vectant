@@ -124,6 +124,7 @@ export function buildExpertiseIndex({
   executionPlans = [],
   transactions = [],
   knowledgeItems = [],
+  feedbackEvents = [],
   now = new Date(),
   policy = EXPERTISE_POLICY,
 } = {}) {
@@ -237,6 +238,53 @@ export function buildExpertiseIndex({
     }
   }
 
+  // Feedback changes the usefulness signal for an answered question without
+  // granting expertise to an asker or to a human reviewer. Feedback is read
+  // from the existing event log, so this index does not require a second
+  // materialized table. Only an agent who actually answered an eligible
+  // question receives the feedback signal.
+  const knowledgeById = new Map(knowledgeItems.map((item) => [item.id, item]));
+  const latestFeedbackByReviewer = new Map();
+  for (const feedbackEvent of feedbackEvents) {
+    if (feedbackEvent?.eventType !== 'agent_question_feedback_submitted') continue;
+    const details = feedbackEvent.details || parseJson(feedbackEvent.detailsJson, {});
+    const questionId = details.knowledgeItemId || details.questionId;
+    const reviewerKey = `${feedbackEvent.actorType || 'unknown'}:${feedbackEvent.actorId || 'unknown'}`;
+    const latestKey = `${questionId || 'unknown'}:${reviewerKey}`;
+    const previous = latestFeedbackByReviewer.get(latestKey);
+    const currentMs = timestampMs(feedbackEvent.createdAt) ?? nowMs;
+    if (previous && previous.atMs >= currentMs) continue;
+    latestFeedbackByReviewer.set(latestKey, {
+      event: feedbackEvent,
+      details,
+      atMs: currentMs,
+    });
+  }
+  for (const { event: feedbackEvent, details, atMs } of latestFeedbackByReviewer.values()) {
+    const itemRow = knowledgeById.get(details.knowledgeItemId || details.questionId);
+    if (!itemRow || itemRow.kind !== 'agent_question' || !isKnowledgeExpertiseEligible(itemRow)) continue;
+    const payload = parseJson(itemRow.payloadJson, {});
+    const answererSessionId = itemRow.answeredByAgentSessionId || payload?.answeredByAgentSessionId;
+    if (!answererSessionId) continue;
+    const verdict = String(details.verdict || '').trim().toLowerCase();
+    const weightSource = `knowledge_feedback_${verdict}`;
+    if (!Object.prototype.hasOwnProperty.call(config.scoring.signalWeights, weightSource)) continue;
+    const references = itemRow.references || parseJson(itemRow.scopeJson, {})?.references || {};
+    const paths = unique(asArray(references.paths));
+    const symbols = unique(asArray(references.symbols));
+    const contracts = unique(asArray(references.contracts));
+    if (!paths.length && !symbols.length && !contracts.length) continue;
+    addSignal(answererSessionId, {
+      type: `knowledge_feedback:${verdict}`,
+      weightSource,
+      paths,
+      symbols,
+      contracts,
+      ref: feedbackEvent.id,
+      atMs,
+    });
+  }
+
   return { nowMs, signalsBySession, policy: config };
 }
 
@@ -303,6 +351,7 @@ export function suggestExpertsForReferences(references, {
   executionPlans = [],
   transactions = [],
   knowledgeItems = [],
+  feedbackEvents = [],
   excludeSessionId = null,
   limit,
   now = new Date(),
@@ -315,7 +364,14 @@ export function suggestExpertsForReferences(references, {
     contracts: asArray(references?.contracts),
     limit: limit ?? config.limits.suggestionLimit,
   }, config);
-  const index = buildExpertiseIndex({ executionPlans, transactions, knowledgeItems, now, policy: config });
+  const index = buildExpertiseIndex({
+    executionPlans,
+    transactions,
+    knowledgeItems,
+    feedbackEvents,
+    now,
+    policy: config,
+  });
   return rankExperts(index, query, { sessions, excludeSessionId, limit: query.limit, policy: config });
 }
 

@@ -1,5 +1,6 @@
 ﻿import {
   abortTransaction,
+  answerProjectQuestion,
   acknowledgeInboxItem,
   acknowledgeInboxItemForAgent,
   attachAgentSession,
@@ -27,6 +28,7 @@
   getAgentInboxForAgent,
   getAgentManifest,
   findAgentExperts,
+  findProjectExperts,
   getAgentSharedKnowledge,
   getControlState,
   getEvents,
@@ -72,6 +74,8 @@
   requestMutationLease,
   resumeMaydayIncident,
   respondToAgentKnowledgeInbox,
+  submitAgentQuestionFeedback,
+  submitProjectQuestionFeedback,
   previewArtifacts,
   promotePolicyDelta,
   revokeProjectMember,
@@ -174,6 +178,10 @@ export async function GET(request, { params }) {
       return okJson({
         knowledge: await listProjectKnowledge(slug, route[1], requestQuery(request), access.actor),
       });
+    }
+
+    if (route[0] === 'projects' && route[2] === 'experts' && route.length === 3) {
+      return okJson(await findProjectExperts(slug, route[1], requestQuery(request), access.actor));
     }
 
     if (route[0] === 'projects' && route[2] === 'deployment-status' && route.length === 3) {
@@ -378,6 +386,22 @@ export async function POST(request, { params }) {
       return handleCodesiteError(error);
     }
   }
+  if (route[0] === 'agent-sessions'
+    && route[2] === 'knowledge'
+    && route[4] === 'feedback'
+    && route.length === 5) {
+    try {
+      return okJson(await submitAgentQuestionFeedback(
+        slug,
+        route[1],
+        route[3],
+        bearerToken(request),
+        await readJson(request),
+      ), { status: 201 });
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
   if (route[0] === 'agent-sessions' && route[2] === 'knowledge' && route.length === 3) {
     try {
       return okJson(await createAgentKnowledgeItem(
@@ -530,6 +554,14 @@ export async function POST(request, { params }) {
   try {
     if (route.join('/') === 'projects') {
       return okJson({ project: await createProject(slug, access.actor, body) }, { status: 201 });
+    }
+
+    if (route[0] === 'projects' && route[2] === 'questions' && route[4] === 'answer' && route.length === 5) {
+      return okJson(await answerProjectQuestion(slug, route[1], route[3], body, access.actor));
+    }
+
+    if (route[0] === 'projects' && route[2] === 'knowledge' && route[4] === 'feedback' && route.length === 5) {
+      return okJson(await submitProjectQuestionFeedback(slug, route[1], route[3], body, access.actor), { status: 201 });
     }
 
     if (route[0] === 'projects' && route[2] === 'zone-policy') {

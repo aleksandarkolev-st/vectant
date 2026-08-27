@@ -13,6 +13,7 @@ const {
   resolveActor: vi.fn(),
   controlPlane: {
     abortTransaction: vi.fn(),
+    answerProjectQuestion: vi.fn(),
     acknowledgeInboxItem: vi.fn(),
     attachAgentSession: vi.fn(),
     askAgentQuestion: vi.fn(),
@@ -30,6 +31,7 @@ const {
     getAgentInbox: vi.fn(),
     getAgentSharedKnowledge: vi.fn(),
     findAgentExperts: vi.fn(),
+    findProjectExperts: vi.fn(),
     recordPolicyDecision: vi.fn(),
     recordTransactionWrite: vi.fn(),
     getLineProvenance: vi.fn(),
@@ -47,6 +49,8 @@ const {
     recordTransactionQuarantineEvent: vi.fn(),
     resumeMaydayIncident: vi.fn(),
     respondToAgentKnowledgeInbox: vi.fn(),
+    submitAgentQuestionFeedback: vi.fn(),
+    submitProjectQuestionFeedback: vi.fn(),
     revokeProjectMember: vi.fn(),
     shadowMergeSimulate: vi.fn(),
     upsertProjectMember: vi.fn(),
@@ -73,6 +77,7 @@ vi.mock('@/lib/integrations/rateLimit', () => ({
 vi.mock('@/lib/codesite/controlPlane', async () => {
   const names = [
     'abortTransaction',
+    'answerProjectQuestion',
     'acknowledgeInboxItem',
     'attachAgentSession',
     'askAgentQuestion',
@@ -96,6 +101,7 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
     'getAgentManifest',
     'getAgentSharedKnowledge',
     'findAgentExperts',
+    'findProjectExperts',
     'getCodeSiteMetrics',
     'getControlState',
     'getEvents',
@@ -124,6 +130,8 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
     'revokeMutationLease',
     'resumeMaydayIncident',
     'respondToAgentKnowledgeInbox',
+    'submitAgentQuestionFeedback',
+    'submitProjectQuestionFeedback',
     'revokeProjectMember',
     'shadowMergeSimulate',
     'updateControlPlan',
@@ -609,6 +617,80 @@ describe('CodeSite catch-all route', () => {
       'acme',
       'project-1',
       { kind: 'shared_skill', limit: '10' },
+      expect.objectContaining({ userId: 'user-1' }),
+    );
+  });
+
+  it('finds project experts through ordinary actor authorization for the operator UI', async () => {
+    const result = {
+      contextVersion: 'synthi.codesite.expertise.v1',
+      policyVersion: 'synthi.codesite.expertise-policy.v1',
+      projectId: 'project-1',
+      experts: [{ agentSessionId: 'agent-2', score: 4.25 }],
+    };
+    controlPlane.findProjectExperts.mockResolvedValue(result);
+
+    const response = await GET(new Request(
+      'http://test/api/workspace/acme/codesite/projects/project-1/experts?paths=src%2Fa.ts&symbols=Turn',
+    ), params(['projects', 'project-1', 'experts']));
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual(result);
+    expect(controlPlane.findProjectExperts).toHaveBeenCalledWith(
+      'acme',
+      'project-1',
+      { paths: 'src/a.ts', symbols: 'Turn' },
+      expect.objectContaining({ userId: 'user-1' }),
+    );
+    expect(canReadScope).toHaveBeenCalled();
+  });
+
+  it('answers a project question through the human operator route', async () => {
+    const body = { answer: 'Use the v2 route contract.', evidenceRefs: ['contract:route-v2'] };
+    const result = {
+      question: { id: 'question-1', status: 'answered', answerText: body.answer },
+      response: { action: 'answer', answer: body.answer },
+      duplicate: false,
+    };
+    controlPlane.answerProjectQuestion.mockResolvedValue(result);
+
+    const response = await POST(new Request(
+      'http://test/api/workspace/acme/codesite/projects/project-1/questions/question-1/answer',
+      { method: 'POST', body: JSON.stringify(body) },
+    ), params(['projects', 'project-1', 'questions', 'question-1', 'answer']));
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual(result);
+    expect(controlPlane.answerProjectQuestion).toHaveBeenCalledWith(
+      'acme',
+      'project-1',
+      'question-1',
+      body,
+      expect.objectContaining({ userId: 'user-1' }),
+    );
+  });
+
+  it('submits question feedback through the human operator route', async () => {
+    const body = { verdict: 'needs_correction', correction: 'Use the v2 contract.' };
+    const result = {
+      feedback: { id: 'feedback-1', verdict: 'needs_correction' },
+      question: { id: 'question-1', status: 'answered' },
+      duplicate: false,
+    };
+    controlPlane.submitProjectQuestionFeedback.mockResolvedValue(result);
+
+    const response = await POST(new Request(
+      'http://test/api/workspace/acme/codesite/projects/project-1/knowledge/question-1/feedback',
+      { method: 'POST', body: JSON.stringify(body) },
+    ), params(['projects', 'project-1', 'knowledge', 'question-1', 'feedback']));
+
+    expect(response.status).toBe(201);
+    expect(await json(response)).toEqual(result);
+    expect(controlPlane.submitProjectQuestionFeedback).toHaveBeenCalledWith(
+      'acme',
+      'project-1',
+      'question-1',
+      body,
       expect.objectContaining({ userId: 'user-1' }),
     );
   });

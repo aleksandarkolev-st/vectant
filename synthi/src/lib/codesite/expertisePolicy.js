@@ -14,6 +14,9 @@ export const EXPERTISE_POLICY = Object.freeze({
       knowledge_reference: 2,
       plan_route: 1.5,
       knowledge_authorship: 1,
+      knowledge_feedback_useful: 2,
+      knowledge_feedback_needs_correction: -2,
+      knowledge_feedback_not_useful: -1,
     }),
   }),
   limits: Object.freeze({
@@ -22,10 +25,17 @@ export const EXPERTISE_POLICY = Object.freeze({
     maxReferencesPerType: 32,
     maxEvidencePerExpert: 16,
     suggestionLimit: 3,
+    maxSuggestedExperts: 8,
   }),
   cache: Object.freeze({
     ttlMs: 15 * 1000,
     maxEntries: 64,
+  }),
+  feedback: Object.freeze({
+    verdicts: Object.freeze(['useful', 'needs_correction', 'not_useful']),
+    maxCorrectionLength: 4096,
+    maxEvidenceRefs: 32,
+    maxEvidenceRefLength: 512,
   }),
   statuses: Object.freeze({
     eligibleSession: Object.freeze(['attached', 'detached']),
@@ -61,6 +71,7 @@ export function resolveExpertisePolicy(input = EXPERTISE_POLICY) {
   const scoringInput = input.scoring && typeof input.scoring === 'object' ? input.scoring : {};
   const limitsInput = input.limits && typeof input.limits === 'object' ? input.limits : {};
   const cacheInput = input.cache && typeof input.cache === 'object' ? input.cache : {};
+  const feedbackInput = input.feedback && typeof input.feedback === 'object' ? input.feedback : {};
   const statusesInput = input.statuses && typeof input.statuses === 'object' ? input.statuses : {};
   const maxLimit = boundedInteger(limitsInput.maxLimit, EXPERTISE_POLICY.limits.maxLimit, { minimum: 1, maximum: 100 });
   const defaultLimit = boundedInteger(
@@ -82,6 +93,11 @@ export function resolveExpertisePolicy(input = EXPERTISE_POLICY) {
     limitsInput.suggestionLimit,
     EXPERTISE_POLICY.limits.suggestionLimit,
     { minimum: 1, maximum: maxLimit },
+  );
+  const maxSuggestedExperts = boundedInteger(
+    limitsInput.maxSuggestedExperts,
+    EXPERTISE_POLICY.limits.maxSuggestedExperts,
+    { minimum: 1, maximum: 32 },
   );
   const signalWeightsInput = scoringInput.signalWeights && typeof scoringInput.signalWeights === 'object'
     ? scoringInput.signalWeights
@@ -120,10 +136,29 @@ export function resolveExpertisePolicy(input = EXPERTISE_POLICY) {
       maxReferencesPerType,
       maxEvidencePerExpert,
       suggestionLimit,
+      maxSuggestedExperts,
     }),
     cache: Object.freeze({
       ttlMs: finiteNumber(cacheInput.ttlMs, EXPERTISE_POLICY.cache.ttlMs, { minimum: 1 }),
       maxEntries: boundedInteger(cacheInput.maxEntries, EXPERTISE_POLICY.cache.maxEntries, { minimum: 1, maximum: 1024 }),
+    }),
+    feedback: Object.freeze({
+      verdicts: Object.freeze(stringList(feedbackInput.verdicts, EXPERTISE_POLICY.feedback.verdicts)),
+      maxCorrectionLength: boundedInteger(
+        feedbackInput.maxCorrectionLength,
+        EXPERTISE_POLICY.feedback.maxCorrectionLength,
+        { minimum: 1, maximum: 16384 },
+      ),
+      maxEvidenceRefs: boundedInteger(
+        feedbackInput.maxEvidenceRefs,
+        EXPERTISE_POLICY.feedback.maxEvidenceRefs,
+        { minimum: 1, maximum: 128 },
+      ),
+      maxEvidenceRefLength: boundedInteger(
+        feedbackInput.maxEvidenceRefLength,
+        EXPERTISE_POLICY.feedback.maxEvidenceRefLength,
+        { minimum: 1, maximum: 2048 },
+      ),
     }),
     statuses: Object.freeze({
       eligibleSession: Object.freeze(stringList(statusesInput.eligibleSession, EXPERTISE_POLICY.statuses.eligibleSession)),
