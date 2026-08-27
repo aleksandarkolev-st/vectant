@@ -333,6 +333,24 @@ describe("CodeSite MCP tool surface", () => {
     expect(init?.headers).toMatchObject({ authorization: "Bearer csa_agent-secret-token" });
   });
 
+  it("rejects an empty expert query before fetch", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-1";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_find_experts", {
+      paths: [],
+      symbols: [],
+      contracts: [],
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "codesite_tool_failed",
+      message: "codesite_agent_knowledge_references_required",
+    }));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("omits unspecified expert filters and preserves repeated references", async () => {
     process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-1";
     process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
@@ -391,6 +409,25 @@ describe("CodeSite MCP tool surface", () => {
       "http://codesite.test/api/workspace/workspace-env/codesite/agent-sessions/agent-1/questions",
     );
     expect(JSON.parse(String(init?.body))).toEqual(args);
+  });
+
+  it("rejects an empty expert question reference set before fetch", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-1";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_ask_expert_question", {
+      title: "Which route contract applies?",
+      summary: "Need the current route contract.",
+      references: {},
+      allow_unrouted: true,
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "codesite_tool_failed",
+      message: "codesite_agent_knowledge_references_required",
+    }));
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("submits question feedback through the attached agent route", async () => {

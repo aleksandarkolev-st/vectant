@@ -239,6 +239,7 @@ export const CODESITE_TOOLS = [
       limit: { type: "integer", minimum: 1, maximum: 10 },
     },
     [],
+    { anyOf: [{ required: ["paths"] }, { required: ["symbols"] }, { required: ["contracts"] }] },
   ),
   agentBoundCodeSiteTool(
     "synthi_codesite_record_discovery",
@@ -917,6 +918,7 @@ function agentBoundCodeSiteTool(
   description: string,
   properties: JsonObject,
   required: string[],
+  schemaExtras: JsonObject = {},
 ): { name: AgentBoundKnowledgeToolName; description: string; inputSchema: JsonObject } {
   return {
     name,
@@ -925,6 +927,7 @@ function agentBoundCodeSiteTool(
       type: "object",
       properties,
       required,
+      ...schemaExtras,
       additionalProperties: false,
     },
   };
@@ -1613,9 +1616,14 @@ function boundedStringListArg(value: unknown, error: string, maximum: number): s
 function validateAgentBoundKnowledgeArguments(toolName: AgentBoundKnowledgeToolName, args: JsonObject): void {
   if (toolName === "synthi_codesite_find_experts") {
     assertAllowedKeys(args, ["paths", "symbols", "contracts", "limit"]);
+    let hasReference = false;
     for (const key of ["paths", "symbols", "contracts"] as const) {
-      if (args[key] !== undefined) boundedStringListArg(args[key], "codesite_agent_knowledge_arguments_invalid", 32);
+      if (args[key] !== undefined) {
+        const values = boundedStringListArg(args[key], "codesite_agent_knowledge_arguments_invalid", 32);
+        hasReference ||= values.length > 0;
+      }
     }
+    if (!hasReference) throw new Error("codesite_agent_knowledge_references_required");
     const limit = args["limit"];
     if (limit !== undefined && (!Number.isInteger(limit) || Number(limit) < 1 || Number(limit) > 10)) {
       throw new Error("codesite_agent_knowledge_arguments_invalid");
@@ -1639,6 +1647,9 @@ function validateAgentBoundKnowledgeArguments(toolName: AgentBoundKnowledgeToolN
     for (const value of Object.values(references)) {
       if (value === undefined) continue;
       boundedStringListArg(value, "codesite_knowledge_references_invalid", 32);
+    }
+    if (!Object.values(references).some((value) => Array.isArray(value) && value.length > 0)) {
+      throw new Error("codesite_agent_knowledge_references_required");
     }
     const urgency = args["urgency"];
     if (urgency !== undefined && !["low", "normal", "high"].includes(urgency as string)) {
