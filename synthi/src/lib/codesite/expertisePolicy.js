@@ -23,6 +23,10 @@ export const EXPERTISE_POLICY = Object.freeze({
     maxEvidencePerExpert: 16,
     suggestionLimit: 3,
   }),
+  cache: Object.freeze({
+    ttlMs: 15 * 1000,
+    maxEntries: 64,
+  }),
   statuses: Object.freeze({
     eligibleSession: Object.freeze(['attached', 'detached']),
     activePlan: Object.freeze(['filed', 'active', 'holding', 'blocked']),
@@ -56,6 +60,7 @@ export function resolveExpertisePolicy(input = EXPERTISE_POLICY) {
 
   const scoringInput = input.scoring && typeof input.scoring === 'object' ? input.scoring : {};
   const limitsInput = input.limits && typeof input.limits === 'object' ? input.limits : {};
+  const cacheInput = input.cache && typeof input.cache === 'object' ? input.cache : {};
   const statusesInput = input.statuses && typeof input.statuses === 'object' ? input.statuses : {};
   const maxLimit = boundedInteger(limitsInput.maxLimit, EXPERTISE_POLICY.limits.maxLimit, { minimum: 1, maximum: 100 });
   const defaultLimit = boundedInteger(
@@ -115,6 +120,10 @@ export function resolveExpertisePolicy(input = EXPERTISE_POLICY) {
       maxReferencesPerType,
       maxEvidencePerExpert,
       suggestionLimit,
+    }),
+    cache: Object.freeze({
+      ttlMs: finiteNumber(cacheInput.ttlMs, EXPERTISE_POLICY.cache.ttlMs, { minimum: 1 }),
+      maxEntries: boundedInteger(cacheInput.maxEntries, EXPERTISE_POLICY.cache.maxEntries, { minimum: 1, maximum: 1024 }),
     }),
     statuses: Object.freeze({
       eligibleSession: Object.freeze(stringList(statusesInput.eligibleSession, EXPERTISE_POLICY.statuses.eligibleSession)),

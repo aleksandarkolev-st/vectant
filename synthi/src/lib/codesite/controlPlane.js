@@ -71,6 +71,10 @@ import {
 } from './agentExpertise';
 import { EXPERTISE_POLICY } from './expertisePolicy';
 import {
+  getCachedExpertiseRoutingState,
+  invalidateExpertiseRoutingState,
+} from './expertiseIndexCache';
+import {
   deliveryAllowedOrigins,
   endpointDeliveryAllowed,
   signDeliveryEnvelope,
@@ -3167,7 +3171,7 @@ export async function getAgentSharedKnowledge(workspaceSlug, sessionId, agentAcc
   return loadRelevantKnowledgeForSession(session, query);
 }
 
-async function loadExpertiseRoutingState(projectId) {
+async function loadFreshExpertiseRoutingState(projectId) {
   const [sessions, executionPlans, transactions, knowledgeItems] = await Promise.all([
     prisma.codeSiteAgentSession.findMany({
       where: { projectId, endedAt: null },
@@ -3184,7 +3188,6 @@ async function loadExpertiseRoutingState(projectId) {
       where: { projectId, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
       select: { id: true, agentSessionId: true, status: true, routeJson: true, filedAt: true },
       orderBy: { filedAt: 'desc' },
-      take: 200,
     }),
     prisma.codeSiteMutationTransaction.findMany({
       where: { projectId, status: { in: ['open', 'prepared', 'blocked', 'validated'] } },
@@ -3200,7 +3203,6 @@ async function loadExpertiseRoutingState(projectId) {
         openedAt: true,
       },
       orderBy: { openedAt: 'desc' },
-      take: 200,
     }),
     prisma.codeSiteKnowledgeItem.findMany({
       where: {
@@ -3218,10 +3220,21 @@ async function loadExpertiseRoutingState(projectId) {
         updatedAt: true,
       },
       orderBy: { updatedAt: 'desc' },
-      take: 400,
     }),
   ]);
   return { sessions, executionPlans, transactions, knowledgeItems };
+}
+
+async function loadExpertiseRoutingState(projectId, options = {}) {
+  return getCachedExpertiseRoutingState(
+    projectId,
+    () => loadFreshExpertiseRoutingState(projectId),
+    {
+      forceRefresh: options.forceRefresh === true,
+      ttlMs: EXPERTISE_POLICY.cache.ttlMs,
+      maxEntries: EXPERTISE_POLICY.cache.maxEntries,
+    },
+  );
 }
 
 export async function findAgentExperts(workspaceSlug, sessionId, agentAccessToken, query = {}) {
@@ -12533,6 +12546,7 @@ async function recordEventWithClient(db, projectId, input, options = {}) {
       if (options.syncArtifacts !== false) {
         await syncArtifactsForProject(projectId, { reason: 'event_recorded', eventId: event.id });
       }
+      invalidateExpertiseRoutingState(projectId);
       return event;
     } catch (error) {
       if (!isLogicalTimeConflict(error)) throw error;

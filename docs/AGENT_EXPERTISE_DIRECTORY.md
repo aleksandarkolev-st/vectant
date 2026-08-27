@@ -24,8 +24,10 @@ that can speak the existing CodeSite tools can use them):
    - typed semantic refs on transactions (symbols/contracts)
    - execution-plan routes (weight 1.5)
    - knowledge-item references (weight 2) and authorship (weight 1)
-   Scores decay with a 14-day half-life so stale experts sink. Ranking is
-   deterministic (score desc, session id asc) and never returns the asker.
+   Scores decay with a 14-day half-life so stale experts sink. The routing
+   inputs are cached per project and loaded without a fixed row-count cutoff;
+   the active policy version travels with each result. Ranking is deterministic
+   (score desc, session id asc) and never returns the asker.
 
 2. **`synthi_codesite_find_experts`** — agent-bound MCP tool + HTTP endpoint
    `GET .../agent-sessions/:id/experts?paths=...&symbols=...&contracts=...`.
