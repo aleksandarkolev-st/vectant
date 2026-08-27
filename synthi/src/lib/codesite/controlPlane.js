@@ -2313,11 +2313,15 @@ function validateKnowledgeQuery(input = {}) {
   if (kind && !KNOWLEDGE_QUERY_KINDS.has(kind)) throw badRequest('knowledge_kind_invalid');
   const status = String(input.status || '').trim().toLowerCase();
   if (status && !/^[a-z][a-z0-9_]{0,63}$/.test(status)) throw badRequest('knowledge_status_invalid');
-  const limitValue = Number(input.limit || 50);
-  const limit = Number.isInteger(limitValue) ? Math.min(Math.max(limitValue, 1), 100) : 50;
+  const pagePolicy = EXPERTISE_POLICY.knowledge;
+  const limitValue = Number(input.limit || pagePolicy.pageDefaultLimit);
+  const limit = Number.isInteger(limitValue)
+    ? Math.min(Math.max(limitValue, 1), pagePolicy.pageMaxLimit)
+    : pagePolicy.pageDefaultLimit;
   const since = input.since ? new Date(input.since) : null;
   if (since && !Number.isFinite(since.getTime())) throw badRequest('knowledge_since_invalid');
-  return { kind: kind || null, status: status || null, limit, since };
+  const cursor = typeof input.cursor === 'string' && input.cursor.trim() ? input.cursor.trim() : null;
+  return { kind: kind || null, status: status || null, limit, since, cursor };
 }
 
 function knowledgeWhere(projectId, query) {
@@ -2329,6 +2333,49 @@ function knowledgeWhere(projectId, query) {
     OR: [
       { expiresAt: null },
       { expiresAt: { gt: new Date() } },
+    ],
+  };
+}
+
+function encodeProjectKnowledgeCursor(row) {
+  const updatedAt = row?.updatedAt instanceof Date ? row.updatedAt : new Date(row?.updatedAt);
+  if (!row?.id || !Number.isFinite(updatedAt.getTime())) return null;
+  return Buffer.from(JSON.stringify({
+    v: EXPERTISE_POLICY.knowledge.cursorVersion,
+    updatedAt: updatedAt.toISOString(),
+    id: row.id,
+  })).toString('base64url');
+}
+
+function decodeProjectKnowledgeCursor(cursor) {
+  try {
+    const parsed = JSON.parse(Buffer.from(String(cursor), 'base64url').toString('utf8'));
+    if (parsed?.v !== EXPERTISE_POLICY.knowledge.cursorVersion
+      || typeof parsed.updatedAt !== 'string'
+      || typeof parsed.id !== 'string'
+      || !parsed.id.trim()) {
+      throw new Error('knowledge_cursor_shape_invalid');
+    }
+    const updatedAt = new Date(parsed.updatedAt);
+    if (!Number.isFinite(updatedAt.getTime())) throw new Error('knowledge_cursor_value_invalid');
+    return { updatedAt, id: parsed.id };
+  } catch (_) {
+    throw badRequest('knowledge_cursor_invalid');
+  }
+}
+
+function projectKnowledgeWhere(projectId, query, cursor = null) {
+  const base = knowledgeWhere(projectId, query);
+  if (!cursor) return base;
+  return {
+    AND: [
+      base,
+      {
+        OR: [
+          { updatedAt: { lt: cursor.updatedAt } },
+          { updatedAt: cursor.updatedAt, id: { lt: cursor.id } },
+        ],
+      },
     ],
   };
 }
@@ -3415,21 +3462,34 @@ export async function askAgentQuestion(workspaceSlug, sessionId, agentAccessToke
   };
 }
 
-export async function listProjectKnowledge(workspaceSlug, projectId, query = {}, actor = null) {
+export async function listProjectKnowledgePage(workspaceSlug, projectId, query = {}, actor = null) {
   const project = await requireProject(workspaceSlug, projectId, actor, 'read');
   const normalized = validateKnowledgeQuery(query);
+  const cursor = normalized.cursor ? decodeProjectKnowledgeCursor(normalized.cursor) : null;
   const rows = await prisma.codeSiteKnowledgeItem.findMany({
-    where: knowledgeWhere(project.id, normalized),
+    where: projectKnowledgeWhere(project.id, normalized, cursor),
     include: { references: true },
-    orderBy: { updatedAt: 'desc' },
-    take: normalized.limit,
+    orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+    take: normalized.limit + 1,
   });
+  const hasMore = rows.length > normalized.limit;
+  const pageRows = hasMore ? rows.slice(0, normalized.limit) : rows;
   const userId = actorUserId(actor);
-  return rows.filter((row) => {
+  const knowledge = pageRows.filter((row) => {
     const visibility = knowledgeVisibility(row);
     if (visibility === 'project') return true;
     return Boolean(userId && (row.createdByUserId === userId || row.ownerUserId === userId));
   }).map(projectKnowledgeRecord).filter(Boolean);
+  const nextCursor = hasMore && pageRows.length ? encodeProjectKnowledgeCursor(pageRows.at(-1)) : null;
+  return {
+    knowledge,
+    ...(nextCursor ? { nextCursor } : {}),
+  };
+}
+
+export async function listProjectKnowledge(workspaceSlug, projectId, query = {}, actor = null) {
+  const page = await listProjectKnowledgePage(workspaceSlug, projectId, query, actor);
+  return page.knowledge;
 }
 
 function questionAskerSessionId(question) {

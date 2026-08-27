@@ -1,3 +1,5 @@
+import { EXPERTISE_POLICY } from '../../lib/codesite/expertisePolicy';
+
 const BASE = '/api/workspace';
 
 export const CODE_SITE_LIVE_EVENT_TYPES = Object.freeze([
@@ -228,15 +230,30 @@ export async function fetchCodeSiteProjectKnowledge(workspaceSlug, projectId, fi
   const status = typeof input.status === 'string' ? input.status.trim().toLowerCase() : '';
   if (PROJECT_KNOWLEDGE_KINDS.has(kind)) search.set('kind', kind);
   if (PROJECT_KNOWLEDGE_STATUS_PATTERN.test(status)) search.set('status', status);
-  if (Number.isInteger(input.limit) && input.limit >= 1 && input.limit <= 100) {
+  if (
+    Number.isInteger(input.limit) &&
+    input.limit >= 1 &&
+    input.limit <= EXPERTISE_POLICY.knowledge.pageMaxLimit
+  ) {
     search.set('limit', String(input.limit));
+  }
+  if (typeof input.cursor === 'string' && input.cursor.trim()) {
+    search.set('cursor', input.cursor.trim());
   }
   const since = safeKnowledgeSince(input.since);
   if (since) search.set('since', since);
   const query = search.toString();
   const suffix = query ? `?${query}` : '';
   const body = await request(`${projectBase(workspaceSlug, projectId)}/knowledge${suffix}`);
-  return Array.isArray(body.knowledge) ? body.knowledge : [];
+  const knowledge = Array.isArray(body.knowledge) ? body.knowledge : [];
+  if (typeof body.nextCursor === 'string' && body.nextCursor.trim()) {
+    Object.defineProperty(knowledge, 'nextCursor', {
+      value: body.nextCursor.trim(),
+      enumerable: false,
+      configurable: true,
+    });
+  }
+  return knowledge;
 }
 
 export async function fetchCodeSiteProjectExperts(workspaceSlug, projectId, references = {}, options = {}) {

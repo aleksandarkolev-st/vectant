@@ -435,6 +435,7 @@ export default function ExpertiseView({
     status: "idle",
     items: [],
     error: null,
+    nextCursor: null,
   });
   const [answerDrafts, setAnswerDrafts] = useState({});
   const [feedbackDrafts, setFeedbackDrafts] = useState({});
@@ -442,13 +443,17 @@ export default function ExpertiseView({
   const [notice, setNotice] = useState(null);
   const [actionError, setActionError] = useState(null);
   const questionRequest = useRef(0);
+  const questionCursor = useRef(null);
   const handledStreamEvent = useRef(null);
 
-  const loadQuestions = useCallback(async () => {
+  const loadQuestions = useCallback(async ({ append = false } = {}) => {
     const requestId = questionRequest.current + 1;
     questionRequest.current = requestId;
+    const cursor = append ? questionCursor.current : null;
+    if (append && !cursor) return;
     if (!workspaceSlug || !projectId) {
-      setQuestions({ status: "ready", items: [], error: null });
+      questionCursor.current = null;
+      setQuestions({ status: "ready", items: [], error: null, nextCursor: null });
       return;
     }
     setQuestions((current) => ({ ...current, status: "loading", error: null }));
@@ -459,26 +464,36 @@ export default function ExpertiseView({
         {
           kind: "agent_question",
           status: questionFilter,
+          ...(cursor ? { cursor } : {}),
         },
       );
       if (questionRequest.current !== requestId) return;
-      setQuestions({
+      const nextItems = Array.isArray(items) ? items : [];
+      const nextCursor =
+        typeof items?.nextCursor === "string" && items.nextCursor.trim()
+          ? items.nextCursor.trim()
+          : null;
+      questionCursor.current = nextCursor;
+      setQuestions((current) => ({
         status: "ready",
-        items: Array.isArray(items) ? items : [],
+        items: append ? [...current.items, ...nextItems] : nextItems,
         error: null,
-      });
+        nextCursor,
+      }));
     } catch (error) {
       if (questionRequest.current !== requestId) return;
-      setQuestions({
+      setQuestions((current) => ({
         status: "error",
-        items: [],
+        items: append ? current.items : [],
         error: error?.message || "questions_fetch_failed",
-      });
+        nextCursor: append ? current.nextCursor : null,
+      }));
     }
   }, [projectId, questionFilter, workspaceSlug]);
 
   useEffect(() => {
     questionRequest.current += 1;
+    questionCursor.current = null;
     handledStreamEvent.current = null;
     setReferenceDraft(EMPTY_REFERENCES);
     setExpertQuery(null);
@@ -488,6 +503,10 @@ export default function ExpertiseView({
     setNotice(null);
     setActionError(null);
   }, [projectId]);
+
+  useEffect(() => {
+    questionCursor.current = null;
+  }, [projectId, questionFilter]);
 
   useEffect(() => {
     void loadQuestions();
@@ -636,6 +655,22 @@ export default function ExpertiseView({
         : [],
     [questions.items],
   );
+  const loadMoreQuestions = questions.nextCursor ? (
+    <button
+      type="button"
+      className="mt-3 min-h-9 rounded-md border px-2.5 text-[11px] font-semibold"
+      onClick={() => void loadQuestions({ append: true })}
+      disabled={questions.status === "loading"}
+      style={{
+        borderColor: "var(--border-subtle)",
+        background: "var(--bg-elevated)",
+        color: "var(--text-primary)",
+      }}
+      data-testid="codesite-question-load-more"
+    >
+      Load more questions
+    </button>
+  ) : null;
 
   return (
     <div
@@ -858,35 +893,41 @@ export default function ExpertiseView({
               </button>
             </div>
           ) : questionItems.length ? (
-            <ul className="min-w-0" data-testid="codesite-question-list">
-              {questionItems.map((item, index) => {
-                const questionId = textValue(item.id, `question-${index}`);
-                const feedbackDraft = feedbackDrafts[questionId] || {};
-                return (
-                  <QuestionRow
-                    key={questionId}
-                    item={item}
-                    answerDraft={answerDrafts[questionId]}
-                    feedbackDraft={feedbackDraft}
-                    submitting={submittingId === questionId}
-                    onAnswerDraft={(value) =>
-                      updateAnswerDraft(questionId, value)
-                    }
-                    onAnswer={() => void answerQuestion(item)}
-                    onFeedbackDraft={(patch) =>
-                      updateFeedbackDraft(questionId, patch)
-                    }
-                    onFeedback={() => void submitFeedback(item)}
-                  />
-                );
-              })}
-            </ul>
+            <>
+              <ul className="min-w-0" data-testid="codesite-question-list">
+                {questionItems.map((item, index) => {
+                  const questionId = textValue(item.id, `question-${index}`);
+                  const feedbackDraft = feedbackDrafts[questionId] || {};
+                  return (
+                    <QuestionRow
+                      key={questionId}
+                      item={item}
+                      answerDraft={answerDrafts[questionId]}
+                      feedbackDraft={feedbackDraft}
+                      submitting={submittingId === questionId}
+                      onAnswerDraft={(value) =>
+                        updateAnswerDraft(questionId, value)
+                      }
+                      onAnswer={() => void answerQuestion(item)}
+                      onFeedbackDraft={(patch) =>
+                        updateFeedbackDraft(questionId, patch)
+                      }
+                      onFeedback={() => void submitFeedback(item)}
+                    />
+                  );
+                })}
+              </ul>
+              {loadMoreQuestions}
+            </>
           ) : (
-            <EmptyLine>
-              {questionFilter === "open"
-                ? "No unanswered project questions."
-                : "No answered project questions yet."}
-            </EmptyLine>
+            <>
+              <EmptyLine>
+                {questionFilter === "open"
+                  ? "No unanswered project questions."
+                  : "No answered project questions yet."}
+              </EmptyLine>
+              {loadMoreQuestions}
+            </>
           )}
         </div>
       </Section>

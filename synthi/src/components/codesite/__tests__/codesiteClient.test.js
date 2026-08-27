@@ -137,6 +137,27 @@ describe('CodeSite project knowledge client', () => {
     );
   });
 
+  it('forwards a cursor and exposes the next page token without changing the array contract', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({
+      knowledge: [{ id: 'question-2', kind: 'agent_question', status: 'open' }],
+      nextCursor: 'cursor/next',
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetch);
+
+    const knowledge = await fetchCodeSiteProjectKnowledge('team', 'project-1', {
+      kind: 'agent_question',
+      status: 'open',
+      cursor: 'cursor/current',
+    });
+
+    expect(knowledge).toEqual([{ id: 'question-2', kind: 'agent_question', status: 'open' }]);
+    expect(knowledge.nextCursor).toBe('cursor/next');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/workspace/team/codesite/projects/project-1/knowledge?kind=agent_question&status=open&cursor=cursor%2Fcurrent',
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+  });
+
   it('drops invalid knowledge filters instead of forwarding arbitrary values', async () => {
     const fetch = vi.fn(async () => new Response(JSON.stringify({ knowledge: 'invalid' }), { status: 200 }));
     vi.stubGlobal('fetch', fetch);

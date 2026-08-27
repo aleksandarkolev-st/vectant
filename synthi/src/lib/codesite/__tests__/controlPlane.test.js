@@ -191,6 +191,7 @@ import {
   getRelevantAgentContext,
   getAgentSharedKnowledge,
   listProjectKnowledge,
+  listProjectKnowledgePage,
   getSourceStateSince,
   openTransaction,
   preflightCodeSiteFsWrite,
@@ -3677,6 +3678,46 @@ describe('CodeSite control plane transaction validation', () => {
       ]);
       const items = await listProjectKnowledge('acme', 'project-1', {}, { userId: 'user-1' });
       expect(items.map((item) => item.id)).toEqual(['knowledge-1']);
+    });
+
+    it('pages project knowledge with a stable updated-at and id cursor', async () => {
+      const newest = knowledgeRow({
+        id: 'knowledge-newest',
+        updatedAt: new Date('2026-08-22T04:02:00.000Z'),
+      });
+      const older = knowledgeRow({
+        id: 'knowledge-older',
+        updatedAt: new Date('2026-08-22T04:01:00.000Z'),
+      });
+      prisma.codeSiteKnowledgeItem.findMany.mockResolvedValueOnce([newest, older]);
+
+      const firstPage = await listProjectKnowledgePage(
+        'acme',
+        'project-1',
+        { kind: 'discovery', limit: 1 },
+        { userId: 'user-1' },
+      );
+      expect(firstPage.knowledge.map((item) => item.id)).toEqual(['knowledge-newest']);
+      expect(firstPage.nextCursor).toEqual(expect.any(String));
+
+      prisma.codeSiteKnowledgeItem.findMany.mockResolvedValueOnce([older]);
+      const secondPage = await listProjectKnowledgePage(
+        'acme',
+        'project-1',
+        { kind: 'discovery', limit: 1, cursor: firstPage.nextCursor },
+        { userId: 'user-1' },
+      );
+      expect(secondPage).toEqual({ knowledge: [expect.objectContaining({ id: 'knowledge-older' })] });
+      expect(prisma.codeSiteKnowledgeItem.findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+        orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+        take: 2,
+        where: expect.objectContaining({
+          AND: expect.arrayContaining([
+            expect.objectContaining({ projectId: 'project-1' }),
+            expect.objectContaining({ OR: expect.any(Array) }),
+          ]),
+        }),
+      }));
     });
 
     it.each(['owner_private', 'restricted'])('does not let a project writer answer a %s question they cannot view', async (visibility) => {

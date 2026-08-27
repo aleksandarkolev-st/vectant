@@ -18,6 +18,11 @@ describe('expertise policy configuration', () => {
       maxCorrectionLength: 4096,
       maxEvidenceRefs: 32,
     });
+    expect(EXPERTISE_POLICY.knowledge).toMatchObject({
+      pageDefaultLimit: 50,
+      pageMaxLimit: 100,
+      cursorVersion: 'v1',
+    });
   });
 
   it('merges deployment-owned overrides without allowing unsafe bounds', () => {
@@ -25,6 +30,7 @@ describe('expertise policy configuration', () => {
       version: 'deployment.expertise-policy.v2',
       scoring: { recencyHalfLifeMs: 86_400_000, signalWeights: { transaction_write: 4 } },
       limits: { defaultLimit: 4, maxLimit: 6, maxReferencesPerType: 48 },
+      knowledge: { pageDefaultLimit: 3, pageMaxLimit: 7, cursorVersion: 'v2' },
     });
 
     expect(policy.version).toBe('deployment.expertise-policy.v2');
@@ -32,6 +38,7 @@ describe('expertise policy configuration', () => {
     expect(policy.scoring.signalWeights.transaction_write).toBe(4);
     expect(policy.scoring.signalWeights.transaction_read).toBe(2);
     expect(policy.limits).toMatchObject({ defaultLimit: 4, maxLimit: 6, maxReferencesPerType: 48 });
+    expect(policy.knowledge).toMatchObject({ pageDefaultLimit: 3, pageMaxLimit: 7, cursorVersion: 'v2' });
     expect(normalizeExpertiseQuery({ paths: ['src/a.ts'], limit: 99 }, policy).limit).toBe(6);
   });
 });

@@ -37,6 +37,11 @@ export const EXPERTISE_POLICY = Object.freeze({
     maxEvidenceRefs: 32,
     maxEvidenceRefLength: 512,
   }),
+  knowledge: Object.freeze({
+    pageDefaultLimit: 50,
+    pageMaxLimit: 100,
+    cursorVersion: 'v1',
+  }),
   statuses: Object.freeze({
     eligibleSession: Object.freeze(['attached', 'detached']),
     activePlan: Object.freeze(['filed', 'active', 'holding', 'blocked']),
@@ -72,6 +77,7 @@ export function resolveExpertisePolicy(input = EXPERTISE_POLICY) {
   const limitsInput = input.limits && typeof input.limits === 'object' ? input.limits : {};
   const cacheInput = input.cache && typeof input.cache === 'object' ? input.cache : {};
   const feedbackInput = input.feedback && typeof input.feedback === 'object' ? input.feedback : {};
+  const knowledgeInput = input.knowledge && typeof input.knowledge === 'object' ? input.knowledge : {};
   const statusesInput = input.statuses && typeof input.statuses === 'object' ? input.statuses : {};
   const maxLimit = boundedInteger(limitsInput.maxLimit, EXPERTISE_POLICY.limits.maxLimit, { minimum: 1, maximum: 100 });
   const defaultLimit = boundedInteger(
@@ -98,6 +104,16 @@ export function resolveExpertisePolicy(input = EXPERTISE_POLICY) {
     limitsInput.maxSuggestedExperts,
     EXPERTISE_POLICY.limits.maxSuggestedExperts,
     { minimum: 1, maximum: 32 },
+  );
+  const pageMaxLimit = boundedInteger(
+    knowledgeInput.pageMaxLimit,
+    EXPERTISE_POLICY.knowledge.pageMaxLimit,
+    { minimum: 1, maximum: 1000 },
+  );
+  const pageDefaultLimit = boundedInteger(
+    knowledgeInput.pageDefaultLimit,
+    Math.min(EXPERTISE_POLICY.knowledge.pageDefaultLimit, pageMaxLimit),
+    { minimum: 1, maximum: pageMaxLimit },
   );
   const signalWeightsInput = scoringInput.signalWeights && typeof scoringInput.signalWeights === 'object'
     ? scoringInput.signalWeights
@@ -159,6 +175,13 @@ export function resolveExpertisePolicy(input = EXPERTISE_POLICY) {
         EXPERTISE_POLICY.feedback.maxEvidenceRefLength,
         { minimum: 1, maximum: 2048 },
       ),
+    }),
+    knowledge: Object.freeze({
+      pageDefaultLimit,
+      pageMaxLimit,
+      cursorVersion: typeof knowledgeInput.cursorVersion === 'string' && knowledgeInput.cursorVersion.trim()
+        ? knowledgeInput.cursorVersion.trim()
+        : EXPERTISE_POLICY.knowledge.cursorVersion,
     }),
     statuses: Object.freeze({
       eligibleSession: Object.freeze(stringList(statusesInput.eligibleSession, EXPERTISE_POLICY.statuses.eligibleSession)),

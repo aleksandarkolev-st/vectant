@@ -77,6 +77,7 @@ agents and the signed-in project operator):
 | `POST /api/workspace/:slug/codesite/agent-sessions/:id/questions` | agent-token auth, `codesite.knowledge.write`; body `{title, summary, references, urgency?, suggested_expert_agent_session_ids?, allow_unrouted?}` |
 | `POST .../agent-sessions/:id/inbox/:itemId/respond` | widened for questions: `answer` (requires answer text), `claim`, `defer`, `dismiss`; works through the impact_notice wrapper |
 | `GET /api/workspace/:slug/codesite/projects/:id/experts` | ordinary project-member auth for the operator UI; same path/symbol/contract query and derived ranking |
+| `GET /api/workspace/:slug/codesite/projects/:id/knowledge` | ordinary project-member auth; filters by kind/status and returns an opaque `nextCursor` for keyset pagination |
 | `POST /api/workspace/:slug/codesite/projects/:id/questions/:knowledgeId/answer` | ordinary project-member auth; records a human answer and notifies the asking agent when one exists |
 | `POST /api/workspace/:slug/codesite/projects/:id/knowledge/:knowledgeId/feedback` | ordinary project-member auth; stores a useful/correction/not-useful verdict in the event log |
 | CodeSite Operations → Expertise | browser UI for project expert search, unanswered questions, human responses, and answer feedback |

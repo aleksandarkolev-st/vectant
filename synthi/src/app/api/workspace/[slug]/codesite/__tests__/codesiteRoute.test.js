@@ -41,6 +41,7 @@ const {
     getSourceStateSince: vi.fn(),
     listActiveTransactions: vi.fn(),
     listProjectKnowledge: vi.fn(),
+    listProjectKnowledgePage: vi.fn(),
     listProjectMembers: vi.fn(),
     openTransaction: vi.fn(),
     preflightCodeSiteFsWrite: vi.fn(),
@@ -116,6 +117,7 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
     'getTransaction',
     'listActiveTransactions',
     'listProjectKnowledge',
+    'listProjectKnowledgePage',
     'listProjectMembers',
     'listProjects',
     'openTransaction',
@@ -597,9 +599,9 @@ describe('CodeSite catch-all route', () => {
   });
 
   it('keeps human project knowledge reads behind ordinary actor authorization', async () => {
-    controlPlane.listProjectKnowledge.mockResolvedValue([
-      { id: 'knowledge-1', kind: 'shared_skill', status: 'published' },
-    ]);
+    controlPlane.listProjectKnowledgePage.mockResolvedValue({
+      knowledge: [{ id: 'knowledge-1', kind: 'shared_skill', status: 'published' }],
+    });
     const response = await GET(new Request(
       'http://test/api/workspace/acme/codesite/projects/project-1/knowledge?kind=shared_skill&limit=10',
     ), params(['projects', 'project-1', 'knowledge']));
@@ -613,7 +615,7 @@ describe('CodeSite catch-all route', () => {
       expect.objectContaining({ userId: 'user-1' }),
       { scope: 'workspace', workspaceSlug: 'acme' },
     );
-    expect(controlPlane.listProjectKnowledge).toHaveBeenCalledWith(
+    expect(controlPlane.listProjectKnowledgePage).toHaveBeenCalledWith(
       'acme',
       'project-1',
       { kind: 'shared_skill', limit: '10' },

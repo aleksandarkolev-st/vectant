@@ -57,7 +57,7 @@
   heartbeatAgentSession,
   listActiveTransactions,
   listPermits,
-  listProjectKnowledge,
+  listProjectKnowledgePage,
   listProjectMembers,
   listProjects,
   listRouteRevisions,
@@ -175,9 +175,12 @@ export async function GET(request, { params }) {
     }
 
     if (route[0] === 'projects' && route[2] === 'knowledge' && route.length === 3) {
-      return okJson({
-        knowledge: await listProjectKnowledge(slug, route[1], requestQuery(request), access.actor),
-      });
+      return okJson(await listProjectKnowledgePage(
+        slug,
+        route[1],
+        requestQuery(request),
+        access.actor,
+      ));
     }
 
     if (route[0] === 'projects' && route[2] === 'experts' && route.length === 3) {
