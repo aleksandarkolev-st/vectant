@@ -36,6 +36,7 @@ import {
   grantAcceptsArgs,
   firstViolatedArgKey,
   type ToolGrant,
+  type DelegationPolicy,
   type WarrantDecision,
   type WarrantJournalEvent,
   type WarrantRecordSnapshot,
@@ -282,6 +283,7 @@ function issueTool(args: unknown): ToolResponse {
     subject: requiredString(a, "subject"),
     grants: toolGrants(a["grants"]),
     seal: a["seal"] === true,
+    delegation: delegationPolicy(a["delegation"]),
     now,
     ttl_ms: Math.min(requiredNumber(a, "ttl_ms"), ceilings.max_ttl_ms),
   });
@@ -299,6 +301,7 @@ function attenuateTool(args: unknown): ToolResponse {
     subject: requiredString(a, "subject"),
     grants: toolGrants(a["grants"]),
     seal: a["seal"] === true,
+    bearer: typeof a["bearer"] === "string" ? a["bearer"] : undefined,
     now: Date.now(),
     ttl_ms: Math.min(numberOpt(a["ttl_ms"]) ?? Number.MAX_SAFE_INTEGER, ceilings.max_ttl_ms),
   });
@@ -377,10 +380,11 @@ export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayl
     // Unconfigured (local/dev) posture keeps the historical open management plane.
     if (adminKey === null) return null;
     if (adminKeyMatches(adminKeyPresented(params), adminKey)) return null;
-    // Patch K2: a holder of a sealed warrant can renew only that credential
-    // by presenting its bearer. Other lifecycle and policy operations remain
-    // strictly on the admin-gated management plane.
+    // Sealed holders can renew their own credential and, only when the root
+    // explicitly opted into it, attenuate it into a narrower child. All other
+    // lifecycle and policy operations remain on the admin-gated plane.
     if (toolName === "synthi_warrant_renew" && hasSealedRenewalBearer(params)) return null;
+    if (toolName === "synthi_warrant_attenuate" && hasSealedDelegationBearer(params)) return null;
     eventLog.push({
       kind: "security",
       code: "rate_limit_warning",
@@ -526,6 +530,14 @@ function hasSealedRenewalBearer(params: unknown): boolean {
   return probe.allowed || probe.reason_code === "tool_not_covered";
 }
 
+function hasSealedDelegationBearer(params: unknown): boolean {
+  const args = recordOpt((params as { arguments?: unknown } | undefined)?.arguments);
+  const warrantId = args?.["parent_warrant_id"];
+  const bearer = args?.["bearer"];
+  if (typeof warrantId !== "string" || typeof bearer !== "string") return false;
+  return warrantRegistry.canDelegate({ warrant_id: warrantId, bearer, now: Date.now() }).allowed;
+}
+
 /**
  * Patch J3: gate resource reads. Security-event resources carry sensitive
  * telemetry (warrant ids, reason codes), so in warn/enforce modes they
@@ -636,6 +648,19 @@ function toolGrants(value: unknown): ToolGrant[] {
   });
 }
 
+function delegationPolicy(value: unknown): DelegationPolicy | undefined {
+  if (value === undefined) return undefined;
+  const policy = obj(value);
+  const maxDepth = requiredNumber(policy, "max_depth");
+  const maxChildTtl = numberOpt(policy["max_child_ttl_ms"]);
+  const maxChildInvocations = numberOpt(policy["max_child_invocations"]);
+  return {
+    max_depth: maxDepth,
+    ...(maxChildTtl === undefined ? {} : { max_child_ttl_ms: maxChildTtl }),
+    ...(maxChildInvocations === undefined ? {} : { max_child_invocations: maxChildInvocations }),
+  };
+}
+
 function invocationTopUps(value: unknown): Record<string, number> | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -680,16 +705,28 @@ function numberOpt(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+const DELEGATION_POLICY_SCHEMA = {
+  type: "object",
+  description: "Optional generic holder-delegation envelope. It requires seal:true and can only narrow authority into children.",
+  properties: {
+    max_depth: { type: "integer", minimum: 1, description: "Maximum child hops below this warrant." },
+    max_child_ttl_ms: { type: "number", minimum: 1, description: "Optional maximum TTL for each child." },
+    max_child_invocations: { type: "integer", minimum: 1, description: "Optional maximum invocation budget required on each child grant." },
+  },
+  required: ["max_depth"],
+  additionalProperties: false,
+} as const;
+
 export const WARRANT_TOOLS = [
   {
     name: "synthi_warrant_issue",
     description: "Issue a capability warrant: an expiring, invocation-capped lease letting one agent use specific tools under argument constraints.",
-    inputSchema: {"type":"object","properties":{"subject":{"type":"string","description":"Agent or user the warrant is for."},"grants":{"type":"array","items":{"type":"object","properties":{"tool":{"type":"string"},"arg_constraints":{"type":"object","additionalProperties":{"type":"string"}},"max_invocations":{"type":"number"}},"required":["tool"]}},"ttl_ms":{"type":"number"},"seal":{"type":"boolean","description":"Seal the warrant: every use must present the one-time bearer secret in _meta.warrant_bearer."}},"required":["subject","grants","ttl_ms"]},
+    inputSchema: {"type":"object","properties":{"subject":{"type":"string","description":"Agent or user the warrant is for."},"grants":{"type":"array","items":{"type":"object","properties":{"tool":{"type":"string"},"arg_constraints":{"type":"object","additionalProperties":{"type":"string"}},"max_invocations":{"type":"number"}},"required":["tool"]}},"ttl_ms":{"type":"number"},"seal":{"type":"boolean","description":"Seal the warrant: every use must present the one-time bearer secret in _meta.warrant_bearer."},"delegation":DELEGATION_POLICY_SCHEMA},"required":["subject","grants","ttl_ms"]},
   },
   {
     name: "synthi_warrant_attenuate",
-    description: "Create a strictly narrower child warrant from an existing one so work can be delegated with less authority than the holder has.",
-    inputSchema: {"type":"object","properties":{"parent_warrant_id":{"type":"string"},"subject":{"type":"string"},"grants":{"type":"array","items":{"type":"object","properties":{"tool":{"type":"string"},"arg_constraints":{"type":"object","additionalProperties":{"type":"string"}},"max_invocations":{"type":"number"}},"required":["tool"]}},"ttl_ms":{"type":"number"},"seal":{"type":"boolean","description":"Seal the warrant: every use must present the one-time bearer secret in _meta.warrant_bearer."}},"required":["parent_warrant_id","subject","grants"]},
+    description: "Create a strictly narrower child warrant. An administrator may attenuate any active parent; a sealed holder may do so only when its parent explicitly carries a delegation policy and it presents bearer.",
+    inputSchema: {"type":"object","properties":{"parent_warrant_id":{"type":"string"},"subject":{"type":"string"},"grants":{"type":"array","items":{"type":"object","properties":{"tool":{"type":"string"},"arg_constraints":{"type":"object","additionalProperties":{"type":"string"}},"max_invocations":{"type":"number"}},"required":["tool"]}},"ttl_ms":{"type":"number"},"seal":{"type":"boolean","description":"Seal the warrant: every use must present the one-time bearer secret in _meta.warrant_bearer."},"bearer":{"type":"string","description":"Required for holder-driven delegation; proves possession of a sealed parent warrant that permits delegation."}},"required":["parent_warrant_id","subject","grants"]},
   },
   {
     name: "synthi_warrant_check",

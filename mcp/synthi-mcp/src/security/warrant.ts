@@ -25,6 +25,23 @@ export interface ToolGrant {
   max_invocations?: number;
 }
 
+/**
+ * An opt-in, generic policy that lets a sealed warrant holder attenuate its
+ * own authority. It deliberately names no agent framework or principal type:
+ * a deployment decides who receives the child warrant through `subject`.
+ *
+ * `max_depth` counts child hops below the warrant that carries this policy.
+ * The policy is copied unchanged to every child, so no descendant can widen
+ * its delegation envelope.
+ */
+export interface DelegationPolicy {
+  max_depth: number;
+  /** Optional upper bound for each child lease, measured from attenuation. */
+  max_child_ttl_ms?: number;
+  /** Optional requirement that every child grant declares a bounded budget. */
+  max_child_invocations?: number;
+}
+
 export interface Warrant {
   warrant_id: string;
   subject: string;
@@ -38,6 +55,10 @@ export interface Warrant {
   status: "active" | "revoked";
   /** True when calls must prove possession with the bearer secret; never the secret itself */
   sealed?: boolean;
+  /** Explicit holder-delegation policy, set only at root issuance. */
+  delegation?: DelegationPolicy;
+  /** Child-hop count beneath the warrant that set `delegation`. */
+  delegation_depth?: number;
 }
 
 export type WarrantDecision =
@@ -163,6 +184,39 @@ function cloneGrants(grants: readonly ToolGrant[]): ToolGrant[] {
   }));
 }
 
+function cloneDelegation(policy: DelegationPolicy | undefined): DelegationPolicy | undefined {
+  return policy === undefined ? undefined : { ...policy };
+}
+
+function cloneWarrant(warrant: Warrant): Warrant {
+  return {
+    ...warrant,
+    grants: cloneGrants(warrant.grants),
+    ...(warrant.delegation === undefined ? {} : { delegation: cloneDelegation(warrant.delegation) }),
+  };
+}
+
+function validateDelegationPolicy(
+  policy: DelegationPolicy | undefined,
+  sealed: boolean | undefined,
+): DelegationPolicy | undefined {
+  if (policy === undefined) return undefined;
+  if (sealed !== true) {
+    throw new Error("A delegation policy requires seal:true so its holder can prove possession.");
+  }
+  if (!Number.isSafeInteger(policy.max_depth) || policy.max_depth < 1 || policy.max_depth >= MAX_CHAIN_DEPTH) {
+    throw new Error(`Delegation max_depth must be an integer from 1 through ${MAX_CHAIN_DEPTH - 1}.`);
+  }
+  if (policy.max_child_ttl_ms !== undefined) validateTtl(policy.max_child_ttl_ms);
+  if (
+    policy.max_child_invocations !== undefined
+    && (!Number.isSafeInteger(policy.max_child_invocations) || policy.max_child_invocations < 1)
+  ) {
+    throw new Error("Delegation max_child_invocations must be a positive integer.");
+  }
+  return cloneDelegation(policy);
+}
+
 function initialRemaining(grants: readonly ToolGrant[]): Map<string, number> {
   const remaining = new Map<string, number>();
   for (const grant of grants) {
@@ -240,9 +294,11 @@ export class WarrantRegistry {
     now: number;
     ttl_ms: number;
     seal?: boolean;
+    delegation?: DelegationPolicy;
   }): IssuedWarrant {
     validateSubjectAndGrants(input.subject, input.grants);
     validateTtl(input.ttl_ms);
+    const delegation = validateDelegationPolicy(input.delegation, input.seal);
 
     const warrantId = `wr_${randomUUID()}`;
     const bearer = input.seal === true ? `wb_${randomUUID().replaceAll("-", "")}` : undefined;
@@ -255,6 +311,7 @@ export class WarrantRegistry {
       root_warrant_id: warrantId,
       status: "active",
       ...(bearer === undefined ? {} : { sealed: true }),
+      ...(delegation === undefined ? {} : { delegation, delegation_depth: 0 }),
     };
     this.records.set(warrantId, {
       warrant,
@@ -262,7 +319,36 @@ export class WarrantRegistry {
       ...(bearer === undefined ? {} : { bearer_hash: sha256Hex(bearer) }),
     });
     this.emit({ k: "issue", record: this.snapshotRecord(warrantId)! });
-    return { ...warrant, ...(bearer === undefined ? {} : { bearer }) };
+    return { ...cloneWarrant(warrant), ...(bearer === undefined ? {} : { bearer }) };
+  }
+
+  /**
+   * Authorize a sealed holder to create one narrower child. This checks the
+   * lifecycle and bearer before policy limits, and never consumes a tool
+   * budget. It is intentionally generic: no runtime or agent type appears in
+   * the capability itself.
+   */
+  canDelegate(input: { warrant_id: string; bearer?: string; now: number }): WarrantDecision {
+    const record = this.records.get(input.warrant_id);
+    if (record === undefined) return deny("no_such_warrant", "No warrant exists with this identifier.");
+    if (record.warrant.delegation === undefined) {
+      return deny("delegation_not_permitted", "This warrant was not issued with holder-delegation permission.");
+    }
+    if (record.bearer_hash === undefined) {
+      return deny("delegation_not_permitted", "Only sealed warrants may delegate by holder possession.");
+    }
+    const lifecycle = this.check({
+      warrant_id: input.warrant_id,
+      tool: "__warrant_delegation_probe__",
+      bearer: input.bearer,
+      now: input.now,
+    });
+    if (!lifecycle.allowed && lifecycle.reason_code !== "tool_not_covered") return lifecycle;
+    const usedDepth = record.warrant.delegation_depth ?? 0;
+    if (usedDepth >= record.warrant.delegation.max_depth) {
+      return deny("delegation_depth_exhausted", "This warrant reached its holder-delegation depth limit.");
+    }
+    return { allowed: true, warrant_id: input.warrant_id };
   }
 
   /**
@@ -282,6 +368,8 @@ export class WarrantRegistry {
     now: number;
     ttl_ms?: number;
     seal?: boolean;
+    /** Present only for holder-driven delegation; administrators use the existing management path. */
+    bearer?: string;
   }): IssuedWarrant {
     const parent = this.records.get(input.parent_warrant_id);
     if (parent === undefined) {
@@ -293,6 +381,14 @@ export class WarrantRegistry {
     if (input.now >= parent.warrant.expires_at_ms) {
       throw new Error(`Cannot attenuate: warrant '${input.parent_warrant_id}' has expired.`);
     }
+    if (input.bearer !== undefined) {
+      const holder = this.canDelegate({
+        warrant_id: input.parent_warrant_id,
+        bearer: input.bearer,
+        now: input.now,
+      });
+      if (!holder.allowed) throw new Error(`Cannot attenuate: ${holder.human_reason}`);
+    }
 
     validateSubjectAndGrants(input.subject, input.grants);
     if (input.ttl_ms !== undefined) validateTtl(input.ttl_ms);
@@ -301,6 +397,12 @@ export class WarrantRegistry {
       throw new Error(
         `Cannot attenuate: delegation chain would exceed the maximum depth of ${MAX_CHAIN_DEPTH}.`,
       );
+    }
+
+    const delegation = parent.warrant.delegation;
+    const nextDelegationDepth = (parent.warrant.delegation_depth ?? 0) + 1;
+    if (delegation !== undefined && nextDelegationDepth > delegation.max_depth) {
+      throw new Error("Cannot attenuate: this warrant reached its delegation policy depth limit.");
     }
 
     for (const grant of input.grants) {
@@ -337,9 +439,19 @@ export class WarrantRegistry {
           );
         }
       }
+      if (delegation?.max_child_invocations !== undefined) {
+        if (grant.max_invocations === undefined || grant.max_invocations > delegation.max_child_invocations) {
+          throw new Error(
+            `Cannot attenuate: delegation policy requires '${grant.tool}' to declare at most ${delegation.max_child_invocations} invocations.`,
+          );
+        }
+      }
     }
 
-    const ttl = input.ttl_ms === undefined ? parent.warrant.expires_at_ms - input.now : input.ttl_ms;
+    const requestedTtl = input.ttl_ms === undefined ? parent.warrant.expires_at_ms - input.now : input.ttl_ms;
+    const ttl = delegation?.max_child_ttl_ms === undefined
+      ? requestedTtl
+      : Math.min(requestedTtl, delegation.max_child_ttl_ms);
     const sealed = parent.bearer_hash !== undefined || input.seal === true;
     const bearer = sealed ? `wb_${randomUUID().replaceAll("-", "")}` : undefined;
     const warrant: Warrant = {
@@ -352,6 +464,7 @@ export class WarrantRegistry {
       root_warrant_id: parent.warrant.root_warrant_id,
       status: "active",
       ...(bearer === undefined ? {} : { sealed: true }),
+      ...(delegation === undefined ? {} : { delegation: cloneDelegation(delegation), delegation_depth: nextDelegationDepth }),
     };
     this.records.set(warrant.warrant_id, {
       warrant,
@@ -359,7 +472,7 @@ export class WarrantRegistry {
       ...(bearer === undefined ? {} : { bearer_hash: sha256Hex(bearer) }),
     });
     this.emit({ k: "attenuate", record: this.snapshotRecord(warrant.warrant_id)! });
-    return { ...warrant, ...(bearer === undefined ? {} : { bearer }) };
+    return { ...cloneWarrant(warrant), ...(bearer === undefined ? {} : { bearer }) };
   }
 
   /**
@@ -496,7 +609,7 @@ export class WarrantRegistry {
   /** Direct O(1) snapshot lookup by id (cloned; safe to hand to callers). */
   get(warrantId: string): Warrant | undefined {
     const record = this.records.get(warrantId);
-    return record === undefined ? undefined : { ...record.warrant, grants: record.warrant.grants.map((grant) => ({ ...grant })) };
+    return record === undefined ? undefined : cloneWarrant(record.warrant);
   }
 
   /** Revoke the warrant and every descendant. Returns how many were revoked. */
@@ -527,7 +640,7 @@ export class WarrantRegistry {
 
   /** Full audit view (cloned snapshots, safe to hand around). */
   listWarrants(): readonly Warrant[] {
-    return Array.from(this.records.values(), (record) => ({ ...record.warrant }));
+    return Array.from(this.records.values(), (record) => cloneWarrant(record.warrant));
   }
 
   /**
@@ -611,7 +724,7 @@ export class WarrantRegistry {
       expires_at_ms: record.warrant.expires_at_ms,
       remaining: this.remainingSnapshot(input.warrant_id),
     });
-    return { ...record.warrant, grants: record.warrant.grants.map((grant) => ({ ...grant })) };
+    return cloneWarrant(record.warrant);
   }
 
   /**
@@ -620,7 +733,7 @@ export class WarrantRegistry {
    */
   restoreRecord(input: WarrantRecordSnapshot): void {
     this.records.set(input.warrant.warrant_id, {
-      warrant: { ...input.warrant, grants: input.warrant.grants.map((grant) => ({ ...grant })) },
+      warrant: cloneWarrant(input.warrant),
       remaining: new Map(Object.entries(input.remaining)),
       ...(input.bearer_hash === undefined ? {} : { bearer_hash: input.bearer_hash }),
     });
@@ -679,7 +792,7 @@ export class WarrantRegistry {
     const record = this.records.get(warrantId);
     if (record === undefined) return undefined;
     return {
-      warrant: { ...record.warrant, grants: record.warrant.grants.map((grant) => ({ ...grant })) },
+      warrant: cloneWarrant(record.warrant),
       remaining: this.remainingSnapshot(warrantId),
       ...(record.bearer_hash === undefined ? {} : { bearer_hash: record.bearer_hash }),
     };
