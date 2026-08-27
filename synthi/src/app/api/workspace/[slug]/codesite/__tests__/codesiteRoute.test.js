@@ -15,6 +15,7 @@ const {
     abortTransaction: vi.fn(),
     acknowledgeInboxItem: vi.fn(),
     attachAgentSession: vi.fn(),
+    askAgentQuestion: vi.fn(),
     commitTransaction: vi.fn(),
     createAgentKnowledgeItem: vi.fn(),
     listProjects: vi.fn(),
@@ -28,6 +29,7 @@ const {
     getCodeSiteMetrics: vi.fn(),
     getAgentInbox: vi.fn(),
     getAgentSharedKnowledge: vi.fn(),
+    findAgentExperts: vi.fn(),
     recordPolicyDecision: vi.fn(),
     recordTransactionWrite: vi.fn(),
     getLineProvenance: vi.fn(),
@@ -73,6 +75,7 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
     'abortTransaction',
     'acknowledgeInboxItem',
     'attachAgentSession',
+    'askAgentQuestion',
     'collisionPredict',
     'commitTransaction',
     'completeInspectionRun',
@@ -92,6 +95,7 @@ vi.mock('@/lib/codesite/controlPlane', async () => {
     'getAgentInbox',
     'getAgentManifest',
     'getAgentSharedKnowledge',
+    'findAgentExperts',
     'getCodeSiteMetrics',
     'getControlState',
     'getEvents',
@@ -431,6 +435,67 @@ describe('CodeSite catch-all route', () => {
     expect(response.status).toBe(200);
     expect(controlPlane.getRelevantAgentContext).toHaveBeenCalledWith('acme', 'agent-1', 'csa_agent_scoped_token');
     expect(resolveActor).not.toHaveBeenCalled();
+  });
+
+  it('routes expert discovery through the scoped agent credential and preserves repeated references', async () => {
+    const result = {
+      contextVersion: 'synthi.codesite.expertise.v1',
+      projectId: 'project-1',
+      experts: [{ agentSessionId: 'agent-2', score: 3.75 }],
+    };
+    controlPlane.findAgentExperts.mockResolvedValue(result);
+
+    const response = await GET(new Request(
+      'http://test/api/workspace/acme/codesite/agent-sessions/agent-1/experts?paths=src%2Fa.ts&paths=src%2Fb.ts&symbols=Turn&limit=7',
+      { headers: { authorization: 'Bearer csa_agent_scoped_token' } },
+    ), params(['agent-sessions', 'agent-1', 'experts']));
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual(result);
+    expect(controlPlane.findAgentExperts).toHaveBeenCalledWith(
+      'acme',
+      'agent-1',
+      'csa_agent_scoped_token',
+      { paths: ['src/a.ts', 'src/b.ts'], symbols: 'Turn', limit: '7' },
+    );
+    expect(resolveActor).not.toHaveBeenCalled();
+    expect(canReadScope).not.toHaveBeenCalled();
+  });
+
+  it('routes expert questions through the scoped agent credential and returns created status', async () => {
+    const body = {
+      title: 'Which owner handles the turn contract?',
+      summary: 'Need the current owner before changing the consumer.',
+      references: { paths: ['src/contracts/turn.ts'] },
+      urgency: 'normal',
+    };
+    const result = {
+      question: { id: 'question-1', kind: 'agent_question', status: 'open' },
+      routedTo: [{ agentSessionId: 'agent-2' }],
+      duplicate: false,
+    };
+    controlPlane.askAgentQuestion.mockResolvedValue(result);
+
+    const response = await POST(new Request(
+      'http://test/api/workspace/acme/codesite/agent-sessions/agent-1/questions',
+      {
+        method: 'POST',
+        headers: { authorization: 'Bearer csa_agent_scoped_token' },
+        body: JSON.stringify(body),
+      },
+    ), params(['agent-sessions', 'agent-1', 'questions']));
+
+    expect(response.status).toBe(201);
+    expect(await json(response)).toEqual(result);
+    expect(controlPlane.askAgentQuestion).toHaveBeenCalledWith(
+      'acme',
+      'agent-1',
+      'csa_agent_scoped_token',
+      body,
+    );
+    expect(resolveActor).not.toHaveBeenCalled();
+    expect(canWriteScope).not.toHaveBeenCalled();
+    expect(checkLimit).not.toHaveBeenCalled();
   });
 
   it('reads shared knowledge with only the environment-bound agent credential', async () => {
