@@ -4,6 +4,7 @@ import {
   safeKnowledgeProjection,
   validateKnowledgeItem,
 } from './knowledgePolicy';
+import { EXPERTISE_POLICY } from './expertisePolicy';
 
 const REFERENCE_TYPES = Object.freeze({
   paths: 'path',
@@ -55,8 +56,8 @@ function kindPayload(item) {
   };
 }
 
-export function buildKnowledgeRecord(input, authority = {}) {
-  const item = validateKnowledgeItem(input);
+export function buildKnowledgeRecord(input, authority = {}, policy = EXPERTISE_POLICY) {
+  const item = validateKnowledgeItem(input, policy);
   const sourceAgentSessionId = item.source.agentSessionId || authority.agentSessionId || null;
   if (authority.projectId && item.projectId !== authority.projectId) {
     throw Object.assign(new Error('knowledge_project_mismatch'), { code: 'knowledge_project_mismatch', status: 403 });
@@ -92,15 +93,15 @@ export function buildKnowledgeRecord(input, authority = {}) {
       ownerAgentSessionId: item.ownerAgentSessionId || null,
       sourceKnowledgeItemId: item.sourceKnowledgeId || null,
       targetTransactionId: item.references.transactionIds[0] || null,
-      dedupeKey: knowledgeDedupeKey(item),
+      dedupeKey: knowledgeDedupeKey(item, policy),
       evidenceRefsJson: stableJson(item.evidenceRefs),
       expiresAt: dateOrNull(item.expiresAt),
     },
   };
 }
 
-export function buildKnowledgeReferenceRecords(itemInput, knowledgeId) {
-  const item = validateKnowledgeItem(itemInput);
+export function buildKnowledgeReferenceRecords(itemInput, knowledgeId, policy = EXPERTISE_POLICY) {
+  const item = validateKnowledgeItem(itemInput, policy);
   const records = [];
   for (const [key, refType] of Object.entries(REFERENCE_TYPES)) {
     for (const refKey of item.references[key]) {
@@ -127,7 +128,7 @@ function referencesFromRows(rows = []) {
   return references;
 }
 
-export function projectKnowledgeRecord(row) {
+export function projectKnowledgeRecord(row, policy = EXPERTISE_POLICY) {
   if (!row?.id || !row?.projectId) return null;
   const payload = parseJson(row.payloadJson, {});
   const scope = parseJson(row.scopeJson, {});
@@ -169,6 +170,5 @@ export function projectKnowledgeRecord(row) {
     toAgentSessionId: payload.toAgentSessionId,
     unresolvedRisks: payload.unresolvedRisks,
     requiredActions: payload.requiredActions,
-  });
+  }, policy);
 }
-

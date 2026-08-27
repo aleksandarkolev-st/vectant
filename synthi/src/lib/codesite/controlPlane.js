@@ -68,9 +68,8 @@ import {
   normalizeExpertiseQuery,
   rankExperts,
   suggestExpertsForReferences,
-  EXPERTISE_CONTEXT_VERSION,
 } from './agentExpertise';
-import { EXPERTISE_POLICY } from './expertisePolicy';
+import { loadExpertisePolicy } from './expertisePolicyRuntime';
 import {
   getCachedExpertiseRoutingState,
   invalidateExpertiseRoutingState,
@@ -88,6 +87,9 @@ import {
   normalizeRuntimeObservedObservation,
   normalizeSourceChangedObservation,
 } from './projectObservation';
+
+const ACTIVE_EXPERTISE_POLICY = loadExpertisePolicy();
+const projectActiveKnowledgeRecord = (row) => projectKnowledgeRecord(row, ACTIVE_EXPERTISE_POLICY);
 
 const EVENT_ORDER_BY = [{ logicalTime: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }];
 const ACTIVE_FLIGHT_STATUSES = ['filed', 'preflight', 'cleared', 'taxiing', 'airborne', 'holding', 'rerouted', 'landing_requested'];
@@ -2171,7 +2173,7 @@ export async function getRelevantAgentContext(workspaceSlug, sessionId, agentAcc
     workstreams,
     transactions,
     inbox,
-  ).map(projectKnowledgeRecord).filter(Boolean);
+  ).map(projectActiveKnowledgeRecord).filter(Boolean);
 
   const projectControl = boundedAgentContextValue(parseJson(session.project.controlPlanJson, {}));
   const zonePolicy = boundedAgentContextValue(parseJson(session.project.zonePolicyJson, {}));
@@ -2319,7 +2321,7 @@ function validateKnowledgeQuery(input = {}) {
     contracts: normalizeKnowledgeQueryReferences(input, ['contract', 'contracts'], 'contract'),
     workstreamIds: normalizeKnowledgeQueryReferences(input, ['workstream_id', 'workstreamId', 'workstreamIds'], 'workstream_id'),
   };
-  const pagePolicy = EXPERTISE_POLICY.knowledge;
+  const pagePolicy = ACTIVE_EXPERTISE_POLICY.knowledge;
   const limitValue = Number(input.limit || pagePolicy.pageDefaultLimit);
   const limit = Number.isInteger(limitValue)
     ? Math.min(Math.max(limitValue, 1), pagePolicy.pageMaxLimit)
@@ -2334,10 +2336,10 @@ function normalizeKnowledgeQueryReferences(input, keys, field) {
   const key = keys.find((candidate) => input[candidate] !== undefined);
   if (!key) return [];
   const values = asArray(input[key]);
-  if (values.length > EXPERTISE_POLICY.limits.maxReferencesPerType) {
+  if (values.length > ACTIVE_EXPERTISE_POLICY.limits.maxReferencesPerType) {
     throw badRequest('knowledge_reference_filter_limit_exceeded', {
       field,
-      limit: EXPERTISE_POLICY.limits.maxReferencesPerType,
+      limit: ACTIVE_EXPERTISE_POLICY.limits.maxReferencesPerType,
     });
   }
   const normalized = [];
@@ -2345,7 +2347,7 @@ function normalizeKnowledgeQueryReferences(input, keys, field) {
     if (typeof value !== 'string') throw badRequest('knowledge_reference_filter_invalid', { field });
     const trimmed = value.trim();
     if (!trimmed
-      || trimmed.length > EXPERTISE_POLICY.knowledge.filterMaxValueLength
+      || trimmed.length > ACTIVE_EXPERTISE_POLICY.knowledge.filterMaxValueLength
       || trimmed.includes('\u0000')) {
       throw badRequest('knowledge_reference_filter_invalid', { field });
     }
@@ -2388,7 +2390,7 @@ function encodeProjectKnowledgeCursor(row) {
   const updatedAt = row?.updatedAt instanceof Date ? row.updatedAt : new Date(row?.updatedAt);
   if (!row?.id || !Number.isFinite(updatedAt.getTime())) return null;
   return Buffer.from(JSON.stringify({
-    v: EXPERTISE_POLICY.knowledge.cursorVersion,
+    v: ACTIVE_EXPERTISE_POLICY.knowledge.cursorVersion,
     updatedAt: updatedAt.toISOString(),
     id: row.id,
   })).toString('base64url');
@@ -2397,7 +2399,7 @@ function encodeProjectKnowledgeCursor(row) {
 function decodeProjectKnowledgeCursor(cursor) {
   try {
     const parsed = JSON.parse(Buffer.from(String(cursor), 'base64url').toString('utf8'));
-    if (parsed?.v !== EXPERTISE_POLICY.knowledge.cursorVersion
+    if (parsed?.v !== ACTIVE_EXPERTISE_POLICY.knowledge.cursorVersion
       || typeof parsed.updatedAt !== 'string'
       || typeof parsed.id !== 'string'
       || !parsed.id.trim()) {
@@ -2484,7 +2486,7 @@ function visibleKnowledgeRowsForSession(rows, session, executionPlans, transacti
     if (visibility === 'restricted' && !owned && !inboxKnowledgeIds.has(row.id)) return false;
     if (owned || inboxKnowledgeIds.has(row.id) || admittedViaWrapper.has(row.id)) return true;
     if (row.kind === 'shared_skill' && row.status === 'published') return true;
-    const projected = projectKnowledgeRecord(row);
+    const projected = projectActiveKnowledgeRecord(row);
     if (!projected) return false;
     return buildKnowledgeDeliveryPlan({
       item: {
@@ -2494,6 +2496,7 @@ function visibleKnowledgeRowsForSession(rows, session, executionPlans, transacti
       sessions: [session],
       executionPlans,
       transactions,
+      policy: ACTIVE_EXPERTISE_POLICY,
     }).length > 0;
   });
 }
@@ -2562,7 +2565,7 @@ async function loadRelevantKnowledgeForSession(session, queryInput = {}, state =
 
   return visible
     .slice(0, query.limit)
-    .map(projectKnowledgeRecord)
+    .map(projectActiveKnowledgeRecord)
     .filter(Boolean);
 }
 
@@ -2591,7 +2594,7 @@ async function createKnowledgeWithClient(db, record, knowledgeId, eventInput) {
   const created = await db.codeSiteKnowledgeItem.create({
     data: { id: knowledgeId, ...record.data },
   });
-  const referenceRows = buildKnowledgeReferenceRecords(record.normalized, knowledgeId);
+  const referenceRows = buildKnowledgeReferenceRecords(record.normalized, knowledgeId, ACTIVE_EXPERTISE_POLICY);
   if (referenceRows.length) await db.codeSiteKnowledgeReference.createMany({ data: referenceRows });
   const event = await publishKnowledgeCoordinationEventWithClient(
     db,
@@ -2736,7 +2739,7 @@ async function persistKnowledgeAndImpacts(authority, record, deliveryPlan) {
         recipientAgentSessionIds: [target.agentSessionId],
         requiresResponse: true,
       };
-      const impactRecord = buildKnowledgeRecord(impactInput, { projectId });
+      const impactRecord = buildKnowledgeRecord(impactInput, { projectId }, ACTIVE_EXPERTISE_POLICY);
       impactRecord.data.dedupeKey = target.dedupeKey;
       impactRecord.data.targetTransactionId = target.transactionIds[0] || null;
       const impact = await createKnowledgeWithClient(db, impactRecord, impactId, {
@@ -2774,10 +2777,10 @@ async function persistKnowledgeAndImpacts(authority, record, deliveryPlan) {
           }),
         },
       });
-      impacts.push({ knowledge: projectKnowledgeRecord(impact.row), inboxItem: inboxProjection(inboxItem) });
+      impacts.push({ knowledge: projectActiveKnowledgeRecord(impact.row), inboxItem: inboxProjection(inboxItem) });
     }
     return {
-      knowledge: projectKnowledgeRecord(persistedSource.row),
+      knowledge: projectActiveKnowledgeRecord(persistedSource.row),
       event: eventProjection(persistedSource.event),
       impacts,
     };
@@ -2808,7 +2811,7 @@ export async function createAgentKnowledgeItem(workspaceSlug, sessionId, agentAc
     projectId: authority.session.projectId,
     agentSessionId: authority.session.id,
     userId: authority.session.ownerUserId,
-  });
+  }, ACTIVE_EXPERTISE_POLICY);
   const [sessions, executionPlans, transactions] = await Promise.all([
     prisma.codeSiteAgentSession.findMany({
       where: { projectId: authority.session.projectId, endedAt: null, status: { in: ['attached', 'detached'] } },
@@ -2826,12 +2829,13 @@ export async function createAgentKnowledgeItem(workspaceSlug, sessionId, agentAc
     where: { projectId: authority.session.projectId, dedupeKey: record.data.dedupeKey },
     include: { references: true },
   });
-  if (existing) return { knowledge: projectKnowledgeRecord(existing), event: null, impacts: [], duplicate: true };
+  if (existing) return { knowledge: projectActiveKnowledgeRecord(existing), event: null, impacts: [], duplicate: true };
   const deliveryPlan = buildKnowledgeDeliveryPlan({
     item: { ...record.normalized, id: 'pending', createdByAgentSessionId: authority.session.id },
     sessions,
     executionPlans,
     transactions,
+    policy: ACTIVE_EXPERTISE_POLICY,
   });
   const result = await persistKnowledgeAndImpacts(authority, record, deliveryPlan);
   await syncArtifactsForProject(authority.session.projectId, { reason: 'knowledge_recorded', eventId: result.event?.id });
@@ -2856,6 +2860,7 @@ function runtimeObservationInboxTargets(projectId, observation, { sessions, exec
     sessions,
     executionPlans,
     transactions,
+    policy: ACTIVE_EXPERTISE_POLICY,
   });
 }
 
@@ -2947,6 +2952,7 @@ async function deliverCoordinationImpacts(projectId, { eventType, normalized, ac
         sessions,
         executionPlans,
         transactions,
+        policy: ACTIVE_EXPERTISE_POLICY,
       }).slice(0, MAX_ROUTE_TARGETS);
       for (const target of targets) {
         const inboxItem = await prisma.codeSiteAgentInboxItem.create({
@@ -3339,7 +3345,7 @@ export async function getAgentSharedKnowledge(workspaceSlug, sessionId, agentAcc
 async function loadFreshExpertiseRoutingState(projectId) {
   const [sessions, executionPlans, transactions, knowledgeItems, feedbackEvents] = await Promise.all([
     prisma.codeSiteAgentSession.findMany({
-      where: { projectId, endedAt: null, status: { in: EXPERTISE_POLICY.statuses.eligibleSession } },
+      where: { projectId, endedAt: null, status: { in: ACTIVE_EXPERTISE_POLICY.statuses.eligibleSession } },
       select: {
         id: true,
         displayCallsign: true,
@@ -3350,12 +3356,12 @@ async function loadFreshExpertiseRoutingState(projectId) {
       },
     }),
     prisma.codeSiteExecutionPlan.findMany({
-      where: { projectId, status: { in: EXPERTISE_POLICY.statuses.activePlan } },
+      where: { projectId, status: { in: ACTIVE_EXPERTISE_POLICY.statuses.activePlan } },
       select: { id: true, agentSessionId: true, status: true, routeJson: true, filedAt: true },
       orderBy: { filedAt: 'desc' },
     }),
     prisma.codeSiteMutationTransaction.findMany({
-      where: { projectId, status: { in: EXPERTISE_POLICY.statuses.activeTransaction } },
+      where: { projectId, status: { in: ACTIVE_EXPERTISE_POLICY.statuses.activeTransaction } },
       select: {
         id: true,
         agentSessionId: true,
@@ -3372,7 +3378,7 @@ async function loadFreshExpertiseRoutingState(projectId) {
     prisma.codeSiteKnowledgeItem.findMany({
       where: {
         projectId,
-        kind: { in: EXPERTISE_POLICY.statuses.signalKnowledgeKinds },
+        kind: { in: ACTIVE_EXPERTISE_POLICY.statuses.signalKnowledgeKinds },
         OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
       },
       select: {
@@ -3409,13 +3415,13 @@ async function loadExpertiseRoutingState(projectId, options = {}) {
       const state = await loadFreshExpertiseRoutingState(projectId);
       return {
         ...state,
-        index: buildExpertiseIndex({ ...state, policy: EXPERTISE_POLICY }),
+        index: buildExpertiseIndex({ ...state, policy: ACTIVE_EXPERTISE_POLICY }),
       };
     },
     {
       forceRefresh: options.forceRefresh === true,
-      ttlMs: EXPERTISE_POLICY.cache.ttlMs,
-      maxEntries: EXPERTISE_POLICY.cache.maxEntries,
+      ttlMs: ACTIVE_EXPERTISE_POLICY.cache.ttlMs,
+      maxEntries: ACTIVE_EXPERTISE_POLICY.cache.maxEntries,
     },
   );
 }
@@ -3424,18 +3430,18 @@ export async function findAgentExperts(workspaceSlug, sessionId, agentAccessToke
   const { session } = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
     requiredCapability: 'codesite.context.read',
   });
-  const normalized = normalizeExpertiseQuery(query, EXPERTISE_POLICY);
+  const normalized = normalizeExpertiseQuery(query, ACTIVE_EXPERTISE_POLICY);
   const routingState = await loadExpertiseRoutingState(session.projectId);
   const index = routingState.index;
   const experts = rankExperts(index, normalized, {
     sessions: routingState.sessions,
     excludeSessionId: session.id,
     limit: normalized.limit,
-    policy: EXPERTISE_POLICY,
+    policy: ACTIVE_EXPERTISE_POLICY,
   });
   return {
-    contextVersion: EXPERTISE_CONTEXT_VERSION,
-    policyVersion: EXPERTISE_POLICY.version,
+    contextVersion: ACTIVE_EXPERTISE_POLICY.contextVersion,
+    policyVersion: ACTIVE_EXPERTISE_POLICY.version,
     generatedAt: new Date().toISOString(),
     projectId: session.projectId,
     query: {
@@ -3449,17 +3455,17 @@ export async function findAgentExperts(workspaceSlug, sessionId, agentAccessToke
 
 export async function findProjectExperts(workspaceSlug, projectId, query = {}, actor = null) {
   const project = await requireProject(workspaceSlug, projectId, actor, 'read');
-  const normalized = normalizeExpertiseQuery(query, EXPERTISE_POLICY);
+  const normalized = normalizeExpertiseQuery(query, ACTIVE_EXPERTISE_POLICY);
   const routingState = await loadExpertiseRoutingState(project.id);
   const index = routingState.index;
   const experts = rankExperts(index, normalized, {
     sessions: routingState.sessions,
     limit: normalized.limit,
-    policy: EXPERTISE_POLICY,
+    policy: ACTIVE_EXPERTISE_POLICY,
   });
   return {
-    contextVersion: EXPERTISE_CONTEXT_VERSION,
-    policyVersion: EXPERTISE_POLICY.version,
+    contextVersion: ACTIVE_EXPERTISE_POLICY.contextVersion,
+    policyVersion: ACTIVE_EXPERTISE_POLICY.version,
     generatedAt: new Date().toISOString(),
     projectId: project.id,
     query: {
@@ -3504,8 +3510,8 @@ export async function askAgentQuestion(workspaceSlug, sessionId, agentAccessToke
       feedbackEvents: routingState.feedbackEvents,
       index: routingState.index,
       excludeSessionId: authority.session.id,
-      limit: EXPERTISE_POLICY.limits.suggestionLimit,
-      policy: EXPERTISE_POLICY,
+      limit: ACTIVE_EXPERTISE_POLICY.limits.suggestionLimit,
+      policy: ACTIVE_EXPERTISE_POLICY,
     },
   );
   // Caller-suggested experts are validated against the live project roster;
@@ -3518,7 +3524,7 @@ export async function askAgentQuestion(workspaceSlug, sessionId, agentAccessToke
   if (requestedSuggestions.length) {
     const unknown = requestedSuggestions.filter((id) => !knownSessionIds.has(id));
     if (unknown.length) throw badRequest('knowledge_reference_outside_project', { projectId: authority.session.projectId, missing: { agentSessionIds: unknown } });
-    finalSuggestions = requestedSuggestions.slice(0, EXPERTISE_POLICY.limits.maxSuggestedExperts);
+    finalSuggestions = requestedSuggestions.slice(0, ACTIVE_EXPERTISE_POLICY.limits.maxSuggestedExperts);
   } else {
     finalSuggestions = suggested.map((entry) => entry.agentSessionId);
     if (finalSuggestions.length) input.allowUnrouted = true;
@@ -3532,7 +3538,7 @@ export async function askAgentQuestion(workspaceSlug, sessionId, agentAccessToke
     projectId: authority.session.projectId,
     agentSessionId: authority.session.id,
     userId: authority.session.ownerUserId,
-  });
+  }, ACTIVE_EXPERTISE_POLICY);
 
   const existing = await prisma.codeSiteKnowledgeItem.findFirst({
     where: { projectId: authority.session.projectId, dedupeKey: record.data.dedupeKey },
@@ -3540,7 +3546,7 @@ export async function askAgentQuestion(workspaceSlug, sessionId, agentAccessToke
   });
   if (existing) {
     return {
-      question: projectKnowledgeRecord(existing),
+      question: projectActiveKnowledgeRecord(existing),
       event: null,
       routedTo: [],
       duplicate: true,
@@ -3560,6 +3566,7 @@ export async function askAgentQuestion(workspaceSlug, sessionId, agentAccessToke
     sessions: routingState.sessions,
     executionPlans: routingState.executionPlans,
     transactions: routingState.transactions,
+    policy: ACTIVE_EXPERTISE_POLICY,
   });
   const result = await persistKnowledgeAndImpacts(authority, record, deliveryPlan);
   await syncArtifactsForProject(authority.session.projectId, {
@@ -3605,7 +3612,7 @@ export async function listProjectKnowledgePage(workspaceSlug, projectId, query =
       const visibility = knowledgeVisibility(row);
       if (visibility === 'project') return true;
       return Boolean(userId && (row.createdByUserId === userId || row.ownerUserId === userId));
-    }).map(projectKnowledgeRecord).filter(Boolean));
+    }).map(projectActiveKnowledgeRecord).filter(Boolean));
 
     if (!hasMore) break;
     const nextCursor = descendingKeysetCursor(lastConsumedRow, 'updatedAt');
@@ -3720,7 +3727,7 @@ export async function answerProjectQuestion(
     const payload = parseJson(question.payloadJson, {});
     if (payload.answerText === response.answer) {
       return {
-        question: projectKnowledgeRecord(question),
+        question: projectActiveKnowledgeRecord(question),
         response,
         event: null,
         duplicate: true,
@@ -3799,7 +3806,7 @@ export async function answerProjectQuestion(
     eventId: updated.event.id,
   });
   return {
-    question: projectKnowledgeRecord({
+    question: projectActiveKnowledgeRecord({
       ...question,
       ...updated.nextQuestion,
       references: question.references,
@@ -3820,7 +3827,7 @@ async function persistQuestionFeedback({
   bypass = false,
   displayCallsign = null,
 }) {
-  const feedback = validateKnowledgeFeedback(body, EXPERTISE_POLICY);
+  const feedback = validateKnowledgeFeedback(body, ACTIVE_EXPERTISE_POLICY);
   const question = await prisma.codeSiteKnowledgeItem.findFirst({
     where: { id: knowledgeItemId, projectId, kind: 'agent_question' },
     include: { references: true },
@@ -3869,7 +3876,7 @@ async function persistQuestionFeedback({
       knowledgeItemId: question.id,
       ...feedback,
     }),
-    question: projectKnowledgeRecord(question),
+    question: projectActiveKnowledgeRecord(question),
     event: eventProjection(event),
     duplicate: false,
   };
@@ -3953,7 +3960,7 @@ export async function respondToAgentKnowledgeInbox(
     if (inboxItem.responseAction === response.action && stableJson(previous) === stableJson(response)) {
       return {
         inboxItem: inboxProjection(inboxItem),
-        knowledge: projectKnowledgeRecord(inboxItem.knowledgeItem),
+        knowledge: projectActiveKnowledgeRecord(inboxItem.knowledgeItem),
         response,
         duplicate: true,
       };
@@ -4096,7 +4103,7 @@ export async function respondToAgentKnowledgeInbox(
   });
   return {
     inboxItem: inboxProjection(updated.nextInbox),
-    knowledge: projectKnowledgeRecord({
+    knowledge: projectActiveKnowledgeRecord({
       ...inboxItem.knowledgeItem,
       ...updated.nextKnowledge,
       references: inboxItem.knowledgeItem.references,
@@ -5810,17 +5817,18 @@ async function publishAssumptionInvalidationKnowledge(projectId, {
     verification: 'verified',
     tags: ['assumption', 'invalidation'],
   };
-  const record = buildKnowledgeRecord(knowledgeInput, { projectId });
+  const record = buildKnowledgeRecord(knowledgeInput, { projectId }, ACTIVE_EXPERTISE_POLICY);
   const existing = await prisma.codeSiteKnowledgeItem.findFirst({
     where: { projectId, dedupeKey: record.data.dedupeKey },
     include: { references: true },
   });
-  if (existing) return { knowledge: projectKnowledgeRecord(existing), duplicate: true, impacts: [] };
+  if (existing) return { knowledge: projectActiveKnowledgeRecord(existing), duplicate: true, impacts: [] };
   const deliveryPlan = buildKnowledgeDeliveryPlan({
     item: { ...record.normalized, id: 'pending-assumption-invalidation' },
     sessions,
     executionPlans,
     transactions: dependentTransactions,
+    policy: ACTIVE_EXPERTISE_POLICY,
   });
   const result = await persistKnowledgeAndImpacts({ session: { projectId } }, record, deliveryPlan);
   await syncArtifactsForProject(projectId, {

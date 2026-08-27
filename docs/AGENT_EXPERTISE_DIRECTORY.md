@@ -69,6 +69,14 @@ agents and the signed-in project operator):
    versioned expertise policy for feedback choices, renders only safe API
    projections, and refreshes from server state after mutations.
 
+The checked-in policy is the browser-safe default. A deployment may select a
+different, explicitly versioned policy at server startup with
+`SYNTHI_CODESITE_EXPERTISE_POLICY_JSON` containing the policy JSON. The server
+validates the override through `resolveExpertisePolicy`; malformed or
+unversioned overrides fail closed, and request/agent data cannot change it.
+Expert ranking responses report the active policy version so cached scores and
+operator decisions remain explainable across deployments.
+
 ## API surface
 
 | Surface | Detail |

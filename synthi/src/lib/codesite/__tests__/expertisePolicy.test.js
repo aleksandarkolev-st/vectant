@@ -4,6 +4,10 @@ import {
   EXPERTISE_POLICY_VERSION,
   resolveExpertisePolicy,
 } from '../expertisePolicy';
+import {
+  EXPERTISE_POLICY_CONFIG_ENV,
+  loadExpertisePolicy,
+} from '../expertisePolicyRuntime';
 import { normalizeExpertiseQuery } from '../agentExpertise';
 
 describe('expertise policy configuration', () => {
@@ -46,5 +50,29 @@ describe('expertise policy configuration', () => {
       filterMaxValueLength: 1024,
     });
     expect(normalizeExpertiseQuery({ paths: ['src/a.ts'], limit: 99 }, policy).limit).toBe(6);
+  });
+
+  it('loads an explicitly versioned deployment policy without reading agent input', () => {
+    const policy = loadExpertisePolicy({
+      [EXPERTISE_POLICY_CONFIG_ENV]: JSON.stringify({
+        version: 'deployment.expertise-policy.v3',
+        scoring: { recencyHalfLifeMs: 86_400_000 },
+        limits: { maxLimit: 7 },
+      }),
+    });
+
+    expect(policy.version).toBe('deployment.expertise-policy.v3');
+    expect(policy.scoring.recencyHalfLifeMs).toBe(86_400_000);
+    expect(policy.limits.maxLimit).toBe(7);
+    expect(loadExpertisePolicy({})).toBe(EXPERTISE_POLICY);
+  });
+
+  it('fails closed when deployment policy JSON is missing or malformed', () => {
+    expect(() => loadExpertisePolicy({
+      [EXPERTISE_POLICY_CONFIG_ENV]: JSON.stringify({ limits: { maxLimit: 7 } }),
+    })).toThrow('codesite_expertise_policy_invalid');
+    expect(() => loadExpertisePolicy({
+      [EXPERTISE_POLICY_CONFIG_ENV]: '{not-json',
+    })).toThrow('codesite_expertise_policy_invalid');
   });
 });

@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { EXPERTISE_POLICY } from './expertisePolicy';
+import { EXPERTISE_POLICY, resolveExpertisePolicy } from './expertisePolicy';
 
 export const KNOWLEDGE_KINDS = Object.freeze([
   'discovery',
@@ -581,7 +581,8 @@ function normalizeHandoff(input, common) {
 
 const QUESTION_URGENCIES = new Set(['low', 'normal', 'high']);
 
-function normalizeAgentQuestion(input, common) {
+function normalizeAgentQuestion(input, common, policy = EXPERTISE_POLICY) {
+  const config = resolveExpertisePolicy(policy);
   const urgency = String(input.urgency || 'normal').trim().toLowerCase();
   if (!QUESTION_URGENCIES.has(urgency)) throw policyError('knowledge_question_urgency_invalid', { allowedUrgencies: [...QUESTION_URGENCIES] });
   const suggested = (input.suggestedExpertAgentSessionIds || input.suggested_expert_agent_session_ids) == null
@@ -589,7 +590,7 @@ function normalizeAgentQuestion(input, common) {
     : normalizedTextList(
       input.suggestedExpertAgentSessionIds || input.suggested_expert_agent_session_ids,
       'question_suggested_expert_agent_session_ids',
-      { limit: EXPERTISE_POLICY.limits.maxSuggestedExperts, maxLength: KNOWLEDGE_REFERENCE_LIMITS.idLength, allowEmpty: true },
+      { limit: config.limits.maxSuggestedExperts, maxLength: KNOWLEDGE_REFERENCE_LIMITS.idLength, allowEmpty: true },
     ).map((value) => normalizeId(value, 'question_suggested_expert_agent_session_id'));
   const allowUnrouted = input.allowUnrouted === true || input.allow_unrouted === true;
   if (!suggested.length && !input.skipSuggestionValidation && !allowUnrouted) {
@@ -612,16 +613,17 @@ function normalizeAgentQuestion(input, common) {
   };
 }
 
-export function validateKnowledgeItem(input) {
+export function validateKnowledgeItem(input, policy = EXPERTISE_POLICY) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw policyError('knowledge_item_invalid');
   assertNoPrivateMaterial(input);
+  const config = resolveExpertisePolicy(policy);
   const kind = normalizeKind(input.kind || input.type);
   const common = normalizeCommon(input, kind);
   if (kind === 'discovery') return normalizeDiscovery(input, common);
   if (kind === 'lead') return normalizeLead(input, common);
   if (kind === 'shared_skill') return normalizeSharedSkill(input, common);
   if (kind === 'impact_notice') return normalizeImpactNotice(input, common);
-  if (kind === 'agent_question') return normalizeAgentQuestion(input, common);
+  if (kind === 'agent_question') return normalizeAgentQuestion(input, common, config);
   return normalizeHandoff(input, common);
 }
 
@@ -638,7 +640,7 @@ export function isKnowledgeExpertiseEligible(item = {}) {
 }
 
 export function transitionKnowledgeItem(input, nextStatusInput, context = {}) {
-  const item = validateKnowledgeItem(input);
+  const item = validateKnowledgeItem(input, context.policy || EXPERTISE_POLICY);
   const nextStatus = normalizeStatus(item.kind, nextStatusInput);
   if (nextStatus === item.status) return item;
   const allowed = STATUS_TRANSITIONS[item.kind][item.status];
@@ -681,8 +683,8 @@ function safeSource(source) {
   };
 }
 
-export function safeKnowledgeProjection(input) {
-  const item = validateKnowledgeItem(input);
+export function safeKnowledgeProjection(input, policy = EXPERTISE_POLICY) {
+  const item = validateKnowledgeItem(input, policy);
   const base = {
     id: item.id,
     kind: item.kind,
@@ -745,8 +747,8 @@ function canonical(value) {
   return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
 }
 
-export function knowledgeDedupeKey(input) {
-  const item = safeKnowledgeProjection(input);
+export function knowledgeDedupeKey(input, policy = EXPERTISE_POLICY) {
+  const item = safeKnowledgeProjection(input, policy);
   const identity = item.kind === 'agent_question'
     ? {
       kind: item.kind,
