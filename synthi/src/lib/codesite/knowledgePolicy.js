@@ -40,6 +40,18 @@ const KNOWLEDGE_STATUSES = Object.freeze({
   agent_question: Object.freeze(['open', 'answered', 'stale', 'archived']),
 });
 
+// Only evidence that has reached a project-trusted state may influence
+// expertise. This is policy, not agent data: records that are still drafts,
+// rejected, stale, dismissed, or archived must not make an agent look more
+// knowledgeable than the control plane has established.
+export const EXPERTISE_ELIGIBLE_KNOWLEDGE_STATUSES = Object.freeze({
+  discovery: Object.freeze(['verified']),
+  lead: Object.freeze(['open', 'claimed', 'escalated', 'resolved']),
+  shared_skill: Object.freeze(['published']),
+  handoff: Object.freeze(['ready', 'acknowledged', 'reopened', 'completed']),
+  agent_question: Object.freeze(['answered']),
+});
+
 const DEFAULT_STATUS = Object.freeze({
   discovery: 'draft',
   lead: 'open',
@@ -618,6 +630,12 @@ export function allowedKnowledgeTransitions(kindInput, statusInput) {
   return [...STATUS_TRANSITIONS[kind][status]];
 }
 
+export function isKnowledgeExpertiseEligible(item = {}) {
+  const kind = String(item.kind || '').trim().toLowerCase();
+  const status = String(item.status || '').trim().toLowerCase();
+  return Boolean(EXPERTISE_ELIGIBLE_KNOWLEDGE_STATUSES[kind]?.includes(status));
+}
+
 export function transitionKnowledgeItem(input, nextStatusInput, context = {}) {
   const item = validateKnowledgeItem(input);
   const nextStatus = normalizeStatus(item.kind, nextStatusInput);
@@ -728,13 +746,19 @@ function canonical(value) {
 
 export function knowledgeDedupeKey(input) {
   const item = safeKnowledgeProjection(input);
-  const identity = {
-    kind: item.kind,
-    projectId: item.projectId,
-    title: item.title.toLowerCase(),
-    summary: item.summary,
-    references: item.references,
-  };
+  const identity = item.kind === 'agent_question'
+    ? {
+      kind: item.kind,
+      projectId: item.projectId,
+      references: item.references,
+    }
+    : {
+      kind: item.kind,
+      projectId: item.projectId,
+      title: item.title.toLowerCase(),
+      summary: item.summary,
+      references: item.references,
+    };
   if (item.kind === 'shared_skill') {
     identity.skillKey = item.skillKey;
     identity.commands = Object.fromEntries(item.recipe.commands.map((command, index) => [String(index), command]));

@@ -652,13 +652,18 @@ describe('agent_question knowledge kind', () => {
     );
   });
 
-  it('dedupes identical re-asks by asker and references', () => {
+  it('dedupes re-asks by asker and references even when wording changes', () => {
     const first = knowledgeDedupeKey(question());
     const second = knowledgeDedupeKey(question());
+    const reworded = knowledgeDedupeKey(question({
+      title: 'Which agent owns this consumer?',
+      summary: 'The wording changed, but the asker and referenced code are unchanged.',
+    }));
     const otherAsker = knowledgeDedupeKey(question({
       source: { ...SOURCE, agentSessionId: 'agent-someone-else' },
     }));
     expect(first).toBe(second);
+    expect(first).toBe(reworded);
     expect(first).not.toBe(otherAsker);
   });
 

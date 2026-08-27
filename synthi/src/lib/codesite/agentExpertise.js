@@ -1,4 +1,5 @@
 import { asArray, parseJson } from './json';
+import { isKnowledgeExpertiseEligible } from './knowledgePolicy';
 import { knowledgePathsOverlap } from './knowledgeRouting';
 
 // Derived, evidence-weighted expertise. Nothing here is provider-aware and
@@ -201,15 +202,20 @@ export function buildExpertiseIndex({
   for (const itemRow of knowledgeItems) {
     const kind = String(itemRow.kind || '');
     if (!SIGNAL_KNOWLEDGE_KINDS.has(kind)) continue;
+    if (!isKnowledgeExpertiseEligible(itemRow)) continue;
     const references = itemRow.references || parseJson(itemRow.scopeJson, {})?.references || {};
     const paths = unique(asArray(references.paths));
     const symbols = unique(asArray(references.symbols));
     const contracts = unique(asArray(references.contracts));
     if (!paths.length && !symbols.length && !contracts.length) continue;
     const atMs = timestampMs(itemRow.updatedAt) ?? nowMs;
-    if (itemRow.createdByAgentSessionId) {
-      addSignal(itemRow.createdByAgentSessionId, {
-        type: 'knowledge_authorship',
+    const payload = parseJson(itemRow.payloadJson, {});
+    const knowledgeAgentSessionId = kind === 'agent_question'
+      ? (itemRow.answeredByAgentSessionId || payload?.answeredByAgentSessionId)
+      : itemRow.createdByAgentSessionId;
+    if (knowledgeAgentSessionId) {
+      addSignal(knowledgeAgentSessionId, {
+        type: kind === 'agent_question' ? 'knowledge_answer' : 'knowledge_authorship',
         weightSource: 'knowledge_authorship',
         paths,
         symbols,
@@ -219,7 +225,7 @@ export function buildExpertiseIndex({
       });
     }
     for (const sessionId of unique(asArray(references.agentSessionIds))) {
-      if (sessionId === itemRow.createdByAgentSessionId) continue;
+      if (sessionId === knowledgeAgentSessionId) continue;
       addSignal(sessionId, {
         type: 'knowledge_reference',
         weightSource: 'knowledge_reference',

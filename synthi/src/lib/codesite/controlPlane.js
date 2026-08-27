@@ -3210,7 +3210,9 @@ async function loadExpertiseRoutingState(projectId) {
       select: {
         id: true,
         kind: true,
+        status: true,
         createdByAgentSessionId: true,
+        payloadJson: true,
         scopeJson: true,
         updatedAt: true,
       },

@@ -160,6 +160,51 @@ describe('expertise ranking', () => {
     expect(alice.evidence).toContain('knowledge_authorship:knw-1');
   });
 
+  it('uses only policy-eligible knowledge and credits answered questions to the responder', () => {
+    const built = index({
+      knowledgeItems: [
+        knowledge({
+          id: 'knw-rejected',
+          status: 'rejected',
+          scopeJson: JSON.stringify({ references: { paths: ['src/rejected.ts'] } }),
+        }),
+        {
+          id: 'question-open',
+          kind: 'agent_question',
+          status: 'open',
+          createdByAgentSessionId: 'agent-alice',
+          payloadJson: JSON.stringify({ answeredByAgentSessionId: 'agent-cara' }),
+          scopeJson: JSON.stringify({ references: { paths: ['src/question.ts'] } }),
+          updatedAt: RECENT,
+        },
+        {
+          id: 'question-answered',
+          kind: 'agent_question',
+          status: 'answered',
+          createdByAgentSessionId: 'agent-alice',
+          payloadJson: JSON.stringify({ answeredByAgentSessionId: 'agent-cara' }),
+          scopeJson: JSON.stringify({ references: { paths: ['src/question.ts'] } }),
+          updatedAt: RECENT,
+        },
+      ],
+    });
+
+    const rejectedExperts = rankExperts(
+      built,
+      { paths: ['src/rejected.ts'], symbols: [], contracts: [] },
+      { sessions },
+    );
+    const questionExperts = rankExperts(
+      built,
+      { paths: ['src/question.ts'], symbols: [], contracts: [] },
+      { sessions },
+    );
+
+    expect(rejectedExperts).toEqual([]);
+    expect(questionExperts.map((entry) => entry.agentSessionId)).toEqual(['agent-cara']);
+    expect(questionExperts[0].evidence).toContain('knowledge_answer:question-answered');
+  });
+
   it('combines plan routes with knowledge signals and applies recency decay', () => {
     const fresh = index({
       executionPlans: [plan({ agentSessionId: 'agent-cara' })],

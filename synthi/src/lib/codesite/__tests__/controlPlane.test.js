@@ -3,12 +3,12 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   canonicalDojoProofPayload,
   createEd25519DojoProofSigner,
   generateEd25519DojoProofKeyPair,
-} from 'C:/Users/polek/Desktop/vectant-ade/mcp/synthi-mcp/dist/dojo/proof/signing.js';
+} from '../../../../../mcp/synthi-mcp/src/dojo/proof/signing.ts';
 
 const { prisma } = vi.hoisted(() => ({
   prisma: {
@@ -288,8 +288,8 @@ function agentAuthoritySession(overrides = {}) {
     agentProvider: 'custom-provider',
     status: 'attached',
     capabilitiesJson: JSON.stringify(['codesite.context.read', 'codesite.knowledge.read']),
-    agentAccessTokenExpiresAt: new Date(Date.now() + 60_000),
-    lastHeartbeatAt: new Date(Date.now() - 1_000),
+    agentAccessTokenExpiresAt: new Date(AGENT_AUTHORITY_NOW.getTime() + 60_000),
+    lastHeartbeatAt: new Date(AGENT_AUTHORITY_NOW.getTime() - 1_000),
     endedAt: null,
     project: {
       id: 'project-authority-1',
@@ -9307,10 +9307,15 @@ describe('agent-token inbox access', () => {
   }
 
   beforeEach(() => {
-      vi.clearAllMocks();
-      prisma.codeSiteProjectMember.findUnique.mockResolvedValue(null);
-      prisma.codeSiteProjectMember.findFirst.mockResolvedValue(null);
-    });
+    vi.useFakeTimers({ now: AGENT_AUTHORITY_NOW });
+    vi.clearAllMocks();
+    prisma.codeSiteProjectMember.findUnique.mockResolvedValue(null);
+    prisma.codeSiteProjectMember.findFirst.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
     it('authorizes its own session to read projected inbox items', async () => {
     const session = agentAuthoritySession();
@@ -9437,8 +9442,9 @@ describe('listProjectChannels keyset pagination', () => {
         .filter((row) => {
           if (!keyset) return true;
           const [beforeDate, sameDateBeforeId] = keyset.OR;
-          return row.createdAt < beforeDate.lt
-            || (row.createdAt.getTime() === beforeDate.lt.getTime() && row.id < sameDateBeforeId.id.lt);
+          const beforeCreatedAt = beforeDate.createdAt.lt;
+          return row.createdAt < beforeCreatedAt
+            || (row.createdAt.getTime() === beforeCreatedAt.getTime() && row.id < sameDateBeforeId.id.lt);
         })
         .sort((left, right) => right.createdAt - left.createdAt || right.id.localeCompare(left.id))
         .slice(0, take);
@@ -9519,8 +9525,8 @@ describe('listProjectChannels keyset pagination', () => {
     });
     expect(secondPage.channels.map((channel) => channel.id)).toEqual(['active-1']);
     expect(secondPage).not.toHaveProperty('nextCursor');
-    expect(prisma.codeSiteAgentChannel.findMany.mock.calls.at(-1)[0].where.AND)
-      .toContainEqual({ status: 'active' });
+    expect(prisma.codeSiteAgentChannel.findMany.mock.calls.at(-1)[0].where.status)
+      .toBe('active');
   });
 
   it('uses the id tiebreak deterministically when creation times match', async () => {
