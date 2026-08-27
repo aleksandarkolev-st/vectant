@@ -15,6 +15,12 @@ const REFERENCE_TYPES = Object.freeze({
   transactionIds: 'transaction',
 });
 
+function learningScopeForVisibility(visibility) {
+  if (visibility === 'workspace') return 'workspace';
+  if (visibility === 'learning_network') return 'learning_network';
+  return 'project';
+}
+
 function dateOrNull(value) {
   if (!value) return null;
   const date = value instanceof Date ? value : new Date(value);
@@ -74,6 +80,7 @@ export function buildKnowledgeRecord(input, authority = {}) {
         references: item.references,
         tags: item.tags,
       }),
+      learningScope: learningScopeForVisibility(item.visibility),
       redactionClass: item.redactionClass,
       confidence: item.confidence,
       verificationStatus: item.verification || (item.status === 'verified' ? 'verified' : 'unverified'),
@@ -158,4 +165,3 @@ export function projectKnowledgeRecord(row) {
     requiredActions: payload.requiredActions,
   });
 }
-

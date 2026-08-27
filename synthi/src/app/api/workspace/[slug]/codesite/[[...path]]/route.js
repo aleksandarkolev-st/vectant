@@ -1,5 +1,7 @@
 ﻿import {
   abortTransaction,
+  adoptAgentLearningCatalogEntry,
+  adoptProjectLearningCatalogEntry,
   acknowledgeInboxItem,
   acknowledgeInboxItemForAgent,
   attachAgentSession,
@@ -54,9 +56,11 @@
   listActiveTransactions,
   listPermits,
   listProjectKnowledge,
+  listProjectLearningCatalog,
   listProjectMembers,
   listProjects,
   listRouteRevisions,
+  listAgentLearningCatalog,
   openTransaction,
   preflightCodeSiteFsWrite,
   recordPolicyDecision,
@@ -83,6 +87,13 @@
   updateZonePolicy,
   validateTransaction,
 } from '@/lib/codesite/controlPlane';
+import {
+  decideFleetNotam,
+  listFleetNotamsForProject,
+  publishFleetNotam,
+  supersedeFleetNotam,
+  withdrawFleetNotam,
+} from '@/lib/codesite/fleetNotams';
 import {
   probeCodeSiteActivityBridge,
   probeCodeSiteDeploymentStatus,
@@ -127,6 +138,13 @@ export async function GET(request, { params }) {
       return handleCodesiteError(error);
     }
   }
+  if (route[0] === 'agent-sessions' && route[2] === 'learning-catalog' && route.length === 3) {
+    try {
+      return okJson(await listAgentLearningCatalog(slug, route[1], bearerToken(request)));
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
   if (route[0] === 'agent-sessions' && route[2] === 'inbox' && route.length === 3
     && bearerToken(request)) {
     try {
@@ -166,6 +184,10 @@ export async function GET(request, { params }) {
       return okJson({
         knowledge: await listProjectKnowledge(slug, route[1], requestQuery(request), access.actor),
       });
+    }
+
+    if (route[0] === 'projects' && route[2] === 'learning-catalog' && route.length === 3) {
+      return okJson(await listProjectLearningCatalog(slug, route[1], access.actor));
     }
 
     if (route[0] === 'projects' && route[2] === 'deployment-status' && route.length === 3) {
@@ -239,6 +261,19 @@ export async function GET(request, { params }) {
         cursor: params.get('cursor'),
         limit: params.get('limit'),
       }));
+    }
+
+    if (route[0] === 'projects' && route[2] === 'fleet-notams') {
+      const params = new URL(request.url).searchParams;
+      const includeOwn = params.get('include_own') === 'true' || params.get('includeOwn') === 'true';
+      const includeMuted = params.get('include_muted') === 'true' || params.get('includeMuted') === 'true';
+      const includeInactive = params.get('include_inactive') === 'true' || params.get('includeInactive') === 'true';
+      return okJson(await listFleetNotamsForProject(slug, route[1], {
+        include_own: includeOwn,
+        include_muted: includeMuted,
+        include_inactive: includeInactive,
+        route: params.get('route') || undefined,
+      }, access.actor));
     }
 
     if (route[0] === 'projects' && route[2] === 'schemas') {
@@ -358,6 +393,21 @@ export async function POST(request, { params }) {
         bearerToken(request),
         await readJson(request),
       ), { status: 201 });
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
+  if (route[0] === 'agent-sessions'
+    && route[2] === 'learning-catalog'
+    && route[4] === 'adopt'
+    && route.length === 5) {
+    try {
+      return okJson(await adoptAgentLearningCatalogEntry(
+        slug,
+        route[1],
+        bearerToken(request),
+        route[3],
+      ));
     } catch (error) {
       return handleCodesiteError(error);
     }
@@ -502,6 +552,13 @@ export async function POST(request, { params }) {
   try {
     if (route.join('/') === 'projects') {
       return okJson({ project: await createProject(slug, access.actor, body) }, { status: 201 });
+    }
+
+    if (route[0] === 'projects'
+      && route[2] === 'learning-catalog'
+      && route[4] === 'adopt'
+      && route.length === 5) {
+      return okJson(await adoptProjectLearningCatalogEntry(slug, route[1], route[3], access.actor));
     }
 
     if (route[0] === 'projects' && route[2] === 'zone-policy') {
@@ -704,6 +761,22 @@ export async function POST(request, { params }) {
       return okJson({ policyDelta: await promotePolicyDelta(slug, route[1], route[3], body, access.actor) });
     }
 
+    if (route[0] === 'projects' && route[2] === 'fleet-notams' && route[3] === 'publish') {
+      return okJson({ fleetNotam: await publishFleetNotam(slug, route[1], body, access.actor) }, { status: 201 });
+    }
+
+    if (route[0] === 'projects' && route[2] === 'fleet-notams' && route[4] === 'decision') {
+      return okJson({ fleetNotam: await decideFleetNotam(slug, route[1], route[3], body, access.actor) });
+    }
+
+    if (route[0] === 'projects' && route[2] === 'fleet-notams' && route[4] === 'withdraw') {
+      return okJson({ fleetNotam: await withdrawFleetNotam(slug, route[1], route[3], body, access.actor) });
+    }
+
+    if (route[0] === 'projects' && route[2] === 'fleet-notams' && route[4] === 'supersede') {
+      return okJson(await supersedeFleetNotam(slug, route[1], route[3], body, access.actor), { status: 201 });
+    }
+
     if (route[0] === 'projects' && route[2] === 'policy-deltas' && route[4] === 'reject') {
       return okJson({ policyDelta: await rejectPolicyDelta(slug, route[1], route[3], body, access.actor) });
     }
@@ -770,7 +843,10 @@ function postAccessMode(route) {
     'source-state-since',
   ].includes(route[2])) return 'read';
   if (route[0] === 'quarantines' && ['replay', 'apply'].includes(route[2])) return 'write';
+  if (route[0] === 'projects' && route[2] === 'fleet-notams'
+    && (route[3] === 'publish' || ['decision', 'withdraw', 'supersede'].includes(route[4]))) return 'write';
   if (route[0] === 'projects' && [
+    'fleet-notams',
     'codesitefs-events',
     'documents',
     'permits',

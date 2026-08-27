@@ -7,12 +7,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   applyCodeSiteRouteRevision: vi.fn(),
   applyCodeSiteQuarantine: vi.fn(),
+  adoptCodeSiteLearningCatalogEntry: vi.fn(),
   createCodeSiteProject: vi.fn(),
+  decideCodeSiteFleetNotam: vi.fn(),
   exportCodeSiteArtifacts: vi.fn(),
+  fetchCodeSiteFleetNotams: vi.fn(),
   fetchCodeSiteCoreState: vi.fn(),
   fetchCodeSiteDeploymentStatus: vi.fn(),
   fetchCodeSiteEvidenceSlice: vi.fn(),
   fetchCodeSiteLineProvenance: vi.fn(),
+  fetchCodeSiteLearningCatalog: vi.fn(),
   fetchCodeSiteQuarantineSlice: vi.fn(),
   fetchCodeSiteRadarState: vi.fn(),
   issueCodeSitePermit: vi.fn(),
@@ -23,6 +27,10 @@ const h = vi.hoisted(() => ({
   reviewCodeSiteRouteRevision: vi.fn(),
   simulateCodeSiteShadowMerge: vi.fn(),
   subscribeCodeSiteProjectEvents: vi.fn(),
+  supersedeCodeSiteFleetNotam: vi.fn(),
+  updateCodeSiteProjectControlPlan: vi.fn(),
+  withdrawCodeSiteFleetNotam: vi.fn(),
+  publishCodeSiteFleetNotam: vi.fn(),
 }));
 
 function emptyState(workspaceSlug = 'acme') {
@@ -53,13 +61,17 @@ function emptyState(workspaceSlug = 'acme') {
 vi.mock('../codesiteClient', () => ({
   applyCodeSiteRouteRevision: h.applyCodeSiteRouteRevision,
   applyCodeSiteQuarantine: h.applyCodeSiteQuarantine,
+  adoptCodeSiteLearningCatalogEntry: h.adoptCodeSiteLearningCatalogEntry,
   createCodeSiteProject: h.createCodeSiteProject,
+  decideCodeSiteFleetNotam: h.decideCodeSiteFleetNotam,
   createEmptyCodeSiteRadarState: emptyState,
   exportCodeSiteArtifacts: h.exportCodeSiteArtifacts,
+  fetchCodeSiteFleetNotams: h.fetchCodeSiteFleetNotams,
   fetchCodeSiteCoreState: h.fetchCodeSiteCoreState,
   fetchCodeSiteDeploymentStatus: h.fetchCodeSiteDeploymentStatus,
   fetchCodeSiteEvidenceSlice: h.fetchCodeSiteEvidenceSlice,
   fetchCodeSiteLineProvenance: h.fetchCodeSiteLineProvenance,
+  fetchCodeSiteLearningCatalog: h.fetchCodeSiteLearningCatalog,
   fetchCodeSiteQuarantineSlice: h.fetchCodeSiteQuarantineSlice,
   fetchCodeSiteRadarState: h.fetchCodeSiteRadarState,
   issueCodeSitePermit: h.issueCodeSitePermit,
@@ -70,6 +82,10 @@ vi.mock('../codesiteClient', () => ({
   reviewCodeSiteRouteRevision: h.reviewCodeSiteRouteRevision,
   simulateCodeSiteShadowMerge: h.simulateCodeSiteShadowMerge,
   subscribeCodeSiteProjectEvents: h.subscribeCodeSiteProjectEvents,
+  supersedeCodeSiteFleetNotam: h.supersedeCodeSiteFleetNotam,
+  updateCodeSiteProjectControlPlan: h.updateCodeSiteProjectControlPlan,
+  withdrawCodeSiteFleetNotam: h.withdrawCodeSiteFleetNotam,
+  publishCodeSiteFleetNotam: h.publishCodeSiteFleetNotam,
 }));
 
 import CodeSitePanel from '../CodeSitePanel';
@@ -727,6 +743,10 @@ describe('CodeSitePanel', () => {
     }));
     h.exportCodeSiteArtifacts.mockResolvedValue({ written: false, files: [] });
     h.fetchCodeSiteLineProvenance.mockResolvedValue([]);
+    h.fetchCodeSiteFleetNotams.mockResolvedValue({ advisories: [], suppressed: 0 });
+    h.fetchCodeSiteLearningCatalog.mockResolvedValue({ learning: [], networkEnabled: false });
+    h.adoptCodeSiteLearningCatalogEntry.mockResolvedValue({ event: { eventType: 'workspace_learning_adopted' } });
+    h.updateCodeSiteProjectControlPlan.mockResolvedValue({ id: 'proj-1' });
     h.fetchCodeSiteDeploymentStatus.mockResolvedValue({
       status: 'degraded',
       checkedAt: '2026-08-22T12:00:00.000Z',
@@ -827,6 +847,120 @@ describe('CodeSitePanel', () => {
     await selectSection('quarantine');
     expect(container.querySelector('[data-testid="codesite-governance-console"]')).toBeNull();
     expect(container.querySelector('[data-testid="codesite-quarantine-review"]')).toBeTruthy();
+  });
+
+  it('renders the fleet advisory board with local-effect and lifecycle controls', async () => {
+    const state = radarState();
+    state.project.policyDeltas = [{
+      id: 'delta-promoted',
+      promotionState: 'promoted',
+      ruleCandidate: { title: 'Require contract diff', requiredRadar: ['contract-diff'] },
+    }];
+    h.fetchCodeSiteRadarState.mockResolvedValue(state);
+    h.fetchCodeSiteFleetNotams.mockResolvedValue({
+      suppressed: 1,
+      advisories: [{
+        notamId: 'incoming-notam',
+        originProjectId: 'other-project',
+        sourcePolicyDeltaId: 'other-delta',
+        status: 'active',
+        effect: 'visibility_only',
+        ingestState: 'unreviewed',
+        title: 'Schema drift alert',
+        summary: 'Run the contract diff before landing.',
+        affectedRoutes: ['api/checkout/**'],
+        ruleCandidate: { requiredRadar: ['contract-diff'] },
+        confidence: 0.9,
+        digestSha256: '0123456789abcdef0123456789abcdef',
+        publishedAt: '2026-08-26T12:00:00.000Z',
+      }, {
+        notamId: 'own-notam',
+        originProjectId: 'proj-1',
+        sourcePolicyDeltaId: 'old-delta',
+        status: 'active',
+        effect: 'visibility_only',
+        ingestState: 'unreviewed',
+        title: 'Older route condition',
+        affectedRoutes: ['api/checkout/**'],
+        ruleCandidate: { requiredRadar: [] },
+        confidence: 0.8,
+        digestSha256: 'abcdef0123456789abcdef0123456789',
+        publishedAt: '2026-08-26T12:00:00.000Z',
+      }],
+    });
+    h.decideCodeSiteFleetNotam.mockResolvedValue({ notamId: 'incoming-notam', state: 'adopted' });
+    h.publishCodeSiteFleetNotam.mockResolvedValue({ notamId: 'published-notam' });
+
+    renderPanel();
+    await flush();
+    await selectSection('notams');
+
+    expect(container.querySelector('[data-testid="codesite-fleet-notams-board"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-fleet-notam-list"]')).toBeTruthy();
+    expect(container.textContent).toContain('visible only');
+    expect(container.textContent).toContain('withheld because its integrity digest did not match');
+    expect(container.querySelector('[data-testid="codesite-fleet-notam-withdraw"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-fleet-notam-supersede"]')).toBeTruthy();
+
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-fleet-notam-adopt"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    expect(h.decideCodeSiteFleetNotam).toHaveBeenCalledWith(
+      'acme', 'proj-1', 'incoming-notam', expect.objectContaining({ state: 'adopt' }),
+    );
+
+    const publishSelect = container.querySelector('[data-testid="codesite-fleet-notam-publish-select"]');
+    await act(async () => {
+      setNativeInputValue(publishSelect, 'delta-promoted');
+      publishSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-fleet-notam-publish"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    expect(h.publishCodeSiteFleetNotam).toHaveBeenCalledWith('acme', 'proj-1', { policyDeltaId: 'delta-promoted' });
+  });
+
+  it('renders, adopts, and opts into the portable learning catalogue', async () => {
+    const state = radarState();
+    state.project.controlPlan = { learningNetwork: { workspace: true, network: false } };
+    h.fetchCodeSiteRadarState.mockResolvedValue(state);
+    h.fetchCodeSiteLearningCatalog.mockResolvedValue({
+      networkEnabled: false,
+      learning: [{
+        id: 'lesson-1',
+        scope: 'workspace',
+        title: 'Inspect before mutation',
+        summary: 'Read the diff and run the established test command first.',
+        confidence: 0.95,
+        recipe: { commands: ['git status --short'], requiredTools: ['git'] },
+      }],
+    });
+
+    renderPanel();
+    await flush();
+    await selectSection('learning');
+
+    expect(container.querySelector('[data-testid="codesite-learning-catalog-board"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="codesite-learning-catalog-list"]')).toBeTruthy();
+    expect(container.textContent).toContain('Source projects, file paths, evidence references');
+    expect(container.textContent).toContain('Inspect before mutation');
+
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-learning-adopt"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    expect(h.adoptCodeSiteLearningCatalogEntry).toHaveBeenCalledWith('acme', 'proj-1', 'lesson-1');
+
+    await act(async () => {
+      container.querySelector('[data-testid="codesite-learning-network-toggle"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    expect(h.updateCodeSiteProjectControlPlan).toHaveBeenCalledWith('acme', 'proj-1', {
+      learningNetwork: { workspace: true, network: true },
+    });
   });
 
   it('renders overview status on first paint', async () => {

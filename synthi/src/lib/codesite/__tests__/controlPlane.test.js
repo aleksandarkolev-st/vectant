@@ -8,7 +8,7 @@ import {
   canonicalDojoProofPayload,
   createEd25519DojoProofSigner,
   generateEd25519DojoProofKeyPair,
-} from 'C:/Users/polek/Desktop/vectant-ade/mcp/synthi-mcp/dist/dojo/proof/signing.js';
+} from '../../../../../mcp/synthi-mcp/src/dojo/proof/signing.ts';
 
 const { prisma } = vi.hoisted(() => ({
   prisma: {
@@ -85,6 +85,9 @@ const { prisma } = vi.hoisted(() => ({
       count: vi.fn(),
       create: vi.fn(),
       findFirst: vi.fn(),
+      findMany: vi.fn(),
+    },
+    codeSiteFleetNotam: {
       findMany: vi.fn(),
     },
     codeSitePolicyDecision: {
@@ -8796,6 +8799,7 @@ describe('CodeSite control plane transaction validation', () => {
       createdAt: new Date('2026-06-29T23:12:00.000Z'),
       promotedAt: new Date('2026-06-29T23:13:00.000Z'),
     }]);
+    prisma.codeSiteFleetNotam.findMany.mockResolvedValueOnce([]);
 
     const forecast = await collisionPredict('acme', 'project-1');
 
@@ -9408,6 +9412,8 @@ describe('agent-token inbox access', () => {
       .rejects.toMatchObject({ status: 404, code: 'inbox_item_not_found' });
     expect(prisma.codeSiteAgentInboxItem.update).not.toHaveBeenCalled();
     expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+  });
+});
 
 describe('listProjectChannels keyset pagination', () => {
   const baseTime = new Date('2026-06-30T12:00:00.000Z');

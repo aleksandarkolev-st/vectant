@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { SECTION_GROUPS, groupForSection, groupSummary } from '../sectionGroups';
 
 const ALL_SECTIONS = [
-  'overview', 'radar', 'tower', 'channels', 'governance', 'runway',
+  'overview', 'radar', 'tower', 'channels', 'governance', 'notams', 'learning', 'runway',
   'quarantine', 'evidence', 'inspections', 'replay', 'simulator',
 ];
 
 describe('section groups', () => {
-  it('covers all eleven sections exactly once', () => {
+  it('covers all thirteen sections exactly once', () => {
     const covered = SECTION_GROUPS.flatMap((group) => group.sections);
     expect(covered.slice().sort()).toEqual(ALL_SECTIONS.slice().sort());
     expect(new Set(covered).size).toBe(ALL_SECTIONS.length);

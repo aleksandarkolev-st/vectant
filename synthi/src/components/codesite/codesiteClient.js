@@ -30,6 +30,13 @@ export const CODE_SITE_LIVE_EVENT_TYPES = Object.freeze([
   'policy_delta_proposed',
   'policy_delta_promoted',
   'policy_delta_rejected',
+  'fleet_notam_published',
+  'fleet_notam_adopt',
+  'fleet_notam_mute',
+  'fleet_notam_dismiss',
+  'fleet_notam_reactivate',
+  'fleet_notam_withdrawn',
+  'fleet_notam_superseded',
   'rfi',
   'change_order',
   'route_deviation',
@@ -47,6 +54,7 @@ export const CODE_SITE_LIVE_EVENT_TYPES = Object.freeze([
   'lead_dismissed',
   'shared_skill_published',
   'shared_skill_updated',
+  'workspace_learning_adopted',
   'impact_notice_created',
   'impact_notice_responded',
   'handoff_ready',
@@ -209,6 +217,85 @@ export async function fetchCodeSiteEvents(workspaceSlug, projectId) {
   if (!workspaceSlug || !projectId) return [];
   const body = await request(`${projectBase(workspaceSlug, projectId)}/events`);
   return body.events || [];
+}
+
+export async function fetchCodeSiteFleetNotams(workspaceSlug, projectId, options = {}) {
+  if (!workspaceSlug || !projectId) return { advisories: [], suppressed: 0 };
+  const input = options && typeof options === 'object' && !Array.isArray(options) ? options : {};
+  const search = new URLSearchParams();
+  for (const key of ['includeOwn', 'includeMuted', 'includeInactive']) {
+    if (input[key] === true) {
+      search.set(key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`), 'true');
+    }
+  }
+  if (typeof input.route === 'string' && input.route.trim()) search.set('route', input.route.trim());
+  const query = search.toString();
+  const body = await request(`${projectBase(workspaceSlug, projectId)}/fleet-notams${query ? `?${query}` : ''}`);
+  return {
+    advisories: Array.isArray(body.advisories) ? body.advisories : [],
+    suppressed: Number.isFinite(Number(body.suppressed)) ? Number(body.suppressed) : 0,
+  };
+}
+
+export async function publishCodeSiteFleetNotam(workspaceSlug, projectId, payload = {}) {
+  if (!workspaceSlug || !projectId) return null;
+  const body = await request(`${projectBase(workspaceSlug, projectId)}/fleet-notams/publish`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  return body.fleetNotam || null;
+}
+
+export async function decideCodeSiteFleetNotam(workspaceSlug, projectId, notamId, payload = {}) {
+  if (!workspaceSlug || !projectId || !notamId) return null;
+  const body = await request(
+    `${projectBase(workspaceSlug, projectId)}/fleet-notams/${encodeURIComponent(notamId)}/decision`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+  return body.fleetNotam || null;
+}
+
+export async function withdrawCodeSiteFleetNotam(workspaceSlug, projectId, notamId, payload = {}) {
+  if (!workspaceSlug || !projectId || !notamId) return null;
+  const body = await request(
+    `${projectBase(workspaceSlug, projectId)}/fleet-notams/${encodeURIComponent(notamId)}/withdraw`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+  return body.fleetNotam || null;
+}
+
+export async function supersedeCodeSiteFleetNotam(workspaceSlug, projectId, notamId, payload = {}) {
+  if (!workspaceSlug || !projectId || !notamId) return null;
+  return request(
+    `${projectBase(workspaceSlug, projectId)}/fleet-notams/${encodeURIComponent(notamId)}/supersede`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+}
+
+export async function fetchCodeSiteLearningCatalog(workspaceSlug, projectId) {
+  if (!workspaceSlug || !projectId) return { learning: [], networkEnabled: false };
+  const body = await request(`${projectBase(workspaceSlug, projectId)}/learning-catalog`);
+  return {
+    learning: Array.isArray(body.learning) ? body.learning : [],
+    networkEnabled: body.networkEnabled === true,
+  };
+}
+
+export async function adoptCodeSiteLearningCatalogEntry(workspaceSlug, projectId, learningId) {
+  if (!workspaceSlug || !projectId || !learningId) return null;
+  return request(
+    `${projectBase(workspaceSlug, projectId)}/learning-catalog/${encodeURIComponent(learningId)}/adopt`,
+    { method: 'POST', body: JSON.stringify({}) },
+  );
+}
+
+export async function updateCodeSiteProjectControlPlan(workspaceSlug, projectId, payload = {}) {
+  if (!workspaceSlug || !projectId) return null;
+  const body = await request(`${projectBase(workspaceSlug, projectId)}/control-plan`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  return body.project || null;
 }
 
 export async function fetchCodeSiteProjectKnowledge(workspaceSlug, projectId, filters = {}) {

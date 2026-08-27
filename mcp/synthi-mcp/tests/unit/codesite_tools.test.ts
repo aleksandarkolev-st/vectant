@@ -122,6 +122,47 @@ describe("CodeSite MCP tool surface", () => {
     expect(await dispatchCodeSiteTool("synthi_health", {})).toBeNull();
   });
 
+  it("maps fleet advisory lifecycle tools to scoped API routes", async () => {
+    const common = { workspace_slug: "acme", project_id: "project-1", base_url: "http://localhost:3100/" };
+
+    await dispatchCodeSiteTool("synthi_codesite_list_fleet_notams", {
+      ...common, include_own: true, include_muted: true, include_inactive: true, route: "packages/api/**",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_publish_fleet_notam", {
+      ...common, policy_delta_id: "delta-1",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_decide_fleet_notam", {
+      ...common, notam_id: "notam-1", state: "adopt",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_withdraw_fleet_notam", {
+      ...common, notam_id: "notam-1", reason: "replacement published",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_supersede_fleet_notam", {
+      ...common, notam_id: "notam-1", policy_delta_id: "delta-2", reason: "narrower condition",
+    });
+
+    expect(fetch).toHaveBeenNthCalledWith(1,
+      new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/fleet-notams?includeOwn=true&include_muted=true&include_inactive=true&route=packages%2Fapi%2F**"),
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(2,
+      new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/fleet-notams/publish"),
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ policy_delta_id: "delta-1" }) }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(3,
+      new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/fleet-notams/notam-1/decision"),
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ state: "adopt" }) }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(4,
+      new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/fleet-notams/notam-1/withdraw"),
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ reason: "replacement published" }) }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(5,
+      new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/fleet-notams/notam-1/supersede"),
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ policy_delta_id: "delta-2", reason: "narrower condition" }) }),
+    );
+  });
+
   it("reads relevant context only from the environment-bound agent identity", async () => {
     process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-1";
     process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_scoped-agent-token";
@@ -525,6 +566,48 @@ describe("CodeSite MCP tool surface", () => {
     }));
     expect(fetch).toHaveBeenNthCalledWith(9, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/agent-manifest"), expect.objectContaining({ method: "GET" }));
     expect(fetch).toHaveBeenNthCalledWith(10, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/schemas"), expect.objectContaining({ method: "GET" }));
+  });
+
+  it("advertises and routes portable learning catalogue operations", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockJsonResponse({ learning: [{ id: "lesson-1", scope: "workspace" }] }))
+      .mockResolvedValueOnce(mockJsonResponse({ event: { eventType: "workspace_learning_adopted" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ project: { id: "project-1", controlPlan: { learningNetwork: { workspace: true, network: true } } } }));
+
+    const catalogTool = CODESITE_TOOLS.find((tool) => tool.name === "synthi_codesite_list_learning_catalog");
+    const adoptTool = CODESITE_TOOLS.find((tool) => tool.name === "synthi_codesite_adopt_learning_catalog_entry");
+    const controlPlanTool = CODESITE_TOOLS.find((tool) => tool.name === "synthi_codesite_update_control_plan");
+    expect(catalogTool).toBeTruthy();
+    expect(adoptTool).toBeTruthy();
+    expect(controlPlanTool?.inputSchema.properties).toHaveProperty("learningNetwork");
+
+    await dispatchCodeSiteTool("synthi_codesite_list_learning_catalog", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      project_id: "project-1",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_adopt_learning_catalog_entry", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      project_id: "project-1",
+      learning_id: "lesson-1",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_update_control_plan", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      project_id: "project-1",
+      learningNetwork: { workspace: true, network: true },
+    });
+
+    expect(fetch).toHaveBeenNthCalledWith(1, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/learning-catalog"), expect.objectContaining({ method: "GET" }));
+    expect(fetch).toHaveBeenNthCalledWith(2, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/learning-catalog/lesson-1/adopt"), expect.objectContaining({
+      method: "POST",
+      body: "{}",
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(3, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/control-plan"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ learningNetwork: { workspace: true, network: true } }),
+    }));
   });
 
   it("maps CodeSite governance permits, document reviews, and route revision workflows", async () => {
