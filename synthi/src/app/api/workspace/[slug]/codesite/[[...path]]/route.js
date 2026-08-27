@@ -18,6 +18,7 @@
   createPolicyDelta,
   createProject,
   applyRouteRevision,
+  askAgentQuestion,
   dryRunTransactionWrites,
   detachAgentSession,
   eventCursor,
@@ -25,6 +26,7 @@
   getAgentInbox,
   getAgentInboxForAgent,
   getAgentManifest,
+  findAgentExperts,
   getAgentSharedKnowledge,
   getControlState,
   getEvents,
@@ -106,6 +108,13 @@ export const dynamic = 'force-dynamic';
 export async function GET(request, { params }) {
   const { slug, path } = await params;
   const route = parsePath(path);
+  if (route[0] === 'agent-sessions' && route[2] === 'experts' && route.length === 3) {
+    try {
+      return okJson(await findAgentExperts(slug, route[1], bearerToken(request), requestQuery(request)));
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
   if (route[0] === 'agent-sessions' && route[2] === 'relevant-context' && route.length === 3) {
     try {
       return okJson(await getRelevantAgentContext(slug, route[1], bearerToken(request)));
@@ -328,12 +337,32 @@ function bearerToken(request) {
 }
 
 function requestQuery(request) {
-  return Object.fromEntries(new URL(request.url).searchParams.entries());
+  const query = {};
+  for (const [key, value] of new URL(request.url).searchParams.entries()) {
+    if (query[key] === undefined) {
+      query[key] = value;
+    } else if (Array.isArray(query[key])) {
+      query[key].push(value);
+    } else {
+      query[key] = [query[key], value];
+    }
+  }
+  return query;
 }
 
 export async function POST(request, { params }) {
   const { slug, path } = await params;
   const route = parsePath(path);
+  if (route[0] === 'agent-sessions' && route[2] === 'questions' && route.length === 3) {
+    try {
+      return okJson(
+        await askAgentQuestion(slug, route[1], bearerToken(request), await readJson(request)),
+        { status: 201 },
+      );
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
   if (route[0] === 'agent-sessions'
     && route[2] === 'inbox'
     && route[4] === 'respond'

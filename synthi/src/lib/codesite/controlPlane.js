@@ -63,6 +63,13 @@ import {
 import { buildKnowledgeDeliveryPlan } from './knowledgeRouting';
 import { validateKnowledgeResponse } from './knowledgeResponses';
 import {
+  buildExpertiseIndex,
+  normalizeExpertiseQuery,
+  rankExperts,
+  suggestExpertsForReferences,
+  EXPERTISE_CONTEXT_VERSION,
+} from './agentExpertise';
+import {
   deliveryAllowedOrigins,
   endpointDeliveryAllowed,
   signDeliveryEnvelope,
@@ -2264,7 +2271,7 @@ export async function getRelevantAgentContext(workspaceSlug, sessionId, agentAcc
 }
 
 const KNOWLEDGE_CREATE_KINDS = new Set(['discovery', 'lead', 'shared_skill', 'handoff']);
-const KNOWLEDGE_QUERY_KINDS = new Set([...KNOWLEDGE_CREATE_KINDS, 'impact_notice']);
+const KNOWLEDGE_QUERY_KINDS = new Set([...KNOWLEDGE_CREATE_KINDS, 'impact_notice', 'agent_question']);
 
 function nextKnowledgeId(prefix = 'knw') {
   return `${prefix}_${randomBytes(18).toString('base64url')}`;
@@ -2327,6 +2334,13 @@ function knowledgeIdsFromInbox(inbox) {
 
 function visibleKnowledgeRowsForSession(rows, session, executionPlans, transactions, inbox) {
   const inboxKnowledgeIds = knowledgeIdsFromInbox(inbox);
+  // An answered question routed via an impact_notice wrapper must stay
+  // visible to the asker: the asker's inbox references the wrapper id, so
+  // also admit rows that are the wrapper's source question.
+  const wrapperSourceIds = asArray(inbox)
+    .map((item) => item.knowledgeItem?.sourceKnowledgeItemId || item.sourceKnowledgeItemId)
+    .filter(Boolean);
+  const admittedViaWrapper = new Set(wrapperSourceIds);
   return rows.filter((row) => {
     const visibility = knowledgeVisibility(row);
     const owned = row.createdByAgentSessionId === session.id
@@ -2335,7 +2349,7 @@ function visibleKnowledgeRowsForSession(rows, session, executionPlans, transacti
       || row.ownerUserId === session.ownerUserId;
     if (visibility === 'owner_private') return owned;
     if (visibility === 'restricted' && !owned && !inboxKnowledgeIds.has(row.id)) return false;
-    if (owned || inboxKnowledgeIds.has(row.id)) return true;
+    if (owned || inboxKnowledgeIds.has(row.id) || admittedViaWrapper.has(row.id)) return true;
     if (row.kind === 'shared_skill' && row.status === 'published') return true;
     const projected = projectKnowledgeRecord(row);
     if (!projected) return false;
@@ -2374,6 +2388,7 @@ async function loadRelevantKnowledgeForSession(session, queryInput = {}, state =
       where: { projectId: session.projectId, agentSessionId: session.id, knowledgeItemId: { not: null } },
       orderBy: { createdAt: 'desc' },
       take: 100,
+      include: { knowledgeItem: { select: { sourceKnowledgeItemId: true } } },
     }),
   ]);
   return visibleKnowledgeRowsForSession(rows, session, executionPlans, transactions, inbox)
@@ -2515,7 +2530,9 @@ async function persistKnowledgeAndImpacts(authority, record, deliveryPlan) {
   const projectId = authority.session?.projectId || record.normalized.projectId;
   return prisma.$transaction(async (db) => {
     const persistedSource = await createKnowledgeWithClient(db, record, sourceKnowledgeId, {
-      eventType: knowledgeEventType(record.normalized),
+      eventType: record.normalized.kind === 'agent_question'
+        ? 'agent_question_asked'
+        : knowledgeEventType(record.normalized),
       displayCallsign: authority.session?.displayCallsign || null,
       actorType: source.actorType === 'agent' ? 'agent_session' : source.actorType,
       actorId: source.actorId,
@@ -3150,6 +3167,199 @@ export async function getAgentSharedKnowledge(workspaceSlug, sessionId, agentAcc
   return loadRelevantKnowledgeForSession(session, query);
 }
 
+async function loadExpertiseRoutingState(projectId) {
+  const [sessions, executionPlans, transactions, knowledgeItems] = await Promise.all([
+    prisma.codeSiteAgentSession.findMany({
+      where: { projectId, endedAt: null },
+      select: {
+        id: true,
+        displayCallsign: true,
+        ownerUserId: true,
+        agentProvider: true,
+        status: true,
+        endedAt: true,
+      },
+    }),
+    prisma.codeSiteExecutionPlan.findMany({
+      where: { projectId, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
+      select: { id: true, agentSessionId: true, status: true, routeJson: true, filedAt: true },
+      orderBy: { filedAt: 'desc' },
+      take: 200,
+    }),
+    prisma.codeSiteMutationTransaction.findMany({
+      where: { projectId, status: { in: ['open', 'prepared', 'blocked', 'validated'] } },
+      select: {
+        id: true,
+        agentSessionId: true,
+        status: true,
+        readSetJson: true,
+        observedReadSetJson: true,
+        writeSetJson: true,
+        observedWriteSetJson: true,
+        semanticDependencyRefsJson: true,
+        openedAt: true,
+      },
+      orderBy: { openedAt: 'desc' },
+      take: 200,
+    }),
+    prisma.codeSiteKnowledgeItem.findMany({
+      where: {
+        projectId,
+        kind: { in: ['discovery', 'lead', 'shared_skill', 'handoff', 'agent_question'] },
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      },
+      select: {
+        id: true,
+        kind: true,
+        status: true,
+        createdByAgentSessionId: true,
+        payloadJson: true,
+        scopeJson: true,
+        updatedAt: true,
+      },
+      orderBy: { updatedAt: 'desc' },
+      take: 400,
+    }),
+  ]);
+  return { sessions, executionPlans, transactions, knowledgeItems };
+}
+
+export async function findAgentExperts(workspaceSlug, sessionId, agentAccessToken, query = {}) {
+  const { session } = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.context.read',
+  });
+  const normalized = normalizeExpertiseQuery(query);
+  const routingState = await loadExpertiseRoutingState(session.projectId);
+  const index = buildExpertiseIndex({ ...routingState });
+  const experts = rankExperts(index, normalized, {
+    sessions: routingState.sessions,
+    excludeSessionId: session.id,
+    limit: normalized.limit,
+  });
+  return {
+    contextVersion: EXPERTISE_CONTEXT_VERSION,
+    generatedAt: new Date().toISOString(),
+    projectId: session.projectId,
+    query: {
+      paths: normalized.paths,
+      symbols: normalized.symbols,
+      contracts: normalized.contracts,
+    },
+    experts,
+  };
+}
+
+export async function askAgentQuestion(workspaceSlug, sessionId, agentAccessToken, body = {}) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.knowledge.write',
+  });
+  if (body.projectId && body.projectId !== authority.session.projectId) throw forbidden('knowledge_project_mismatch');
+  const input = {
+    ...body,
+    kind: 'agent_question',
+    projectId: authority.session.projectId,
+    source: {
+      ...(body.source && typeof body.source === 'object' ? body.source : {}),
+      actorType: 'agent',
+      actorId: authority.session.id,
+      agentSessionId: authority.session.id,
+      terminalSessionId: authority.session.terminalSessionId || null,
+    },
+  };
+
+  const routingState = await loadExpertiseRoutingState(authority.session.projectId);
+  const suggested = suggestExpertsForReferences(
+    {
+      paths: asArray(input.references?.paths ?? input.references?.pathRefs ?? []),
+      symbols: asArray(input.references?.symbols ?? []),
+      contracts: asArray(input.references?.contracts ?? []),
+    },
+    {
+      sessions: routingState.sessions.map((peer) => ({ ...peer })),
+      executionPlans: routingState.executionPlans,
+      transactions: routingState.transactions,
+      knowledgeItems: routingState.knowledgeItems,
+      excludeSessionId: authority.session.id,
+      limit: 3,
+    },
+  );
+  // Caller-suggested experts are validated against the live project roster;
+  // derived suggestions are only used when the caller did not pin any.
+  const requestedSuggestions = unique(asArray(
+    input.suggestedExpertAgentSessionIds ?? input.suggested_expert_agent_session_ids ?? [],
+  ).map((value) => String(value || '').trim()).filter(Boolean));
+  const knownSessionIds = new Set(routingState.sessions.map((peer) => peer.id));
+  let finalSuggestions;
+  if (requestedSuggestions.length) {
+    const unknown = requestedSuggestions.filter((id) => !knownSessionIds.has(id));
+    if (unknown.length) throw badRequest('knowledge_reference_outside_project', { projectId: authority.session.projectId, missing: { agentSessionIds: unknown } });
+    finalSuggestions = requestedSuggestions.slice(0, 8);
+  } else {
+    finalSuggestions = suggested.map((entry) => entry.agentSessionId);
+    if (finalSuggestions.length) input.allowUnrouted = true;
+  }
+
+  const record = buildKnowledgeRecord({
+    ...input,
+    suggestedExpertAgentSessionIds: finalSuggestions,
+    allowUnrouted: input.allowUnrouted === true,
+  }, {
+    projectId: authority.session.projectId,
+    agentSessionId: authority.session.id,
+    userId: authority.session.ownerUserId,
+  });
+
+  const existing = await prisma.codeSiteKnowledgeItem.findFirst({
+    where: { projectId: authority.session.projectId, dedupeKey: record.data.dedupeKey },
+    include: { references: true },
+  });
+  if (existing) {
+    return {
+      question: projectKnowledgeRecord(existing),
+      event: null,
+      routedTo: [],
+      duplicate: true,
+    };
+  }
+
+  // Route to the suggested experts (durable inbox + impact-style notice with
+  // response required). Falls back to relevance routing when no expert was
+  // derivable and the asker explicitly allowed an unrouted broadcast.
+  const deliveryPlan = buildKnowledgeDeliveryPlan({
+    item: {
+      ...record.normalized,
+      id: 'pending',
+      createdByAgentSessionId: authority.session.id,
+      recipientAgentSessionIds: finalSuggestions,
+    },
+    sessions: await prisma.codeSiteAgentSession.findMany({
+      where: { projectId: authority.session.projectId, endedAt: null, status: { in: ['attached', 'detached'] } },
+    }),
+    executionPlans: await prisma.codeSiteExecutionPlan.findMany({
+      where: { projectId: authority.session.projectId, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
+    }),
+    transactions: await prisma.codeSiteMutationTransaction.findMany({
+      where: { projectId: authority.session.projectId, status: { in: ['open', 'prepared', 'blocked', 'validated'] } },
+    }),
+  });
+  const result = await persistKnowledgeAndImpacts(authority, record, deliveryPlan);
+  await syncArtifactsForProject(authority.session.projectId, {
+    reason: 'agent_question_asked',
+    eventId: result.event?.id,
+  });
+  return {
+    question: result.knowledge,
+    event: result.event,
+    routedTo: result.impacts.map((impact) => ({
+      knowledgeItemId: impact.knowledge?.id || null,
+      inboxItem: impact.inboxItem,
+      agentSessionId: impact.inboxItem?.agentSessionId || null,
+    })),
+    suggestedExperts: suggested,
+    duplicate: false,
+  };
+}
+
 export async function listProjectKnowledge(workspaceSlug, projectId, query = {}, actor = null) {
   const project = await requireProject(workspaceSlug, projectId, actor, 'read');
   const normalized = validateKnowledgeQuery(query);
@@ -3186,7 +3396,20 @@ export async function respondToAgentKnowledgeInbox(
     include: { knowledgeItem: { include: { references: true } } },
   });
   if (!inboxItem || !inboxItem.knowledgeItem) throw notFound('knowledge_inbox_item_not_found');
-  const response = validateKnowledgeResponse(inboxItem.knowledgeItem.kind, body);
+  // The routed notice for a question is an impact_notice wrapper around the
+  // agent_question record; answer/claim/defer/dismiss act on the question
+  // itself, so validate against the underlying knowledge kind.
+  const impactPayload = parseJson(inboxItem.knowledgeItem.payloadJson, {});
+  const questionSourceId = inboxItem.knowledgeItem.sourceKnowledgeItemId || impactPayload?.sourceKnowledgeId || null;
+  let responseKind = inboxItem.knowledgeItem.kind;
+  if (inboxItem.knowledgeItem.kind === 'impact_notice' && questionSourceId) {
+    const sourceKnowledge = await prisma.codeSiteKnowledgeItem.findFirst({
+      where: { id: questionSourceId, projectId: authority.session.projectId },
+      select: { kind: true },
+    });
+    if (sourceKnowledge?.kind === 'agent_question') responseKind = 'agent_question';
+  }
+  const response = validateKnowledgeResponse(responseKind, body);
   if (inboxItem.respondedAt) {
     const previous = parseJson(inboxItem.responseJson, {});
     if (inboxItem.responseAction === response.action && stableJson(previous) === stableJson(response)) {
@@ -3212,7 +3435,15 @@ export async function respondToAgentKnowledgeInbox(
       },
     });
     let nextKnowledge = inboxItem.knowledgeItem;
-    if (response.targetStatus) {
+    // When answering through an impact_notice wrapper, the status transition
+    // targets the underlying question record, not the wrapper itself.
+    if (response.targetStatus && responseKind !== inboxItem.knowledgeItem.kind) {
+      await db.codeSiteKnowledgeItem.update({
+        where: { id: questionSourceId },
+        data: { status: response.targetStatus },
+      });
+    }
+    if (response.targetStatus && responseKind === inboxItem.knowledgeItem.kind) {
       nextKnowledge = await db.codeSiteKnowledgeItem.update({
         where: { id: inboxItem.knowledgeItem.id },
         data: {
@@ -3227,8 +3458,41 @@ export async function respondToAgentKnowledgeInbox(
         },
       });
     }
+    // An answered question stores the answer on the question record and
+    // routes a durable acknowledgement back to the asking agent so the
+    // answer survives as shared knowledge even after both sessions end.
+    const isQuestionAnswer = responseKind === 'agent_question' && response.action === 'answer';
+    if (isQuestionAnswer) {
+      const answerTargetId = responseKind === inboxItem.knowledgeItem.kind
+        ? inboxItem.knowledgeItem.id
+        : questionSourceId;
+      let answerPayload = parseJson(inboxItem.knowledgeItem.payloadJson, {});
+      if (responseKind !== inboxItem.knowledgeItem.kind) {
+        const sourceQuestion = await db.codeSiteKnowledgeItem.findFirst({
+          where: { id: answerTargetId, kind: 'agent_question' },
+          select: { payloadJson: true },
+        });
+        answerPayload = sourceQuestion
+          ? parseJson(sourceQuestion.payloadJson, {})
+          : {};
+      }
+      nextKnowledge = await db.codeSiteKnowledgeItem.update({
+        where: { id: answerTargetId },
+        data: {
+          status: 'answered',
+          payloadJson: stringifyJson({
+            ...answerPayload,
+            answerText: response.answer,
+            answeredByAgentSessionId: authority.session.id,
+          }),
+          updatedAt: now,
+        },
+      });
+    }
     const event = await recordEventWithClient(db, authority.session.projectId, {
-      eventType: knowledgeResponseEventType(inboxItem.knowledgeItem.kind, response.action),
+      eventType: responseKind === 'agent_question' && response.action === 'answer'
+        ? 'agent_question_answered'
+        : knowledgeResponseEventType(inboxItem.knowledgeItem.kind, response.action),
       displayCallsign: authority.session.displayCallsign,
       actorType: 'agent_session',
       actorId: authority.session.id,
@@ -3242,6 +3506,50 @@ export async function respondToAgentKnowledgeInbox(
         targetStatus: response.targetStatus,
       },
     }, { syncArtifacts: false });
+    // Deliver a durable "answered" notice back to the asking agent session so
+    // it can pick up the answer on its next poll even if it was offline.
+    if (responseKind === 'agent_question') {
+      const questionPayload = parseJson(inboxItem.knowledgeItem.payloadJson, {});
+      // For a direct agent_question the asker is on the record itself; for an
+      // impact_notice wrapper we resolve via the source question's payload.
+      let askerSessionId = questionPayload.fromAgentSessionId || inboxItem.knowledgeItem.createdByAgentSessionId;
+      if (responseKind !== inboxItem.knowledgeItem.kind && questionSourceId) {
+        const sourceQuestion = await db.codeSiteKnowledgeItem.findFirst({
+          where: { id: questionSourceId, kind: 'agent_question' },
+          select: { payloadJson: true, createdByAgentSessionId: true },
+        });
+        if (sourceQuestion) {
+          askerSessionId = parseJson(sourceQuestion.payloadJson, {})?.fromAgentSessionId
+            || sourceQuestion.createdByAgentSessionId;
+        }
+      }
+      if (askerSessionId && askerSessionId !== authority.session.id) {
+        const asker = await db.codeSiteAgentSession.findFirst({
+          where: { id: askerSessionId, projectId: authority.session.projectId },
+          select: { id: true, ownerUserId: true },
+        });
+        if (asker) {
+          await db.codeSiteAgentInboxItem.create({
+            data: {
+              projectId: authority.session.projectId,
+              agentSessionId: asker.id,
+              recipientUserId: asker.ownerUserId,
+              eventId: event.id,
+              knowledgeItemId: inboxItem.knowledgeItem.id,
+              kind: 'agent_question_answered',
+              requiresResponse: false,
+              status: 'unread',
+              redactedPayloadJson: stringifyJson({
+                knowledgeItemId: inboxItem.knowledgeItem.id,
+                title: `Answered: ${inboxItem.knowledgeItem.title}`.slice(0, 160),
+                answerText: response.answer,
+                answeredByAgentSessionId: authority.session.id,
+              }),
+            },
+          });
+        }
+      }
+    }
     return { nextInbox, nextKnowledge, event };
   });
   await syncArtifactsForProject(authority.session.projectId, {

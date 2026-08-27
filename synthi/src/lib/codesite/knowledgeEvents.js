@@ -10,6 +10,8 @@ const CANONICAL_KNOWLEDGE_EVENT_TYPES = Object.freeze({
   impact_notice_responded: 'impact_notice.responded',
   handoff_ready: 'handoff.ready',
   handoff_acknowledged: 'handoff.acknowledged',
+  agent_question_asked: 'agent_question.asked',
+  agent_question_answered: 'agent_question.answered',
 });
 
 export function canonicalKnowledgeEventType(eventType) {
@@ -17,4 +19,3 @@ export function canonicalKnowledgeEventType(eventType) {
 }
 
 export const KNOWLEDGE_EVENT_TYPES = Object.freeze(Object.keys(CANONICAL_KNOWLEDGE_EVENT_TYPES));
-

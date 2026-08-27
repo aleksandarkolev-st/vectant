@@ -89,11 +89,23 @@ function handoff(overrides = {}) {
   });
 }
 
+function question(overrides = {}) {
+  return base('agent_question', {
+    title: 'Who owns the door-state consumer path?',
+    summary: 'Need to know whether DoorState::apply also clamps velocity before I change the input mapping.',
+    status: 'open',
+    urgency: 'normal',
+    suggestedExpertAgentSessionIds: ['agent-alice'],
+    ...overrides,
+  });
+}
+
 function fixtureFor(kind, overrides = {}) {
   if (kind === 'discovery') return discovery(overrides);
   if (kind === 'lead') return lead(overrides);
   if (kind === 'shared_skill') return skill(overrides);
   if (kind === 'impact_notice') return impact(overrides);
+  if (kind === 'agent_question') return question(overrides);
   return handoff(overrides);
 }
 
@@ -109,6 +121,7 @@ describe('knowledge kind validation and safe normalization', () => {
       'shared_skill',
       'impact_notice',
       'handoff',
+      'agent_question',
     ]);
 
     expect(validateKnowledgeItem(discovery())).toMatchObject({
@@ -595,5 +608,72 @@ describe('shared skill recipe publication policy', () => {
     expectPolicyError(() => validateKnowledgeItem(skill({
       recipe: { ...safeRecipe, usageConditions: [] },
     })), 'knowledge_skill_usage_conditions_required');
+  });
+});
+
+describe('agent_question knowledge kind', () => {
+  it('normalizes a routed question with urgency and suggested experts', () => {
+    const normalized = validateKnowledgeItem(question());
+    expect(normalized).toMatchObject({
+      kind: 'agent_question',
+      status: 'open',
+      questionUrgency: 'normal',
+      suggestedExpertAgentSessionIds: ['agent-alice'],
+    });
+  });
+
+  it('rejects unrouted broadcast questions unless explicitly allowed', () => {
+    // Stored rows are resynced through artifact projection, which must bypass
+    // this creation-time routing rule; newly-created questions still cannot.
+    expectPolicyError(
+      () => validateKnowledgeItem(question({ suggestedExpertAgentSessionIds: [] })),
+      'knowledge_question_experts_or_unrouted_required',
+    );
+    expect(validateKnowledgeItem(question({
+      suggestedExpertAgentSessionIds: [],
+      allowUnrouted: true,
+    })).suggestedExpertAgentSessionIds).toEqual([]);
+  });
+
+  it('accepts the documented snake_case unrouted flag', () => {
+    expect(validateKnowledgeItem(question({
+      suggestedExpertAgentSessionIds: [],
+      allow_unrouted: true,
+    })).suggestedExpertAgentSessionIds).toEqual([]);
+  });
+
+  it('rejects invalid urgency and oversized suggestion lists', () => {
+    expectPolicyError(() => validateKnowledgeItem(question({ urgency: 'yesterday' })), 'knowledge_question_urgency_invalid');
+    expectPolicyError(
+      () => validateKnowledgeItem(question({
+        suggestedExpertAgentSessionIds: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'],
+      })),
+      'knowledge_question_suggested_expert_agent_session_ids_limit_exceeded',
+    );
+  });
+
+  it('dedupes re-asks by asker and references even when wording changes', () => {
+    const first = knowledgeDedupeKey(question());
+    const second = knowledgeDedupeKey(question());
+    const reworded = knowledgeDedupeKey(question({
+      title: 'Which agent owns this consumer?',
+      summary: 'The wording changed, but the asker and referenced code are unchanged.',
+    }));
+    const otherAsker = knowledgeDedupeKey(question({
+      source: { ...SOURCE, agentSessionId: 'agent-someone-else' },
+    }));
+    expect(first).toBe(second);
+    expect(first).toBe(reworded);
+    expect(first).not.toBe(otherAsker);
+  });
+
+  it('projects an answered question without exposing response routing metadata', () => {
+    const projection = validateKnowledgeItem(question({
+      status: 'answered',
+      answerText: 'Yes, clamped at maxTurnRate.',
+      answeredByAgentSessionId: 'agent-alice',
+    }));
+    expect(projection.answerText).toBe('Yes, clamped at maxTurnRate.');
+    expect(safeKnowledgeProjection(projection).answerText).toBe('Yes, clamped at maxTurnRate.');
   });
 });

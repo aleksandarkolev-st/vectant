@@ -6,6 +6,7 @@ export const KNOWLEDGE_KINDS = Object.freeze([
   'shared_skill',
   'impact_notice',
   'handoff',
+  'agent_question',
 ]);
 
 export const KNOWLEDGE_REFERENCE_LIMITS = Object.freeze({
@@ -26,6 +27,8 @@ const KIND_ALIASES = new Map([
   ['impact_notice', 'impact_notice'],
   ['impactnotice', 'impact_notice'],
   ['handoff', 'handoff'],
+  ['agent_question', 'agent_question'],
+  ['question', 'agent_question'],
 ]);
 
 const KNOWLEDGE_STATUSES = Object.freeze({
@@ -34,6 +37,19 @@ const KNOWLEDGE_STATUSES = Object.freeze({
   shared_skill: Object.freeze(['draft', 'pending_review', 'published', 'rejected', 'deprecated', 'revoked']),
   impact_notice: Object.freeze(['pending', 'acknowledged', 'rebasing', 'resolved', 'irrelevant', 'aborted', 'expired']),
   handoff: Object.freeze(['draft', 'ready', 'acknowledged', 'reopened', 'completed', 'declined', 'cancelled', 'expired']),
+  agent_question: Object.freeze(['open', 'answered', 'stale', 'archived']),
+});
+
+// Only evidence that has reached a project-trusted state may influence
+// expertise. This is policy, not agent data: records that are still drafts,
+// rejected, stale, dismissed, or archived must not make an agent look more
+// knowledgeable than the control plane has established.
+export const EXPERTISE_ELIGIBLE_KNOWLEDGE_STATUSES = Object.freeze({
+  discovery: Object.freeze(['verified']),
+  lead: Object.freeze(['open', 'claimed', 'escalated', 'resolved']),
+  shared_skill: Object.freeze(['published']),
+  handoff: Object.freeze(['ready', 'acknowledged', 'reopened', 'completed']),
+  agent_question: Object.freeze(['answered']),
 });
 
 const DEFAULT_STATUS = Object.freeze({
@@ -42,6 +58,7 @@ const DEFAULT_STATUS = Object.freeze({
   shared_skill: 'draft',
   impact_notice: 'pending',
   handoff: 'draft',
+  agent_question: 'open',
 });
 
 const STATUS_TRANSITIONS = Object.freeze({
@@ -86,6 +103,12 @@ const STATUS_TRANSITIONS = Object.freeze({
     declined: Object.freeze([]),
     cancelled: Object.freeze([]),
     expired: Object.freeze([]),
+  }),
+  agent_question: Object.freeze({
+    open: Object.freeze(['answered', 'stale', 'archived']),
+    answered: Object.freeze(['stale', 'archived']),
+    stale: Object.freeze(['archived']),
+    archived: Object.freeze([]),
   }),
 });
 
@@ -555,6 +578,39 @@ function normalizeHandoff(input, common) {
   };
 }
 
+const QUESTION_URGENCIES = new Set(['low', 'normal', 'high']);
+
+function normalizeAgentQuestion(input, common) {
+  const urgency = String(input.urgency || 'normal').trim().toLowerCase();
+  if (!QUESTION_URGENCIES.has(urgency)) throw policyError('knowledge_question_urgency_invalid', { allowedUrgencies: [...QUESTION_URGENCIES] });
+  const suggested = (input.suggestedExpertAgentSessionIds || input.suggested_expert_agent_session_ids) == null
+    ? []
+    : normalizedTextList(
+      input.suggestedExpertAgentSessionIds || input.suggested_expert_agent_session_ids,
+      'question_suggested_expert_agent_session_ids',
+      { limit: 8, maxLength: KNOWLEDGE_REFERENCE_LIMITS.idLength, allowEmpty: true },
+    ).map((value) => normalizeId(value, 'question_suggested_expert_agent_session_id'));
+  const allowUnrouted = input.allowUnrouted === true || input.allow_unrouted === true;
+  if (!suggested.length && !input.skipSuggestionValidation && !allowUnrouted) {
+    // A question with no suggested expert and no explicit unrouted flag is a
+    // broadcast in disguise; refuse it rather than spamming every peer.
+    throw policyError('knowledge_question_experts_or_unrouted_required');
+  }
+  return {
+    ...common,
+    questionUrgency: urgency,
+    suggestedExpertAgentSessionIds: [...new Set(suggested)],
+    // Stored rows carry answerText/answeredByAgentSessionId once answered;
+    // preserve them through projection re-validation instead of resetting.
+    answerText: optionalText(input.answerText || input.answer_text, 'question_answer_text', 4096),
+    answeredByAgentSessionId: normalizeId(
+      input.answeredByAgentSessionId || input.answered_by_agent_session_id,
+      'question_answered_by_agent_session_id',
+      { required: false },
+    ),
+  };
+}
+
 export function validateKnowledgeItem(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw policyError('knowledge_item_invalid');
   assertNoPrivateMaterial(input);
@@ -564,6 +620,7 @@ export function validateKnowledgeItem(input) {
   if (kind === 'lead') return normalizeLead(input, common);
   if (kind === 'shared_skill') return normalizeSharedSkill(input, common);
   if (kind === 'impact_notice') return normalizeImpactNotice(input, common);
+  if (kind === 'agent_question') return normalizeAgentQuestion(input, common);
   return normalizeHandoff(input, common);
 }
 
@@ -571,6 +628,12 @@ export function allowedKnowledgeTransitions(kindInput, statusInput) {
   const kind = normalizeKind(kindInput);
   const status = normalizeStatus(kind, statusInput);
   return [...STATUS_TRANSITIONS[kind][status]];
+}
+
+export function isKnowledgeExpertiseEligible(item = {}) {
+  const kind = String(item.kind || '').trim().toLowerCase();
+  const status = String(item.status || '').trim().toLowerCase();
+  return Boolean(EXPERTISE_ELIGIBLE_KNOWLEDGE_STATUSES[kind]?.includes(status));
 }
 
 export function transitionKnowledgeItem(input, nextStatusInput, context = {}) {
@@ -656,6 +719,16 @@ export function safeKnowledgeProjection(input) {
       responseAction: item.responseAction,
     };
   }
+  if (item.kind === 'agent_question') {
+    return {
+      ...base,
+      questionUrgency: item.questionUrgency,
+      suggestedExpertAgentSessionIds: item.suggestedExpertAgentSessionIds,
+      fromAgentSessionId: item.source?.agentSessionId || null,
+      answerText: item.answerText,
+      answeredByAgentSessionId: item.answeredByAgentSessionId,
+    };
+  }
   return {
     ...base,
     fromAgentSessionId: item.fromAgentSessionId,
@@ -673,13 +746,19 @@ function canonical(value) {
 
 export function knowledgeDedupeKey(input) {
   const item = safeKnowledgeProjection(input);
-  const identity = {
-    kind: item.kind,
-    projectId: item.projectId,
-    title: item.title.toLowerCase(),
-    summary: item.summary,
-    references: item.references,
-  };
+  const identity = item.kind === 'agent_question'
+    ? {
+      kind: item.kind,
+      projectId: item.projectId,
+      references: item.references,
+    }
+    : {
+      kind: item.kind,
+      projectId: item.projectId,
+      title: item.title.toLowerCase(),
+      summary: item.summary,
+      references: item.references,
+    };
   if (item.kind === 'shared_skill') {
     identity.skillKey = item.skillKey;
     identity.commands = Object.fromEntries(item.recipe.commands.map((command, index) => [String(index), command]));
@@ -689,6 +768,11 @@ export function knowledgeDedupeKey(input) {
   } else if (item.kind === 'handoff') {
     identity.fromAgentSessionId = item.fromAgentSessionId;
     identity.toAgentSessionId = item.toAgentSessionId;
+  } else if (item.kind === 'agent_question') {
+    // Questions dedupe on asker + references so a re-ask of the identical
+    // question (even after an answer) returns the existing thread instead of
+    // spawning duplicate notifications.
+    identity.fromAgentSessionId = item.source?.agentSessionId || null;
   }
   const digest = crypto.createHash('sha256').update(JSON.stringify(canonical(identity))).digest('hex');
   return `knowledge:${item.kind}:${digest}`;
