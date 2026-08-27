@@ -3635,6 +3635,14 @@ async function persistQuestionFeedback({
   })) {
     throw notFound('knowledge_question_not_found');
   }
+  const answerPayload = parseJson(question.payloadJson, {});
+  const reviewedByAnswerer = Boolean(
+    (actorUserIdValue && answerPayload.answeredByUserId === actorUserIdValue)
+      || (actorType === 'agent_session'
+        && actorId
+        && answerPayload.answeredByAgentSessionId === actorId),
+  );
+  if (reviewedByAnswerer) throw forbidden('knowledge_feedback_self_review_forbidden');
   if (question.status !== 'answered') {
     throw conflict('knowledge_feedback_question_not_answered', {
       knowledgeItemId,

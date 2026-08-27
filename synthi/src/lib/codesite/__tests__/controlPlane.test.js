@@ -218,6 +218,7 @@ import {
   reviewDocument,
   reviewRouteRevision,
   shadowMergeSimulate,
+  submitAgentQuestionFeedback,
   submitProjectQuestionFeedback,
   updateZonePolicy,
   validateTransaction,
@@ -3730,6 +3731,45 @@ describe('CodeSite control plane transaction validation', () => {
         { verdict: 'useful' },
         { userId: 'reviewer-1' },
       )).rejects.toMatchObject({ status: 404, code: 'knowledge_question_not_found' });
+      expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+    });
+
+    it('does not let a human answerer review their own answer', async () => {
+      const question = knowledgeRow({
+        id: 'human-self-reviewed-question',
+        kind: 'agent_question',
+        status: 'answered',
+        payloadJson: JSON.stringify({ answeredByUserId: 'reviewer-1' }),
+      });
+      prisma.codeSiteKnowledgeItem.findFirst.mockResolvedValue(question);
+
+      await expect(submitProjectQuestionFeedback(
+        'acme',
+        'project-1',
+        question.id,
+        { verdict: 'useful' },
+        { userId: 'reviewer-1' },
+      )).rejects.toMatchObject({ status: 403, code: 'knowledge_feedback_self_review_forbidden' });
+      expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+    });
+
+    it('does not let an agent answerer review their own answer', async () => {
+      const session = bindKnowledgeAuthority();
+      const question = knowledgeRow({
+        id: 'agent-self-reviewed-question',
+        kind: 'agent_question',
+        status: 'answered',
+        payloadJson: JSON.stringify({ answeredByAgentSessionId: session.id }),
+      });
+      prisma.codeSiteKnowledgeItem.findFirst.mockResolvedValue(question);
+
+      await expect(submitAgentQuestionFeedback(
+        'acme',
+        session.id,
+        question.id,
+        AGENT_AUTHORITY_TOKEN,
+        { verdict: 'useful' },
+      )).rejects.toMatchObject({ status: 403, code: 'knowledge_feedback_self_review_forbidden' });
       expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
     });
   });
