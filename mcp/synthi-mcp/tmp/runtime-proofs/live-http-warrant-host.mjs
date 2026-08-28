@@ -42,6 +42,7 @@ const recipientDirectory = new Map([
 const resourceCapability = `${principal.issuer}:resource`;
 const acceptedResource = RESOURCE_URIS.console;
 const reservedRequestIds = new Set();
+const warrantId = `${proofId}:warrant`;
 
 process.env.NODE_ENV = "production";
 process.env.SYNTHI_WARRANT_MODE = "enforce";
@@ -56,13 +57,13 @@ process.once("SIGTERM", closeMetrics);
 const authority = {
   async issue(input) {
     return {
-      warrant_id: "runtime-proof-issued-warrant",
+      warrant_id: warrantId,
       subject: input.subject,
       audience: input.audience,
       grants: input.grants,
       issued_at_ms: 0,
       expires_at_ms: input.ttl_ms,
-      root_warrant_id: "runtime-proof-issued-warrant",
+      root_warrant_id: warrantId,
       status: "active",
     };
   },
