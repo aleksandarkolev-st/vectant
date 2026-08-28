@@ -23,6 +23,10 @@ pub const CAP_RELOAD: &str = "reload";
 pub const CAP_BINARY_PATCH: &str = "binary_patch";
 pub const CAP_WINDOW_DISCOVERY: &str = "window_discovery";
 
+pub fn module_requires_strict_gpu_reload_proof(module_name: &str) -> bool {
+    module_name.starts_with("__gpu_device:") || module_name.starts_with("__gpu_device_partial:")
+}
+
 pub fn default_supervisor_capabilities() -> Vec<String> {
     vec![
         CAP_LOAD.to_string(),

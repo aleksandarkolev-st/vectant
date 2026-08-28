@@ -19,6 +19,13 @@ use crate::infra::host_kv::{
     KV_STORE,
 };
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModuleLoadOutcome {
+    Applied { active_path: String },
+    SkippedAlreadyActive { active_path: String },
+    Rejected { reason: String },
+}
+
 pub unsafe fn process_load_command(
     name: &str,
     path: &str,
@@ -32,7 +39,7 @@ pub unsafe fn process_load_command(
     session_id_cstring: &Option<CString>,
     kv_api: &HostKvApiV1,
     loader_enabled: bool,
-) {
+) -> ModuleLoadOutcome {
     eprintln!("[Runner] Loading module '{}' from {}", name, path);
 
     if let Some(current_path) = loaded_paths.get(name) {
@@ -41,7 +48,9 @@ pub unsafe fn process_load_command(
                 "[Runner] Module '{}' already loaded from {}. Skipping.",
                 name, path
             );
-            return;
+            return ModuleLoadOutcome::SkippedAlreadyActive {
+                active_path: path.to_string(),
+            };
         }
     }
 
@@ -143,7 +152,11 @@ pub unsafe fn process_load_command(
                     name, module_abi_version
                 );
             }
-            if require_gpu_contract && validator::module_requires_gpu_contract(name) {
+            if require_gpu_contract
+                && info
+                    .effective_contract
+                    .is_some_and(validator::module_requires_gpu_contract)
+            {
                 if info.has_gpu_contract {
                     eprintln!(
                         "[Runner] [GPU HMR] Host GPU ABI validated for '{}' (managed_state={})",
@@ -173,7 +186,7 @@ pub unsafe fn process_load_command(
                 };
                 let status = HmrStatus::rejected(name, &reason);
                 eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
-                return;
+                return ModuleLoadOutcome::Rejected { reason };
             }
 
             // ============================================================
@@ -944,16 +957,21 @@ pub unsafe fn process_load_command(
                 };
                 eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
             }
+            ModuleLoadOutcome::Applied {
+                active_path: path.to_string(),
+            }
         }
         Err(e) => {
+            let reason = format!("Load error: {e}");
             eprintln!(
                 "[Runner] [HMR] Error loading new library (old module continues): {}",
                 e
             );
 
             // Send rejection status
-            let status = HmrStatus::rejected(name, &format!("Load error: {}", e));
+            let status = HmrStatus::rejected(name, &reason);
             eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+            ModuleLoadOutcome::Rejected { reason }
         }
     }
 }

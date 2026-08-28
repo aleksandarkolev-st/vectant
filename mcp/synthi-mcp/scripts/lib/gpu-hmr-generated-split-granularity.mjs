@@ -4,8 +4,11 @@ export const GPU_HMR_GENERATED_SPLIT_GRANULARITY_SCHEMA_VERSION =
   'synthi.gpu_hmr.generated_split_granularity.v1';
 export const GPU_HMR_GENERATED_SPLIT_DETERMINISTIC_FISSION_SCHEMA_VERSION =
   'synthi.gpu_hmr.generated_split_deterministic_fission.v1';
+export const GPU_HMR_GENERATED_SPLIT_DETERMINISTIC_FISSION_EVIDENCE_SCHEMA_VERSION =
+  'synthi.gpu_hmr.generated_split_deterministic_fission_evidence.v1';
 
 const REQUIRED_FISSION_VERIFICATION_CATEGORIES = [
+  'selected_island_binding',
   'source_mapping',
   'include_closure',
   'symbol_ownership',
@@ -16,10 +19,23 @@ const REQUIRED_FISSION_VERIFICATION_CATEGORIES = [
   'output_oracle',
 ];
 
-const DEFAULT_DEVICE_BY_VENDOR = {
-  cuda: 'device.cu',
-  rocm: 'device.hip',
+const TYPED_EVIDENCE_CATEGORY_ALIASES = {
+  selected_island_binding: ['selected_island', 'island_binding', 'selected_island_proof'],
+  source_mapping: ['source_map', 'source_mapping_proof'],
+  include_closure: ['include_dependency_closure', 'include_closure_proof'],
+  symbol_ownership: ['symbol_binding', 'symbol_ownership_proof'],
+  dependency_closure: ['dependency_closure_proof'],
+  abi_membrane: ['abi_proof', 'abi_compatibility', 'abi_membrane_proof'],
+  compile_recipe: ['compile_proof', 'compile_recipe_proof', 'compiler_invocation'],
+  loader_capability: ['loader_runtime_proof', 'runtime_loader_proof', 'runtime_proof'],
+  output_oracle: ['output_oracle_proof', 'oracle_proof'],
 };
+
+const CONTENT_ADDRESSED_EVIDENCE_REF_RE =
+  /^(?:evidence|validation):[a-z0-9._/-]+(?::[a-z0-9._/-]+)*:sha256:[0-9a-f]{64}$/i;
+const CONTENT_ADDRESSED_ID_RE =
+  /^[a-z][a-z0-9._-]*(?::[a-z0-9._/-]+)*:sha256:[0-9a-f]{64}$/i;
+const SHA256_CONTENT_ADDRESS_RE = /^sha256:[0-9a-f]{64}$/i;
 
 function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -35,10 +51,6 @@ function stableJson(value) {
 
 function sha256Hex(value) {
   return createHash('sha256').update(String(value ?? '')).digest('hex');
-}
-
-function evidenceId(category, value) {
-  return `evidence:generated-fission:${category}:sha256:${sha256Hex(stableJson(value))}`;
 }
 
 function verifierReportEvidenceId(value) {
@@ -74,6 +86,273 @@ function compactObjects(values) {
 
 function normalizePathList(values) {
   return compactStrings(values).map(cleanRel).filter(Boolean);
+}
+
+function normalizeEvidenceCategory(value) {
+  return String(value ?? '')
+    .trim()
+    .replace(/[-\s]+/g, '_')
+    .toLowerCase();
+}
+
+function categoryAliases(category) {
+  return new Set([
+    category,
+    ...(TYPED_EVIDENCE_CATEGORY_ALIASES[category] ?? []),
+  ].map(normalizeEvidenceCategory));
+}
+
+function isContentAddressedEvidenceRef(value) {
+  return CONTENT_ADDRESSED_EVIDENCE_REF_RE.test(String(value ?? '').trim());
+}
+
+function isContentAddressedId(value) {
+  const trimmed = String(value ?? '').trim();
+  return CONTENT_ADDRESSED_ID_RE.test(trimmed) || SHA256_CONTENT_ADDRESS_RE.test(trimmed);
+}
+
+function evidenceRecordSchema(record) {
+  return firstText(record?.schemaVersion, record?.schema_version, record?.schema);
+}
+
+function evidenceRecordCategory(record) {
+  return normalizeEvidenceCategory(firstText(
+    record?.category,
+    record?.evidenceCategory,
+    record?.evidence_category,
+    record?.proofCategory,
+    record?.proof_category,
+  ));
+}
+
+function evidenceRecordType(record) {
+  return normalizeEvidenceCategory(firstText(
+    record?.evidenceType,
+    record?.evidence_type,
+    record?.kind,
+    record?.proofType,
+    record?.proof_type,
+  ));
+}
+
+function evidenceRecordRefs(record) {
+  return compactStrings([
+    record?.evidenceRef,
+    record?.evidence_ref,
+    ...(Array.isArray(record?.evidenceRefs) ? record.evidenceRefs : []),
+    ...(Array.isArray(record?.evidence_refs) ? record.evidence_refs : []),
+  ]);
+}
+
+function evidenceRecordContentAddresses(record) {
+  return compactStrings([
+    record?.contentHash,
+    record?.content_hash,
+    record?.artifactHash,
+    record?.artifact_hash,
+    record?.contentAddressedId,
+    record?.content_addressed_id,
+    record?.artifactId,
+    record?.artifact_id,
+    record?.proofId,
+    record?.proof_id,
+    ...(Array.isArray(record?.contentHashes) ? record.contentHashes : []),
+    ...(Array.isArray(record?.content_hashes) ? record.content_hashes : []),
+    ...(Array.isArray(record?.artifactHashes) ? record.artifactHashes : []),
+    ...(Array.isArray(record?.artifact_hashes) ? record.artifact_hashes : []),
+    ...(Array.isArray(record?.artifactIds) ? record.artifactIds : []),
+    ...(Array.isArray(record?.artifact_ids) ? record.artifact_ids : []),
+    ...(Array.isArray(record?.proofIds) ? record.proofIds : []),
+    ...(Array.isArray(record?.proof_ids) ? record.proof_ids : []),
+  ]).filter(isContentAddressedId);
+}
+
+function evidenceRecordSubject(record) {
+  return asObject(
+    record?.subject
+    ?? record?.proofSubject
+    ?? record?.proof_subject
+    ?? record?.binding
+    ?? record?.selectedIsland
+    ?? record?.selected_island,
+  );
+}
+
+function evidenceRecordPaths(record) {
+  const subject = evidenceRecordSubject(record);
+  return normalizePathList([
+    record?.selectedPath,
+    record?.selected_path,
+    record?.sourcePath,
+    record?.source_path,
+    ...(Array.isArray(record?.sourcePaths) ? record.sourcePaths : []),
+    ...(Array.isArray(record?.source_paths) ? record.source_paths : []),
+    subject.selectedPath,
+    subject.selected_path,
+    subject.sourcePath,
+    subject.source_path,
+    ...(Array.isArray(subject.sourcePaths) ? subject.sourcePaths : []),
+    ...(Array.isArray(subject.source_paths) ? subject.source_paths : []),
+  ]);
+}
+
+function evidenceRecordIslandIds(record) {
+  const subject = evidenceRecordSubject(record);
+  return compactStrings([
+    record?.selectedIslandId,
+    record?.selected_island_id,
+    record?.islandId,
+    record?.island_id,
+    subject.selectedIslandId,
+    subject.selected_island_id,
+    subject.islandId,
+    subject.island_id,
+    ...(Array.isArray(record?.selectedIslandIds) ? record.selectedIslandIds : []),
+    ...(Array.isArray(record?.selected_island_ids) ? record.selected_island_ids : []),
+  ]);
+}
+
+function evidenceRecordTargetSymbols(record) {
+  const subject = evidenceRecordSubject(record);
+  return compactStrings([
+    record?.targetSymbol,
+    record?.target_symbol,
+    record?.kernelSymbol,
+    record?.kernel_symbol,
+    subject.targetSymbol,
+    subject.target_symbol,
+    subject.kernelSymbol,
+    subject.kernel_symbol,
+    ...(Array.isArray(record?.targetSymbols) ? record.targetSymbols : []),
+    ...(Array.isArray(record?.target_symbols) ? record.target_symbols : []),
+    ...(Array.isArray(subject.targetSymbols) ? subject.targetSymbols : []),
+    ...(Array.isArray(subject.target_symbols) ? subject.target_symbols : []),
+  ]);
+}
+
+function evidenceRecordMatchesCategory(record, category) {
+  const aliases = categoryAliases(category);
+  return aliases.has(evidenceRecordCategory(record)) || aliases.has(evidenceRecordType(record));
+}
+
+function collectFissionEvidenceRecords(...values) {
+  const records = [];
+  const visit = (value) => {
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    if (
+      evidenceRecordSchema(value) === GPU_HMR_GENERATED_SPLIT_DETERMINISTIC_FISSION_EVIDENCE_SCHEMA_VERSION
+      || evidenceRecordCategory(value)
+    ) {
+      records.push(value);
+    }
+    for (const key of [
+      'evidence',
+      'evidence_records',
+      'evidenceRecords',
+      'verification_evidence',
+      'verificationEvidence',
+      'deterministic_fission_evidence',
+      'deterministicFissionEvidence',
+      'fission_evidence',
+      'fissionEvidence',
+      'proof_artifacts',
+      'proofArtifacts',
+    ]) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) visit(value[key]);
+    }
+  };
+  for (const value of values) visit(value);
+  return records;
+}
+
+function typedEvidenceFailure(category, reason, details = {}) {
+  return {
+    accepted: false,
+    failureCode: `generated_split.${category}_${reason}`,
+    evidenceIds: [],
+    evidenceTypes: [],
+    contentAddresses: [],
+    ...details,
+  };
+}
+
+function typedEvidenceGate(category, records, { selectedPath, selectedIslandId, selectedKernel } = {}) {
+  const candidates = records.filter((record) => evidenceRecordMatchesCategory(record, category));
+  const typedCandidates = candidates.filter((record) =>
+    evidenceRecordSchema(record) === GPU_HMR_GENERATED_SPLIT_DETERMINISTIC_FISSION_EVIDENCE_SCHEMA_VERSION
+    && evidenceRecordType(record)
+  );
+  if (typedCandidates.length === 0) {
+    return typedEvidenceFailure(category, 'typed_evidence_missing', {
+      observedCandidateCount: candidates.length,
+    });
+  }
+
+  const withRefs = typedCandidates
+    .map((record) => ({
+      record,
+      evidenceIds: evidenceRecordRefs(record).filter(isContentAddressedEvidenceRef),
+      contentAddresses: evidenceRecordContentAddresses(record),
+    }))
+    .filter((item) => item.evidenceIds.length > 0);
+  if (withRefs.length === 0) {
+    return typedEvidenceFailure(category, 'content_addressed_evidence_ref_missing', {
+      observedCandidateCount: typedCandidates.length,
+    });
+  }
+
+  const withContentAddresses = withRefs.filter((item) => item.contentAddresses.length > 0);
+  if (withContentAddresses.length === 0) {
+    return typedEvidenceFailure(category, 'content_addressed_payload_missing', {
+      observedCandidateCount: withRefs.length,
+    });
+  }
+
+  const normalizedSelectedPath = cleanRel(selectedPath);
+  const pathBound = withContentAddresses.filter((item) =>
+    normalizedSelectedPath && evidenceRecordPaths(item.record).includes(normalizedSelectedPath)
+  );
+  if (pathBound.length === 0) {
+    return typedEvidenceFailure(category, 'selected_path_binding_missing', {
+      observedCandidateCount: withContentAddresses.length,
+    });
+  }
+
+  let acceptedRecords = pathBound;
+  if (category === 'selected_island_binding') {
+    acceptedRecords = acceptedRecords.filter((item) =>
+      evidenceRecordIslandIds(item.record).includes(selectedIslandId)
+    );
+    if (acceptedRecords.length === 0) {
+      return typedEvidenceFailure(category, 'selected_island_id_binding_missing', {
+        observedCandidateCount: pathBound.length,
+      });
+    }
+    if (selectedKernel) {
+      acceptedRecords = acceptedRecords.filter((item) =>
+        evidenceRecordTargetSymbols(item.record).includes(selectedKernel)
+      );
+      if (acceptedRecords.length === 0) {
+        return typedEvidenceFailure(category, 'target_symbol_binding_missing', {
+          observedCandidateCount: pathBound.length,
+        });
+      }
+    }
+  }
+
+  return {
+    accepted: true,
+    failureCode: null,
+    schemaVersion: GPU_HMR_GENERATED_SPLIT_DETERMINISTIC_FISSION_EVIDENCE_SCHEMA_VERSION,
+    evidenceIds: compactStrings(acceptedRecords.flatMap((item) => item.evidenceIds)),
+    evidenceTypes: compactStrings(acceptedRecords.map((item) => evidenceRecordType(item.record))),
+    contentAddresses: compactStrings(acceptedRecords.flatMap((item) => item.contentAddresses)),
+    observedCandidateCount: acceptedRecords.length,
+  };
 }
 
 function sourceForPath(files, filePath) {
@@ -127,7 +406,7 @@ export function manifestDeviceRoles(manifest, vendorHint = 'rocm') {
 
   const vendor = String(gpu.vendor ?? vendorHint ?? '').trim().toLowerCase();
   const moduleFiles = asObject(manifestObject.module_files ?? manifestObject.moduleFiles);
-  const fallbackPath = cleanRel(moduleFiles.device ?? DEFAULT_DEVICE_BY_VENDOR[vendor] ?? 'device.hip');
+  const fallbackPath = cleanRel(moduleFiles.device);
   return fallbackPath
     ? [{
         id: 'device.device',
@@ -192,6 +471,7 @@ export function assessGeneratedGpuSplitGranularity({ manifest, files, vendor } =
     multipleKernelsShareDeviceTranslationUnit,
     rejectedClaims,
     reasonCodes: compactStrings([
+      deviceRoles.length === 0 ? 'generated_split.device_roles_missing' : null,
       missingDeviceRolePaths.length ? 'generated_split.device_role_source_missing' : null,
       'generated_split.smallest_safe_fission_not_proven_without_verifier',
       'generated_split.per_kernel_hmr_not_proven_without_verifier',
@@ -264,25 +544,6 @@ function artifactContentHashes(artifact) {
   ]);
 }
 
-function artifactLoaderProofAccepted(artifact) {
-  const value = asObject(artifact);
-  const ledger = asObject(value.proofLedgerValidation ?? value.proof_ledger_validation);
-  const runtimeArtifact = asObject(
-    value.runtimeProofArtifactValidation ?? value.runtime_proof_artifact_validation,
-  );
-  return value.loaderProofAccepted === true
-    || value.loader_proof_accepted === true
-    || value.runtimeProofAccepted === true
-    || value.runtime_proof_accepted === true
-    || value.gpuHmrSuccess === true
-    || value.gpu_hmr_success === true
-    || value.ledgerGpuHmrSuccess === true
-    || value.ledger_gpu_hmr_success === true
-    || ledger.gpuHmrSuccess === true
-    || ledger.gpu_hmr_success === true
-    || runtimeArtifact.accepted === true;
-}
-
 function nonEmptyObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0;
 }
@@ -325,20 +586,42 @@ function unaffectedRoleHashesAccepted(rolePaths, selectedPath, before = {}, afte
   };
 }
 
-function categoryCoverage(category, accepted, evidenceValue) {
-  const ids = accepted ? [evidenceId(category, evidenceValue)] : [];
-  return { category, accepted, evidenceIds: ids };
+function categoryCoverage(category, materialAccepted, typedGate) {
+  const accepted = materialAccepted === true && typedGate?.accepted === true;
+  return {
+    category,
+    accepted,
+    materialAccepted: materialAccepted === true,
+    evidenceGate: typedGate?.accepted === true ? 'passed' : typedGate?.failureCode,
+    evidenceObserved: typedGate?.accepted === true,
+    evidenceSchemaVersion: typedGate?.accepted === true ? typedGate.schemaVersion : null,
+    evidenceTypes: typedGate?.accepted === true ? typedGate.evidenceTypes : [],
+    contentAddresses: typedGate?.accepted === true ? typedGate.contentAddresses : [],
+    evidenceIds: accepted ? typedGate.evidenceIds : [],
+  };
 }
 
 function coverageComplete(categories) {
   const missingCategories = categories
     .filter((category) => category.accepted !== true || category.evidenceIds.length === 0)
     .map((category) => category.category);
+  const missingGates = compactStrings(categories
+    .filter((category) => category.accepted !== true)
+    .map((category) => category.evidenceGate === 'passed'
+      ? `generated_split.${category.category}_material_not_accepted`
+      : category.evidenceGate));
   return {
     requiredCategories: REQUIRED_FISSION_VERIFICATION_CATEGORIES,
     missingCategories,
+    missingGates,
     categories: categories.map((category) => ({
       category: category.category,
+      materialAccepted: category.materialAccepted,
+      evidenceGate: category.evidenceGate,
+      evidenceObserved: category.evidenceObserved,
+      evidenceSchemaVersion: category.evidenceSchemaVersion,
+      evidenceTypes: category.evidenceTypes,
+      contentAddresses: category.contentAddresses,
       evidenceIds: category.evidenceIds,
     })),
   };
@@ -352,6 +635,10 @@ export function verifyGeneratedGpuSplitDeterministicFission({
   selectedPath,
   changedPaths,
   selectedArtifact,
+  verificationEvidence = [],
+  deterministicFissionEvidence = [],
+  fissionEvidence = [],
+  proofArtifacts = [],
   outputOracleContract,
   abiCompatibilityClass = 'compatible',
   fullDeviceFallback = false,
@@ -377,6 +664,9 @@ export function verifyGeneratedGpuSplitDeterministicFission({
   const selectedManifestRole = compactObjects(baseAssessment.deviceRoles)
     .find((role) => cleanRel(role.path) === normalizedSelectedPath) ?? {};
   const selectedKernel = selectedRole?.kernelCount === 1 ? selectedRole.kernelSymbols[0] : null;
+  const selectedIslandId = selectedKernel
+    ? `kernel:${selectedKernel}:${sha256Hex(normalizedSelectedPath).slice(0, 16)}`
+    : `device-role:${sha256Hex(normalizedSelectedPath).slice(0, 16)}`;
   const normalizedChangedPaths = normalizePathList(changedPaths);
   const changedScopeAccepted =
     normalizedChangedPaths.length > 0
@@ -385,10 +675,33 @@ export function verifyGeneratedGpuSplitDeterministicFission({
   const boundArtifactIds = artifactIds(selectedArtifact);
   const boundArtifactProofIds = artifactProofIds(selectedArtifact);
   const boundArtifactHashes = artifactContentHashes(selectedArtifact);
+  const contentAddressedBoundArtifactIds = boundArtifactIds.filter(isContentAddressedId);
+  const contentAddressedBoundArtifactProofIds = boundArtifactProofIds.filter(isContentAddressedId);
+  const contentAddressedBoundArtifactHashes = boundArtifactHashes.filter(isContentAddressedId);
   const artifactBindingAccepted =
     artifactSources.includes(normalizedSelectedPath)
-    && (boundArtifactIds.length > 0 || boundArtifactHashes.length > 0 || boundArtifactProofIds.length > 0)
-    && artifactLoaderProofAccepted(selectedArtifact);
+    && (
+      contentAddressedBoundArtifactIds.length > 0
+      || contentAddressedBoundArtifactHashes.length > 0
+      || contentAddressedBoundArtifactProofIds.length > 0
+    );
+  const fissionEvidenceRecords = collectFissionEvidenceRecords(
+    verificationEvidence,
+    deterministicFissionEvidence,
+    fissionEvidence,
+    proofArtifacts,
+    selectedArtifact,
+    outputOracleContract,
+  );
+  const typedEvidenceGates = new Map(REQUIRED_FISSION_VERIFICATION_CATEGORIES.map((category) => [
+    category,
+    typedEvidenceGate(category, fissionEvidenceRecords, {
+      selectedPath: normalizedSelectedPath,
+      selectedIslandId,
+      selectedKernel,
+    }),
+  ]));
+  const typedGate = (category) => typedEvidenceGates.get(category);
   const unaffected = unaffectedRoleHashesAccepted(
     rolePaths,
     normalizedSelectedPath,
@@ -421,64 +734,27 @@ export function verifyGeneratedGpuSplitDeterministicFission({
     && processRestarted === false;
 
   const categories = [
-    categoryCoverage('source_mapping', Boolean(selectedRole), {
-      selectedPath: normalizedSelectedPath,
-      roleIds: selectedRole?.roleIds ?? [],
-    }),
-    categoryCoverage('include_closure', includeClosureObserved, {
-      selectedPath: normalizedSelectedPath,
-      sourceFiles: selectedManifestRole.sourceFiles ?? selectedManifestRole.source_files ?? [],
-      includedDependencies,
-    }),
-    categoryCoverage('symbol_ownership', selectedKernelOwnedOnlyBySelectedRole, {
-      selectedPath: normalizedSelectedPath,
-      selectedKernel,
-      allRoleKernels: roleReports.map((role) => ({
-        path: role.path,
-        kernelSymbols: role.kernelSymbols,
-      })),
-    }),
-    categoryCoverage('dependency_closure', changedScopeAccepted && unaffected.accepted, {
-      changedPaths: normalizedChangedPaths,
-      selectedPath: normalizedSelectedPath,
-      unaffected,
-    }),
-    categoryCoverage('abi_membrane', abiAccepted, {
-      abiCompatibilityClass,
-      selectedKernel,
-    }),
-    categoryCoverage('compile_recipe', compileRecipeAccepted, {
-      compiler: selectedManifestRole.compiler,
-      arch: selectedManifestRole.arch,
-      compileTarget,
-      compilerArgsHash,
-    }),
-    categoryCoverage('loader_capability', loaderFirewallAccepted && artifactBindingAccepted, {
-      artifactSources,
-      boundArtifactIds,
-      boundArtifactProofIds,
-      boundArtifactHashes,
-      fullDeviceFallback,
-      hostRelinked,
-      fullRebuildUsed,
-      processRestarted,
-    }),
-    categoryCoverage('output_oracle', outputOracleAccepted, outputOracleContract),
+    categoryCoverage('selected_island_binding', Boolean(selectedRole) && selectedKernel !== null, typedGate('selected_island_binding')),
+    categoryCoverage('source_mapping', Boolean(selectedRole), typedGate('source_mapping')),
+    categoryCoverage('include_closure', includeClosureObserved, typedGate('include_closure')),
+    categoryCoverage('symbol_ownership', selectedKernelOwnedOnlyBySelectedRole, typedGate('symbol_ownership')),
+    categoryCoverage('dependency_closure', changedScopeAccepted && unaffected.accepted, typedGate('dependency_closure')),
+    categoryCoverage('abi_membrane', abiAccepted, typedGate('abi_membrane')),
+    categoryCoverage('compile_recipe', compileRecipeAccepted, typedGate('compile_recipe')),
+    categoryCoverage('loader_capability', loaderFirewallAccepted && artifactBindingAccepted, typedGate('loader_capability')),
+    categoryCoverage('output_oracle', outputOracleAccepted, typedGate('output_oracle')),
   ];
   const verificationEvidenceCoverage = coverageComplete(categories);
   const accepted = verificationEvidenceCoverage.missingCategories.length === 0
     && selectedRole?.present === true
     && selectedKernel !== null
     && baseAssessment.missingDeviceRolePaths.length === 0;
-  const selectedIslandId = selectedKernel
-    ? `kernel:${selectedKernel}:${sha256Hex(normalizedSelectedPath).slice(0, 16)}`
-    : `device-role:${sha256Hex(normalizedSelectedPath).slice(0, 16)}`;
   const verifierEvidenceId = verifierReportEvidenceId({
     selectedIslandId,
     accepted,
     verificationEvidenceCoverage,
   });
-  const deterministicVerifierEvidenceIds = categories.flatMap((category) => category.evidenceIds);
+  const deterministicVerifierEvidenceIds = compactStrings(categories.flatMap((category) => category.evidenceIds));
   const selectedIslandContract = {
     islandId: selectedIslandId,
     island_id: selectedIslandId,
@@ -492,12 +768,12 @@ export function verifyGeneratedGpuSplitDeterministicFission({
     excluded_host_sources: normalizePathList(excludedHostSources),
     targetSymbols: selectedKernel ? [selectedKernel] : [],
     target_symbols: selectedKernel ? [selectedKernel] : [],
-    artifactIds: boundArtifactIds,
-    artifact_ids: boundArtifactIds,
-    artifactProofIds: boundArtifactProofIds,
-    artifact_proof_ids: boundArtifactProofIds,
-    artifactContentHashes: boundArtifactHashes,
-    artifact_content_hashes: boundArtifactHashes,
+    artifactIds: contentAddressedBoundArtifactIds,
+    artifact_ids: contentAddressedBoundArtifactIds,
+    artifactProofIds: contentAddressedBoundArtifactProofIds,
+    artifact_proof_ids: contentAddressedBoundArtifactProofIds,
+    artifactContentHashes: contentAddressedBoundArtifactHashes,
+    artifact_content_hashes: contentAddressedBoundArtifactHashes,
     outputOracleContract: outputOracleContract ?? {},
     output_oracle_contract: outputOracleContract ?? {},
     verificationEvidenceCoverage,
@@ -535,6 +811,7 @@ export function verifyGeneratedGpuSplitDeterministicFission({
   };
   const reasonCodes = compactStrings([
     ...compactStrings(baseAssessment.reasonCodes),
+    ...verificationEvidenceCoverage.missingGates,
     accepted ? null : 'generated_split.deterministic_fission_verifier_rejected',
     selectedRole ? null : 'generated_split.selected_device_role_missing',
     selectedRole?.present === true ? null : 'generated_split.selected_device_role_source_missing',
@@ -599,6 +876,7 @@ export function verifyGeneratedGpuSplitDeterministicFission({
       selectedKernel,
       verificationEvidenceCoverage,
       failures: verificationEvidenceCoverage.missingCategories,
+      failureGates: verificationEvidenceCoverage.missingGates,
     },
     fissionProof,
     selectedIslandContract,
@@ -633,9 +911,23 @@ function deterministicFissionVerifierAccepted(report) {
   const requiredCategories = compactStrings(coverage.requiredCategories);
   const categories = compactObjects(coverage.categories);
   const categoryNames = compactStrings(categories.map((category) => category.category));
+  const categoryRecordComplete = (category) => {
+    const item = categories.find((candidate) => candidate.category === category);
+    if (!item) return false;
+    const evidenceIds = compactStrings(item.evidenceIds);
+    const contentAddresses = compactStrings(item.contentAddresses);
+    return evidenceIds.length > 0
+      && evidenceIds.every(isContentAddressedEvidenceRef)
+      && item.evidenceGate === 'passed'
+      && item.evidenceObserved === true
+      && item.evidenceSchemaVersion
+        === GPU_HMR_GENERATED_SPLIT_DETERMINISTIC_FISSION_EVIDENCE_SCHEMA_VERSION
+      && compactStrings(item.evidenceTypes).length > 0
+      && contentAddresses.length > 0
+      && contentAddresses.every(isContentAddressedId);
+  };
   const categoryEvidenceComplete = REQUIRED_FISSION_VERIFICATION_CATEGORIES.every((category) =>
-    categoryNames.includes(category)
-    && compactStrings(categories.find((item) => item.category === category)?.evidenceIds).length > 0
+    categoryNames.includes(category) && categoryRecordComplete(category)
   );
   const categoryEvidenceIds = categories.flatMap((category) => compactStrings(category.evidenceIds));
   const passedStatusObserved = stageStatuses.some((status) =>
@@ -647,6 +939,7 @@ function deterministicFissionVerifierAccepted(report) {
   return verifier.accepted === true
     && verifier.schemaVersion === GPU_HMR_GENERATED_SPLIT_DETERMINISTIC_FISSION_SCHEMA_VERSION
     && verifierEvidenceId !== null
+    && isContentAddressedEvidenceRef(verifierEvidenceId)
     && selectedIslandId !== null
     && proof.fissionProven === true
     && proof.observed === true
@@ -667,6 +960,7 @@ function deterministicFissionVerifierAccepted(report) {
     && missingCategories.length === 0
     && REQUIRED_FISSION_VERIFICATION_CATEGORIES.every((category) => requiredCategories.includes(category))
     && categoryEvidenceComplete
+    && categoryEvidenceIds.every(isContentAddressedEvidenceRef)
     && categoryEvidenceIds.every((id) => proofDeterministicVerifierEvidenceRefs.includes(id))
     && categoryEvidenceIds.every((id) => contractDeterministicVerifierEvidenceIds.includes(id));
 }

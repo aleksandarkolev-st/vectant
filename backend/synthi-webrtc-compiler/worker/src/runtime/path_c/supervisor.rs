@@ -53,6 +53,7 @@ impl SupervisedSession {
 
     /// Send a Load command and wait for Ack.
     pub async fn load_module(&mut self, module_name: &str, so_path: &str) -> Result<()> {
+        ensure_path_c_v1_module_supported(module_name)?;
         let id = self.next_id();
         let cmd = HmrCommand::Load {
             command_id: id,
@@ -65,6 +66,7 @@ impl SupervisedSession {
 
     /// Send a Reload command and wait for Ack.
     pub async fn reload_module(&mut self, module_name: &str, so_path: &str) -> Result<()> {
+        ensure_path_c_v1_module_supported(module_name)?;
         let id = self.next_id();
         let cmd = HmrCommand::Reload {
             command_id: id,
@@ -144,6 +146,16 @@ impl SupervisedSession {
             }
         }
     }
+}
+
+fn ensure_path_c_v1_module_supported(module_name: &str) -> Result<()> {
+    if module_requires_strict_gpu_reload_proof(module_name) {
+        anyhow::bail!(
+            "Path-C protocol v1 cannot authorize GPU module '{}' because its ACK has no source-edit, artifact, epoch, dispatch, or output proof",
+            module_name
+        );
+    }
+    Ok(())
 }
 
 /// Spawn a supervised session: Xvfb + child + IPC handshake.
@@ -261,5 +273,12 @@ mod tests {
     fn socket_path_format() {
         let p = socket_path("session-abc123");
         assert_eq!(p, "/tmp/synthi_hmr_session-abc123.sock");
+    }
+
+    #[test]
+    fn path_c_v1_rejects_gpu_modules_before_ipc() {
+        assert!(ensure_path_c_v1_module_supported("core").is_ok());
+        assert!(ensure_path_c_v1_module_supported("__gpu_device:rocm:all:abi").is_err());
+        assert!(ensure_path_c_v1_module_supported("__gpu_device_partial:rocm:shade:abi").is_err());
     }
 }

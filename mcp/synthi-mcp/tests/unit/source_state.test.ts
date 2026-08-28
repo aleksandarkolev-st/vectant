@@ -21,6 +21,16 @@ function installFakeAttached(): { sent: Array<Record<string, unknown>> } {
     channels: {
       sendCompileRequest: async (payload: Record<string, unknown>) => {
         sent.push(payload);
+        return {
+          schemaVersion: "synthi.gpu_hmr.compile_dispatch_correlation.v1" as const,
+          proofAuthority: "compile_dispatch_correlation_only_not_gpu_hmr_acceptance" as const,
+          dispatchedAt: Date.now(),
+          proofCorrelationId:
+            `gpu-proof-compile-correlation:sha256:${String(sent.length).repeat(64).slice(0, 64)}`,
+          acceptedForGpuHmr: false as const,
+          gpuHmrSuccess: false as const,
+          canSatisfyRuntimeProof: false as const,
+        };
       },
     },
   };

@@ -1,6 +1,11 @@
 {
   "schemaVersion": "synthi.gpu.hmr.external_project_profile.v1",
   "id": "threejs-webgl-shader-lava",
+  "backend": "webgl",
+  "backendFamily": "webgl",
+  "libraryFamily": "threejs",
+  "runtimeEnvironment": "browser_dev_server",
+  "profileClass": "external_engine_visual_profile",
   "project": {
     "name": "Three.js WebGL shader lava hot visual proof",
     "repoUrl": "https://github.com/mrdoob/three.js.git",

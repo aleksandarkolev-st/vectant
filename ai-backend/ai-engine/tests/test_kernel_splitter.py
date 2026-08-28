@@ -40,6 +40,17 @@ from llm.prompts import GPU_SPLIT_PROMPT, build_split_mode_prompt
 from verifier_gpu import SplitVerificationResult, Violation, verify_split_output
 
 
+HIP_SPLIT_MANIFEST = {
+    "module_files": {
+        "shared": "shared.h",
+        "core": "core.cpp",
+        "gui": "gui.cpp",
+        "host_runner": "host_runner.cpp",
+        "device": "device.hip",
+    }
+}
+
+
 SAMPLE_RAW = '''
 <JSON>
 {
@@ -69,6 +80,13 @@ This project is a CUDA vector-add demo.
   "shared_link_flags": [],
   "runner_link_flags": ["-lSDL2","-ldl","-lcudart","-lcuda"],
   "files": ["shared.h","core.cpp","gui.cpp","host_runner.cpp","device.cu"],
+  "module_files": {
+    "shared": "shared.h",
+    "core": "core.cpp",
+    "gui": "gui.cpp",
+    "host_runner": "host_runner.cpp",
+    "device": "device.cu"
+  },
   "system_packages": [],
   "hot_reload_mode": "swap",
   "confidence": { "overall": "high", "runner_synthesis": "high",
@@ -87,12 +105,29 @@ This project is a CUDA vector-add demo.
 '''
 
 
+def test_portable_gpu_source_extensions_are_preserved_for_split_context():
+    for path in (
+        "kernels/update.cl",
+        "shaders/update.opencl",
+        "shaders/render.wgsl",
+        "shaders/render.glsl",
+        "shaders/render.comp",
+        "shaders/render.hlsl",
+        "shaders/render.slang",
+        "web/runtime.ts",
+    ):
+        assert kernel_splitter._looks_like_source_file(path)
+
+    assert not kernel_splitter._looks_like_source_file("docs/gpu-notes.md")
+
+
 def test_parses_clean_response():
     parsed = parse_kernel_split_response(SAMPLE_RAW)
     assert "device.cu" in parsed["files"]
     assert "vec_add" in parsed["files"]["device.cu"]
     assert parsed["manifest"]["gpu"]["vendor"] == "cuda"
     assert parsed["manifest"]["files"][-1] == "device.cu"
+    assert parsed["manifest"]["module_files"]["device"] == "device.cu"
     assert parsed["kernel_hashes"] == {"vec_add": "0x1234abcd5678ef01"}
     assert isinstance(parsed["launch_graph"], list)
     assert parsed["launch_graph"][0]["kernel"] == "vec_add"
@@ -360,6 +395,103 @@ def test_does_not_compile_embedded_file_map_as_role_source():
     assert "core.cpp" not in parsed["files"]
 
 
+def test_preserves_manifest_declared_opaque_generated_paths_and_json_source_bytes():
+    manifest = {
+        "module_files": {
+            "shared": "units/shared.contract",
+            "core": "units/host-core.payload",
+            "gui": "units/visual-stage",
+            "host_runner": "units/launch-entry",
+            "device": "units/accelerator-A.payload",
+        }
+    }
+    files = {
+        "units/shared.contract": '#include "synthi_gpu_runtime.h"',
+        "units/host-core.payload": '{"literal":"source bytes"}',
+        "units/visual-stage": 'extern "C" void gui_on_render(void*) {}',
+        "units/launch-entry": "int main(){return 0;}",
+        "units/accelerator-A.payload": 'extern "C" __global__ void step() {}',
+        "units/auxiliary.data": "opaque auxiliary bytes",
+    }
+    raw = (
+        f"<JSON>{json.dumps(files)}</JSON>"
+        "<synthi_arch_cache>"
+        f"<synthi_build_manifest>{json.dumps(manifest)}</synthi_build_manifest>"
+        "</synthi_arch_cache>"
+    )
+
+    parsed = parse_kernel_split_response(raw)
+
+    assert parsed["files"] == files
+    assert parsed["manifest"]["module_files"]["device"] == "units/accelerator-A.payload"
+
+
+def test_rejects_manifest_semantic_roles_that_alias_one_generated_path():
+    manifest = {
+        "module_files": {
+            "shared": "units/shared",
+            "core": "units/host",
+            "gui": "units/host",
+            "host_runner": "units/runner",
+            "device": "units/device",
+        }
+    }
+    raw = (
+        '<JSON>{"units/shared":"s","units/host":"h",'
+        '"units/runner":"r","units/device":"d"}</JSON>'
+        "<synthi_arch_cache>"
+        f"<synthi_build_manifest>{json.dumps(manifest)}</synthi_build_manifest>"
+        "</synthi_arch_cache>"
+    )
+
+    with pytest.raises(KernelSplitterError, match="generated.case_collision_rejected"):
+        parse_kernel_split_response(raw)
+
+
+@pytest.mark.parametrize(
+    ("path", "reason_code"),
+    [
+        ("../escape.payload", "generated.path_traversal_rejected"),
+        ("C:/escape.payload", "generated.absolute_path_rejected"),
+        ("folder/CON.payload", "generated.invalid_path_rejected"),
+    ],
+)
+def test_rejects_unsafe_generated_file_paths(path, reason_code):
+    raw = f"<JSON>{json.dumps({path: 'bytes'})}</JSON>"
+
+    with pytest.raises(KernelSplitterError, match=reason_code):
+        parse_kernel_split_response(raw)
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        ("Units/Accelerator", "units/accelerator"),
+        ("unicode/caf\u00e9", "unicode/cafe\u0301"),
+    ],
+)
+def test_rejects_portable_generated_path_aliases(paths):
+    raw = f"<JSON>{json.dumps({paths[0]: 'first', paths[1]: 'second'})}</JSON>"
+
+    with pytest.raises(KernelSplitterError, match="generated.case_collision_rejected"):
+        parse_kernel_split_response(raw)
+
+
+def test_rejects_duplicate_generated_json_keys_before_dict_collapse():
+    raw = '<JSON>{"units/accelerator":"first","units/accelerator":"second"}</JSON>'
+
+    with pytest.raises(KernelSplitterError, match="generated.case_collision_rejected"):
+        parse_kernel_split_response(raw)
+
+
+@pytest.mark.parametrize("invalid_value", [None, 7, ["not", "source"]])
+def test_rejects_invalid_generated_file_values(invalid_value):
+    raw = f"<JSON>{json.dumps({'units/accelerator': invalid_value})}</JSON>"
+
+    with pytest.raises(KernelSplitterError, match="generated.invalid_file_value_rejected"):
+        parse_kernel_split_response(raw)
+
+
 def test_build_prompt_substitutes_user_code():
     code = "__global__ void k(){}"
     p = build_prompt(code)
@@ -444,7 +576,139 @@ def test_split_provider_timeout_is_reason_coded():
 
     assert verification.ok is False
     assert verification.violations[0].rule == "ai_provider_timeout"
-    assert "TimeoutError" in verification.violations[0].message
+    diagnostic = json.loads(verification.violations[0].message)
+    assert diagnostic["schemaVersion"] == "synthi.ai.provider_diagnostic.v1"
+    assert diagnostic["errorClass"] == "TimeoutError"
+    assert diagnostic["retryable"] is True
+
+
+def test_split_provider_account_suspended_is_reason_coded_and_redacted():
+    raw_key = "AIzaSyProviderSuspendedFixtureKey000000000"
+    verification = split_provider_failure_verification(
+        KernelSplitProviderError(
+            RuntimeError(
+                "PermissionDenied: Consumer api_key:"
+                f"{raw_key} has been suspended. reason=CONSUMER_SUSPENDED"
+            )
+        )
+    )
+
+    assert verification.ok is False
+    assert verification.violations[0].rule == "ai_provider_account_suspended"
+    assert raw_key not in verification.violations[0].message
+    diagnostic = json.loads(verification.violations[0].message)
+    assert diagnostic["reasonCode"] == "ai_provider_account_suspended"
+    assert diagnostic["acceptedForGpuHmr"] is False
+
+
+def test_split_provider_auth_denied_is_reason_coded():
+    verification = split_provider_failure_verification(
+        KernelSplitProviderError(
+            RuntimeError("PermissionDenied: 403 API key not valid for this provider")
+        )
+    )
+
+    assert verification.ok is False
+    assert verification.violations[0].rule == "ai_provider_auth_denied"
+    assert "API key not valid" not in verification.violations[0].message
+
+
+def test_split_provider_diagnostic_discards_resource_urls_and_credentials():
+    provider_resource = "projects/" + ("7" * 12)
+    sentinels = [
+        provider_resource,
+        "https://user:password@example.invalid/v1/models?key=secret#fragment",
+        "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+        "Cookie: session=secret-session-value",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzZWNyZXQifQ.signature",
+    ]
+    verification = split_provider_failure_verification(
+        KernelSplitProviderError(
+            RuntimeError("PermissionDenied 403 " + " ".join(sentinels))
+        )
+    )
+
+    retained = verification.violations[0].message
+    assert verification.violations[0].rule == "ai_provider_auth_denied"
+    assert all(sentinel not in retained for sentinel in sentinels)
+    diagnostic = json.loads(retained)
+    assert set(diagnostic) == {
+        "acceptedForGpuHmr",
+        "canSatisfyRuntimeProof",
+        "diagnosticId",
+        "endpointRole",
+        "errorClass",
+        "gpuHmrSuccess",
+        "httpStatus",
+        "proofAuthority",
+        "reasonCode",
+        "retryable",
+        "schemaVersion",
+    }
+    assert diagnostic["endpointRole"] == "split_generation"
+
+
+def test_run_kernel_splitter_preflight_refusal_skips_provider_call():
+    raw_key = "AIzaSyPreflightSuspendedFixtureKey0000000"
+
+    class Provider:
+        called = False
+        preflight_called = False
+        name = "fixture-provider"
+
+        async def preflight(self, *_args, **_kwargs):
+            self.preflight_called = True
+            return {
+                "ok": False,
+                "provider": self.name,
+                "reasonCode": "ai_provider_account_suspended",
+                "message": (
+                    "PermissionDenied: Consumer api_key:"
+                    f"{raw_key} has been suspended. reason=CONSUMER_SUSPENDED"
+                ),
+                "proof_authority": "provider_preflight_diagnostic_only",
+                "accepted_for_gpu_hmr": False,
+                "gpu_hmr_success": False,
+                "can_satisfy_runtime_proof": False,
+            }
+
+        async def ask_llm(self, *_args, **_kwargs):
+            self.called = True
+            raise AssertionError("ask_llm must not run after failed preflight")
+
+    source = """
+    #include <hip/hip_runtime.h>
+    extern "C" __global__ void k(float* out) { out[threadIdx.x] = 1.0f; }
+    int main() { return 0; }
+    """
+    provider = Provider()
+    detection = GpuDetectionResult(
+        is_gpu=True,
+        vendor_hint="rocm",
+        per_file={"src/main.hip": GpuDetectionEvidence(qualifier_hits=1)},
+    )
+
+    with pytest.raises(KernelSplitProviderError) as exc:
+        asyncio.run(
+            run_kernel_splitter(
+                provider=provider,
+                user_code=source,
+                lang="cpp",
+                detection=detection,
+                files=[{"name": "src/main.hip", "content": source}],
+                focus="src/main.hip",
+                model="fixture-model",
+                gpu_arch_hint="gfx1201",
+            )
+        )
+
+    verification = split_provider_failure_verification(exc.value)
+    assert provider.preflight_called is True
+    assert provider.called is False
+    assert verification.ok is False
+    assert verification.violations[0].rule == "ai_provider_account_suspended"
+    assert raw_key not in verification.violations[0].message
+    assert json.loads(verification.violations[0].message)["endpointRole"] == "provider_preflight"
 
 
 def test_run_kernel_splitter_rejects_vulkan_before_ai_provider():
@@ -555,6 +819,671 @@ def test_run_kernel_splitter_rejects_ambiguous_cmake_target_before_ai_provider()
     resolution = exc.value.source_context_report["buildMetadata"]["targetResolution"]
     assert resolution["status"] == "ambiguous"
     assert resolution["method"] == "ambiguous_executable_targets_containing_focus"
+
+
+def test_run_kernel_splitter_uses_deterministic_rocm_sdl_split_before_ai_provider(monkeypatch):
+    class Provider:
+        called = False
+        preflight_called = False
+
+        async def preflight(self, *_args, **_kwargs):
+            self.preflight_called = True
+            raise AssertionError("preflight should not be called for deterministic source-owned split")
+
+        async def ask_llm(self, *_args, **_kwargs):
+            self.called = True
+            raise AssertionError("provider should not be called for deterministic source-owned split")
+
+    source = r'''
+    #include <SDL2/SDL.h>
+    #include <hip/hip_runtime.h>
+    #include <cmath>
+    constexpr int WIDTH = 64;
+    constexpr int HEIGHT = 64;
+    constexpr int N = 8;
+    static void seed(float* x, float* y) {
+        for (int i = 0; i < N; ++i) {
+            x[i] = (float)(i * 3);
+            y[i] = (float)(i * 5);
+        }
+    }
+    extern "C" __global__ void move_points(float* x, float* y, int n, unsigned long long frame) {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if (i >= n) return;
+        x[i] = fmodf(x[i] + 1.0f + (float)(frame & 3), (float)WIDTH);
+        y[i] = fmodf(y[i] + 2.0f, (float)HEIGHT);
+    }
+    int main() {
+        SDL_Window* window = SDL_CreateWindow("demo", 0, 0, WIDTH, HEIGHT, 0);
+        SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, 0);
+        float hostX[N];
+        float hostY[N];
+        seed(hostX, hostY);
+        float* deviceX = nullptr;
+        float* deviceY = nullptr;
+        hipMalloc(&deviceX, sizeof(float) * N);
+        hipMalloc(&deviceY, sizeof(float) * N);
+        hipMemcpy(deviceX, hostX, sizeof(float) * N, hipMemcpyHostToDevice);
+        hipMemcpy(deviceY, hostY, sizeof(float) * N, hipMemcpyHostToDevice);
+        unsigned long long frame = 0;
+        dim3 block(256);
+        dim3 grid((N + block.x - 1) / block.x);
+        move_points<<<grid, block>>>(deviceX, deviceY, N, frame++);
+        hipMemcpy(hostX, deviceX, sizeof(float) * N, hipMemcpyDeviceToHost);
+        hipMemcpy(hostY, deviceY, sizeof(float) * N, hipMemcpyDeviceToHost);
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        SDL_RenderClear(renderer);
+        SDL_SetRenderDrawColor(renderer, 255, 220, 80, 255);
+        for (int i = 0; i < N; ++i) {
+            SDL_Rect r{(int)hostX[i], (int)hostY[i], 2, 2};
+            SDL_RenderFillRect(renderer, &r);
+        }
+        SDL_RenderPresent(renderer);
+        return 0;
+    }
+    '''
+    provider = Provider()
+    detection = GpuDetectionResult(
+        is_gpu=True,
+        vendor_hint="rocm",
+        per_file={"src/demo.hip": GpuDetectionEvidence(qualifier_hits=1)},
+    )
+    monkeypatch.delenv("SYNTHI_GPU_VENDOR", raising=False)
+    monkeypatch.delenv("SYNTHI_GPU_ARCH", raising=False)
+
+    result = asyncio.run(
+        run_kernel_splitter(
+            provider=provider,
+            user_code=source,
+            lang="cpp",
+            detection=detection,
+            files=[{"name": "src/demo.hip", "content": source}],
+            focus="src/demo.hip",
+            model="gemini-3.5-flash",
+            gpu_arch_hint="gfx1201",
+        )
+    )
+
+    assert provider.called is False
+    assert provider.preflight_called is False
+    assert result.verification and result.verification.ok is True
+    assert result.repair_report["deterministicSplit"]["providerCallUsed"] is False
+    assert result.raw_response == ""
+    assert "synthi_output_oracle" not in result.files["core.cpp"]
+    assert "Dim3 block(256);" in result.files["core.cpp"]
+    assert "Dim3 grid((N + block.x - 1) / block.x);" in result.files["core.cpp"]
+    assert "sizeof(float) * N" in result.files["core.cpp"]
+    assert "sizeof(float);" not in result.files["core.cpp"]
+    assert "SDL_RenderFillRect" in result.files["gui.cpp"]
+    assert "synthi_generated_seed_buffers" in result.files["device.hip"]
+    assert "constexpr int N" in result.files["shared.h"]
+    assert "constexpr int N" not in result.files["device.hip"]
+
+    class RequiredProvider:
+        name = "gemini"
+        called = False
+        preflight_called = False
+
+        async def preflight(self, *_args, **_kwargs):
+            self.preflight_called = True
+            return {"ok": True}
+
+        async def ask_llm(self, *_args, **_kwargs):
+            self.called = True
+            raise RuntimeError("required provider call observed")
+
+    required_provider = RequiredProvider()
+    provider_request, provider_request_hash = kernel_splitter.provider_call_request_binding(
+        nonce="provider-call:0123456789abcdef0123456789abcdef",
+        user_code=source,
+        lang="cpp",
+        files=[{"name": "src/demo.hip", "content": source}],
+        focus="src/demo.hip",
+        provider="gemini",
+        model="gemini-3.5-flash",
+        gpu_arch_hint="gfx1201",
+        extra_instructions=None,
+    )
+    with pytest.raises(KernelSplitProviderError) as provider_error:
+        asyncio.run(
+            run_kernel_splitter(
+                provider=required_provider,
+                user_code=source,
+                lang="cpp",
+                detection=detection,
+                files=[{"name": "src/demo.hip", "content": source}],
+                focus="src/demo.hip",
+                model="gemini-3.5-flash",
+                gpu_arch_hint="gfx1201",
+                require_provider_call=True,
+                provider_call_request=provider_request,
+                provider_call_request_hash=provider_request_hash,
+            )
+        )
+    assert provider_error.value.reason_code == "ai_provider_error"
+    assert "required provider call observed" not in str(provider_error.value)
+    assert required_provider.preflight_called is True
+    assert required_provider.called is True
+
+
+def _provider_receipt_fixture(response_prefix='{"files":{"device.hip":"kernel"}}'):
+    request, request_hash = kernel_splitter.provider_call_request_binding(
+        nonce="provider-call:fedcba9876543210fedcba9876543210",
+        user_code="__global__ void kernel(float* out) { out[0] = 1.0f; }",
+        lang="cpp",
+        files=[{
+            "name": "src/main.hip",
+            "content": "__global__ void kernel(float* out) { out[0] = 1.0f; }",
+        }],
+        focus="src/main.hip",
+        provider="generic-provider",
+        model="model-under-test",
+        gpu_arch_hint="gfx1201",
+        extra_instructions="preserve output",
+    )
+    challenge, _ = kernel_splitter._provider_call_challenge(
+        request_binding=request,
+        request_hash=request_hash,
+        prompt_payload="prompt-under-test",
+    )
+    challenge_json = json.dumps(
+        challenge,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    raw_response = (
+        response_prefix
+        + f"<synthi_provider_call_challenge>{challenge_json}"
+        + "</synthi_provider_call_challenge>"
+    )
+    return request, request_hash, challenge, raw_response
+
+
+def _exact_provider_metadata(**updates):
+    metadata = {
+        "provider": "generic-provider",
+        "requested_model": "model-under-test",
+        "actual_model": "model-under-test",
+        "request_mode": "split",
+        "provider_model_status": "available",
+        "fallback_model": None,
+        "fallback_used": False,
+        "provider_model_alias_resolved_to": None,
+        "provider_shutdown_or_deprecation_detected": False,
+        "model_availability_checked_at": "2026-07-15T00:00:00+00:00",
+        "hard_infra_failure": False,
+    }
+    metadata.update(updates)
+    return metadata
+
+
+def _issue_provider_receipt(provider_metadata, response_prefix=None):
+    fixture_args = () if response_prefix is None else (response_prefix,)
+    request, request_hash, challenge, raw_response = _provider_receipt_fixture(*fixture_args)
+    return kernel_splitter._provider_call_receipt(
+        request_binding=request,
+        request_hash=request_hash,
+        challenge=challenge,
+        raw_response=raw_response,
+        provider_metadata=provider_metadata,
+        started_monotonic_ns=100,
+        completed_monotonic_ns=200,
+        started_unix_ns=1_700_000_000_000_000_000,
+        completed_unix_ns=1_700_000_000_000_000_100,
+    )
+
+
+def test_provider_call_receipt_binds_request_response_and_provider_metadata():
+    request, request_hash = kernel_splitter.provider_call_request_binding(
+        nonce="provider-call:fedcba9876543210fedcba9876543210",
+        user_code="__global__ void kernel(float* out) { out[0] = 1.0f; }",
+        lang="cpp",
+        files=[{
+            "name": "src/main.hip",
+            "content": "__global__ void kernel(float* out) { out[0] = 1.0f; }",
+        }],
+        focus="src/main.hip",
+        provider="generic-provider",
+        model="model-under-test",
+        gpu_arch_hint="gfx1201",
+        extra_instructions="preserve output",
+    )
+    challenge, _ = kernel_splitter._provider_call_challenge(
+        request_binding=request,
+        request_hash=request_hash,
+        prompt_payload="prompt-under-test",
+    )
+    challenge_json = json.dumps(
+        challenge,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    raw_response = (
+        '{"files":{"device.hip":"kernel"}}'
+        f"<synthi_provider_call_challenge>{challenge_json}</synthi_provider_call_challenge>"
+    )
+    receipt = kernel_splitter._provider_call_receipt(
+        request_binding=request,
+        request_hash=request_hash,
+        challenge=challenge,
+        raw_response=raw_response,
+        provider_metadata={
+            "provider": "generic-provider",
+            "requested_model": "model-under-test",
+            "actual_model": "model-under-test",
+            "request_mode": "split",
+            "provider_model_status": "available",
+            "fallback_model": None,
+            "fallback_used": False,
+            "provider_model_alias_resolved_to": None,
+            "provider_shutdown_or_deprecation_detected": False,
+            "model_availability_checked_at": "2026-07-15T00:00:00+00:00",
+            "hard_infra_failure": False,
+        },
+        started_monotonic_ns=100,
+        completed_monotonic_ns=200,
+        started_unix_ns=1_700_000_000_000_000_000,
+        completed_unix_ns=1_700_000_000_000_000_100,
+    )
+
+    assert receipt["accepted"] is True
+    assert receipt["provider_call_used"] is True
+    assert receipt["request_binding"] == request
+    assert receipt["request_binding"]["requested_provider"] == "generic-provider"
+    assert receipt["request_hash"] == request_hash
+    assert receipt["response_hash"] == kernel_splitter._sha256_prefixed(raw_response)
+    assert receipt["challenge"] == challenge
+    assert receipt["challenge_echo_verified"] is True
+    assert receipt["call_id"] == f"provider-call:{receipt['receipt_hash']}"
+    assert receipt["accepted_for_gpu_hmr"] is False
+    assert receipt["gpu_hmr_success"] is False
+
+    noncanonical_challenge = json.dumps(challenge, ensure_ascii=False, indent=2)
+    with pytest.raises(ValueError, match="exact fresh-call challenge"):
+        kernel_splitter._validate_provider_call_challenge_echo(
+            (
+                '{"files":{"device.hip":"kernel"}}'
+                f"<synthi_provider_call_challenge>{noncanonical_challenge}"
+                "</synthi_provider_call_challenge>"
+            ),
+            challenge,
+        )
+
+    with pytest.raises(ValueError, match="requested model"):
+        kernel_splitter._provider_call_receipt(
+            request_binding=request,
+            request_hash=request_hash,
+            challenge=challenge,
+            raw_response=raw_response,
+            provider_metadata={
+                "provider": "generic-provider",
+                "requested_model": "replayed-model",
+                "actual_model": "replayed-model",
+                "request_mode": "split",
+                "provider_model_status": "available",
+                "fallback_model": None,
+                "fallback_used": False,
+                "provider_model_alias_resolved_to": None,
+                "provider_shutdown_or_deprecation_detected": False,
+                "model_availability_checked_at": "2026-07-15T00:00:00+00:00",
+                "hard_infra_failure": False,
+            },
+            started_monotonic_ns=100,
+            completed_monotonic_ns=200,
+            started_unix_ns=1_700_000_000_000_000_000,
+            completed_unix_ns=1_700_000_000_000_000_100,
+        )
+
+    with pytest.raises(ValueError, match="provider does not match"):
+        kernel_splitter._provider_call_receipt(
+            request_binding=request,
+            request_hash=request_hash,
+            challenge=challenge,
+            raw_response=raw_response,
+            provider_metadata={
+                "provider": "substituted-provider",
+                "requested_model": "model-under-test",
+                "actual_model": "model-under-test",
+                "request_mode": "split",
+                "provider_model_status": "available",
+                "fallback_model": None,
+                "fallback_used": False,
+                "provider_model_alias_resolved_to": None,
+                "provider_shutdown_or_deprecation_detected": False,
+                "model_availability_checked_at": "2026-07-15T00:00:00+00:00",
+                "hard_infra_failure": False,
+            },
+            started_monotonic_ns=100,
+            completed_monotonic_ns=200,
+            started_unix_ns=1_700_000_000_000_000_000,
+            completed_unix_ns=1_700_000_000_000_000_100,
+        )
+
+    with pytest.raises(ValueError, match="fresh-call challenge"):
+        kernel_splitter._provider_call_receipt(
+            request_binding=request,
+            request_hash=request_hash,
+            challenge=challenge,
+            raw_response='{"files":{"device.hip":"stale"}}',
+            provider_metadata={
+                "provider": "generic-provider",
+                "requested_model": "model-under-test",
+                "actual_model": "model-under-test",
+                "request_mode": "split",
+                "provider_model_status": "available",
+                "fallback_model": None,
+                "fallback_used": False,
+                "provider_model_alias_resolved_to": None,
+                "provider_shutdown_or_deprecation_detected": False,
+                "model_availability_checked_at": "2026-07-15T00:00:00+00:00",
+                "hard_infra_failure": False,
+            },
+            started_monotonic_ns=100,
+            completed_monotonic_ns=200,
+            started_unix_ns=1_700_000_000_000_000_000,
+            completed_unix_ns=1_700_000_000_000_000_100,
+        )
+
+
+@pytest.mark.parametrize(
+    ("metadata_updates", "error_match"),
+    [
+        ({"actual_model": "substituted-model"}, "exactly match requested model"),
+        ({"fallback_used": True}, "fallback_used=false"),
+        ({"fallback_model": "fallback-model"}, "fallback model"),
+        ({"provider_model_status": "deprecated"}, "status=available"),
+        ({"provider_model_status": "unknown"}, "status=available"),
+        ({"provider_model_status": "private_alias"}, "status=available"),
+        ({"provider_model_alias_resolved_to": "resolved-model"}, "alias resolution"),
+        ({"provider_shutdown_or_deprecation_detected": True}, "lifecycle state=false"),
+        ({"model_availability_checked_at": "not-a-timestamp"}, "valid model availability"),
+        ({"hard_infra_failure": True}, "non-failed infrastructure"),
+    ],
+)
+def test_provider_call_receipt_requires_exact_requested_model_execution(
+    metadata_updates,
+    error_match,
+):
+    with pytest.raises(ValueError, match=error_match):
+        _issue_provider_receipt(_exact_provider_metadata(**metadata_updates))
+
+
+@pytest.mark.parametrize(
+    ("provider_metadata", "response_prefix", "error_match"),
+    [
+        (
+            _exact_provider_metadata(
+                diagnostics={"nested": {"acceptedForGpuHmr": True}},
+            ),
+            None,
+            "provider metadata claims",
+        ),
+        (
+            _exact_provider_metadata(),
+            '{"support":{"nested":{"canSatisfyDispatchProof":"true"}}}',
+            "provider response claims",
+        ),
+    ],
+)
+def test_provider_call_receipt_rejects_nested_authority_claims(
+    provider_metadata,
+    response_prefix,
+    error_match,
+):
+    with pytest.raises(ValueError, match=error_match):
+        _issue_provider_receipt(provider_metadata, response_prefix)
+
+
+def test_provider_call_receipt_accepts_only_support_authority():
+    receipt = _issue_provider_receipt(_exact_provider_metadata())
+
+    assert receipt["actual_model"] == receipt["requested_model"] == "model-under-test"
+    assert receipt["provider_model_status"] == "available"
+    assert receipt["fallback_used"] is False
+    assert receipt["fallback_model"] is None
+    assert receipt["provider_model_alias_resolved_to"] is None
+    assert receipt["provider_shutdown_or_deprecation_detected"] is False
+    assert receipt["hard_infra_failure"] is False
+    assert receipt["accepted_for_gpu_hmr"] is False
+    assert receipt["gpu_hmr_success"] is False
+    assert receipt["can_satisfy_runtime_proof"] is False
+    assert receipt["can_satisfy_dispatch_proof"] is False
+
+
+def test_required_provider_call_echoes_fresh_challenge_through_split_parser():
+    class Provider:
+        name = "generic-provider"
+        last_call_metadata = {}
+
+        async def preflight(self, *_args, **_kwargs):
+            return {"ok": True}
+
+        async def ask_llm(self, _code, _lang, prompt, **kwargs):
+            challenge = kernel_splitter._PROVIDER_CALL_CHALLENGE_RE.search(prompt)
+            assert challenge is not None
+            self.last_call_metadata = {
+                "provider": self.name,
+                "requested_model": kwargs["model"],
+                "actual_model": kwargs["model"],
+                "request_mode": "split",
+                "provider_model_status": "available",
+                "fallback_model": None,
+                "fallback_used": False,
+                "provider_model_alias_resolved_to": None,
+                "provider_shutdown_or_deprecation_detected": False,
+                "model_availability_checked_at": "2026-07-15T00:00:00+00:00",
+                "hard_infra_failure": False,
+            }
+            return f"{SAMPLE_RAW}\n{challenge.group(0)}"
+
+    source = '__global__ void vec_add(const float* a, const float* b, float* c, int n) {}'
+    files = [{"name": "src/main.cu", "content": source}]
+    request, request_hash = kernel_splitter.provider_call_request_binding(
+        nonce="provider-call:0123456789abcdef0123456789abcdef",
+        user_code=source,
+        lang="cpp",
+        files=files,
+        focus="src/main.cu",
+        provider="generic-provider",
+        model="model-under-test",
+        gpu_arch_hint="sm_80",
+        extra_instructions=None,
+    )
+    result = asyncio.run(
+        run_kernel_splitter(
+            provider=Provider(),
+            user_code=source,
+            lang="cpp",
+            detection=GpuDetectionResult(
+                is_gpu=True,
+                vendor_hint="cuda",
+                per_file={"src/main.cu": GpuDetectionEvidence(qualifier_hits=1)},
+            ),
+            files=files,
+            focus="src/main.cu",
+            model="model-under-test",
+            gpu_arch_hint="sm_80",
+            require_provider_call=True,
+            provider_call_request=request,
+            provider_call_request_hash=request_hash,
+        )
+    )
+
+    assert result.verification is not None
+    assert "device.cu" in result.files
+    assert result.provider_call_receipt["challenge_echo_verified"] is True
+    assert result.provider_call_receipt["response_hash"] == kernel_splitter._sha256_prefixed(
+        result.raw_response
+    )
+    assert "<synthi_provider_call_challenge>" in result.raw_response
+
+
+def test_deterministic_rocm_sdl_split_preserves_texture_render_path(monkeypatch):
+    class Provider:
+        called = False
+
+        async def ask_llm(self, *_args, **_kwargs):
+            self.called = True
+            raise AssertionError("provider should not be called for deterministic source-owned texture split")
+
+    source = r'''
+    #include <SDL2/SDL.h>
+    #include <hip/hip_runtime.h>
+    #include <cstdint>
+    constexpr int WIDTH = 32;
+    constexpr int HEIGHT = 24;
+    constexpr int PIXEL_COUNT = WIDTH * HEIGHT;
+    extern "C" __global__ void draw_pixels(uint32_t* pixels, int width, int height, float exposure, unsigned long long frame) {
+        int x = blockIdx.x * blockDim.x + threadIdx.x;
+        int y = blockIdx.y * blockDim.y + threadIdx.y;
+        if (x >= width || y >= height) return;
+        uint32_t r = (uint32_t)((x + (int)(frame & 7)) & 255);
+        uint32_t g = (uint32_t)((y * 3) & 255);
+        uint32_t b = (uint32_t)(exposure * 80.0f);
+        pixels[y * width + x] = 0xff000000u | (r << 16) | (g << 8) | b;
+    }
+    int main() {
+        SDL_Window* window = SDL_CreateWindow("texture", 0, 0, WIDTH, HEIGHT, 0);
+        SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, 0);
+        SDL_Texture* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, WIDTH, HEIGHT);
+        static uint32_t hostPixels[PIXEL_COUNT];
+        uint32_t* devicePixels = nullptr;
+        hipMalloc(&devicePixels, sizeof(uint32_t) * PIXEL_COUNT);
+        unsigned long long frame = 0;
+        dim3 block(8, 8);
+        dim3 grid((WIDTH + block.x - 1) / block.x, (HEIGHT + block.y - 1) / block.y);
+        draw_pixels<<<grid, block>>>(devicePixels, WIDTH, HEIGHT, 1.25f, frame++);
+        hipDeviceSynchronize();
+        hipMemcpy(hostPixels, devicePixels, sizeof(uint32_t) * PIXEL_COUNT, hipMemcpyDeviceToHost);
+        SDL_UpdateTexture(texture, nullptr, hostPixels, WIDTH * (int)sizeof(uint32_t));
+        SDL_RenderClear(renderer);
+        SDL_RenderCopy(renderer, texture, nullptr, nullptr);
+        SDL_RenderPresent(renderer);
+        return 0;
+    }
+    '''
+    provider = Provider()
+    detection = GpuDetectionResult(
+        is_gpu=True,
+        vendor_hint="rocm",
+        per_file={"src/texture_demo.hip": GpuDetectionEvidence(qualifier_hits=1)},
+    )
+    monkeypatch.delenv("SYNTHI_GPU_VENDOR", raising=False)
+    monkeypatch.delenv("SYNTHI_GPU_ARCH", raising=False)
+
+    result = asyncio.run(
+        run_kernel_splitter(
+            provider=provider,
+            user_code=source,
+            lang="cpp",
+            detection=detection,
+            files=[{"name": "src/texture_demo.hip", "content": source}],
+            focus="src/texture_demo.hip",
+            model="gemini-3.5-flash",
+            gpu_arch_hint="gfx1201",
+        )
+    )
+
+    assert provider.called is False
+    assert result.verification and result.verification.ok is True
+    assert result.repair_report["deterministicSplit"]["providerCallUsed"] is False
+    assert "void* texture = nullptr;" in result.files["shared.h"]
+    assert 'extern "C" void* core_get_api() { return &g_state; }' in result.files["core.cpp"]
+    assert 'extern "C" void* get_core_api() { return core_get_api(); }' in result.files["core.cpp"]
+    assert "SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, WIDTH, HEIGHT)" in result.files["gui.cpp"]
+    assert "AppState* state = static_cast<AppState*>(core_state_ptr ? core_state_ptr : prev_state);" in result.files["gui.cpp"]
+    assert "SDL_Texture* texture = static_cast<SDL_Texture*>(state->texture);" in result.files["gui.cpp"]
+    assert "SDL_UpdateTexture(texture, nullptr, hostPixels, WIDTH * (int)sizeof(uint32_t));" in result.files["gui.cpp"]
+    assert "synthi_gpu_launch_source_location" in result.files["core.cpp"]
+
+
+def test_deterministic_rocm_sdl_split_preserves_source_header_constants(monkeypatch):
+    class Provider:
+        called = False
+        preflight_called = False
+
+        async def preflight(self, *_args, **_kwargs):
+            self.preflight_called = True
+            raise AssertionError("preflight should not be called for deterministic source-owned split")
+
+        async def ask_llm(self, *_args, **_kwargs):
+            self.called = True
+            raise AssertionError("provider should not be called for deterministic source-owned split")
+
+    main_source = r'''
+    #include <SDL2/SDL.h>
+    #include <hip/hip_runtime.h>
+    #include <cstdint>
+    #include "scene_config.h"
+    extern "C" __global__ void draw_pixels(uint32_t* pixels, int width, int height) {
+        int x = blockIdx.x * blockDim.x + threadIdx.x;
+        int y = blockIdx.y * blockDim.y + threadIdx.y;
+        if (x >= width || y >= height) return;
+        pixels[y * width + x] = 0xff203040u;
+    }
+    int main() {
+        SDL_Window* window = SDL_CreateWindow("texture", 0, 0, WIDTH, HEIGHT, 0);
+        SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, 0);
+        SDL_Texture* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, WIDTH, HEIGHT);
+        static uint32_t hostPixels[PIXEL_COUNT];
+        uint32_t* devicePixels = nullptr;
+        hipMalloc(&devicePixels, sizeof(uint32_t) * PIXEL_COUNT);
+        dim3 block(8, 8);
+        dim3 grid((WIDTH + block.x - 1) / block.x, (HEIGHT + block.y - 1) / block.y);
+        draw_pixels<<<grid, block>>>(devicePixels, WIDTH, HEIGHT);
+        hipDeviceSynchronize();
+        hipMemcpy(hostPixels, devicePixels, sizeof(uint32_t) * PIXEL_COUNT, hipMemcpyDeviceToHost);
+        SDL_UpdateTexture(texture, nullptr, hostPixels, WIDTH * (int)sizeof(uint32_t));
+        SDL_RenderClear(renderer);
+        SDL_RenderCopy(renderer, texture, nullptr, nullptr);
+        SDL_RenderPresent(renderer);
+        return 0;
+    }
+    '''
+    header_source = r'''
+    #pragma once
+    constexpr int WIDTH = 32;
+    constexpr int HEIGHT = 24;
+    constexpr int PIXEL_COUNT = WIDTH * HEIGHT;
+    '''
+    provider = Provider()
+    detection = GpuDetectionResult(
+        is_gpu=True,
+        vendor_hint="rocm",
+        per_file={"src/main.cpp": GpuDetectionEvidence(qualifier_hits=1)},
+    )
+    monkeypatch.delenv("SYNTHI_GPU_VENDOR", raising=False)
+    monkeypatch.delenv("SYNTHI_GPU_ARCH", raising=False)
+
+    result = asyncio.run(
+        run_kernel_splitter(
+            provider=provider,
+            user_code=main_source,
+            lang="cpp",
+            detection=detection,
+            files=[
+                {"name": "src/main.cpp", "content": main_source},
+                {"name": "src/scene_config.h", "content": header_source},
+            ],
+            focus="src/main.cpp",
+            model="gemini-3.5-flash",
+            gpu_arch_hint="gfx1201",
+        )
+    )
+
+    assert provider.called is False
+    assert provider.preflight_called is False
+    assert result.verification and result.verification.ok is True
+    assert result.repair_report["deterministicSplit"]["providerCallUsed"] is False
+    assert result.repair_report["deterministicSplit"]["constantSourcePaths"] == ["src/scene_config.h"]
+    assert "constexpr int WIDTH = 32;" in result.files["shared.h"]
+    assert "constexpr int PIXEL_COUNT = WIDTH * HEIGHT;" in result.files["shared.h"]
+    assert "new uint32_t[PIXEL_COUNT]" in result.files["core.cpp"]
+    assert "sizeof(uint32_t) * PIXEL_COUNT" in result.files["core.cpp"]
+    assert "SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, WIDTH, HEIGHT)" in result.files["gui.cpp"]
+    assert "constexpr int PIXEL_COUNT" not in result.files["device.hip"]
 
 
 def test_build_split_retry_prompt_preserves_previous_rejections():
@@ -816,6 +1745,7 @@ def test_deterministic_split_repair_runs_followup_passes():
     verification = verify_split_output(
         files=files,
         manifest_arch=["unit-test-arch"],
+        manifest=HIP_SPLIT_MANIFEST,
         source_files=source_files,
     )
     assert any(v.rule.startswith("source_device_kernel_") for v in verification.violations)
@@ -823,7 +1753,7 @@ def test_deterministic_split_repair_runs_followup_passes():
 
     repaired, after, report = _apply_split_repairs_until_stable(
         files=files,
-        manifest=None,
+        manifest=HIP_SPLIT_MANIFEST,
         manifest_arch=["unit-test-arch"],
         source_files=source_files,
         verification=verification,

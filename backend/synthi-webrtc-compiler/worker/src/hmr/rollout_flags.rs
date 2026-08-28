@@ -171,6 +171,12 @@ impl RolloutFlags {
         self.inner.read().unwrap().global_kill_hmr
     }
 
+    /// Returns true when policy forbids an AI split call on this request path.
+    pub fn is_ai_split_disabled(&self) -> bool {
+        let guard = self.inner.read().unwrap();
+        guard.global_kill_hmr || guard.force_no_ai_hot_path
+    }
+
     /// Returns true when the kill switch for a specific adapter family is active.
     pub fn is_family_killed(&self, family: &AdapterFamily) -> bool {
         let guard = self.inner.read().unwrap();
@@ -276,5 +282,23 @@ mod tests {
             ..Default::default()
         });
         assert!(flags.read().global_kill_hmr);
+    }
+
+    #[test]
+    fn ai_split_policy_covers_global_kill_and_no_ai_hot_path() {
+        let flags = RolloutFlags::default_flags();
+        assert!(!flags.is_ai_split_disabled());
+
+        flags.update(RolloutConfig {
+            force_no_ai_hot_path: true,
+            ..Default::default()
+        });
+        assert!(flags.is_ai_split_disabled());
+
+        flags.update(RolloutConfig {
+            global_kill_hmr: true,
+            ..Default::default()
+        });
+        assert!(flags.is_ai_split_disabled());
     }
 }

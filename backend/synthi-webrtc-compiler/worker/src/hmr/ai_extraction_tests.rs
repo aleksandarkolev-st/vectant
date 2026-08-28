@@ -41,9 +41,10 @@ mod tests {
             consecutive_failures: 0,
             failure_rescue_threshold: 3,
             user_requested_ai: false,
+            require_ai_provider_call: false,
             user_requested_deterministic: false,
         };
-        let classification = classify_loop(&input);
+        let classification = classify_loop(&input).expect("ordinary routing");
         assert_eq!(classification.loop_type, CompileLoop::LoopA);
 
         // 3. AI gate blocks
@@ -84,9 +85,10 @@ mod tests {
             consecutive_failures: 0,
             failure_rescue_threshold: 3,
             user_requested_ai: false,
+            require_ai_provider_call: false,
             user_requested_deterministic: false,
         };
-        let classification = classify_loop(&input);
+        let classification = classify_loop(&input).expect("ordinary routing");
         assert_eq!(classification.loop_type, CompileLoop::LoopB);
 
         // AI gate allows
@@ -118,13 +120,59 @@ mod tests {
             consecutive_failures: 5,
             failure_rescue_threshold: 3,
             user_requested_ai: false,
+            require_ai_provider_call: false,
             user_requested_deterministic: false,
         };
-        let classification = classify_loop(&input);
+        let classification = classify_loop(&input).expect("ordinary routing");
         assert_eq!(classification.loop_type, CompileLoop::LoopB);
 
         let enrichment =
             CompileEnrichment::from_classification(classification, adapted, Some("h1".into()));
+        assert!(enrichment.is_ai_assisted());
+        assert!(enrichment.use_ai_split);
+    }
+
+    /// Scenario: a strict cold provider request cannot reuse an adapted split cache.
+    #[test]
+    fn scenario_required_provider_call_ignores_adapted_cache() {
+        let adapted = AdaptedProjectStatus::adapted(
+            PathBuf::from("core.cpp"),
+            PathBuf::from("gui.cpp"),
+            None,
+        )
+        .with_split_hash("source_hash_1".into());
+        let flags = RolloutFlags::new_defaults();
+        let input = LoopClassifierInput {
+            adapted_status: &adapted,
+            current_source_hash: Some("source_hash_1"),
+            rollout_flags: &flags,
+            consecutive_failures: 0,
+            failure_rescue_threshold: 3,
+            user_requested_ai: false,
+            require_ai_provider_call: true,
+            user_requested_deterministic: false,
+        };
+        let classification = classify_loop(&input).expect("strict provider routing");
+        assert_eq!(classification.loop_type, CompileLoop::LoopB);
+
+        let gate = AiGate::new();
+        let cache = SplitCache::new(10);
+        cache.put(CachedSplitResult {
+            source_hash: "source_hash_1".into(),
+            core_code: "// stale cached core".into(),
+            gui_code: "// stale cached gui".into(),
+            shared_code: None,
+            language: "cpp".into(),
+            cached_at: 1000,
+        });
+        let bypass = check_ai_bypass(&gate, &cache, classification.loop_type, "source_hash_1");
+        assert!(matches!(bypass, AiBypassResult::Proceed));
+
+        let enrichment = CompileEnrichment::from_classification(
+            classification,
+            adapted,
+            Some("source_hash_1".into()),
+        );
         assert!(enrichment.is_ai_assisted());
         assert!(enrichment.use_ai_split);
     }

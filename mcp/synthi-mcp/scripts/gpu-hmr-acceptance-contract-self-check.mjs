@@ -21,6 +21,25 @@ const HIP_FIELD_EVIDENCE_REFS = {
   readback_oracle: ['runtime:readback-oracle'],
 };
 
+function undefinedPaths(value) {
+  const paths = [];
+  const seen = new Set();
+  const pending = [{ value, path: '$' }];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current.value === undefined) {
+      paths.push(current.path);
+      continue;
+    }
+    if (!current.value || typeof current.value !== 'object' || seen.has(current.value)) continue;
+    seen.add(current.value);
+    for (const key of Reflect.ownKeys(current.value)) {
+      pending.push({ value: current.value[key], path: `${current.path}.${String(key)}` });
+    }
+  }
+  return paths.sort();
+}
+
 function contract(overrides = {}) {
   return {
     contract_version: GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
@@ -161,6 +180,41 @@ function expectReject(name, patch, expectedCode) {
 
 const accepted = evaluateGpuHmrAcceptanceContract(contract());
 assert.equal(accepted.accepted, true);
+assert.equal(accepted.contract.contract_hash, accepted.recomputedContractHash);
+
+const transientOptionalFields = contract({
+  fission_report: {
+    ...contract().fission_report,
+    output_oracle_contract: {
+      ...contract().fission_report.output_oracle_contract,
+      optional_runtime_field: undefined,
+      optional_runtime_sequence: ['observed', undefined],
+    },
+  },
+});
+const transientOptionalEvaluation = evaluateGpuHmrAcceptanceContract(transientOptionalFields);
+assert.equal(transientOptionalEvaluation.accepted, true);
+const persistedOptionalContract = JSON.parse(JSON.stringify(transientOptionalEvaluation.contract));
+const persistedOptionalEvaluation = evaluateGpuHmrAcceptanceContract(persistedOptionalContract);
+assert.equal(persistedOptionalEvaluation.accepted, true);
+assert.equal(
+  persistedOptionalEvaluation.recomputedContractHash,
+  transientOptionalEvaluation.recomputedContractHash,
+);
+
+const staleHashedContract = structuredClone(accepted.contract);
+staleHashedContract.fission_report.output_oracle_contract.readback_plan = 'changed-after-hash';
+const staleHashedEvaluation = evaluateGpuHmrAcceptanceContract(staleHashedContract);
+assert.equal(staleHashedEvaluation.accepted, false);
+assert.ok(staleHashedEvaluation.failedGates.some(({ code }) => code === 'contract_hash_mismatch'));
+
+const conflictingHashAliases = {
+  ...accepted.contract,
+  contractHash: `sha256:${'f'.repeat(64)}`,
+};
+const conflictingHashEvaluation = evaluateGpuHmrAcceptanceContract(conflictingHashAliases);
+assert.equal(conflictingHashEvaluation.accepted, false);
+assert.ok(conflictingHashEvaluation.failedGates.some(({ code }) => code === 'contract_hash_alias_mismatch'));
 
 expectReject('missing project id', {
   project_id: null,
@@ -702,11 +756,177 @@ const derivedProofInput = {
 };
 
 const derivedWithoutFirewall = deriveGpuHmrAcceptanceContractFromVerifiedProofs(derivedProofInput);
+assert.deepEqual(
+  undefinedPaths(derivedWithoutFirewall),
+  [],
+  'derived acceptance contracts must be stable plain JSON data without undefined backend fields',
+);
 assert.ok(
   derivedWithoutFirewall.classification.blocking_gaps.includes('route_classifier_not_verified'),
   `derived contract unexpectedly lacked route firewall gap: ${derivedWithoutFirewall.classification.blocking_gaps.join(',')}`,
 );
 assert.equal(evaluateGpuHmrAcceptanceContract(derivedWithoutFirewall).accepted, false);
+
+const verifiedGpuFirewallEvidence = {
+  route: 'gpu_device_sidecar_reload',
+  evidence_source: 'self-check:verified-route-classifier',
+  evidence_refs: ['self-check:verified-route-classifier'],
+  cpu_hmr_used: false,
+  full_rebuild_used: false,
+  process_restarted: false,
+  process_id_before: 'pid-1',
+  process_id_after: 'pid-1',
+};
+const nativeRocmBoundary = {
+  schemaVersion: 'synthi.gpu_hmr.native_rocm_launch_boundary.v1',
+  observed: true,
+  status: 'refusal_evidence',
+  proof_authority: 'evidence_only_not_gpu_hmr_success',
+  can_satisfy_dispatch_proof: false,
+  function_resolution_count: 1,
+  function_resolution_symbols: ['light_kernel'],
+  blocking_gaps: [
+    'native_launch_boundary_observed',
+    'native_boundary_not_synthi_dispatch_proof',
+    'synthi_dispatch_not_observed',
+  ],
+  evidence_refs: ['worker-log:native_function_resolution:light_kernel'],
+};
+const nativeRuntimeEligibility = {
+  schemaVersion: 'synthi.gpu_hmr.real_rocm_runtime_eligibility.v1',
+  observed: true,
+  status: 'refused_missing_runtime_proof',
+  proof_authority: 'candidate_metadata_only_not_gpu_hmr_success',
+  can_satisfy_dispatch_proof: false,
+  hmr_backend: null,
+  backend_candidates: ['hip'],
+  source_language: 'opencl_c',
+  candidate_artifact_identity: {
+    source_paths: ['src/kernels/MIOpenNeuron.cl', 'src/kernels/activation_functions.h'],
+    artifact_kind: 'hip_source_bridge',
+    entry_points: ['MIOpenActiveFwdLite'],
+    compile_target: 'gfx1201',
+    compiler: 'hipcc',
+    compiler_args_hash: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+  },
+  blocking_gaps: [
+    'native_boundary_not_synthi_dispatch_proof',
+    'artifact_transport_not_observed',
+    'same_process_epoch_missing',
+    'dispatch_epoch_missing',
+    'output_oracle_profile_absent',
+    'host_identity_not_observed',
+  ],
+  evidence_refs: ['profile:cmake_arg:-DPROJECT_BACKEND=HIP'],
+};
+const derivedNativeBoundaryRefusal = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+  ...derivedProofInput,
+  fullRuntimeProof: { fullRuntimeProven: false },
+  firewallEvidence: verifiedGpuFirewallEvidence,
+  validationContext: {
+    native_rocm_launch_boundary: nativeRocmBoundary,
+    native_runtime_eligibility: nativeRuntimeEligibility,
+  },
+});
+assert.ok(
+  derivedNativeBoundaryRefusal.classification.blocking_gaps.includes('native_launch_boundary_observed'),
+  `native ROCm boundary gap missing: ${derivedNativeBoundaryRefusal.classification.blocking_gaps.join(',')}`,
+);
+assert.ok(
+  derivedNativeBoundaryRefusal.unsupported_reasons.includes('native_boundary_not_synthi_dispatch_proof'),
+  `native ROCm boundary unsupported reason missing: ${derivedNativeBoundaryRefusal.unsupported_reasons.join(',')}`,
+);
+assert.equal(evaluateGpuHmrAcceptanceContract(derivedNativeBoundaryRefusal).accepted, false);
+
+const derivedCandidateBackendRefusal = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+  projectId: 'large-rocm-ml-project',
+  editId: 'activation-delta',
+  classification: {
+    project_kind: 'gpu_project',
+    edit_kind: 'gpu_artifact_edit',
+    route: 'gpu_hmr',
+    confidence: 0.84,
+  },
+  firewallEvidence: verifiedGpuFirewallEvidence,
+  validationContext: {
+    native_runtime_eligibility: nativeRuntimeEligibility,
+  },
+  fullRuntimeProof: { fullRuntimeProven: false },
+});
+assert.equal(
+  derivedCandidateBackendRefusal.backend,
+  'unknown',
+  'candidate backend evidence must not become authoritative backend without runtime proof',
+);
+assert.equal(
+  derivedCandidateBackendRefusal.artifact_identity.artifact_kind,
+  'hip_source_bridge',
+  'candidate artifact identity should be retained for refusal diagnostics',
+);
+assert.ok(
+  derivedCandidateBackendRefusal.classification.blocking_gaps.includes('dispatch_epoch_missing'),
+  `candidate eligibility dispatch gap missing: ${derivedCandidateBackendRefusal.classification.blocking_gaps.join(',')}`,
+);
+assert.ok(
+  derivedCandidateBackendRefusal.classification.blocking_gaps.includes('output_oracle_profile_absent'),
+  `candidate eligibility oracle gap missing: ${derivedCandidateBackendRefusal.classification.blocking_gaps.join(',')}`,
+);
+assert.equal(evaluateGpuHmrAcceptanceContract(derivedCandidateBackendRefusal).accepted, false);
+
+const derivedProjectNameBackendSpoof = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+  ...derivedProofInput,
+  backend: 'rocm',
+  backendEvidence: 'hiprtBuildScene',
+  gpuApi: 'hiprtBuildScene',
+  launchApi: 'hiprtCreateContext',
+  firewallEvidence: verifiedGpuFirewallEvidence,
+  dispatchProof: {
+    ...derivedProofInput.dispatchProof,
+    evidenceRefs: [
+      'runtime:project:hiprtpathtracer',
+      'runtime:target:hiprt-oro',
+      'runtime:fixture:hiprt_kernel',
+    ],
+  },
+});
+assert.equal(
+  derivedProjectNameBackendSpoof.backend,
+  'unknown',
+  'project, target, and fixture names must not become backend evidence',
+);
+
+const derivedTypedHiprtApiEvidence = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+  ...derivedProofInput,
+  backend: 'rocm',
+  firewallEvidence: verifiedGpuFirewallEvidence,
+  validationContext: {
+    gpuApi: 'hiprtBuildScene',
+  },
+});
+assert.equal(
+  derivedTypedHiprtApiEvidence.backend,
+  'hiprt',
+  'a typed HIPRT API observation should identify the backend family',
+);
+
+const derivedNativeBoundarySupplemental = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
+  ...derivedProofInput,
+  firewallEvidence: verifiedGpuFirewallEvidence,
+  validationContext: {
+    native_rocm_launch_boundary: nativeRocmBoundary,
+    native_runtime_eligibility: nativeRuntimeEligibility,
+  },
+});
+assert.equal(
+  derivedNativeBoundarySupplemental.classification.blocking_gaps.includes('native_launch_boundary_observed'),
+  false,
+  `native ROCm boundary should be supplemental after full proof: ${derivedNativeBoundarySupplemental.classification.blocking_gaps.join(',')}`,
+);
+assert.equal(
+  derivedNativeBoundarySupplemental.classification.blocking_gaps.includes('dispatch_epoch_missing'),
+  false,
+  `native runtime eligibility should be supplemental after full proof: ${derivedNativeBoundarySupplemental.classification.blocking_gaps.join(',')}`,
+);
 
 for (const [name, classification, expectedGate] of [
   [

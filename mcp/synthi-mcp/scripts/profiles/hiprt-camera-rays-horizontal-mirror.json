@@ -12,6 +12,13 @@
   },
   "runtime": {
     "targetName": "HIPRTPathTracer",
+    "sourceTree": {
+      "sourceKind": "git",
+      "repoUrl": "https://github.com/TomClabault/HIPRT-Path-Tracer.git",
+      "repoName": "HIPRT-Path-Tracer",
+      "commit": "d114ed0d4c1d4ff9ea4e2511841819ed9aa59e6e",
+      "proofAuthority": "runtime_source_tree_prerequisite_only_not_gpu_hmr_success"
+    },
     "args": [
       "../data/GLTFs/cornell_pbr.gltf",
       "--sky=../data/Skyspheres/evening_road_01_puresky_2k.hdr"
@@ -19,6 +26,18 @@
     "requiredFiles": [
       "data/GLTFs/cornell_pbr.gltf",
       "data/Skyspheres/evening_road_01_puresky_2k.hdr"
+    ],
+    "requiredAssets": [
+      {
+        "path": "data/GLTFs/cornell_pbr.gltf",
+        "role": "scene_gltf",
+        "mediaType": "model/gltf+json"
+      },
+      {
+        "path": "data/Skyspheres/evening_road_01_puresky_2k.hdr",
+        "role": "environment_map",
+        "mediaType": "image/vnd.radiance"
+      }
     ],
     "requiredKernels": [
       "CameraRays",
@@ -61,6 +80,19 @@
     "notes": [
       "Camera state and random_number are set by the same-process probe before the proof frame.",
       "Denoising/postprocess must not satisfy visual proof unless this mode is explicitly enforced by the adapter."
+    ]
+  },
+  "negativeEdit": {
+    "source": {
+      "file": "src/Device/kernels/CameraRays.h",
+      "before": "GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) CameraRays(HIPRTRenderData render_data)",
+      "after": "GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) CameraRays(HIPRTRenderData render_data, int synthi_negative_abi_break)"
+    },
+    "abiCompatibilityClass": "layout_changed",
+    "reasons": [
+      "kernel_signature_changed",
+      "abi_layout_changed",
+      "hiprt_runtime_adapter_contract_rejects_layout_changed_abi"
     ]
   },
   "proof": {

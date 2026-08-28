@@ -2,6 +2,8 @@ import {
   classifyGpuHmrVisualEvidenceStats,
   evaluateGpuHmrDeterministicVisualMode,
   screenshotQualifiesAsVisualEvidence,
+  visualEvidenceAcceptedAsRuntimeProof,
+  visualEvidenceIsSupplementalOnly,
   visualEvidenceRow,
 } from './gpu-hmr-visual-evidence.mjs';
 import { queryGpuHmrLedgerInvariants } from './gpu-hmr-proof-ledger.mjs';
@@ -185,6 +187,47 @@ function limitationsFromRuntimeArtifacts(records) {
     })));
 }
 
+function realRocmMissingDependencyProbeLimitations(probe) {
+  if (!isObject(probe)) return [];
+  const acceptedForGpuHmr =
+    probe.acceptedForGpuHmr === true || probe.accepted_for_gpu_hmr === true;
+  const gpuHmrSuccess =
+    probe.gpuHmrSuccess === true || probe.gpu_hmr_success === true;
+  const canSatisfyRuntimeProof =
+    probe.canSatisfyRuntimeProof === true || probe.can_satisfy_runtime_proof === true;
+  const failedGates = compactStringList([
+    ...(Array.isArray(probe.failedGates) ? probe.failedGates : []),
+    ...(Array.isArray(probe.failed_gates) ? probe.failed_gates : []),
+    acceptedForGpuHmr ? 'missing_dependency_probe_claimed_gpu_hmr_acceptance' : null,
+    gpuHmrSuccess ? 'missing_dependency_probe_claimed_gpu_hmr_success' : null,
+    canSatisfyRuntimeProof ? 'missing_dependency_probe_claimed_runtime_authority' : null,
+  ]);
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(probe.blockingGaps) ? probe.blockingGaps : []),
+    ...(Array.isArray(probe.blocking_gaps) ? probe.blocking_gaps : []),
+    ...failedGates,
+    failedGates.length === 0 ? 'real_rocm_missing_dependency_probe_present' : null,
+  ]);
+  const observedState = firstString(
+    probe.status,
+    probe.reason,
+    failedGates[0],
+    'real_rocm_missing_dependency_probe_present',
+  );
+  return [{
+    stage_id: 'real-rocm-missing-dependency-probe',
+    status: 'blocked',
+    required_state: 'gpu-hmr-real-rocm-dependencies-satisfied',
+    observed_state: observedState,
+    degraded_state: 'gpu-hmr-real-rocm-build-prerequisite-missing',
+    degraded_reason: observedState,
+    blocking_gaps: blockingGaps,
+    proof_artifact_path: null,
+    phase: null,
+    name: null,
+  }];
+}
+
 function uniqueLimitations(limitations) {
   const seen = new Set();
   return limitations.filter((limitation) => {
@@ -217,15 +260,33 @@ function screenshotPaths(input) {
 }
 
 function visualArtifactPaths(input) {
+  const artifacts = compactObjects([
+    ...(Array.isArray(input.visualEvidenceArtifacts) ? input.visualEvidenceArtifacts : []),
+    ...(Array.isArray(input.visual_evidence_artifacts) ? input.visual_evidence_artifacts : []),
+  ]);
+  const supplementalArtifactKeys = new Set(compactStringList(artifacts
+    .filter(visualEvidenceIsSupplementalOnly)
+    .flatMap((artifact) => [
+      artifact.path,
+      artifact.filePath,
+      artifact.file_path,
+      artifact.evidenceId,
+      artifact.evidence_id,
+      artifact.contentHash,
+      artifact.content_hash,
+    ])));
   const explicit = compactStringList([
     ...(Array.isArray(input.visualArtifactPaths) ? input.visualArtifactPaths : []),
     ...(Array.isArray(input.visual_artifact_paths) ? input.visual_artifact_paths : []),
-  ]);
+  ]).filter((artifactPath) => !supplementalArtifactKeys.has(artifactPath));
+  const artifactPaths = artifacts
+    .filter((artifact) => visualEvidenceAcceptedAsRuntimeProof(artifact))
+    .flatMap((artifact) => [artifact.path, artifact.filePath, artifact.file_path]);
   const screenshots = compactObjects(input.screenshots)
     .map((shot) => visualEvidenceRow(shot))
-    .filter((shot) => shot.accepted_as_visual_evidence)
+    .filter((shot) => visualEvidenceAcceptedAsRuntimeProof(shot))
     .flatMap((shot) => [shot.path, shot.filePath, shot.file_path]);
-  return compactStringList([...explicit, ...screenshots]);
+  return compactStringList([...explicit, ...artifactPaths, ...screenshots]);
 }
 
 function visualEvidenceQuality(input) {
@@ -247,6 +308,12 @@ function visualEvidenceQuality(input) {
       unique_color_sample_count: row.unique_color_sample_count,
       visual_quality: row.visual_quality,
       accepted_as_visual_evidence: row.accepted_as_visual_evidence,
+      accepted_as_image_evidence: row.accepted_as_image_evidence,
+      accepted_as_runtime_visual_proof: row.accepted_as_runtime_visual_proof,
+      runtime_visual_proof_binding: row.runtime_visual_proof_binding ?? row.runtimeVisualProofBinding ?? null,
+      visual_evidence_supplemental_only:
+        row.visualEvidenceSupplementalOnly === true
+        || row.visual_evidence_supplemental_only === true,
     };
   });
   const measuredPaths = new Set(measured.map((row) => row.path).filter(Boolean));
@@ -263,7 +330,11 @@ function visualEvidenceQuality(input) {
       rgb_span_mean: null,
       unique_color_sample_count: null,
       visual_quality: 'gpu-hmr-visual-unmeasured',
-      accepted_as_visual_evidence: true,
+      accepted_as_visual_evidence: false,
+      accepted_as_image_evidence: false,
+      accepted_as_runtime_visual_proof: false,
+      runtime_visual_proof_binding: null,
+      visual_evidence_supplemental_only: false,
     }));
   return [...measured, ...unmeasured];
 }
@@ -351,6 +422,60 @@ function targetProgressionGates(input, validationContext) {
   return Array.isArray(gates) ? compactObjects(gates) : [];
 }
 
+function realRocmAppHookMaterialization(input, validationContext) {
+  if (isObject(input.realRocmAppHookMaterialization)) return input.realRocmAppHookMaterialization;
+  if (isObject(input.real_rocm_app_hook_materialization)) return input.real_rocm_app_hook_materialization;
+  if (isObject(input.appHookMaterialization)) return input.appHookMaterialization;
+  if (isObject(input.app_hook_materialization)) return input.app_hook_materialization;
+  if (isObject(validationContext?.realRocmAppHookMaterialization)) {
+    return validationContext.realRocmAppHookMaterialization;
+  }
+  if (isObject(validationContext?.real_rocm_app_hook_materialization)) {
+    return validationContext.real_rocm_app_hook_materialization;
+  }
+  if (isObject(validationContext?.appHookMaterialization)) return validationContext.appHookMaterialization;
+  if (isObject(validationContext?.app_hook_materialization)) return validationContext.app_hook_materialization;
+  return null;
+}
+
+function realRocmRuntimeProfileAdapterResult(input, validationContext) {
+  if (isObject(input.realRocmRuntimeProfileAdapterResult)) return input.realRocmRuntimeProfileAdapterResult;
+  if (isObject(input.real_rocm_runtime_profile_adapter_result)) {
+    return input.real_rocm_runtime_profile_adapter_result;
+  }
+  if (isObject(input.runtimeProfileAdapterResult)) return input.runtimeProfileAdapterResult;
+  if (isObject(input.runtime_profile_adapter_result)) return input.runtime_profile_adapter_result;
+  if (isObject(validationContext?.realRocmRuntimeProfileAdapterResult)) {
+    return validationContext.realRocmRuntimeProfileAdapterResult;
+  }
+  if (isObject(validationContext?.real_rocm_runtime_profile_adapter_result)) {
+    return validationContext.real_rocm_runtime_profile_adapter_result;
+  }
+  if (isObject(validationContext?.runtimeProfileAdapterResult)) {
+    return validationContext.runtimeProfileAdapterResult;
+  }
+  if (isObject(validationContext?.runtime_profile_adapter_result)) {
+    return validationContext.runtime_profile_adapter_result;
+  }
+  return null;
+}
+
+function realRocmMissingDependencyProbe(input, validationContext) {
+  if (isObject(input.realRocmMissingDependencyProbe)) return input.realRocmMissingDependencyProbe;
+  if (isObject(input.real_rocm_missing_dependency_probe)) return input.real_rocm_missing_dependency_probe;
+  if (isObject(input.missingDependencyProbe)) return input.missingDependencyProbe;
+  if (isObject(input.missing_dependency_probe)) return input.missing_dependency_probe;
+  if (isObject(validationContext?.realRocmMissingDependencyProbe)) {
+    return validationContext.realRocmMissingDependencyProbe;
+  }
+  if (isObject(validationContext?.real_rocm_missing_dependency_probe)) {
+    return validationContext.real_rocm_missing_dependency_probe;
+  }
+  if (isObject(validationContext?.missingDependencyProbe)) return validationContext.missingDependencyProbe;
+  if (isObject(validationContext?.missing_dependency_probe)) return validationContext.missing_dependency_probe;
+  return null;
+}
+
 function targetProgressionGateLimitations(input, validationContext) {
   return targetProgressionGates(input, validationContext)
     .filter((gate) => gate.status === 'fail')
@@ -369,7 +494,7 @@ function targetProgressionGateLimitations(input, validationContext) {
 
 function missingVisualEvidenceLimitation(input, qualityRows) {
   if (!visualEvidenceExpected(input)) return [];
-  if (compactObjects(qualityRows).some((row) => row.accepted_as_visual_evidence === true)) {
+  if (compactObjects(qualityRows).some((row) => visualEvidenceAcceptedAsRuntimeProof(row))) {
     return [];
   }
   return [{
@@ -713,8 +838,39 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
   const fullRuntimeStates = proofArrayStates(input.runtimeFullProofs);
   const qualityRows = visualEvidenceQuality(input);
   const progressionGates = targetProgressionGates(input, validationContext);
+  const appHookMaterialization = compactObjects([
+    realRocmAppHookMaterialization(input, validationContext),
+    ...runtimeArtifactRecords.map((record) =>
+      record.realRocmAppHookMaterialization
+      ?? record.real_rocm_app_hook_materialization
+      ?? record.appHookMaterialization
+      ?? record.app_hook_materialization
+      ?? null
+    ),
+  ]).at(-1) ?? null;
+  const runtimeProfileAdapterResult = compactObjects([
+    realRocmRuntimeProfileAdapterResult(input, validationContext),
+    ...runtimeArtifactRecords.map((record) =>
+      record.realRocmRuntimeProfileAdapterResult
+      ?? record.real_rocm_runtime_profile_adapter_result
+      ?? record.runtimeProfileAdapterResult
+      ?? record.runtime_profile_adapter_result
+      ?? null
+    ),
+  ]).at(-1) ?? null;
+  const missingDependencyProbe = compactObjects([
+    realRocmMissingDependencyProbe(input, validationContext),
+    ...runtimeArtifactRecords.map((record) =>
+      record.realRocmMissingDependencyProbe
+      ?? record.real_rocm_missing_dependency_probe
+      ?? record.missingDependencyProbe
+      ?? record.missing_dependency_probe
+      ?? null
+    ),
+  ]).at(-1) ?? null;
   const limitations = uniqueLimitations([
     ...limitationsFromRuntimeArtifacts(runtimeArtifactRecords),
+    ...realRocmMissingDependencyProbeLimitations(missingDependencyProbe),
     ...acceptanceContractLimitations(acceptanceContractEvaluations),
     ...acceptanceContractConsistencyLimitations(acceptanceContractConsistencyEvaluations),
     ...deterministicVisualModeLimitations(deterministicVisualModeEvaluations),
@@ -840,6 +996,114 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
             proof_mode: deterministicVisualModeEvaluation.proofMode ?? null,
           }
         : null,
+      real_rocm_app_hook_materialization: appHookMaterialization
+        ? {
+            required: appHookMaterialization.required === true,
+            accepted_as_refusal_evidence:
+              appHookMaterialization.acceptedAsRefusalEvidence === true
+              || appHookMaterialization.accepted_as_refusal_evidence === true,
+            accepted_for_gpu_hmr:
+              appHookMaterialization.acceptedForGpuHmr === true
+              || appHookMaterialization.accepted_for_gpu_hmr === true,
+            gpu_hmr_success:
+              appHookMaterialization.gpuHmrSuccess === true
+              || appHookMaterialization.gpu_hmr_success === true,
+            can_satisfy_runtime_proof:
+              appHookMaterialization.canSatisfyRuntimeProof === true
+              || appHookMaterialization.can_satisfy_runtime_proof === true,
+            materialization_complete:
+              appHookMaterialization.materializationComplete === true
+              || appHookMaterialization.materialization_complete === true,
+            blocking_gap_count: compactStringList([
+              ...(Array.isArray(appHookMaterialization.blockingGaps)
+                ? appHookMaterialization.blockingGaps
+                : []),
+              ...(Array.isArray(appHookMaterialization.blocking_gaps)
+                ? appHookMaterialization.blocking_gaps
+                : []),
+            ]).length,
+            status: appHookMaterialization.status ?? null,
+          }
+        : null,
+      real_rocm_runtime_profile_adapter_result: runtimeProfileAdapterResult
+        ? {
+            declared: runtimeProfileAdapterResult.declared === true,
+            present: runtimeProfileAdapterResult.present === true,
+            accepted_as_refusal_evidence:
+              runtimeProfileAdapterResult.acceptedAsRefusalEvidence === true
+              || runtimeProfileAdapterResult.accepted_as_refusal_evidence === true,
+            accepted_for_gpu_hmr:
+              runtimeProfileAdapterResult.acceptedForGpuHmr === true
+              || runtimeProfileAdapterResult.accepted_for_gpu_hmr === true,
+            gpu_hmr_success:
+              runtimeProfileAdapterResult.gpuHmrSuccess === true
+              || runtimeProfileAdapterResult.gpu_hmr_success === true,
+            can_satisfy_runtime_proof:
+              runtimeProfileAdapterResult.canSatisfyRuntimeProof === true
+              || runtimeProfileAdapterResult.can_satisfy_runtime_proof === true,
+            strict_runtime_proof_accepted:
+              runtimeProfileAdapterResult.strictRuntimeProofAccepted === true
+              || runtimeProfileAdapterResult.strict_runtime_proof_accepted === true,
+            strict_runtime_proof_id:
+              runtimeProfileAdapterResult.strictRuntimeProofId
+              ?? runtimeProfileAdapterResult.strict_runtime_proof_id
+              ?? null,
+            adapter_result_hash:
+              runtimeProfileAdapterResult.adapterResultHash
+              ?? runtimeProfileAdapterResult.adapter_result_hash
+              ?? null,
+            blocking_gap_count: compactStringList([
+              ...(Array.isArray(runtimeProfileAdapterResult.blockingGaps)
+                ? runtimeProfileAdapterResult.blockingGaps
+                : []),
+              ...(Array.isArray(runtimeProfileAdapterResult.blocking_gaps)
+                ? runtimeProfileAdapterResult.blocking_gaps
+                : []),
+            ]).length,
+            status: runtimeProfileAdapterResult.status ?? null,
+          }
+        : null,
+      real_rocm_missing_dependency_probe: missingDependencyProbe
+        ? {
+            accepted_as_refusal_evidence:
+              missingDependencyProbe.acceptedAsRefusalEvidence === true
+              || missingDependencyProbe.accepted_as_refusal_evidence === true,
+            accepted_for_gpu_hmr:
+              missingDependencyProbe.acceptedForGpuHmr === true
+              || missingDependencyProbe.accepted_for_gpu_hmr === true,
+            gpu_hmr_success:
+              missingDependencyProbe.gpuHmrSuccess === true
+              || missingDependencyProbe.gpu_hmr_success === true,
+            can_satisfy_runtime_proof:
+              missingDependencyProbe.canSatisfyRuntimeProof === true
+              || missingDependencyProbe.can_satisfy_runtime_proof === true,
+            dependency_count:
+              missingDependencyProbe.dependencyCount
+              ?? missingDependencyProbe.dependency_count
+              ?? null,
+            header_dependency_count:
+              missingDependencyProbe.headerDependencyCount
+              ?? missingDependencyProbe.header_dependency_count
+              ?? null,
+            missing_header_count:
+              missingDependencyProbe.missingHeaderCount
+              ?? missingDependencyProbe.missing_header_count
+              ?? null,
+            present_header_count:
+              missingDependencyProbe.presentHeaderCount
+              ?? missingDependencyProbe.present_header_count
+              ?? null,
+            blocking_gap_count: compactStringList([
+              ...(Array.isArray(missingDependencyProbe.blockingGaps)
+                ? missingDependencyProbe.blockingGaps
+                : []),
+              ...(Array.isArray(missingDependencyProbe.blocking_gaps)
+                ? missingDependencyProbe.blocking_gaps
+                : []),
+            ]).length,
+            status: missingDependencyProbe.status ?? null,
+          }
+        : null,
       runtime_artifacts: runtimeArtifactRecords.map((record) => ({
         phase: record.phase ?? null,
         name: record.name ?? null,
@@ -864,6 +1128,18 @@ export function buildGpuHmrValidationProofSummary(input = {}) {
     deterministic_visual_mode: deterministicVisualMode,
     deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
     deterministic_visual_mode_evaluations: deterministicVisualModeEvaluations,
+    realRocmAppHookMaterialization: appHookMaterialization,
+    real_rocm_app_hook_materialization: appHookMaterialization,
+    appHookMaterialization,
+    app_hook_materialization: appHookMaterialization,
+    realRocmRuntimeProfileAdapterResult: runtimeProfileAdapterResult,
+    real_rocm_runtime_profile_adapter_result: runtimeProfileAdapterResult,
+    runtimeProfileAdapterResult,
+    runtime_profile_adapter_result: runtimeProfileAdapterResult,
+    realRocmMissingDependencyProbe: missingDependencyProbe,
+    real_rocm_missing_dependency_probe: missingDependencyProbe,
+    missingDependencyProbe,
+    missing_dependency_probe: missingDependencyProbe,
     gpu_hmr_success: gpuHmrSuccess,
     visual_evidence_is_supplemental: true,
     output_correctness_requires_deterministic_oracle: true,

@@ -266,6 +266,54 @@ function classifyWebGpuPreflight({ browserExecutable, probe }) {
   };
 }
 
+function preflightBackendEvidence({ browserExecutable, probe }) {
+  const result = probe?.result ?? {};
+  const evidenceRefs = [
+    'probe:webgpu_browser_launch',
+    'probe:webgpu_navigator_gpu',
+    'probe:webgpu_adapter',
+    'probe:webgpu_device',
+    'probe:webgpu_render_submit',
+  ];
+  if (probe?.screenshotPath) evidenceRefs.push('artifact:webgpu_preflight_diagnostic_screenshot');
+  return {
+    schemaVersion: 'synthi.gpu_hmr.preflight_backend_contract.v1',
+    backend: {
+      value: 'webgpu',
+      evidenceRefs,
+    },
+    backendFamily: {
+      value: 'webgpu',
+      evidenceRefs,
+    },
+    runtimeCapabilityPreflight: {
+      backend: 'webgpu',
+      backendFamily: 'webgpu',
+      probe: 'webgpu_browser_runtime_preflight',
+      browserExecutable,
+      browserLaunched: probe?.launched === true,
+      browserLaunchArgs: WEBGPU_LAUNCH_ARGS,
+      secureContext: result.isSecureContext === true,
+      navigatorGpuPresent: result.hasNavigatorGpu === true,
+      adapterFound: result.adapterFound === true,
+      deviceCreated: result.deviceCreated === true,
+      renderSubmitted: result.renderSubmitted === true,
+      preferredCanvasFormat: result.preferredCanvasFormat ?? null,
+      adapterInfo: result.adapterInfo ?? null,
+      features: result.features ?? [],
+      limits: result.limits ?? {},
+      diagnosticScreenshot: probe?.screenshotPath ?? null,
+      probeDurationMs: probe?.durationMs ?? null,
+      noShimApplied: true,
+      noBrowserFlagClaimedAsHmr: true,
+      noSynthesizedRuntime: true,
+      noSymlinkApplied: true,
+      evidenceRefs,
+    },
+    evidenceRefs,
+  };
+}
+
 async function buildProof() {
   await mkdir(ARTIFACT_DIR, { recursive: true });
   const startedAt = new Date().toISOString();
@@ -295,6 +343,7 @@ async function buildProof() {
       candidateExecutables: candidateBrowserExecutables(),
       launchArgs: WEBGPU_LAUNCH_ARGS,
     },
+    backendEvidence: preflightBackendEvidence({ browserExecutable, probe }),
     probe,
     classification: {
       webgpuAccepted: classification.webgpuAccepted,
@@ -319,6 +368,8 @@ async function buildProof() {
       pipelineRecreateProofRequired: true,
       frameOutputOracleRequired: true,
       noShimApplied: true,
+      noSymlinkApplied: true,
+      noSynthesizedRuntime: true,
       noBrowserFlagClaimedAsHmr: true,
     },
   };
@@ -343,6 +394,8 @@ async function writeProof(proof) {
     `unsupported_reasons=${proof.classification.unsupportedReasons.join(',') || 'none'}`,
     `diagnostic_screenshot=${proof.classification.diagnosticScreenshot || 'none'}`,
     `no_shim_applied=${proof.acceptance.noShimApplied}`,
+    `no_symlink_applied=${proof.acceptance.noSymlinkApplied}`,
+    `no_synthesized_runtime=${proof.acceptance.noSynthesizedRuntime}`,
     `no_browser_flag_claimed_as_hmr=${proof.acceptance.noBrowserFlagClaimedAsHmr}`,
     '',
   ].join('\n'));
@@ -350,18 +403,22 @@ async function writeProof(proof) {
 }
 
 function selfCheck() {
+  const acceptedProbe = {
+    launched: true,
+    durationMs: 12.5,
+    screenshotPath: 'webgpu-preflight-diagnostic.png',
+    result: {
+      isSecureContext: true,
+      hasNavigatorGpu: true,
+      adapterFound: true,
+      deviceCreated: true,
+      renderSubmitted: true,
+      preferredCanvasFormat: 'bgra8unorm',
+    },
+  };
   const accepted = classifyWebGpuPreflight({
     browserExecutable: 'chrome',
-    probe: {
-      launched: true,
-      result: {
-        isSecureContext: true,
-        hasNavigatorGpu: true,
-        adapterFound: true,
-        deviceCreated: true,
-        renderSubmitted: true,
-      },
-    },
+    probe: acceptedProbe,
   });
   const rejectedNoGpu = classifyWebGpuPreflight({
     browserExecutable: 'chrome',
@@ -394,6 +451,26 @@ function selfCheck() {
     || !rejectedNoBrowser.unsupportedReasons.includes('browser_executable_missing')
   ) {
     throw new Error('WebGPU preflight self-check failed missing browser case');
+  }
+  const backendEvidence = preflightBackendEvidence({
+    browserExecutable: 'chrome',
+    probe: acceptedProbe,
+  });
+  if (backendEvidence.schemaVersion !== 'synthi.gpu_hmr.preflight_backend_contract.v1') {
+    throw new Error('WebGPU preflight self-check failed backend evidence schema');
+  }
+  if (
+    backendEvidence.backend?.value !== 'webgpu'
+    || !backendEvidence.backend?.evidenceRefs?.includes('probe:webgpu_render_submit')
+  ) {
+    throw new Error('WebGPU preflight self-check failed backend evidence field refs');
+  }
+  if (
+    backendEvidence.runtimeCapabilityPreflight?.probe !== 'webgpu_browser_runtime_preflight'
+    || backendEvidence.runtimeCapabilityPreflight?.renderSubmitted !== true
+    || backendEvidence.runtimeCapabilityPreflight?.noBrowserFlagClaimedAsHmr !== true
+  ) {
+    throw new Error('WebGPU preflight self-check failed runtime capability evidence');
   }
   console.log('[ok] WebGPU preflight self-check passed');
 }

@@ -54,6 +54,13 @@ import re
 import shlex
 from typing import Any, Dict, List, Literal, Mapping, Optional, Set, Tuple
 
+from generated_path_policy import (
+    GeneratedPathViolation,
+    normalize_generated_path_list,
+    normalize_generated_path_mapping,
+    normalize_generated_relative_path,
+)
+
 try:
     from pydantic import BaseModel, Field, field_validator, ConfigDict
     _PYDANTIC_V2 = True
@@ -238,6 +245,42 @@ def validate_manifest_v1(manifest: BuildManifest) -> None:
     the low-confidence guardrail). The Python side just validates structure
     and the multi-step build rejection.
     """
+    try:
+        manifest.files = normalize_generated_path_list(manifest.files)
+        normalized_module_paths = normalize_generated_path_list(
+            (
+                path
+                for path in (
+                    manifest.module_files.shared,
+                    manifest.module_files.core,
+                    manifest.module_files.gui,
+                    manifest.module_files.host_runner,
+                    manifest.module_files.device,
+                )
+                if path is not None
+            ),
+            allow_exact_duplicates=True,
+        )
+        normalized_module_paths_iter = iter(normalized_module_paths)
+        for field_name in ("shared", "core", "gui", "host_runner", "device"):
+            if getattr(manifest.module_files, field_name) is not None:
+                setattr(manifest.module_files, field_name, next(normalized_module_paths_iter))
+        if manifest.gpu is not None:
+            normalized_device_paths = normalize_generated_path_list(
+                (
+                    role.get("path")
+                    for role in manifest.gpu.device_roles
+                    if isinstance(role, Mapping) and role.get("path") is not None
+                ),
+                allow_exact_duplicates=True,
+            )
+            normalized_device_paths_iter = iter(normalized_device_paths)
+            for role in manifest.gpu.device_roles:
+                if isinstance(role, dict) and role.get("path") is not None:
+                    role["path"] = next(normalized_device_paths_iter)
+    except GeneratedPathViolation as exc:
+        raise ManifestRejection(f"{exc.reason_code}: {exc}") from exc
+
     # Point 3: multi-step builds
     if manifest.build_steps:
         raise ManifestRejection(
@@ -397,9 +440,10 @@ def _normalize_gpu_device_roles(
         for item in raw_roles:
             if not isinstance(item, Mapping):
                 continue
-            path = str(item.get("path") or item.get("generated_path") or "").replace("\\", "/")
-            if not path:
+            raw_path = item.get("path") or item.get("generated_path")
+            if not raw_path:
                 continue
+            path = normalize_generated_relative_path(raw_path)
             role_arch = _normalize_str_list(item.get("arch")) or list(arch)
             roles.append(
                 {
@@ -462,7 +506,7 @@ def _lookup_generated_role_content(
     declared_path: Optional[str],
     vendor: str,
 ) -> tuple[Optional[str], Optional[str]]:
-    normalized_files = {str(k).replace("\\", "/"): v for k, v in split_files.items()}
+    normalized_files = normalize_generated_path_mapping(split_files)
     default_device = "device.hip" if vendor == "rocm" else "device.cu"
     fallback_names = {
         "shared": ["shared.h"],
@@ -473,8 +517,7 @@ def _lookup_generated_role_content(
     }
     candidates = []
     if declared_path:
-        normalized = str(declared_path).replace("\\", "/")
-        candidates.extend([normalized, normalized.rsplit("/", 1)[-1]])
+        candidates.append(normalize_generated_relative_path(declared_path))
     candidates.extend([role, *fallback_names.get(role, [])])
     if role == "device":
         candidates.extend(
@@ -583,6 +626,7 @@ def internalize_gpu_generated_artifacts(
 ) -> tuple[dict[str, str], dict, dict]:
     """Move generated GPU role filenames under Synthi-owned internal paths."""
 
+    normalized_split_files = normalize_generated_path_mapping(split_files)
     manifest_out = dict(manifest)
     gpu = dict(manifest_out.get("gpu") if isinstance(manifest_out.get("gpu"), dict) else {})
     vendor = _normalize_gpu_vendor(gpu.get("vendor"))
@@ -603,7 +647,7 @@ def internalize_gpu_generated_artifacts(
 
     for role, internal_path in internal_roles.items():
         content, source_path = _lookup_generated_role_content(
-            split_files,
+            normalized_split_files,
             role=role,
             declared_path=declared_roles.get(role),
             vendor=vendor,
@@ -661,9 +705,7 @@ def internalize_gpu_generated_artifacts(
         "mappings": mappings,
         "missingRoles": missing_roles,
         "droppedExtraGeneratedFiles": sorted(
-            str(path).replace("\\", "/")
-            for path in split_files
-            if str(path).replace("\\", "/") not in consumed_paths
+            path for path in normalized_split_files if path not in consumed_paths
         ),
     }
     if gpu and "generated_split_granularity" in gpu:
@@ -687,7 +729,8 @@ def normalize_gpu_split_manifest(
     """
 
     manifest = dict(raw or {})
-    file_names = [str(k) for k in split_files.keys()]
+    normalized_split_files = normalize_generated_path_mapping(split_files)
+    file_names = list(normalized_split_files)
 
     def file_by(predicate, fallback: Optional[str] = None) -> Optional[str]:
         for name in file_names:
@@ -714,6 +757,9 @@ def normalize_gpu_split_manifest(
 
     default_device = "device.hip" if vendor == "rocm" else "device.cu"
     roles = dict(manifest.get("module_files") if isinstance(manifest.get("module_files"), dict) else {})
+    for role, path in tuple(roles.items()):
+        if path:
+            roles[role] = normalize_generated_relative_path(path)
     roles.setdefault("shared", file_by(lambda base, _: base == "shared.h" or "shared" in base, "shared.h"))
     roles.setdefault("core", file_by(lambda base, _: base == "core.cpp" or "core" in base, "core.cpp"))
     roles.setdefault("gui", file_by(lambda base, _: base == "gui.cpp" or "gui" in base, "gui.cpp"))
@@ -722,11 +768,17 @@ def normalize_gpu_split_manifest(
         "device",
         file_by(lambda base, full: base.endswith((".cu", ".hip")) or "device" in full, default_device),
     )
+    normalize_generated_path_list(
+        (path for path in roles.values() if path),
+        allow_exact_duplicates=True,
+    )
     manifest["module_files"] = roles
 
     files = manifest.get("files")
     if not isinstance(files, list) or not files:
         files = file_names
+    else:
+        files = normalize_generated_path_list(files)
     for path in roles.values():
         if path and path not in files:
             files.append(path)

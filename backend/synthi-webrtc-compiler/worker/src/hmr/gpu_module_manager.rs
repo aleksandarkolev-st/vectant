@@ -33,9 +33,10 @@
 
 #![cfg(feature = "gpu-hmr")]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::hmr::gpu_driver_loader::{
     CuFunction, CuKernelParams, CuModule, CuResult, CuStream, GpuDriverSymbolTable,
@@ -57,6 +58,21 @@ pub struct ModuleSlot {
 struct PartialModuleSlot {
     slot: ModuleSlot,
     symbols: Vec<String>,
+}
+
+/// Opaque snapshot of module ownership and the active launch table.
+///
+/// A checkpoint is bound to the manager that created it and is consumed by
+/// `rollback_to`. Callers must keep any slots retired after the checkpoint
+/// alive until the candidate publication is either committed or rolled back.
+#[derive(Debug)]
+pub struct GpuModuleManagerCheckpoint {
+    owner_id: u64,
+    primary: Option<ModuleSlot>,
+    standby: Option<ModuleSlot>,
+    partials: Vec<PartialModuleSlot>,
+    kernels: KernelTable,
+    swap_count: u64,
 }
 
 impl ModuleSlot {
@@ -178,6 +194,8 @@ pub enum ModuleManagerError {
     InvalidArtifactPath(String),
     /// Empty cubin/hsaco — refuse the load up-front.
     EmptyBlob,
+    /// A checkpoint from a different manager instance was supplied.
+    CheckpointOwnerMismatch,
 }
 
 impl ModuleManagerError {
@@ -192,6 +210,7 @@ impl ModuleManagerError {
             Self::InvalidKernelName(_) => "invalid_kernel_name",
             Self::InvalidArtifactPath(_) => "invalid_artifact_path",
             Self::EmptyBlob => "empty_blob",
+            Self::CheckpointOwnerMismatch => "checkpoint_owner_mismatch",
         }
     }
 }
@@ -208,6 +227,9 @@ impl std::fmt::Display for ModuleManagerError {
             Self::InvalidKernelName(s) => write!(f, "kernel name {s:?} contains NUL"),
             Self::InvalidArtifactPath(s) => write!(f, "artifact path {s:?} contains NUL"),
             Self::EmptyBlob => write!(f, "empty cubin / hsaco blob"),
+            Self::CheckpointOwnerMismatch => {
+                write!(f, "module checkpoint belongs to a different manager")
+            }
         }
     }
 }
@@ -218,8 +240,9 @@ impl std::fmt::Display for ModuleManagerError {
 /// table dereferences against; the standby is the next image
 /// loading or just-loaded. After a swap the old primary becomes
 /// the retired handle the caller must unload.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct GpuModuleManager {
+    instance_id: u64,
     primary: Option<ModuleSlot>,
     standby: Option<ModuleSlot>,
     partials: Vec<PartialModuleSlot>,
@@ -227,9 +250,44 @@ pub struct GpuModuleManager {
     /// Last driver error, set whenever a call returned non-zero.
     /// Cleared when the offending slot is cleared.
     last_error: Option<ModuleManagerError>,
-    /// Monotonic count of swaps that completed cleanly; surfaced
-    /// in telemetry as `gpu_swap_count`.
+    /// Count of committed module promotions and partial merges, surfaced in
+    /// telemetry as `gpu_swap_count`. A rejected provisional publication
+    /// restores the checkpointed count.
     swap_count: u64,
+}
+
+static NEXT_MANAGER_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_manager_instance_id() -> u64 {
+    NEXT_MANAGER_INSTANCE_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .expect("GpuModuleManager instance id space exhausted")
+}
+
+impl Default for GpuModuleManager {
+    fn default() -> Self {
+        Self {
+            instance_id: next_manager_instance_id(),
+            primary: None,
+            standby: None,
+            partials: Vec::new(),
+            kernels: KernelTable::default(),
+            last_error: None,
+            swap_count: 0,
+        }
+    }
+}
+
+impl GpuModuleManagerCheckpoint {
+    fn resident_slots(&self) -> Vec<ModuleSlot> {
+        let mut slots = Vec::with_capacity(2 + self.partials.len());
+        slots.extend(self.primary);
+        slots.extend(self.standby);
+        slots.extend(self.partials.iter().map(|partial| partial.slot));
+        slots
+    }
 }
 
 impl GpuModuleManager {
@@ -263,6 +321,66 @@ impl GpuModuleManager {
 
     pub fn clear_last_error(&mut self) {
         self.last_error = None;
+    }
+
+    /// Captures module ownership and the kernel table before a candidate load
+    /// or publication. The snapshot contains no driver calls and carries no
+    /// proof authority by itself.
+    pub fn checkpoint(&self) -> GpuModuleManagerCheckpoint {
+        GpuModuleManagerCheckpoint {
+            owner_id: self.instance_id,
+            primary: self.primary,
+            standby: self.standby,
+            partials: self.partials.clone(),
+            kernels: self.kernels.clone(),
+            swap_count: self.swap_count,
+        }
+    }
+
+    /// Restores a prior checkpoint and returns modules introduced after it.
+    ///
+    /// Returned slots are no longer owned by the manager and must be unloaded
+    /// by the caller. Slots present in the checkpoint are restored, not
+    /// returned, even when a swap or partial merge temporarily retired them.
+    /// Driver unloads must therefore wait until candidate proof closes. The
+    /// latest `last_error` is intentionally retained as attempt diagnostics.
+    pub fn rollback_to(
+        &mut self,
+        checkpoint: GpuModuleManagerCheckpoint,
+    ) -> Result<Vec<ModuleSlot>, ModuleManagerError> {
+        if checkpoint.owner_id != self.instance_id {
+            return Err(ModuleManagerError::CheckpointOwnerMismatch);
+        }
+
+        let prior_handles: HashSet<u64> = checkpoint
+            .resident_slots()
+            .into_iter()
+            .map(|slot| slot.handle)
+            .collect();
+        let mut returned_handles = HashSet::new();
+        let introduced = self
+            .resident_slots()
+            .into_iter()
+            .filter(|slot| {
+                !prior_handles.contains(&slot.handle) && returned_handles.insert(slot.handle)
+            })
+            .collect();
+
+        self.primary = checkpoint.primary;
+        self.standby = checkpoint.standby;
+        self.partials = checkpoint.partials;
+        self.kernels = checkpoint.kernels;
+        self.swap_count = checkpoint.swap_count;
+
+        Ok(introduced)
+    }
+
+    fn resident_slots(&self) -> Vec<ModuleSlot> {
+        let mut slots = Vec::with_capacity(2 + self.partials.len());
+        slots.extend(self.primary);
+        slots.extend(self.standby);
+        slots.extend(self.partials.iter().map(|partial| partial.slot));
+        slots
     }
 
     /// Loads a cubin/hsaco blob into the standby slot. Wraps
@@ -794,6 +912,9 @@ mod tests {
             cu_device_get: stub_device_get,
             cu_ctx_get_current: stub_ctx_get,
             cu_ctx_set_current: stub_ctx_set,
+            cu_ctx_get_device: None,
+            cu_device_get_uuid: None,
+            cu_stream_get_device: None,
             cu_module_load_data: stub_load_data,
             cu_module_load: stub_load_file,
             cu_module_unload: stub_unload,
@@ -1042,6 +1163,223 @@ mod tests {
     }
 
     #[test]
+    fn rollback_restores_full_publication_and_returns_only_candidate() {
+        reset_counters();
+        let mut m = GpuModuleManager::new();
+        let t = stub_table();
+
+        let original = m.load_standby(&t, &[1, 2, 3]).unwrap();
+        m.resolve_kernels(&t, &["shade".into()]).unwrap();
+        let original_function = m.kernel_table().get("shade").unwrap();
+        m.swap().unwrap();
+        let checkpoint = m.checkpoint();
+
+        let candidate = m.load_standby(&t, &[4, 5, 6]).unwrap();
+        m.resolve_kernels(&t, &["shade".into()]).unwrap();
+        let retired = m.swap().unwrap();
+        assert_eq!(retired, Some(original));
+        assert_eq!(m.primary(), Some(candidate));
+
+        let introduced = m.rollback_to(checkpoint).unwrap();
+        assert_eq!(introduced, vec![candidate]);
+        assert_eq!(m.primary(), Some(original));
+        assert!(m.standby().is_none());
+        assert_eq!(m.kernel_table().get("shade"), Some(original_function));
+        assert_eq!(m.swap_count(), 1);
+    }
+
+    #[test]
+    fn rollback_restores_superseded_partial_and_kernel_table() {
+        reset_counters();
+        let mut m = GpuModuleManager::new();
+        let t = stub_table();
+
+        let primary = m.load_standby(&t, &[1, 2, 3]).unwrap();
+        m.resolve_kernels(&t, &["shade".into(), "trace".into()])
+            .unwrap();
+        let original_table = m.kernel_table().clone();
+        m.swap().unwrap();
+
+        m.load_standby(&t, &[4, 5]).unwrap();
+        m.resolve_kernels(&t, &["shade".into()]).unwrap();
+        m.merge_standby_partial(original_table, &["shade".to_string()])
+            .unwrap();
+        let prior_partial = m.partials[0].slot;
+        let prior_table = m.kernel_table().clone();
+        let prior_shade = prior_table.get("shade").unwrap();
+        let prior_trace = prior_table.get("trace").unwrap();
+        let checkpoint = m.checkpoint();
+
+        let candidate = m.load_standby(&t, &[6, 7]).unwrap();
+        m.resolve_kernels(&t, &["shade".into()]).unwrap();
+        let temporarily_retired = m
+            .merge_standby_partial(prior_table, &["shade".to_string()])
+            .unwrap();
+        assert_eq!(temporarily_retired, vec![prior_partial]);
+
+        let introduced = m.rollback_to(checkpoint).unwrap();
+        assert_eq!(introduced, vec![candidate]);
+        assert_eq!(m.primary(), Some(primary));
+        assert_eq!(m.partial_module_count(), 1);
+        assert_eq!(m.partials[0].slot, prior_partial);
+        assert_eq!(m.kernel_table().get("shade"), Some(prior_shade));
+        assert_eq!(m.kernel_table().get("trace"), Some(prior_trace));
+        assert_eq!(m.swap_count(), 2);
+    }
+
+    #[test]
+    fn full_rollback_restores_drained_partial_chain_without_returning_old_slots() {
+        reset_counters();
+        let mut m = GpuModuleManager::new();
+        let t = stub_table();
+
+        let primary = m.load_standby(&t, &[1, 2, 3]).unwrap();
+        m.resolve_kernels(&t, &["shade".into(), "trace".into()])
+            .unwrap();
+        let primary_table = m.kernel_table().clone();
+        m.swap().unwrap();
+
+        m.load_standby(&t, &[4, 5]).unwrap();
+        m.resolve_kernels(&t, &["shade".into()]).unwrap();
+        m.merge_standby_partial(primary_table, &["shade".to_string()])
+            .unwrap();
+        let prior_partial = m.partials[0].slot;
+        let prior_table = m.kernel_table().clone();
+        let checkpoint = m.checkpoint();
+
+        let candidate = m.load_standby(&t, &[6, 7, 8]).unwrap();
+        m.resolve_kernels(&t, &["shade".into(), "trace".into()])
+            .unwrap();
+        let temporarily_retired_primary = m.swap().unwrap();
+        let temporarily_retired_partials = m.drain_partial_modules();
+        assert_eq!(temporarily_retired_primary, Some(primary));
+        assert_eq!(temporarily_retired_partials, vec![prior_partial]);
+
+        let introduced = m.rollback_to(checkpoint).unwrap();
+        assert_eq!(introduced, vec![candidate]);
+        assert_eq!(m.primary(), Some(primary));
+        assert_eq!(m.partial_module_count(), 1);
+        assert_eq!(m.partials[0].slot, prior_partial);
+        assert_eq!(m.kernel_table().get("shade"), prior_table.get("shade"));
+        assert_eq!(m.kernel_table().get("trace"), prior_table.get("trace"));
+        assert_eq!(m.swap_count(), 2);
+    }
+
+    #[test]
+    fn partial_rollback_restores_superseded_slot_and_preserves_retained_slot() {
+        reset_counters();
+        let mut m = GpuModuleManager::new();
+        let t = stub_table();
+
+        let primary = m.load_standby(&t, &[1, 2, 3]).unwrap();
+        m.resolve_kernels(&t, &["shade".into(), "trace".into()])
+            .unwrap();
+        let primary_table = m.kernel_table().clone();
+        m.swap().unwrap();
+
+        m.load_standby(&t, &[4, 5]).unwrap();
+        m.resolve_kernels(&t, &["shade".into()]).unwrap();
+        m.merge_standby_partial(primary_table, &["shade".to_string()])
+            .unwrap();
+        let shade_partial = m.partials[0].slot;
+
+        let shade_table = m.kernel_table().clone();
+        m.load_standby(&t, &[6, 7]).unwrap();
+        m.resolve_kernels(&t, &["trace".into()]).unwrap();
+        m.merge_standby_partial(shade_table, &["trace".to_string()])
+            .unwrap();
+        let trace_partial = m.partials[1].slot;
+        let prior_table = m.kernel_table().clone();
+        let checkpoint = m.checkpoint();
+
+        let candidate = m.load_standby(&t, &[8, 9]).unwrap();
+        m.resolve_kernels(&t, &["shade".into()]).unwrap();
+        let temporarily_retired = m
+            .merge_standby_partial(prior_table.clone(), &["shade".to_string()])
+            .unwrap();
+        assert_eq!(temporarily_retired, vec![shade_partial]);
+        assert_eq!(m.partials.len(), 2);
+        assert_eq!(m.partials[0].slot, trace_partial);
+        assert_eq!(m.partials[1].slot, candidate);
+
+        let introduced = m.rollback_to(checkpoint).unwrap();
+        assert_eq!(introduced, vec![candidate]);
+        assert_eq!(m.primary(), Some(primary));
+        assert_eq!(m.partial_module_count(), 2);
+        assert_eq!(m.partials[0].slot, shade_partial);
+        assert_eq!(m.partials[1].slot, trace_partial);
+        assert_eq!(m.kernel_table().get("shade"), prior_table.get("shade"));
+        assert_eq!(m.kernel_table().get("trace"), prior_table.get("trace"));
+        assert_eq!(m.swap_count(), 3);
+    }
+
+    #[test]
+    fn rollback_before_swap_discards_candidate_standby_and_restores_table() {
+        reset_counters();
+        let mut m = GpuModuleManager::new();
+        let t = stub_table();
+
+        let primary = m.load_standby(&t, &[1, 2, 3]).unwrap();
+        m.resolve_kernels(&t, &["shade".into()]).unwrap();
+        let original_function = m.kernel_table().get("shade").unwrap();
+        m.swap().unwrap();
+        let checkpoint = m.checkpoint();
+
+        let candidate = m.load_standby(&t, &[4, 5]).unwrap();
+        m.resolve_kernels(&t, &["shade".into()]).unwrap();
+        assert_eq!(m.standby(), Some(candidate));
+
+        let introduced = m.rollback_to(checkpoint).unwrap();
+        assert_eq!(introduced, vec![candidate]);
+        assert_eq!(m.primary(), Some(primary));
+        assert!(m.standby().is_none());
+        assert_eq!(m.kernel_table().get("shade"), Some(original_function));
+        assert_eq!(m.swap_count(), 1);
+    }
+
+    #[test]
+    fn rollback_preserves_latest_attempt_error() {
+        reset_counters();
+        let mut m = GpuModuleManager::new();
+        let t = stub_table();
+
+        let primary = m.load_standby(&t, &[1, 2, 3]).unwrap();
+        m.resolve_kernels(&t, &["shade".into()]).unwrap();
+        let original_function = m.kernel_table().get("shade").unwrap();
+        m.swap().unwrap();
+        let checkpoint = m.checkpoint();
+
+        let candidate = m.load_standby(&t, &[4, 5]).unwrap();
+        with_state_mut(|state| state.get_fn_result = 17);
+        let attempt_error = m.resolve_kernels(&t, &["shade".into()]).unwrap_err();
+
+        let introduced = m.rollback_to(checkpoint).unwrap();
+        assert_eq!(introduced, vec![candidate]);
+        assert_eq!(m.primary(), Some(primary));
+        assert!(m.standby().is_none());
+        assert_eq!(m.kernel_table().get("shade"), Some(original_function));
+        assert_eq!(m.last_error(), Some(&attempt_error));
+        assert_eq!(m.swap_count(), 1);
+    }
+
+    #[test]
+    fn rollback_rejects_foreign_checkpoint_without_mutation() {
+        reset_counters();
+        let checkpoint = GpuModuleManager::new().checkpoint();
+        let mut m = GpuModuleManager::new();
+        let t = stub_table();
+        let standby = m.load_standby(&t, &[1, 2]).unwrap();
+        m.resolve_kernels(&t, &["shade".into()]).unwrap();
+        let function = m.kernel_table().get("shade").unwrap();
+
+        let err = m.rollback_to(checkpoint).unwrap_err();
+        assert_eq!(err.short_label(), "checkpoint_owner_mismatch");
+        assert_eq!(m.standby(), Some(standby));
+        assert_eq!(m.kernel_table().get("shade"), Some(function));
+        assert!(m.last_error().is_none());
+    }
+
+    #[test]
     fn swap_fails_without_standby() {
         let mut m = GpuModuleManager::new();
         let err = m.swap().unwrap_err();
@@ -1210,6 +1548,7 @@ mod tests {
         // Compile-time check.
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<GpuModuleManager>();
+        assert_send_sync::<GpuModuleManagerCheckpoint>();
         assert_send_sync::<ModuleSlot>();
         assert_send_sync::<KernelTable>();
     }

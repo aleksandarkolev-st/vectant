@@ -23,9 +23,8 @@ makes a judgement call:
      existing kernel symbol must still exist with an unchanged parameter
      list unless the diff also patches the host launch site for it.
 
-  4. **No new `.cu`/`.hip` files.** The current GPU HMR manifest supports
-     one device translation unit role. Multi-TU device builds require a
-     later manifest/runtime contract.
+  4. **No undeclared role or file creation.** Every semantic edit role is
+     bound to one explicit path already present in `BuildManifest.files`.
 
 In addition, split-path checks (§5.6 item 2):
 
@@ -52,11 +51,19 @@ from agents.launch_graph_extractor import extract_launch_graph
 from agents.abi_stamper import mask_comments_for_parsing, normalize_param_list
 from agents.gpu_device_markers import (
     DEVICE_ANNOTATION_MACRO_PATTERN,
-    GPU_DEVICE_MARKER_RE,
+    has_gpu_device_marker,
+)
+from generated_path_policy import (
+    GeneratedPathViolation,
+    normalize_generated_path_list,
+    normalize_generated_path_mapping,
+    normalize_generated_relative_path,
 )
 
 
 HealTier = str  # "compile_hard" | "compile_soft" | "runtime"
+_HEAL_MODULE_ROLES = ("shared", "core", "gui", "host_runner", "device")
+_HEAL_HOST_MODULE_ROLES = frozenset({"shared", "core", "gui", "host_runner"})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -359,7 +366,7 @@ _GPU_INIT_KERNEL_LAUNCH_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _SYNTHI_LAUNCH_RESULT_CHECK_RE = re.compile(
-    r"(?:\bif\s*\(\s*synthi_gpu_launch\s*\(|\b(?:const\s+)?(?:bool|auto)(?:\s+const)?\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*synthi_gpu_launch\s*\()",
+    r"(?:\bif\s*\(\s*synthi_gpu_launch(?:_source_location|_original_host_path)?\s*\(|\b(?:const\s+)?(?:bool|auto)(?:\s+const)?\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*synthi_gpu_launch(?:_source_location|_original_host_path)?\s*\()",
     re.DOTALL,
 )
 _GUI_RENDER_MIRROR_INDEX_RE = re.compile(
@@ -436,6 +443,7 @@ def verify_heal_output(
     *,
     tier: HealTier,
     project_files: Iterable[str],
+    module_files: Mapping[str, str],
     edits: List[Mapping[str, str]],
     existing_kernels: Iterable[str],
     existing_device_source: Optional[str] = None,
@@ -449,6 +457,8 @@ def verify_heal_output(
         applies on the latter two.
       project_files: iterable of files currently listed in the
         BuildManifest (rule 1: no file creation).
+      module_files: explicit semantic role -> project path bindings from the
+        same BuildManifest. Role identity is never inferred from a path.
       edits: the healer's `{module, operation, anchor, content}` list.
       existing_kernels: iterable of kernel symbol names defined in the
         pre-heal device role.
@@ -461,54 +471,43 @@ def verify_heal_output(
       `HealVerificationResult` with `.ok == True` and an empty
       violations list on a clean pass.
     """
+    role_paths, role_violations = _resolve_heal_role_paths(project_files, module_files)
+    if role_violations:
+        return HealVerificationResult(ok=False, violations=role_violations)
     violations: List[Violation] = []
-    project_files_set: Set[str] = set(project_files)
-    device_files = {
-        f for f in project_files_set
-        if f.replace("\\", "/").lower().endswith((".cu", ".hip"))
-    }
-    allowed_modules = set(project_files_set)
-    alias_to_file = _module_aliases(project_files_set)
-    allowed_modules.update(alias_to_file)
     existing_kernels_set: Set[str] = {k for k in existing_kernels if k}
     host_sites: Mapping[str, str] = host_launch_sites or {}
 
-    # Rule 1 + 4: no file creation, no new .cu/.hip files.
+    # Rule 1 + 4: edits name semantic roles only, and those roles are already
+    # bound to files in the submitted manifest.
     for edit in edits:
         module = edit.get("module", "")
         op = (edit.get("operation") or "").lower()
-        normalized_module = alias_to_file.get(module, module)
-        if op in _NEW_FILE_OPS or module not in allowed_modules:
+        if module not in role_paths:
+            violations.append(
+                Violation(
+                    rule="heal_unknown_module_role",
+                    message=(
+                        f"Heal output names undeclared semantic role {module!r}. "
+                        f"Allowed roles: {list(_HEAL_MODULE_ROLES)}"
+                    ),
+                    offending_module=str(module),
+                )
+            )
+        if op in _NEW_FILE_OPS:
             violations.append(
                 Violation(
                     rule="no_file_creation",
                     message=(
-                        f"Heal output edits or creates a file outside the project's "
-                        f"BuildManifest: module={module!r} op={op!r}. "
-                        f"Allowed files: {sorted(project_files_set)}"
+                        f"Heal output attempts file creation through semantic role "
+                        f"{module!r}: op={op!r}."
                     ),
-                    offending_module=module,
-                )
-            )
-        if normalized_module.endswith((".cu", ".hip")) and normalized_module not in device_files:
-            violations.append(
-                Violation(
-                    rule="no_extra_device_tu",
-                    message=(
-                        f"Heal output introduces a new device translation unit: {module!r}. "
-                        "Multi-TU device builds require a later manifest/runtime "
-                        "contract; the current contract supports one device role."
-                    ),
-                    offending_module=module,
+                    offending_module=str(module),
                 )
             )
 
     # Rule 2: no wrapper kernels.
-    device_edits = [
-        {**e, "module": alias_to_file.get(e.get("module", ""), e.get("module", ""))}
-        for e in edits
-        if alias_to_file.get(e.get("module", ""), e.get("module", "")) in device_files
-    ]
+    device_edits = [dict(edit) for edit in edits if edit.get("module") == "device"]
     introduced_kernels = _collect_new_kernels(device_edits, existing_kernels_set)
     for new_name in introduced_kernels:
         existing_match = _is_shim_name(new_name, existing_kernels_set)
@@ -521,7 +520,7 @@ def verify_heal_output(
                         f"resembles an existing kernel {existing_match!r}. Patch "
                         "the existing kernel in place rather than adding a wrapper."
                     ),
-                    offending_module=alias_to_file.get("device", "device"),
+                    offending_module=role_paths["device"],
                     offending_symbol=new_name,
                 )
             )
@@ -547,7 +546,7 @@ def verify_heal_output(
                                 "without removing/updating its host launch "
                                 "site. Patch both sides in one edit batch."
                             ),
-                            offending_module=alias_to_file.get("device", "device"),
+                            offending_module=role_paths["device"],
                             offending_symbol=name,
                         )
                     )
@@ -561,11 +560,20 @@ def verify_heal_output(
                                 f"{name!r} without a matching host launch-site "
                                 "update. Patch both sides in one edit batch."
                             ),
-                            offending_module=alias_to_file.get("device", "device"),
+                            offending_module=role_paths["device"],
                             offending_symbol=name,
                         )
                     )
 
+    return HealVerificationResult(ok=not violations, violations=violations)
+
+
+def validate_heal_role_bindings(
+    project_files: Iterable[str],
+    module_files: Mapping[str, str],
+) -> HealVerificationResult:
+    """Validate a heal request's typed role ownership before invoking a model."""
+    _role_paths, violations = _resolve_heal_role_paths(project_files, module_files)
     return HealVerificationResult(ok=not violations, violations=violations)
 
 
@@ -1636,11 +1644,28 @@ def _mirror_initialized_in_load(core_load_body: str, mirror: str, fields: Set[st
 def _source_device_files(source_files: Optional[Mapping[str, str]]) -> Mapping[str, str]:
     if not source_files:
         return {}
-    return {
-        path: source
-        for path, source in source_files.items()
-        if _is_source_device_file(path, source)
+    normalized = {
+        path.replace("\\", "/"): source for path, source in source_files.items()
     }
+    queue = sorted(
+        path
+        for path, source in normalized.items()
+        if has_gpu_device_marker(mask_comments_for_parsing(source))
+    )
+    reachable: dict[str, str] = {}
+    while queue:
+        path = queue.pop(0)
+        if path in reachable:
+            continue
+        source = normalized.get(path)
+        if source is None:
+            continue
+        reachable[path] = source
+        for match in _QUOTED_INCLUDE_RE.finditer(mask_comments_for_parsing(source)):
+            resolved = _resolve_source_include(match.group(1).strip(), normalized)
+            if resolved is not None and resolved not in reachable:
+                queue.append(resolved)
+    return {path: reachable[path] for path in sorted(reachable)}
 
 
 def _resolve_source_include(
@@ -1724,16 +1749,6 @@ def _device_role_included_source_files(
     return included
 
 
-def _is_source_device_file(path: str, source: str) -> bool:
-    normalized = path.replace("\\", "/").lower()
-    masked = mask_comments_for_parsing(source)
-    if normalized.endswith((".cu", ".hip")):
-        return True
-    if not normalized.endswith((".cuh", ".hpp", ".hh", ".h")):
-        return False
-    return bool(GPU_DEVICE_MARKER_RE.search(masked))
-
-
 def _render_backends_in_sources(sources: Iterable[str]) -> Set[str]:
     found: Set[str] = set()
     for source in sources:
@@ -1747,7 +1762,7 @@ def _source_device_identifiers(source_device_sources: Mapping[str, str]) -> Set[
     identifiers: Set[str] = set()
     for source in source_device_sources.values():
         masked = mask_comments_for_parsing(source)
-        if not GPU_DEVICE_MARKER_RE.search(masked):
+        if not has_gpu_device_marker(masked):
             continue
         identifiers.update(_SOURCE_DEVICE_IDENTIFIER_RE.findall(masked))
     return identifiers
@@ -1775,15 +1790,15 @@ def _source_body_effectively_empty(body: str) -> bool:
 
 
 def _manifest_role_path(manifest: Optional[Mapping[str, object]], role: str) -> Optional[str]:
-    if not isinstance(manifest, dict):
+    if not isinstance(manifest, Mapping):
         return None
     module_files = manifest.get("module_files")
-    if not isinstance(module_files, dict):
+    if not isinstance(module_files, Mapping):
         return None
     value = module_files.get(role)
     if not isinstance(value, str) or not value.strip():
         return None
-    return value.strip().lstrip("./").replace("\\", "/")
+    return normalize_generated_relative_path(value)
 
 
 def _normalize_generated_path(path: str) -> str:
@@ -1794,41 +1809,12 @@ def _normalize_generated_path(path: str) -> str:
 
 
 def _resolve_split_role_paths(
-    files: Mapping[str, str],
     manifest: Optional[Mapping[str, object]],
 ) -> dict[str, Optional[str]]:
-    def first_existing(candidates: Iterable[str]) -> Optional[str]:
-        for candidate in candidates:
-            if candidate in files:
-                return candidate
-        return None
-
-    paths: dict[str, Optional[str]] = {}
-    fallback_candidates = {
-        "shared": ("shared.h",),
-        "core": ("core.cpp",),
-        "gui": ("gui.cpp",),
-        "host_runner": ("host_runner.cpp",),
+    return {
+        role: _manifest_role_path(manifest, role)
+        for role in ("shared", "core", "gui", "host_runner", "device")
     }
-    for role, candidates in fallback_candidates.items():
-        declared = _manifest_role_path(manifest, role)
-        paths[role] = declared if declared else first_existing(candidates)
-
-    declared_device = _manifest_role_path(manifest, "device")
-    if declared_device:
-        paths["device"] = declared_device
-    else:
-        paths["device"] = first_existing(("device.cu", "device.hip"))
-        if paths["device"] is None:
-            paths["device"] = next(
-                (
-                    name
-                    for name in files
-                    if name.replace("\\", "/").lower().endswith((".cu", ".hip"))
-                ),
-                None,
-            )
-    return paths
 
 
 def verify_split_output(
@@ -1853,10 +1839,36 @@ def verify_split_output(
         `synthi_gpu_runtime.h` ABI header instead of inventing local
         launch/lifecycle declarations.
       - the split contains every current GPU HMR semantic role. Filenames
-        come from `compile_manifest.module_files`; canonical names are only
-        fallbacks for older outputs.
+        come exclusively from `compile_manifest.module_files`.
     """
     violations: List[Violation] = []
+    try:
+        files = normalize_generated_path_mapping(files)
+        module_files = manifest.get("module_files") if isinstance(manifest, Mapping) else None
+        if isinstance(module_files, Mapping):
+            normalize_generated_path_list(
+                path for path in module_files.values() if path is not None
+            )
+        gpu = manifest.get("gpu") if isinstance(manifest, Mapping) else None
+        device_roles = gpu.get("device_roles") if isinstance(gpu, Mapping) else None
+        if isinstance(device_roles, list):
+            normalize_generated_path_list(
+                (
+                    role.get("path")
+                    for role in device_roles
+                    if isinstance(role, Mapping) and role.get("path") is not None
+                ),
+                allow_exact_duplicates=True,
+            )
+    except GeneratedPathViolation as exc:
+        violations.append(
+            Violation(
+                rule=exc.reason_code,
+                message=str(exc),
+                offending_module=str(exc.path),
+            )
+        )
+        return SplitVerificationResult(ok=False, violations=violations)
     if not list(manifest_arch):
         violations.append(
             Violation(
@@ -1865,29 +1877,110 @@ def verify_split_output(
             )
         )
 
-    role_paths = _resolve_split_role_paths(files, manifest)
+    role_paths = _resolve_split_role_paths(manifest)
+    role_resolution_failed = False
     for role in ("shared", "core", "gui", "host_runner"):
         path = role_paths.get(role)
-        if not path or path not in files:
+        if not path:
+            role_resolution_failed = True
             violations.append(
                 Violation(
                     rule="split_missing_file",
-                    message=f"Split output is missing required {role} role file.",
-                    offending_module=path or role,
+                    message=(
+                        "compile_manifest.module_files is missing the required "
+                        f"{role} role declaration. Role identity cannot be inferred "
+                        "from a generated filename."
+                    ),
+                    offending_module=role,
+                )
+            )
+        elif path not in files:
+            role_resolution_failed = True
+            violations.append(
+                Violation(
+                    rule="split_missing_file",
+                    message=f"Split output does not contain declared {role} role path {path!r}.",
+                    offending_module=path,
                 )
             )
     device_path = role_paths.get("device")
-    if not device_path or device_path not in files:
+    if not device_path:
+        role_resolution_failed = True
         violations.append(
             Violation(
                 rule="split_missing_device_file",
                 message=(
-                    "GPU split output is missing the manifest-declared device "
-                    "role file. Kernels must live in the dedicated device role."
+                    "compile_manifest.module_files is missing the required device "
+                    "role declaration. Device role identity cannot be inferred from "
+                    "an extension or generated filename."
                 ),
-                offending_module=device_path or "device",
+                offending_module="device",
             )
         )
+    elif device_path not in files:
+        role_resolution_failed = True
+        violations.append(
+            Violation(
+                rule="split_missing_device_file",
+                message=f"GPU split output does not contain declared device role path {device_path!r}.",
+                offending_module=device_path,
+            )
+        )
+
+    if role_resolution_failed:
+        return SplitVerificationResult(ok=False, violations=violations)
+
+    declared_role_paths = {
+        path for path in role_paths.values() if isinstance(path, str) and path
+    }
+    manifest_files = manifest.get("files") if isinstance(manifest, Mapping) else None
+    if manifest_files is not None:
+        if not isinstance(manifest_files, list):
+            violations.append(
+                Violation(
+                    rule="split_manifest_file_set_invalid",
+                    message="compile_manifest.files must be an ordered list of generated paths.",
+                    offending_module="files",
+                )
+            )
+            return SplitVerificationResult(ok=False, violations=violations)
+        try:
+            normalized_manifest_files = set(normalize_generated_path_list(manifest_files))
+        except GeneratedPathViolation as exc:
+            violations.append(
+                Violation(
+                    rule=exc.reason_code,
+                    message=str(exc),
+                    offending_module=str(exc.path),
+                )
+            )
+            return SplitVerificationResult(ok=False, violations=violations)
+        if normalized_manifest_files != declared_role_paths:
+            violations.append(
+                Violation(
+                    rule="split_manifest_file_set_mismatch",
+                    message=(
+                        "compile_manifest.files must exactly match the generated paths "
+                        "owned by compile_manifest.module_files."
+                    ),
+                    offending_module="files",
+                )
+            )
+
+    undeclared_generated_paths = sorted(set(files) - declared_role_paths)
+    for path in undeclared_generated_paths:
+        violations.append(
+            Violation(
+                rule="split_undeclared_generated_file",
+                message=(
+                    f"Generated artifact {path!r} is not owned by any declared semantic role. "
+                    "Unbound generated bytes cannot participate in an accepted split."
+                ),
+                offending_module=path,
+            )
+        )
+    if violations:
+        return SplitVerificationResult(ok=False, violations=violations)
 
     shared_path = role_paths.get("shared") or "shared"
     core_path = role_paths.get("core") or "core"
@@ -3490,7 +3583,7 @@ def _host_site_was_updated(
     # reference it.
     for edit in edits:
         module = edit.get("module", "")
-        if module in {"core", "gui", "shared", "host_runner"} or module.endswith((".cpp", ".cc", ".cxx", ".h", ".hpp")):
+        if module in _HEAL_HOST_MODULE_ROLES:
             content = edit.get("content", "") or ""
             anchor = edit.get("anchor", "") or ""
             if kernel in content or kernel in anchor:
@@ -3512,7 +3605,7 @@ def _host_site_was_removed(
         return False
     for edit in edits:
         module = edit.get("module", "")
-        if module not in {"core", "gui", "host_runner"} and not module.endswith((".cpp", ".cc", ".cxx")):
+        if module not in {"core", "gui", "host_runner"}:
             continue
         op = (edit.get("operation") or "").lower()
         anchor = edit.get("anchor", "") or ""
@@ -3524,31 +3617,89 @@ def _host_site_was_removed(
     return False
 
 
-def _module_aliases(project_files: Set[str]) -> dict[str, str]:
-    aliases: dict[str, str] = {}
+def _resolve_heal_role_paths(
+    project_files: Iterable[str],
+    module_files: Mapping[str, str],
+) -> tuple[dict[str, str], List[Violation]]:
+    violations: List[Violation] = []
+    try:
+        normalized_project_files = normalize_generated_path_list(project_files)
+    except GeneratedPathViolation as exc:
+        return {}, [
+            Violation(
+                rule=exc.reason_code,
+                message=str(exc),
+                offending_module=str(exc.path),
+            )
+        ]
+    project_file_set = set(normalized_project_files)
+    if not isinstance(module_files, Mapping):
+        return {}, [
+            Violation(
+                rule="heal_missing_module_role",
+                message="Heal verification requires an explicit module_files role map.",
+                offending_module=role,
+            )
+            for role in _HEAL_MODULE_ROLES
+        ]
 
-    def pick(canonical: str, predicate) -> Optional[str]:
-        if canonical in project_files:
-            return canonical
-        return next(
-            (
-                path
-                for path in sorted(project_files)
-                if predicate(path.replace("\\", "/").split("/")[-1].lower(), path.lower())
-            ),
-            None,
+    unknown_roles = sorted(str(role) for role in module_files if role not in _HEAL_MODULE_ROLES)
+    for role in unknown_roles:
+        violations.append(
+            Violation(
+                rule="heal_unknown_module_role_declaration",
+                message=f"module_files declares unsupported semantic role {role!r}.",
+                offending_module=role,
+            )
         )
 
-    role_candidates = {
-        "core": pick("core.cpp", lambda base, _: "core" in base and base.endswith((".cpp", ".cc", ".cxx"))),
-        "gui": pick("gui.cpp", lambda base, _: ("gui" in base or "render" in base) and base.endswith((".cpp", ".cc", ".cxx"))),
-        "shared": pick("shared.h", lambda base, _: "shared" in base and base.endswith((".h", ".hpp"))),
-        "host_runner": pick("host_runner.cpp", lambda base, _: "runner" in base and base.endswith((".cpp", ".cc", ".cxx"))),
-        "device": pick("device.cu", lambda base, _: base.endswith((".cu", ".hip"))),
-    }
-    if role_candidates["device"] is None:
-        role_candidates["device"] = pick("device.hip", lambda base, _: base.endswith((".cu", ".hip")))
-    for role, path in role_candidates.items():
-        if path:
-            aliases[role] = path
-    return aliases
+    role_paths: dict[str, str] = {}
+    owner_by_collision_key: dict[str, str] = {}
+    for role in _HEAL_MODULE_ROLES:
+        raw_path = module_files.get(role)
+        if not isinstance(raw_path, str) or not raw_path:
+            violations.append(
+                Violation(
+                    rule="heal_missing_module_role",
+                    message=f"module_files is missing required semantic role {role!r}.",
+                    offending_module=role,
+                )
+            )
+            continue
+        try:
+            path = normalize_generated_relative_path(raw_path)
+        except GeneratedPathViolation as exc:
+            violations.append(
+                Violation(
+                    rule=exc.reason_code,
+                    message=str(exc),
+                    offending_module=role,
+                )
+            )
+            continue
+        collision_key = path.lower()
+        previous_role = owner_by_collision_key.get(collision_key)
+        if previous_role is not None:
+            violations.append(
+                Violation(
+                    rule="heal_duplicate_module_role_path",
+                    message=(
+                        f"Semantic roles {previous_role!r} and {role!r} both own {path!r}."
+                    ),
+                    offending_module=role,
+                )
+            )
+            continue
+        owner_by_collision_key[collision_key] = role
+        role_paths[role] = path
+        if path not in project_file_set:
+            violations.append(
+                Violation(
+                    rule="heal_module_role_not_in_project_files",
+                    message=(
+                        f"Semantic role {role!r} owns {path!r}, which is absent from project_files."
+                    ),
+                    offending_module=role,
+                )
+            )
+    return role_paths, violations

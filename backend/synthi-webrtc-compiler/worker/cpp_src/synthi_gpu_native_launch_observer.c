@@ -323,7 +323,15 @@ static void synthi_function_symbol_token(
 static const char* synthi_runtime_session(void) {
     static char session[64];
     if (session[0] == '\0') {
-        snprintf(session, sizeof(session), "native-launch-observer:%ld", (long)getpid());
+        const char* configured_session = getenv("SYNTHI_REAL_ROCM_RUNTIME_SESSION");
+        if (configured_session == NULL || configured_session[0] == '\0') {
+            configured_session = getenv("SYNTHI_GPU_HMR_RUNTIME_SESSION");
+        }
+        if (configured_session != NULL && configured_session[0] != '\0') {
+            synthi_sanitize_token(configured_session, session, sizeof(session));
+        } else {
+            snprintf(session, sizeof(session), "native-launch-observer:%ld", (long)getpid());
+        }
     }
     return session;
 }
@@ -344,6 +352,39 @@ static const char* synthi_observed_array_allocation_apis(void) {
     return "oroMallocArray,hipMallocArray,cudaMallocArray,cuArrayCreate,cuArrayCreate_v2";
 }
 
+static void synthi_log_native_host_identity(
+    const char* event,
+    unsigned long long sequence,
+    void* stream) {
+    char event_token[64];
+    synthi_sanitize_token(event, event_token, sizeof(event_token));
+    const char* session = synthi_runtime_session();
+    long pid = (long)getpid();
+    fprintf(
+        stderr,
+        "[gpu-runtime-boundary] host_identity event=%s role=runner_process runtime_session=%s process_id=pid:%ld pid=%ld generation=0 ptr=0x%llx aux=%llu attachment_provenance=native_runtime_intercept\n",
+        event_token,
+        session,
+        pid,
+        pid,
+        (unsigned long long)pid,
+        0ULL);
+    if (stream != NULL) {
+        fprintf(
+            stderr,
+            "[gpu-runtime-boundary] host_identity event=%s role=stream_context runtime_session=%s process_id=pid:%ld pid=%ld generation=0 stream=0x%llx context_id=stream:0x%llx queue_id=stream:0x%llx ptr=0x%llx aux=%llu attachment_provenance=native_runtime_intercept\n",
+            event_token,
+            session,
+            pid,
+            pid,
+            (unsigned long long)(uintptr_t)stream,
+            (unsigned long long)(uintptr_t)stream,
+            (unsigned long long)(uintptr_t)stream,
+            (unsigned long long)(uintptr_t)stream,
+            0ULL);
+    }
+}
+
 __attribute__((constructor))
 static void synthi_log_native_launch_observer_ready(void) {
     char mode_token[128];
@@ -353,14 +394,16 @@ static void synthi_log_native_launch_observer_ready(void) {
         sizeof(mode_token));
     fprintf(
         stderr,
-        "[gpu-runtime-boundary] native_launch_observer_ready runtime_session=%s pid=%ld mode=%s apis=%s function_resolution_apis=%s texture_object_apis=%s array_allocation_apis=%s attachment_provenance=native_runtime_intercept\n",
+        "[gpu-runtime-boundary] native_launch_observer_ready runtime_session=%s process_id=pid:%ld pid=%ld mode=%s apis=%s function_resolution_apis=%s texture_object_apis=%s array_allocation_apis=%s attachment_provenance=native_runtime_intercept\n",
         synthi_runtime_session(),
+        (long)getpid(),
         (long)getpid(),
         mode_token,
         synthi_observed_launch_apis(),
         synthi_observed_function_resolution_apis(),
         synthi_observed_texture_object_apis(),
         synthi_observed_array_allocation_apis());
+    synthi_log_native_host_identity("native_observer_ready", 0, NULL);
 }
 
 static unsigned long long synthi_next_sequence(void) {
@@ -525,9 +568,10 @@ static void* synthi_next_symbol(const char* name) {
     if (error != NULL || symbol == NULL) {
         fprintf(
             stderr,
-            "[gpu-runtime-boundary] native_launch_intercept_error api=%s runtime_session=%s error=dlsym_next_missing\n",
+            "[gpu-runtime-boundary] native_launch_intercept_error api=%s runtime_session=%s process_id=pid:%ld error=dlsym_next_missing\n",
             name,
-            synthi_runtime_session());
+            synthi_runtime_session(),
+            (long)getpid());
         return NULL;
     }
     synthi_cache_real_symbol(name, symbol);
@@ -567,9 +611,10 @@ static void synthi_log_native_function_resolution(
     synthi_sanitize_token(name, symbol_token, sizeof(symbol_token));
     fprintf(
         stderr,
-        "[gpu-runtime-boundary] native_function_resolution api=%s runtime_session=%s module=0x%llx symbol=%s function_ptr=0x%llx result=%d resolution=%s real_resolver_resolved=%s attachment_provenance=native_runtime_intercept\n",
+        "[gpu-runtime-boundary] native_function_resolution api=%s runtime_session=%s process_id=pid:%ld module=0x%llx symbol=%s function_ptr=0x%llx result=%d resolution=%s real_resolver_resolved=%s attachment_provenance=native_runtime_intercept\n",
         api,
         synthi_runtime_session(),
+        (long)getpid(),
         (unsigned long long)(uintptr_t)module,
         symbol_token,
         (unsigned long long)(uintptr_t)function,
@@ -609,9 +654,10 @@ static void synthi_log_native_texture_object_create(
     unsigned long long texture_value = texture != NULL ? *texture : 0ULL;
     fprintf(
         stderr,
-        "[gpu-runtime-boundary] native_texture_object_create api=%s runtime_session=%s sequence=%llu texture=0x%llx texture_out_ptr=0x%llx resource_desc_ptr=0x%llx texture_desc_ptr=0x%llx resource_view_desc_ptr=0x%llx result=%d creation=%s real_resolver_resolved=%s attachment_provenance=native_runtime_intercept\n",
+        "[gpu-runtime-boundary] native_texture_object_create api=%s runtime_session=%s process_id=pid:%ld sequence=%llu texture=0x%llx texture_out_ptr=0x%llx resource_desc_ptr=0x%llx texture_desc_ptr=0x%llx resource_view_desc_ptr=0x%llx result=%d creation=%s real_resolver_resolved=%s attachment_provenance=native_runtime_intercept\n",
         api,
         synthi_runtime_session(),
+        (long)getpid(),
         sequence,
         texture_value,
         (unsigned long long)(uintptr_t)texture,
@@ -685,9 +731,10 @@ static void synthi_log_native_array_allocation(
     }
     fprintf(
         stderr,
-        "[gpu-runtime-boundary] native_array_allocation api=%s runtime_session=%s sequence=%llu array=0x%llx array_out_ptr=0x%llx descriptor_ptr=0x%llx descriptor_kind=%s channel_x=%d channel_y=%d channel_z=%d channel_w=%d channel_format_kind=%d width=%llu height=%llu flags=%u result=%d allocation=%s real_resolver_resolved=%s attachment_provenance=native_runtime_intercept\n",
+        "[gpu-runtime-boundary] native_array_allocation api=%s runtime_session=%s process_id=pid:%ld sequence=%llu array=0x%llx array_out_ptr=0x%llx descriptor_ptr=0x%llx descriptor_kind=%s channel_x=%d channel_y=%d channel_z=%d channel_w=%d channel_format_kind=%d width=%llu height=%llu flags=%u result=%d allocation=%s real_resolver_resolved=%s attachment_provenance=native_runtime_intercept\n",
         api,
         synthi_runtime_session(),
+        (long)getpid(),
         sequence,
         (unsigned long long)(uintptr_t)array_value,
         (unsigned long long)(uintptr_t)array,
@@ -794,7 +841,7 @@ static void synthi_log_native_launch_candidates(
         candidate_hash *= 1099511628211ULL;
         fprintf(
             stderr,
-            "[gpu-runtime-boundary] original_host_path_candidate event=candidate attached=false dispatch_boundary_observed=true attachment_provenance=native_runtime_intercept host_path_id=native-callsite:%016llx launch_sequence=%llu frame_index=%d module=%s symbol=%s address=0x%llx function_ptr=0x%llx kernel_symbol=%s runtime_session=%s\n",
+            "[gpu-runtime-boundary] original_host_path_candidate event=candidate attached=false dispatch_boundary_observed=true attachment_provenance=native_runtime_intercept host_path_id=native-callsite:%016llx launch_sequence=%llu frame_index=%d module=%s symbol=%s address=0x%llx function_ptr=0x%llx kernel_symbol=%s runtime_session=%s process_id=pid:%ld\n",
             candidate_hash,
             sequence,
             frame_index,
@@ -803,7 +850,8 @@ static void synthi_log_native_launch_candidates(
             (unsigned long long)(uintptr_t)frames[frame_index],
             (unsigned long long)(uintptr_t)function,
             kernel_symbol,
-            session);
+            session,
+            (long)getpid());
         emitted++;
     }
 }
@@ -827,9 +875,10 @@ static void synthi_log_native_launch_attempt(
     synthi_function_symbol_token(function, kernel_symbol, sizeof(kernel_symbol));
     fprintf(
         stderr,
-        "[gpu-runtime-boundary] native_launch_attempt api=%s runtime_session=%s sequence=%llu function_ptr=0x%llx kernel_symbol=%s grid=(%u,%u,%u) block=(%u,%u,%u) args_ptr=0x%llx stream=0x%llx shared_bytes=%u real_launch_resolved=%s dispatch=attempted-native attachment_provenance=native_runtime_intercept\n",
+        "[gpu-runtime-boundary] native_launch_attempt api=%s runtime_session=%s process_id=pid:%ld sequence=%llu function_ptr=0x%llx kernel_symbol=%s grid=(%u,%u,%u) block=(%u,%u,%u) args_ptr=0x%llx stream=0x%llx shared_bytes=%u real_launch_resolved=%s dispatch=attempted-native attachment_provenance=native_runtime_intercept\n",
         api,
         session,
+        (long)getpid(),
         sequence,
         (unsigned long long)(uintptr_t)function,
         kernel_symbol,
@@ -843,6 +892,7 @@ static void synthi_log_native_launch_attempt(
         (unsigned long long)(uintptr_t)stream,
         shared_bytes,
         real_launch_resolved ? "true" : "false");
+    synthi_log_native_host_identity("native_launch_attempt", sequence, stream);
     synthi_log_native_launch_candidates(sequence, function, kernel_symbol);
 }
 
@@ -865,9 +915,10 @@ static void synthi_log_native_launch(
     synthi_function_symbol_token(function, kernel_symbol, sizeof(kernel_symbol));
     fprintf(
         stderr,
-        "[gpu-runtime-boundary] native_launch_observed api=%s runtime_session=%s sequence=%llu function_ptr=0x%llx kernel_symbol=%s grid=(%u,%u,%u) block=(%u,%u,%u) args_ptr=0x%llx stream=0x%llx shared_bytes=%u result=%d dispatch=observed-native attachment_provenance=native_runtime_intercept\n",
+        "[gpu-runtime-boundary] native_launch_observed api=%s runtime_session=%s process_id=pid:%ld sequence=%llu function_ptr=0x%llx kernel_symbol=%s grid=(%u,%u,%u) block=(%u,%u,%u) args_ptr=0x%llx stream=0x%llx shared_bytes=%u result=%d dispatch=observed-native attachment_provenance=native_runtime_intercept\n",
         api,
         session,
+        (long)getpid(),
         sequence,
         (unsigned long long)(uintptr_t)function,
         kernel_symbol,
@@ -883,11 +934,13 @@ static void synthi_log_native_launch(
         result);
     fprintf(
         stderr,
-        "[gpu-runtime-boundary] original_host_path event=observed attached=false dispatch_boundary_observed=true attachment_provenance=native_runtime_intercept host_path_id=native-launch-observer:%llu dispatch_table_entry_id=none runtime_dispatch_table_entry_id=none dispatch_entry_runtime_verified=false generation=0 function_ptr=0x%llx kernel_symbol=%s runtime_session=%s\n",
+        "[gpu-runtime-boundary] original_host_path event=observed attached=false dispatch_boundary_observed=true attachment_provenance=native_runtime_intercept host_path_id=native-launch-observer:%llu dispatch_table_entry_id=none runtime_dispatch_table_entry_id=none dispatch_entry_runtime_verified=false generation=0 function_ptr=0x%llx kernel_symbol=%s runtime_session=%s process_id=pid:%ld\n",
         sequence,
         (unsigned long long)(uintptr_t)function,
         kernel_symbol,
-        session);
+        session,
+        (long)getpid());
+    synthi_log_native_host_identity("native_launch_observed", sequence, stream);
 }
 
 static int synthi_module_launch(

@@ -94,6 +94,12 @@ impl IpcConfig {
 pub enum IpcError {
     /// Connection closed
     ConnectionClosed,
+    /// Connection ended after a frame had already started.
+    TruncatedFrame {
+        section: &'static str,
+        received: usize,
+        expected: usize,
+    },
     /// Read timeout
     ReadTimeout { after_ms: u64 },
     /// Write timeout
@@ -131,6 +137,14 @@ impl std::fmt::Display for IpcError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             IpcError::ConnectionClosed => write!(f, "Connection closed"),
+            IpcError::TruncatedFrame {
+                section,
+                received,
+                expected,
+            } => write!(
+                f,
+                "Truncated frame {section}: received {received} of {expected} bytes"
+            ),
             IpcError::ReadTimeout { after_ms } => {
                 write!(f, "Read timeout after {}ms", after_ms)
             }
@@ -234,7 +248,7 @@ pub fn read_frame_validated<R: Read>(
 ) -> Result<Vec<u8>, IpcError> {
     // Read header (12 bytes)
     let mut header = [0u8; FRAME_HEADER_SIZE];
-    reader.read_exact(&mut header)?;
+    read_frame_section(reader, &mut header, "header", true)?;
 
     // Validate magic
     let magic = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
@@ -267,7 +281,7 @@ pub fn read_frame_validated<R: Read>(
 
     // NOW safe to allocate - length has been validated
     let mut payload = vec![0u8; length as usize];
-    reader.read_exact(&mut payload)?;
+    read_frame_section(reader, &mut payload, "payload", false)?;
 
     // Verify checksum
     let actual_checksum = crc32_checksum(&payload);
@@ -279,6 +293,53 @@ pub fn read_frame_validated<R: Read>(
     }
 
     Ok(payload)
+}
+
+fn read_frame_section<R: Read>(
+    reader: &mut R,
+    buffer: &mut [u8],
+    section: &'static str,
+    clean_eof_before_section_is_closed: bool,
+) -> Result<(), IpcError> {
+    let mut received = 0usize;
+    while received < buffer.len() {
+        match reader.read(&mut buffer[received..]) {
+            Ok(0) if received == 0 && clean_eof_before_section_is_closed => {
+                return Err(IpcError::ConnectionClosed);
+            }
+            Ok(0) => {
+                return Err(IpcError::TruncatedFrame {
+                    section,
+                    received,
+                    expected: buffer.len(),
+                });
+            }
+            Ok(bytes_read) => {
+                received = received.checked_add(bytes_read).ok_or_else(|| {
+                    IpcError::ProtocolViolation {
+                        reason: format!("frame {section} byte count overflowed"),
+                    }
+                })?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::UnexpectedEof
+                    && received == 0
+                    && clean_eof_before_section_is_closed =>
+            {
+                return Err(IpcError::ConnectionClosed);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Err(IpcError::TruncatedFrame {
+                    section,
+                    received,
+                    expected: buffer.len(),
+                });
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
 }
 
 /// Write a frame with checksum
@@ -810,7 +871,37 @@ impl<R: Read, W: Write> IpcChannel<R, W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
+    use std::io::{Cursor, Error, ErrorKind};
+
+    struct InterruptedOnce<R> {
+        inner: R,
+        interrupted: bool,
+    }
+
+    impl<R: Read> Read for InterruptedOnce<R> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(Error::from(ErrorKind::Interrupted));
+            }
+            self.inner.read(buffer)
+        }
+    }
+
+    struct UnexpectedEofAfterBytes {
+        inner: Cursor<Vec<u8>>,
+    }
+
+    impl Read for UnexpectedEofAfterBytes {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let bytes_read = self.inner.read(buffer)?;
+            if bytes_read == 0 {
+                Err(Error::from(ErrorKind::UnexpectedEof))
+            } else {
+                Ok(bytes_read)
+            }
+        }
+    }
 
     #[test]
     fn test_frame_roundtrip() {
@@ -854,6 +945,115 @@ mod tests {
         let result = read_frame_validated(&mut cursor, &config, None);
 
         assert!(matches!(result, Err(IpcError::FrameTooLarge { .. })));
+    }
+
+    #[test]
+    fn clean_eof_before_a_frame_is_connection_closed() {
+        let config = IpcConfig::default();
+        let mut cursor = Cursor::new(Vec::<u8>::new());
+        assert!(matches!(
+            read_frame_validated(&mut cursor, &config, None),
+            Err(IpcError::ConnectionClosed)
+        ));
+    }
+
+    #[test]
+    fn partial_frame_header_is_not_clean_eof() {
+        let config = IpcConfig::default();
+        let mut cursor = Cursor::new(FRAME_MAGIC.to_be_bytes()[..2].to_vec());
+        assert!(matches!(
+            read_frame_validated(&mut cursor, &config, None),
+            Err(IpcError::TruncatedFrame {
+                section: "header",
+                received: 2,
+                expected: FRAME_HEADER_SIZE,
+            })
+        ));
+    }
+
+    #[test]
+    fn partial_frame_payload_is_not_clean_eof() {
+        let payload = b"expected payload";
+        let mut frame = Vec::new();
+        write_frame(&mut frame, payload).unwrap();
+        frame.truncate(FRAME_HEADER_SIZE + 3);
+
+        let config = IpcConfig::default();
+        let mut cursor = Cursor::new(frame);
+        assert!(matches!(
+            read_frame_validated(&mut cursor, &config, None),
+            Err(IpcError::TruncatedFrame {
+                section: "payload",
+                received: 3,
+                expected,
+            }) if expected == payload.len()
+        ));
+    }
+
+    #[test]
+    fn explicit_unexpected_eof_after_partial_header_is_truncation() {
+        let config = IpcConfig::default();
+        let mut reader = UnexpectedEofAfterBytes {
+            inner: Cursor::new(FRAME_MAGIC.to_be_bytes()[..2].to_vec()),
+        };
+        assert!(matches!(
+            read_frame_validated(&mut reader, &config, None),
+            Err(IpcError::TruncatedFrame {
+                section: "header",
+                received: 2,
+                expected: FRAME_HEADER_SIZE,
+            })
+        ));
+    }
+
+    #[test]
+    fn explicit_unexpected_eof_before_nonempty_payload_is_truncation() {
+        let payload = b"missing payload";
+        let mut frame = Vec::new();
+        write_frame(&mut frame, payload).unwrap();
+        frame.truncate(FRAME_HEADER_SIZE);
+
+        let config = IpcConfig::default();
+        let mut reader = UnexpectedEofAfterBytes {
+            inner: Cursor::new(frame),
+        };
+        assert!(matches!(
+            read_frame_validated(&mut reader, &config, None),
+            Err(IpcError::TruncatedFrame {
+                section: "payload",
+                received: 0,
+                expected,
+            }) if expected == payload.len()
+        ));
+    }
+
+    #[test]
+    fn interrupted_frame_read_is_retried() {
+        let payload = b"retry me";
+        let mut frame = Vec::new();
+        write_frame(&mut frame, payload).unwrap();
+
+        let config = IpcConfig::default();
+        let mut reader = InterruptedOnce {
+            inner: Cursor::new(frame),
+            interrupted: false,
+        };
+        assert_eq!(
+            read_frame_validated(&mut reader, &config, None).unwrap(),
+            payload
+        );
+    }
+
+    #[test]
+    fn zero_length_frame_payload_is_valid() {
+        let mut frame = Vec::new();
+        write_frame(&mut frame, &[]).unwrap();
+
+        let config = IpcConfig::default();
+        let mut cursor = Cursor::new(frame);
+        assert!(read_frame_validated(&mut cursor, &config, None)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

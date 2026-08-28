@@ -242,6 +242,26 @@
       "owner": "ai_generation"
     },
     {
+      "code": "ai_provider_auth_denied",
+      "phase": "generation",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "AI provider rejected the request because authentication or authorization failed.",
+      "requiredRemediation": "Fix provider credentials or permissions, then rerun the source-first split.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "ai_generation"
+    },
+    {
+      "code": "ai_provider_account_suspended",
+      "phase": "generation",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "AI provider rejected the request because the configured account or consumer is suspended.",
+      "requiredRemediation": "Restore provider account access or switch to a valid configured provider.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "ai_generation"
+    },
+    {
       "code": "ai_provider_rate_limited",
       "phase": "generation",
       "severity": "blocking",

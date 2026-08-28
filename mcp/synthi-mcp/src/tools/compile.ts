@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { validateComputeExpectedOutputSemantics } from "../compute_expected_output_semantics.js";
 import { eventLog } from "../events/index.js";
 import { session } from "../session.js";
 import { checkInputGate } from "../correctness/index.js";
@@ -13,6 +14,94 @@ interface FileRef {
   name: string;
   sha256?: string;
   bytes?: number;
+}
+
+const SOURCE_FIRST_REQUEST_INTENT_MAX_BYTES = 64 * 1024;
+const SOURCE_FIRST_REQUEST_INTENT_MAX_DEPTH = 32;
+const SOURCE_FIRST_AUTHORITY_CLAIM_KEYS = new Set([
+  "acceptedforgpuhmr",
+  "gpuhmrsuccess",
+  "cansatisfyruntimeproof",
+  "cansatisfydispatchproof",
+  "runtimeauthority",
+  "dispatchauthority",
+  "fullruntimeproven",
+  "dispatchproven",
+]);
+
+function isPlainJsonObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function normalizedIntentKey(key: string): string {
+  return key.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+}
+
+function validateJsonIntentValue(
+  value: unknown,
+  ancestors: Set<object>,
+  depth: number,
+): string | undefined {
+  if (depth > SOURCE_FIRST_REQUEST_INTENT_MAX_DEPTH) return "maximum nesting depth exceeded";
+  if (value === null || typeof value === "string" || typeof value === "boolean") return undefined;
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? undefined : "non-finite number";
+  }
+  if (typeof value !== "object") return `non-JSON ${typeof value} value`;
+  if (ancestors.has(value)) return "cyclic object graph";
+
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const reason = validateJsonIntentValue(item, ancestors, depth + 1);
+        if (reason) return reason;
+      }
+      return undefined;
+    }
+    if (!isPlainJsonObject(value)) return "non-plain object";
+    if (Object.getOwnPropertySymbols(value).length > 0) return "symbol-keyed property";
+
+    for (const [key, child] of Object.entries(value)) {
+      if (SOURCE_FIRST_AUTHORITY_CLAIM_KEYS.has(normalizedIntentKey(key)) && child !== false) {
+        return `authority claim at ${key}`;
+      }
+      const reason = validateJsonIntentValue(child, ancestors, depth + 1);
+      if (reason) return reason;
+    }
+    return undefined;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function validateSourceFirstRequestIntent(
+  value: unknown,
+): { accepted: true; value: Record<string, unknown> } | { accepted: false; reason: string } {
+  if (!isPlainJsonObject(value)) {
+    return { accepted: false, reason: "expected a plain JSON object" };
+  }
+  const invalidReason = validateJsonIntentValue(value, new Set(), 0);
+  if (invalidReason) return { accepted: false, reason: invalidReason };
+
+  let encoded: string | undefined;
+  try {
+    encoded = JSON.stringify(value);
+  } catch {
+    return { accepted: false, reason: "object is not JSON serializable" };
+  }
+  if (typeof encoded !== "string") {
+    return { accepted: false, reason: "object is not JSON serializable" };
+  }
+  if (Buffer.byteLength(encoded, "utf8") > SOURCE_FIRST_REQUEST_INTENT_MAX_BYTES) {
+    return {
+      accepted: false,
+      reason: `encoded object exceeds ${SOURCE_FIRST_REQUEST_INTENT_MAX_BYTES} bytes`,
+    };
+  }
+  return { accepted: true, value };
 }
 
 function computeContentHash(
@@ -62,9 +151,24 @@ interface RawArgs {
   height?: unknown;
   use_ai_split?: unknown;
   bypass_ai_split_cache?: unknown;
+  bypass_device_compile_cache?: unknown;
   force_ai_split?: unknown;
   force_fresh_ai_split?: unknown;
   require_fresh_ai_split?: unknown;
+  require_ai_provider_call?: unknown;
+  require_provider_call?: unknown;
+  force_ai_provider_call?: unknown;
+  ai_provider_call_nonce?: unknown;
+  provider_call_nonce?: unknown;
+  aiProviderCallNonce?: unknown;
+  ai_provider?: unknown;
+  provider?: unknown;
+  provider_name?: unknown;
+  aiProvider?: unknown;
+  ai_model?: unknown;
+  model?: unknown;
+  model_name?: unknown;
+  aiModel?: unknown;
   user_requested_ai?: unknown;
   user_requested_deterministic?: unknown;
   force_gpu_ai_delta?: unknown;
@@ -75,6 +179,9 @@ interface RawArgs {
   gpu_arch?: unknown;
   compile_manifest?: unknown;
   manifest?: unknown;
+  source_first_request_intent?: unknown;
+  compute_expected_output_contract_hash?: unknown;
+  compute_expected_output_semantics?: unknown;
   target?: unknown;
   project_root?: unknown;
   slug?: unknown;
@@ -91,6 +198,37 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
   }
   if (a.filename !== undefined && typeof a.filename !== "string") {
     return errorResponse("invalid_args", { field: "filename", expected: "string" });
+  }
+  const computeExpectedOutputContractHash =
+    a.compute_expected_output_contract_hash;
+  if (
+    computeExpectedOutputContractHash !== undefined
+    && (
+      typeof computeExpectedOutputContractHash !== "string"
+      || !/^sha256:[a-f0-9]{64}$/.test(computeExpectedOutputContractHash)
+    )
+  ) {
+    return errorResponse("invalid_args", {
+      field: "compute_expected_output_contract_hash",
+      expected: "sha256: followed by exactly 64 lowercase hexadecimal characters",
+    });
+  }
+  const computeExpectedOutputSemantics =
+    a.compute_expected_output_semantics === undefined
+      ? null
+      : validateComputeExpectedOutputSemantics(
+        a.compute_expected_output_semantics,
+      );
+  if (
+    computeExpectedOutputSemantics !== null
+    && !computeExpectedOutputSemantics.accepted
+  ) {
+    return errorResponse("invalid_args", {
+      field: "compute_expected_output_semantics",
+      expected:
+        "canonical synthi.gpu_hmr.compute_expected_output_semantics.v1 object",
+      reason: computeExpectedOutputSemantics.reason,
+    });
   }
 
   // Validate optional `files` shape: [{name, content}]. An invalid shape
@@ -145,6 +283,15 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
       });
     }
   }
+  if (
+    a.bypass_device_compile_cache !== undefined
+    && typeof a.bypass_device_compile_cache !== "boolean"
+  ) {
+    return errorResponse("invalid_args", {
+      field: "bypass_device_compile_cache",
+      expected: "boolean",
+    });
+  }
 
   const gate = checkInputGate();
   if (gate) return errorResponse(gate.error, gate);
@@ -174,6 +321,53 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
   if (typeof bypassAiSplitCache === "boolean") {
     payload["bypass_ai_split_cache"] = bypassAiSplitCache;
   }
+  if (typeof a.bypass_device_compile_cache === "boolean") {
+    payload["bypass_device_compile_cache"] = a.bypass_device_compile_cache;
+  }
+  const requireAiProviderCall =
+    a.require_ai_provider_call ?? a.require_provider_call ?? a.force_ai_provider_call;
+  if (requireAiProviderCall !== undefined && typeof requireAiProviderCall !== "boolean") {
+    return errorResponse("invalid_args", {
+      field: "require_ai_provider_call",
+      expected: "boolean",
+    });
+  }
+  const aiProviderCallNonce =
+    a.ai_provider_call_nonce ?? a.provider_call_nonce ?? a.aiProviderCallNonce;
+  if (aiProviderCallNonce !== undefined && typeof aiProviderCallNonce !== "string") {
+    return errorResponse("invalid_args", {
+      field: "ai_provider_call_nonce",
+      expected: "string",
+    });
+  }
+  if (
+    requireAiProviderCall === true
+    && (
+      typeof aiProviderCallNonce !== "string"
+      || !/^provider-call:[a-f0-9]{32}$/.test(aiProviderCallNonce)
+    )
+  ) {
+    return errorResponse("invalid_args", {
+      field: "ai_provider_call_nonce",
+      expected: "provider-call followed by 32 lowercase hexadecimal characters",
+    });
+  }
+  if (typeof requireAiProviderCall === "boolean") {
+    payload["require_ai_provider_call"] = requireAiProviderCall;
+  }
+  if (typeof aiProviderCallNonce === "string") {
+    payload["ai_provider_call_nonce"] = aiProviderCallNonce;
+  }
+  const aiProvider = a.ai_provider ?? a.provider ?? a.provider_name ?? a.aiProvider;
+  if (aiProvider !== undefined && (typeof aiProvider !== "string" || aiProvider.trim() === "")) {
+    return errorResponse("invalid_args", { field: "ai_provider", expected: "non-empty string" });
+  }
+  const aiModel = a.ai_model ?? a.model ?? a.model_name ?? a.aiModel;
+  if (aiModel !== undefined && (typeof aiModel !== "string" || aiModel.trim() === "")) {
+    return errorResponse("invalid_args", { field: "ai_model", expected: "non-empty string" });
+  }
+  if (typeof aiProvider === "string") payload["ai_provider"] = aiProvider.trim().toLowerCase();
+  if (typeof aiModel === "string") payload["ai_model"] = aiModel.trim();
   if (typeof a.user_requested_ai === "boolean") payload["user_requested_ai"] = a.user_requested_ai;
   if (typeof a.user_requested_deterministic === "boolean") {
     payload["user_requested_deterministic"] = a.user_requested_deterministic;
@@ -197,12 +391,31 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
     }
     payload["compile_manifest"] = compileManifest;
   }
+  if (a.source_first_request_intent !== undefined) {
+    const requestIntent = validateSourceFirstRequestIntent(a.source_first_request_intent);
+    if (!requestIntent.accepted) {
+      return errorResponse("invalid_args", {
+        field: "source_first_request_intent",
+        expected:
+          `plain JSON object no larger than ${SOURCE_FIRST_REQUEST_INTENT_MAX_BYTES} UTF-8 bytes without GPU HMR/runtime/dispatch authority claims`,
+        reason: requestIntent.reason,
+      });
+    }
+    payload["source_first_request_intent"] = requestIntent.value;
+  }
   if (typeof a.target === "string") payload["target"] = a.target;
   if (typeof a.project_root === "string") payload["project_root"] = a.project_root;
   if (typeof a.slug === "string") payload["slug"] = a.slug;
 
+  let compileDispatch: Awaited<ReturnType<typeof attached.channels.sendCompileRequest>>;
   try {
-    await attached.channels.sendCompileRequest(payload);
+    compileDispatch = await attached.channels.sendCompileRequest(
+      payload,
+      computeExpectedOutputContractHash,
+      computeExpectedOutputSemantics?.accepted === true
+        ? computeExpectedOutputSemantics.value
+        : undefined,
+    );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.startsWith("compile_channel_not_open")) {
@@ -213,7 +426,17 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
     return errorFromException("compile_send_failed", err);
   }
 
-  const dispatchedAt = Date.now();
+  const dispatchedAt = compileDispatch.dispatchedAt;
+  const gpuProofDispatchCorrelation = Object.freeze({
+    schema_version: compileDispatch.schemaVersion,
+    evidence_authority: compileDispatch.proofAuthority,
+    correlation_id: compileDispatch.proofCorrelationId,
+    compute_expected_output_semantics_hash:
+      compileDispatch.computeExpectedOutputSemanticsHash,
+    accepted_for_gpu_hmr: false,
+    gpu_hmr_success: false,
+    can_satisfy_runtime_proof: false,
+  });
   eventLog.push({
     kind: "input",
     action: "compile:start",
@@ -224,6 +447,13 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
       use_ai_split: Boolean(payload["use_ai_split"]),
       bypass_ai_split_cache:
         typeof bypassAiSplitCache === "boolean" ? bypassAiSplitCache : undefined,
+      ...(typeof a.bypass_device_compile_cache === "boolean"
+        ? { bypass_device_compile_cache: a.bypass_device_compile_cache }
+        : {}),
+      require_ai_provider_call:
+        typeof requireAiProviderCall === "boolean" ? requireAiProviderCall : undefined,
+      ...(typeof aiProvider === "string" ? { ai_provider: aiProvider.trim().toLowerCase() } : {}),
+      ...(typeof aiModel === "string" ? { ai_model: aiModel.trim() } : {}),
       file_count: files.length,
       file_ref_count: fileRefs.length,
       source_chars: (a.source as string).length,
@@ -234,6 +464,7 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
       ...(typeof a.gpu_arch === "string" ? { gpu_arch: a.gpu_arch } : {}),
       ...(compileManifest !== undefined ? { compile_manifest: true } : {}),
       ...(typeof a.target === "string" ? { target: a.target } : {}),
+      gpu_proof_dispatch_correlation: gpuProofDispatchCorrelation,
     },
   });
 
@@ -258,6 +489,7 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
     language,
     filename,
     dispatched_at: dispatchedAt,
+    gpu_proof_dispatch_correlation: gpuProofDispatchCorrelation,
     note:
       "Compile dispatched. Await terminal HMR status via synthi_wait_hmr({since_ts: dispatched_at}). Responses stream on build-log.",
   });

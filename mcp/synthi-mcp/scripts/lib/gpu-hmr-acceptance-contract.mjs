@@ -123,6 +123,9 @@ const BACKEND_CONTRACT_COMPARABLE_FIELDS = {
       'pipeline_recreate_required',
       'pipeline_recreate_proven',
       'frame_used_new_pipeline_trace',
+      'pipeline_kind',
+      'compute_pipeline_trace',
+      'compute_readback_trace',
     ],
     unorderedListFields: new Set(['entry_points']),
   },
@@ -150,10 +153,15 @@ const BACKEND_CONTRACT_COMPARABLE_FIELDS = {
 
 function stableJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
-  return `{${Object.keys(value).sort().map((key) =>
-    `${JSON.stringify(key)}:${stableJson(value[key])}`
-  ).join(',')}}`;
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableJson(entry) ?? 'null').join(',')}]`;
+  }
+  const entries = [];
+  for (const key of Object.keys(value).sort()) {
+    const serialized = stableJson(value[key]);
+    if (serialized !== undefined) entries.push(`${JSON.stringify(key)}:${serialized}`);
+  }
+  return `{${entries.join(',')}}`;
 }
 
 function sha256Hex(value) {
@@ -544,6 +552,43 @@ function fissionVerifierEvidenceRefAccepted(value) {
     || normalized.startsWith('static:fission-verifier-report:');
 }
 
+function acceptanceContractHashMaterial(normalized) {
+  return {
+    contract_version: normalized.contract_version,
+    project_id: normalized.project_id,
+    edit_id: normalized.edit_id,
+    backend: normalized.backend,
+    classification: normalized.classification,
+    artifact_identity: normalized.artifact_identity,
+    artifact_hash_before: normalized.artifact_hash_before,
+    artifact_hash_after: normalized.artifact_hash_after,
+    unaffected_artifacts_hash_unchanged: normalized.unaffected_artifacts_hash_unchanged,
+    abi_compatibility_class: normalized.abi_compatibility_class,
+    abi_metadata: normalized.abi_metadata,
+    reload_mechanism: normalized.reload_mechanism,
+    adapter_outcome: normalized.adapter_outcome,
+    reload_evidence_refs: normalized.reload_evidence_refs,
+    firewall_evidence: normalized.firewall_evidence,
+    output_oracle_target: normalized.output_oracle_target,
+    native_runtime_eligibility: normalized.native_runtime_eligibility,
+    dispatch_trace_required: normalized.dispatch_trace_required,
+    oracle_trace_required: normalized.oracle_trace_required,
+    state_preservation_checks: normalized.state_preservation_checks,
+    epoch_policy: normalized.epoch_policy,
+    epoch_retirement_proof: normalized.epoch_retirement_proof,
+    fission_report: normalized.fission_report,
+    hip_contract: normalized.hip_contract,
+    hiprt_contract: normalized.hiprt_contract,
+    vulkan_contract: normalized.vulkan_contract,
+    webgpu_contract: normalized.webgpu_contract,
+    opencl_contract: normalized.opencl_contract,
+  };
+}
+
+function normalizedAcceptanceContractHash(normalized) {
+  return `sha256:${sha256Hex(stableJson(acceptanceContractHashMaterial(normalized)))}`;
+}
+
 export function normalizeGpuHmrAcceptanceContract(input = {}) {
   const c = asObject(input);
   const classification = normalizeClassification(c.classification);
@@ -574,6 +619,12 @@ export function normalizeGpuHmrAcceptanceContract(input = {}) {
     reload_evidence_refs: compactStringList(c.reload_evidence_refs ?? c.reloadEvidenceRefs),
     firewall_evidence: normalizeFirewallEvidence(c.firewall_evidence ?? c.firewallEvidence),
     output_oracle_target: normalizeOutputOracleTarget(c.output_oracle_target ?? c.outputOracleTarget),
+    native_runtime_eligibility: asObject(
+      c.native_runtime_eligibility
+      ?? c.nativeRuntimeEligibility
+      ?? c.real_rocm_runtime_eligibility
+      ?? c.realRocmRuntimeEligibility,
+    ),
     dispatch_trace_required: c.dispatch_trace_required !== false && c.dispatchTraceRequired !== false,
     oracle_trace_required: c.oracle_trace_required !== false && c.oracleTraceRequired !== false,
     state_preservation_checks: asObject(c.state_preservation_checks ?? c.statePreservationChecks),
@@ -586,37 +637,21 @@ export function normalizeGpuHmrAcceptanceContract(input = {}) {
     webgpu_contract: asObject(c.webgpu_contract ?? c.webgpuContract),
     opencl_contract: asObject(c.opencl_contract ?? c.openclContract),
   };
-  normalized.contract_hash ??= `sha256:${sha256Hex(stableJson({
-    contract_version: normalized.contract_version,
-    project_id: normalized.project_id,
-    edit_id: normalized.edit_id,
-    backend: normalized.backend,
-    classification: normalized.classification,
-    artifact_identity: normalized.artifact_identity,
-    artifact_hash_before: normalized.artifact_hash_before,
-    artifact_hash_after: normalized.artifact_hash_after,
-    unaffected_artifacts_hash_unchanged: normalized.unaffected_artifacts_hash_unchanged,
-    abi_compatibility_class: normalized.abi_compatibility_class,
-    abi_metadata: normalized.abi_metadata,
-    reload_mechanism: normalized.reload_mechanism,
-    adapter_outcome: normalized.adapter_outcome,
-    reload_evidence_refs: normalized.reload_evidence_refs,
-    firewall_evidence: normalized.firewall_evidence,
-    output_oracle_target: normalized.output_oracle_target,
-    dispatch_trace_required: normalized.dispatch_trace_required,
-    oracle_trace_required: normalized.oracle_trace_required,
-    state_preservation_checks: normalized.state_preservation_checks,
-    epoch_policy: normalized.epoch_policy,
-    epoch_retirement_proof: normalized.epoch_retirement_proof,
-    fission_report: normalized.fission_report,
-    hip_contract: normalized.hip_contract,
-    hiprt_contract: normalized.hiprt_contract,
-    vulkan_contract: normalized.vulkan_contract,
-    webgpu_contract: normalized.webgpu_contract,
-    opencl_contract: normalized.opencl_contract,
-  }))}`;
+  normalized.contract_hash ??= normalizedAcceptanceContractHash(normalized);
   normalized.contract_id ??= `gpu-hmr-contract:${normalized.contract_hash}`;
   return normalized;
+}
+
+export function recomputeGpuHmrAcceptanceContractHash(input = {}) {
+  const source = asObject(input);
+  const normalized = normalizeGpuHmrAcceptanceContract({
+    ...source,
+    contract_hash: null,
+    contractHash: null,
+    contract_id: null,
+    contractId: null,
+  });
+  return normalizedAcceptanceContractHash(normalized);
 }
 
 export function evaluateGpuHmrAcceptanceContract(input = {}) {
@@ -625,6 +660,26 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
   const failures = [];
   const warnings = [];
   const c = contract.classification;
+  const suppliedContractHashSnake = text(rawContract.contract_hash);
+  const suppliedContractHashCamel = text(rawContract.contractHash);
+  const suppliedContractHash = suppliedContractHashSnake ?? suppliedContractHashCamel;
+  const recomputedContractHash = normalizedAcceptanceContractHash(contract);
+
+  if (
+    suppliedContractHashSnake
+    && suppliedContractHashCamel
+    && suppliedContractHashSnake !== suppliedContractHashCamel
+  ) {
+    addFailure(failures, 'contract_hash_alias_mismatch');
+  }
+  if (suppliedContractHash && !/^sha256:[0-9a-f]{64}$/.test(suppliedContractHash)) {
+    addFailure(failures, 'contract_hash_invalid', { supplied_contract_hash: suppliedContractHash });
+  } else if (suppliedContractHash && suppliedContractHash !== recomputedContractHash) {
+    addFailure(failures, 'contract_hash_mismatch', {
+      supplied_contract_hash: suppliedContractHash,
+      recomputed_contract_hash: recomputedContractHash,
+    });
+  }
 
   if (contract.contract_version !== GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION) {
     addFailure(failures, 'contract_version_unsupported', {
@@ -682,6 +737,10 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
   ) {
     addFailure(failures, 'visual_backend_compute_target_unverified', { backend: contract.backend });
   }
+  const visualBackendComputeTarget =
+    VISUAL_OR_ENGINE_BACKENDS.has(contract.backend)
+    && outputOracleTargetKind(contract.output_oracle_target) === 'compute'
+    && computeOnlyOutputTargetVerified(contract.output_oracle_target);
   if (!contract.artifact_hash_before) addFailure(failures, 'artifact_hash_before_missing');
   if (!contract.artifact_hash_after) addFailure(failures, 'artifact_hash_after_missing');
   if (contract.artifact_hash_before && contract.artifact_hash_after
@@ -707,18 +766,16 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
     addFailure(failures, 'ai_hint_used_as_authoritative_contract_field', marker);
   }
   const abi = contract.abi_compatibility_class;
-  const backendSpecificAdapterSafetyProven =
+  const compatibilityClassAccepted = ['compatible', 'additive'].includes(abi.value);
+  const adapterSafetyAuthorityClaimed =
     abi.backend_specific_adapter_safety_proven
-    && abi.backend_specific_adapter_safety_evidence_refs.length > 0;
-  if (
-    abi.backend_specific_adapter_safety_proven
-    && abi.backend_specific_adapter_safety_evidence_refs.length === 0
-  ) {
-    addFailure(failures, 'abi_backend_specific_adapter_safety_evidence_refs_missing', {
+    || (!compatibilityClassAccepted && abi.backend_specific_adapter_safety_evidence_refs.length > 0);
+  if (adapterSafetyAuthorityClaimed) {
+    addFailure(failures, 'abi_backend_specific_adapter_safety_not_authoritative', {
       abi: abi.value,
     });
   }
-  if (!['compatible', 'additive'].includes(abi.value) && !backendSpecificAdapterSafetyProven) {
+  if (!compatibilityClassAccepted) {
     addFailure(failures, 'abi_compatibility_not_proven', { abi: abi.value });
   }
   if (!abi.evidence_refs.length) addFailure(failures, 'abi_evidence_refs_missing');
@@ -760,10 +817,13 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
   if (!nonEmptyValue(state.device_uuid)) addFailure(failures, 'state_device_uuid_missing');
   if (!nonEmptyValue(state.context_or_device_handle)) addFailure(failures, 'state_context_or_device_handle_missing');
   if (!nonEmptyValue(state.queue_or_stream_handle)) addFailure(failures, 'state_queue_or_stream_handle_missing');
-  if (COMPUTE_BACKENDS.has(contract.backend) && !nonEmptyValue(state.persistent_gpu_allocations)) {
+  if (
+    (COMPUTE_BACKENDS.has(contract.backend) || visualBackendComputeTarget)
+    && !nonEmptyValue(state.persistent_gpu_allocations)
+  ) {
     addFailure(failures, 'state_persistent_gpu_allocations_missing');
   }
-  if (VISUAL_OR_ENGINE_BACKENDS.has(contract.backend)) {
+  if (VISUAL_OR_ENGINE_BACKENDS.has(contract.backend) && !visualBackendComputeTarget) {
     if (!nonEmptyValue(state.camera_state_hash)) addFailure(failures, 'state_camera_hash_missing');
     if (!nonEmptyValue(state.swapchain_or_framebuffer_identity)) {
       addFailure(failures, 'state_swapchain_or_framebuffer_identity_missing');
@@ -930,7 +990,17 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
   }
   if (contract.backend === 'webgpu' || contract.backend === 'bevy_wgsl') {
     const webgpu = contract.webgpu_contract;
-    for (const field of [
+    const pipelineKind = firstText(webgpu.pipeline_kind, webgpu.pipelineKind) ?? 'render';
+    const requiredFields = pipelineKind === 'compute' ? [
+      'wgsl_hash_before',
+      'wgsl_hash_after',
+      'shader_module_epoch',
+      'entry_points',
+      'bind_group_layout_hash',
+      'pipeline_layout_hash',
+      'compute_pipeline_trace',
+      'compute_readback_trace',
+    ] : [
       'wgsl_hash_before',
       'wgsl_hash_after',
       'shader_module_epoch',
@@ -940,7 +1010,8 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
       'vertex_buffer_layout_hash',
       'color_target_state_hash',
       'frame_used_new_pipeline_trace',
-    ]) {
+    ];
+    for (const field of requiredFields) {
       requireBackendField(failures, 'webgpu_contract', webgpu, field);
       requireBackendFieldEvidence(failures, 'webgpu_contract', webgpu, field);
     }
@@ -970,6 +1041,8 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
     failureMode: failures.length === 0 ? null : contract.failure_mode,
     failedGates: failures,
     warnings,
+    recomputedContractHash,
+    recomputed_contract_hash: recomputedContractHash,
   };
 }
 
@@ -1090,24 +1163,14 @@ export function evaluateGpuHmrAcceptanceContractConsistency({
   };
 }
 
-function backendEvidenceText({ input, validationContext, selectedIsland, dispatchProof, artifactTransportProof }) {
+function backendEvidenceText({ validationContext, selectedIsland, dispatchProof, artifactTransportProof }) {
   return [
-    input.backendEvidence,
-    input.backend_evidence,
-    input.gpuApi,
-    input.gpu_api,
-    input.launchApi,
-    input.launch_api,
-    validationContext.backendEvidence,
-    validationContext.backend_evidence,
     validationContext.gpuApi,
     validationContext.gpu_api,
     validationContext.launchApi,
     validationContext.launch_api,
     validationContext.deviceIdentity?.backend,
     validationContext.device_identity?.backend,
-    selectedIsland?.artifactKind,
-    selectedIsland?.artifact_kind,
     selectedIsland?.compiler,
     selectedIsland?.compilerName,
     selectedIsland?.compiler_name,
@@ -1117,17 +1180,11 @@ function backendEvidenceText({ input, validationContext, selectedIsland, dispatc
     dispatchProof?.launch_api,
     artifactTransportProof?.loaderApi,
     artifactTransportProof?.loader_api,
-    ...(asArray(dispatchProof?.dispatchEvidenceRefs)),
-    ...(asArray(dispatchProof?.dispatch_evidence_refs)),
-    ...(asArray(dispatchProof?.evidenceRefs)),
-    ...(asArray(dispatchProof?.evidence_refs)),
-    ...(asArray(artifactTransportProof?.evidenceRefs)),
-    ...(asArray(artifactTransportProof?.evidence_refs)),
   ].map((value) => String(value ?? '').toLowerCase()).join(' ');
 }
 
 function hasHiprtBackendEvidence(evidence) {
-  return /\bhiprt\b|hiprtpathtracer|hiprt[_-]?oro|hiprto|hiprt[_-]?kernel/.test(evidence);
+  return /\bhiprt\b|\bhiprt(?:create|destroy|build|get|set)[a-z0-9_]*\b/.test(evidence);
 }
 
 function hasHipBackendEvidence(evidence) {
@@ -1436,7 +1493,7 @@ function hipContractFromVerifiedProofs({
   const dispatchRefs = evidenceRefsFromProofs(dispatchProof, selectedIsland);
   const abiRefs = evidenceRefsFromProofs(abiProof);
   const outputRefs = evidenceRefsFromProofs(outputProof, outputOracle);
-  return {
+  return compactObject({
     kernel_name: firstText(
       dispatchProof?.kernelName,
       dispatchProof?.kernel_name,
@@ -1501,7 +1558,7 @@ function hipContractFromVerifiedProofs({
         readback_oracle: outputRefs,
       },
     ),
-  };
+  });
 }
 
 function hiprtContractFromVerifiedProofs({
@@ -1537,7 +1594,7 @@ function hiprtContractFromVerifiedProofs({
 function openclContractFromVerifiedProofs({ outputProof, artifactHashBefore, artifactHashAfter, entryPoints, backendContractProof }) {
   const contract = backendSpecificContractFromProof(backendContractProof, 'opencl');
   const outputOracle = firstObject(outputProof?.outputOracle, outputProof?.output_oracle);
-  return {
+  return compactObject({
     program_hash_before: artifactHashBefore,
     program_hash_after: artifactHashAfter,
     kernel_name: firstText(contract.kernelName, contract.kernel_name, entryPoints[0]),
@@ -1559,12 +1616,12 @@ function openclContractFromVerifiedProofs({ outputProof, artifactHashBefore, art
       'opencl',
       BACKEND_CONTRACT_COMPARABLE_FIELDS.opencl.fields,
     ),
-  };
+  });
 }
 
 function vulkanContractFromVerifiedProofs({ artifactHashBefore, artifactHashAfter, entryPoints, backendContractProof }) {
   const contract = backendSpecificContractFromProof(backendContractProof, 'vulkan');
-  return {
+  return compactObject({
     shader_module_hash_before: firstText(contract.shaderModuleHashBefore, contract.shader_module_hash_before, artifactHashBefore),
     shader_module_hash_after: firstText(contract.shaderModuleHashAfter, contract.shader_module_hash_after, artifactHashAfter),
     entry_point: firstText(contract.entryPoint, contract.entry_point, entryPoints[0]),
@@ -1583,12 +1640,12 @@ function vulkanContractFromVerifiedProofs({ artifactHashBefore, artifactHashAfte
       'vulkan',
       BACKEND_CONTRACT_COMPARABLE_FIELDS.vulkan.fields,
     ),
-  };
+  });
 }
 
 function webgpuContractFromVerifiedProofs({ artifactHashBefore, artifactHashAfter, entryPoints, epochProof, backendContractProof, backend }) {
   const contract = backendSpecificContractFromProof(backendContractProof, backend === 'bevy_wgsl' ? 'bevy_wgsl' : 'webgpu');
-  return {
+  return compactObject({
     wgsl_hash_before: firstText(contract.wgslHashBefore, contract.wgsl_hash_before, artifactHashBefore),
     wgsl_hash_after: firstText(contract.wgslHashAfter, contract.wgsl_hash_after, artifactHashAfter),
     shader_module_epoch: firstText(contract.shaderModuleEpoch, contract.shader_module_epoch, epochProof?.activeEpoch),
@@ -1611,7 +1668,7 @@ function webgpuContractFromVerifiedProofs({ artifactHashBefore, artifactHashAfte
       backend === 'bevy_wgsl' ? 'bevy_wgsl' : 'webgpu',
       BACKEND_CONTRACT_COMPARABLE_FIELDS[backend === 'bevy_wgsl' ? 'bevy_wgsl' : 'webgpu'].fields,
     ),
-  };
+  });
 }
 
 function evidenceRefsFromProofs(...proofs) {
@@ -1621,6 +1678,30 @@ function evidenceRefsFromProofs(...proofs) {
     ...(asArray(proof?.proofArtifactPaths)),
     ...(asArray(proof?.proof_artifact_paths)),
   ]));
+}
+
+function nativeRocmLaunchBoundaryBlockingGaps(nativeBoundary, fullRuntimeProof) {
+  const boundary = asObject(nativeBoundary);
+  const observed = boundary.observed === true
+    || boundary.native_launch_boundary_observed === true
+    || boundary.nativeLaunchBoundaryObserved === true;
+  if (!observed || fullRuntimeProof?.fullRuntimeProven === true) return [];
+  const configuredGaps = compactStringList(boundary.blocking_gaps ?? boundary.blockingGaps);
+  return configuredGaps.length > 0
+    ? configuredGaps
+    : ['native_launch_boundary_observed', 'native_boundary_not_synthi_dispatch_proof'];
+}
+
+function nativeRuntimeEligibilityBlockingGaps(nativeEligibility, fullRuntimeProof) {
+  const eligibility = asObject(nativeEligibility);
+  const observed = eligibility.observed === true
+    || compactStringList(eligibility.backend_candidates ?? eligibility.backendCandidates).length > 0
+    || text(eligibility.status) === 'refused_missing_runtime_proof';
+  if (!observed || fullRuntimeProof?.fullRuntimeProven === true) return [];
+  const configuredGaps = compactStringList(eligibility.blocking_gaps ?? eligibility.blockingGaps);
+  return configuredGaps.length > 0
+    ? configuredGaps
+    : ['native_runtime_eligibility_refused_missing_runtime_proof'];
 }
 
 function firewallProofFromVerifiedProofs({ input, validationContext }) {
@@ -1735,6 +1816,8 @@ function blockingGapsFromVerifiedProofs({
   selectedIsland,
   backendContractProof,
   classificationGaps = [],
+  nativeRocmLaunchBoundary = {},
+  nativeRuntimeEligibility = {},
 }) {
   const gaps = [];
   if (backend === 'unknown') gaps.push('backend_unknown');
@@ -1764,6 +1847,8 @@ function blockingGapsFromVerifiedProofs({
       gaps.push('backend_contract_not_verified');
     }
   }
+  gaps.push(...nativeRocmLaunchBoundaryBlockingGaps(nativeRocmLaunchBoundary, fullRuntimeProof));
+  gaps.push(...nativeRuntimeEligibilityBlockingGaps(nativeRuntimeEligibility, fullRuntimeProof));
   gaps.push(...asArray(firewallProof?.blockingGaps));
   return compactStringList(gaps);
 }
@@ -1811,6 +1896,30 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
   const outputProof = asObject(input.outputProof ?? input.output_proof);
   const hostPreservationProof = asObject(input.hostPreservationProof ?? input.host_preservation_proof);
   const fullRuntimeProof = asObject(input.fullRuntimeProof ?? input.full_runtime_proof);
+  const nativeRocmLaunchBoundary = asObject(
+    input.nativeRocmLaunchBoundary
+    ?? input.native_rocm_launch_boundary
+    ?? validationContext.nativeRocmLaunchBoundary
+    ?? validationContext.native_rocm_launch_boundary,
+  );
+  const nativeRuntimeEligibility = asObject(
+    input.nativeRuntimeEligibility
+    ?? input.native_runtime_eligibility
+    ?? input.realRocmRuntimeEligibility
+    ?? input.real_rocm_runtime_eligibility
+    ?? validationContext.nativeRuntimeEligibility
+    ?? validationContext.native_runtime_eligibility
+    ?? validationContext.realRocmRuntimeEligibility
+    ?? validationContext.real_rocm_runtime_eligibility,
+  );
+  const candidateArtifactIdentity = firstObject(
+    input.candidateArtifactIdentity,
+    input.candidate_artifact_identity,
+    validationContext.candidateArtifactIdentity,
+    validationContext.candidate_artifact_identity,
+    nativeRuntimeEligibility.candidateArtifactIdentity,
+    nativeRuntimeEligibility.candidate_artifact_identity,
+  );
   const rawClassification = rawClassificationFromVerifiedContext(input, validationContext);
   const verifiedClassification = normalizeClassification(rawClassification);
   const firewallProof = firewallProofFromVerifiedProofs({ input, validationContext });
@@ -1844,6 +1953,8 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
   const sourcePaths = compactStringList([
     ...asArray(selectedIsland.sourcePaths),
     ...asArray(selectedIsland.source_paths),
+    ...asArray(candidateArtifactIdentity.source_paths),
+    ...asArray(candidateArtifactIdentity.sourcePaths),
   ]);
   const entryPoints = compactStringList([
     ...asArray(selectedIsland.targetSymbols),
@@ -1852,6 +1963,8 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
     ...asArray(selectedIsland.exported_symbols_expected),
     ...asArray(dispatchProof.dispatchTableEntryIds).map((entry) => String(entry).split(':')[0]),
     ...asArray(dispatchProof.dispatch_table_entry_ids).map((entry) => String(entry).split(':')[0]),
+    ...asArray(candidateArtifactIdentity.entry_points),
+    ...asArray(candidateArtifactIdentity.entryPoints),
   ]);
   const evidenceRefs = evidenceRefsFromProofs(
     ...sourceProofs,
@@ -1863,6 +1976,8 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
     outputProof,
     hostPreservationProof,
     backendContractProof,
+    nativeRocmLaunchBoundary,
+    nativeRuntimeEligibility,
   );
   const blockingGaps = blockingGapsFromVerifiedProofs({
     backend,
@@ -1879,17 +1994,23 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
     selectedIsland,
     backendContractProof,
     classificationGaps: verifiedClassificationGaps(rawClassification, verifiedClassification),
+    nativeRocmLaunchBoundary,
+    nativeRuntimeEligibility,
   });
   const gpuRouteAccepted = blockingGaps.length === 0;
-  const artifactKind = selectedIslandKind(selectedIsland, backend);
+  const candidateArtifactKind = enumValue(
+    asObject(candidateArtifactIdentity.artifact_kind).value
+    ?? candidateArtifactIdentity.artifact_kind
+    ?? candidateArtifactIdentity.artifactKind,
+    ARTIFACT_KINDS,
+    'unknown',
+  );
+  const selectedArtifactKind = selectedIslandKind(selectedIsland, backend);
+  const artifactKind = selectedArtifactKind !== 'unknown' ? selectedArtifactKind : candidateArtifactKind;
   const fullDeviceFallback = /full[_-]?device|device[_-]?module/.test(
     String(selectedIsland.artifactKind ?? selectedIsland.artifact_kind ?? ''),
   );
   const abiAdapterSafetyEvidenceRefs = abiAdapterSafetyEvidenceRefsFromProof(abiProof);
-  const abiAdapterSafetyProven = (
-    abiProof.backendSpecificAdapterSafetyProven === true
-    || abiProof.backend_specific_adapter_safety_proven === true
-  ) && abiAdapterSafetyEvidenceRefs.length > 0;
   const contract = normalizeGpuHmrAcceptanceContract({
     contract_version: GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
     project_id: firstText(input.projectId, input.project_id, input.workspaceSlug, validationContext.workspaceSlug),
@@ -1920,7 +2041,14 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
       source_paths: sourcePaths,
       artifact_kind: artifactKind,
       entry_points: entryPoints,
-      compile_target: firstText(input.gpuArch, input.gpu_arch, validationContext.gpuArch, validationContext.gpu_arch),
+      compile_target: firstText(
+        input.gpuArch,
+        input.gpu_arch,
+        validationContext.gpuArch,
+        validationContext.gpu_arch,
+        candidateArtifactIdentity.compile_target,
+        candidateArtifactIdentity.compileTarget,
+      ),
       compiler: firstText(
         selectedIsland.compiler,
         selectedIsland.compilerName,
@@ -1931,12 +2059,15 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
         validationContext.compiler,
         validationContext.deviceCompiler,
         validationContext.device_compiler,
+        candidateArtifactIdentity.compiler,
       ),
       compiler_args_hash: firstText(
         selectedIsland.compileCommandHash,
         selectedIsland.compile_command_hash,
         selectedIsland.compileRecipeHash,
         selectedIsland.compile_recipe_hash,
+        candidateArtifactIdentity.compiler_args_hash,
+        candidateArtifactIdentity.compilerArgsHash,
       ),
     },
     artifact_hash_before: artifactHashBefore,
@@ -1945,7 +2076,7 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
     abi_compatibility_class: {
       value: abiCompatibilityClassFromProof(abiProof),
       evidence_refs: compactStringList(abiProof.evidenceRefs ?? abiProof.evidence_refs),
-      backend_specific_adapter_safety_proven: abiAdapterSafetyProven,
+      backend_specific_adapter_safety_proven: false,
       backend_specific_adapter_safety_evidence_refs: abiAdapterSafetyEvidenceRefs,
     },
     abi_metadata: {
@@ -2036,6 +2167,7 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
       outputProof.output_oracle?.outputOracleTarget,
       outputProof.output_oracle?.output_oracle_target,
     ),
+    native_runtime_eligibility: nativeRuntimeEligibility,
     firewall_evidence: {
       route: firewallProof.route,
       evidence_source: firewallProof.evidence_source,

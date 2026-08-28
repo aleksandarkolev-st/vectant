@@ -203,8 +203,17 @@ describe("browser MCP tool surface", () => {
   it("denies snapshot before any authorized tab is selected", async () => {
     const response = await dispatchBrowserTool("synthi_browser_snapshot", {});
     expect(response?.isError).toBe(true);
-    expect((response?.structuredContent as { error: string }).error).toBe("browser_tool_failed");
-    expect((response?.structuredContent as { message: string }).message).toBe("tab_not_authorized");
+    expect(response?.structuredContent).toMatchObject({
+      error: "browser_tool_failed",
+      evidenceAuthority: "exception_class_only_not_runtime_or_gpu_hmr_proof",
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      exceptionClass: "runtime_error",
+      messagePresent: true,
+    });
+    expect((response?.structuredContent as { messageRef: string }).messageRef)
+      .toMatch(/^mcp-error-message-ref:sha256:[a-f0-9]{64}$/);
+    expect(response?.structuredContent).not.toHaveProperty("message");
   });
 
   it("does not let agent preview observe self-grant screenshot consent", async () => {

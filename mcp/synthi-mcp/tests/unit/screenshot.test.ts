@@ -76,11 +76,16 @@ function installFakeFrameSequence(frames: Array<{
   };
 }
 
-function fakeFrameGate(frameSeq: number, tsMs: number): Record<string, unknown> {
+function fakeFrameGate(
+  frameSeq: number,
+  tsMs: number,
+  evidenceBinding?: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
   const token = session.issueFrameGateToken({
     session_id: "fake-session",
     frame_seq: frameSeq,
     ts_ms: tsMs,
+    ...(evidenceBinding !== undefined ? { evidence_binding: evidenceBinding } : {}),
   });
   return {
     status: "satisfied",
@@ -90,6 +95,25 @@ function fakeFrameGate(frameSeq: number, tsMs: number): Record<string, unknown> 
     gate_token: token.token,
     gate_token_issued_at_ms: token.issued_at_ms,
     gate_token_expires_at_ms: token.expires_at_ms,
+  };
+}
+
+function bindGpuProofTrustInvalidation(): () => void {
+  let listener: (() => void) | null = null;
+  const hmr = {
+    onGpuProofTrustInvalidated(cb: () => void): () => void {
+      listener = cb;
+      return (): void => {
+        if (listener === cb) listener = null;
+      };
+    },
+  };
+  (session as unknown as {
+    bindFrameGateTokenRevocation: (source: typeof hmr) => () => void;
+  }).bindFrameGateTokenRevocation(hmr);
+  return (): void => {
+    if (listener === null) throw new Error("proof trust invalidation listener not bound");
+    listener();
   };
 }
 
@@ -162,6 +186,62 @@ describe("synthi_screenshot", () => {
     const res = await screenshotTool({ freshness_max_ms: 500 });
     expect(res.isError).toBe(true);
     expect((res.structuredContent as { error: string }).error).toBe("frame_stale");
+  });
+
+  it("keeps a frame-gate token retryable when freshness rejects the frame", async () => {
+    const png = await solidPng(100, 100, { r: 10, g: 20, b: 30 });
+    const frameTs = Date.now() - 10_000;
+    installFakeSession({ data: png, width: 100, height: 100, ts: frameTs, seq: 5 });
+    const gate = fakeFrameGate(5, frameTs);
+
+    const stale = await screenshotTool({
+      after_frame_gate: gate,
+      freshness_max_ms: 500,
+    });
+    expect(stale.isError).toBe(true);
+    expect((stale.structuredContent as { error: string }).error).toBe("frame_stale");
+
+    const retry = await screenshotTool({ after_frame_gate: gate });
+    expect(retry.isError).toBeUndefined();
+    expect(retry.structuredContent).toMatchObject({
+      seq: 5,
+      ts: frameTs,
+      frame_gate: { gate_token_verified: true },
+    });
+
+    const replay = await screenshotTool({ after_frame_gate: gate });
+    expect(replay.isError).toBe(true);
+    expect(replay.structuredContent).toMatchObject({
+      error: "frame_gate_unverified",
+      reason: "frame_gate_token_unknown",
+    });
+  });
+
+  it("keeps a frame-gate token retryable when output byte generation fails", async () => {
+    const frameTs = Date.now();
+    installFakeSession({
+      data: Buffer.from("not-an-image", "utf8"),
+      width: 100,
+      height: 100,
+      ts: frameTs,
+      seq: 6,
+    });
+    const gate = fakeFrameGate(6, frameTs);
+
+    const failed = await screenshotTool({ after_frame_gate: gate });
+    expect(failed.isError).toBe(true);
+    expect((failed.structuredContent as { error: string }).error)
+      .toBe("screenshot_failed");
+
+    const png = await solidPng(100, 100, { r: 40, g: 50, b: 60 });
+    installFakeSession({ data: png, width: 100, height: 100, ts: frameTs, seq: 6 });
+    const retry = await screenshotTool({ after_frame_gate: gate });
+    expect(retry.isError).toBeUndefined();
+    expect(retry.structuredContent).toMatchObject({
+      seq: 6,
+      ts: frameTs,
+      frame_gate: { gate_token_verified: true },
+    });
   });
 
   it("rejects invalid region shape", async () => {
@@ -318,6 +398,104 @@ describe("synthi_screenshot", () => {
       image_sha256: meta.image_sha256,
       source_frame_hash: meta.source_frame_hash,
     });
+  });
+
+  it("copies token-owned evidence binding and ignores caller-injected binding", async () => {
+    const png = await solidPng(100, 100, { r: 30, g: 60, b: 90 });
+    installFakeSession({ data: png, width: 100, height: 100, ts: 1_300, seq: 3 });
+    const issuerBinding = {
+      schema_version: "test.evidence_binding.v1",
+      observation: { event_id: "issuer-event", sequence: 3 },
+    };
+    const gate = fakeFrameGate(3, 1_300, issuerBinding);
+    issuerBinding.observation.event_id = "mutated-after-issue";
+    const injectedHash = `sha256:${"0".repeat(64)}`;
+
+    const res = await screenshotTool({
+      after_frame_gate: {
+        ...gate,
+        evidence_binding: {
+          schema_version: "caller.forged.v1",
+          observation: { event_id: "caller-event", sequence: 999 },
+        },
+        evidence_binding_hash: injectedHash,
+      },
+    });
+
+    expect(res.isError).toBeUndefined();
+    const meta = res.structuredContent as {
+      frame_gate?: {
+        evidence_binding?: Record<string, unknown>;
+        evidence_binding_hash?: string;
+      };
+      capture_manifest?: {
+        evidence_binding?: Record<string, unknown>;
+        evidence_binding_hash?: string;
+        frame_gate?: {
+          evidence_binding?: Record<string, unknown>;
+          evidence_binding_hash?: string;
+        };
+      };
+    };
+    const expectedBinding = {
+      schema_version: "test.evidence_binding.v1",
+      observation: { event_id: "issuer-event", sequence: 3 },
+    };
+    expect(meta.frame_gate?.evidence_binding).toEqual(expectedBinding);
+    expect(meta.capture_manifest?.evidence_binding).toEqual(expectedBinding);
+    expect(meta.capture_manifest?.frame_gate?.evidence_binding).toEqual(expectedBinding);
+    expect(meta.frame_gate?.evidence_binding_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(meta.frame_gate?.evidence_binding_hash).not.toBe(injectedHash);
+    expect(meta.capture_manifest?.evidence_binding_hash).toBe(
+      meta.frame_gate?.evidence_binding_hash,
+    );
+    expect(meta.capture_manifest?.frame_gate?.evidence_binding_hash).toBe(
+      meta.frame_gate?.evidence_binding_hash,
+    );
+  });
+
+  it("rejects a pre-invalidation token without exporting its stale evidence binding", async () => {
+    const png = await solidPng(100, 100, { r: 30, g: 60, b: 90 });
+    installFakeSession({ data: png, width: 100, height: 100, ts: 1_350, seq: 4 });
+    const invalidateProofTrust = bindGpuProofTrustInvalidation();
+    const gate = fakeFrameGate(4, 1_350, {
+      schema_version: "test.evidence_binding.v1",
+      runtime_proof_ref: "stale-proof-ref",
+    });
+
+    invalidateProofTrust();
+    const res = await screenshotTool({ after_frame_gate: gate });
+
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as Record<string, unknown>;
+    expect(body["error"]).toBe("frame_gate_unverified");
+    expect(body["reason"]).toBe("frame_gate_token_unknown");
+    expect(body).not.toHaveProperty("evidence_binding");
+    expect(JSON.stringify(body)).not.toContain("stale-proof-ref");
+  });
+
+  it("does not copy caller-injected evidence into a legacy gate token", async () => {
+    const png = await solidPng(100, 100, { r: 30, g: 60, b: 90 });
+    installFakeSession({ data: png, width: 100, height: 100, ts: 1_400, seq: 4 });
+    const gate = fakeFrameGate(4, 1_400);
+
+    const res = await screenshotTool({
+      after_frame_gate: {
+        ...gate,
+        evidence_binding: { source: "caller" },
+        evidence_binding_hash: `sha256:${"f".repeat(64)}`,
+      },
+    });
+
+    expect(res.isError).toBeUndefined();
+    const meta = res.structuredContent as {
+      frame_gate?: Record<string, unknown>;
+      capture_manifest?: Record<string, unknown>;
+    };
+    expect(meta.frame_gate).not.toHaveProperty("evidence_binding");
+    expect(meta.frame_gate).not.toHaveProperty("evidence_binding_hash");
+    expect(meta.capture_manifest).not.toHaveProperty("evidence_binding");
+    expect(meta.capture_manifest).not.toHaveProperty("evidence_binding_hash");
   });
 
   it("returns frame_gate_timeout instead of capturing a stale pre-gate frame", async () => {

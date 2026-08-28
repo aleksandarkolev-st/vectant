@@ -31,6 +31,31 @@
       "alphaMode": "opaque"
     }
   },
+  "negativeEdit": {
+    "claim": "Adding a bind group layout changes the WebGPU pipeline ABI and must reject until binding layout evidence and app hook support exist.",
+    "pipeline": {
+      "layout": "explicit-empty",
+      "primitiveTopology": "triangle-list",
+      "bindGroupLayouts": [
+        {
+          "entries": [
+            {
+              "binding": 0,
+              "visibility": "fragment",
+              "buffer": {
+                "type": "uniform"
+              }
+            }
+          ]
+        }
+      ],
+      "vertexBufferLayouts": [],
+      "colorTargetState": {
+        "format": "preferredCanvasFormat",
+        "alphaMode": "opaque"
+      }
+    }
+  },
   "visualProof": {
     "claim": "Replacing the WGSL shader module and recreating the WebGPU render pipeline in the same browser page changes the rendered frame.",
     "minChangedPixelRatio": 0.02,

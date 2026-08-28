@@ -1,10 +1,16 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import {
   evaluateGpuHmrProofLedger,
+  evaluateGpuHmrVisualCaptureRuntimeBinding,
+  buildGpuHmrFrameGateRuntimeBinding,
+  buildGpuHmrVisualCaptureRuntimeBinding,
   assertGpuHmrProofLedgerSuccess,
   buildGpuHmrProofLedger,
+  normalizeGpuHmrProofLedgerRecord,
   queryGpuHmrLedgerInvariants,
+  GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE,
   GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
 } from './lib/gpu-hmr-proof-ledger.mjs';
 import { GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION } from './lib/gpu-hmr-acceptance-contract.mjs';
@@ -14,6 +20,7 @@ import { buildGpuHmrValidationProofSummary } from './lib/gpu-hmr-validation-proo
 const HASH_A = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const HASH_B = 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const HASH_C = 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
+const HASH_D = 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
 const REQUIRED_TIMING_FIELDS = [
   'static_discovery_time',
   'ai_contract_synthesis_time',
@@ -31,6 +38,18 @@ const REQUIRED_TIMING_FIELDS = [
   'dispatch_to_output_proof_time',
   'total_validator_wall_time',
 ];
+
+function stableJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  return `{${Object.keys(value).sort().map(
+    (key) => `${JSON.stringify(key)}:${stableJson(value[key])}`,
+  ).join(',')}}`;
+}
+
+function contentHash(value) {
+  return `sha256:${createHash('sha256').update(stableJson(value)).digest('hex')}`;
+}
 const MODEL_AVAILABILITY_SOURCE = 'https://ai.google.dev/gemini-api/docs/deprecations';
 
 function modelAvailabilityFields({
@@ -189,6 +208,7 @@ function baselineClassification(overrides = {}) {
 
 function baselineRecord(overrides = {}) {
   return {
+    schema_version: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
     project_id: 'adversarial-generic-project',
     edit_id: 'gpu-artifact-edit',
     backend: 'hip',
@@ -254,8 +274,72 @@ function baselineRecord(overrides = {}) {
   };
 }
 
+function commitEraRecord() {
+  const publicationId = 'dispatcher-publication-7';
+  const registrationId = 'dispatcher-registration-7';
+  const record = baselineRecord();
+  record.classification.confidence = '0.95';
+  record.proof_canonical_profile = GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE;
+  record.epoch_publish_event = {
+    ...record.epoch_publish_event,
+    event: 'provisional_install',
+    epoch: '7',
+    publication_id: publicationId,
+    candidate_registration_id: registrationId,
+    previous_epoch: '6',
+  };
+  record.epoch_commit_event = {
+    id: 'commit-1',
+    event: 'unrestricted_visibility_commit',
+    publication_id: publicationId,
+    candidate_registration_id: registrationId,
+    epoch: '7',
+    previous_epoch: '6',
+    artifact_hash: HASH_B,
+    process_id: 'pid-1',
+    timestamp_monotonic_ns: 450,
+  };
+  record.dispatch_event = {
+    ...record.dispatch_event,
+    epoch: '7',
+    publication_id: publicationId,
+    dispatcher_registration_id: registrationId,
+  };
+  record.output_event = {
+    ...record.output_event,
+    epoch: '7',
+  };
+  record.retirement_event = {
+    ...record.retirement_event,
+    epoch: '6',
+    artifact_hash: HASH_A,
+    status: 'retired_after_quiescent',
+    process_id: 'pid-1',
+  };
+  record.evidence_refs = [
+    ...record.evidence_refs,
+    `dispatcher-publication:${publicationId}`,
+    `dispatcher-registration:${registrationId}`,
+  ];
+  return record;
+}
+
+function installCaptureEvidenceBinding(captureManifest, binding) {
+  const evidenceBindingHash = contentHash(binding);
+  captureManifest.evidence_binding = structuredClone(binding);
+  captureManifest.evidence_binding_hash = evidenceBindingHash;
+  captureManifest.frame_gate.evidence_binding = structuredClone(binding);
+  captureManifest.frame_gate.evidence_binding_hash = evidenceBindingHash;
+}
+
 function baselineVisualRecord(overrides = {}) {
-  return baselineRecord({
+  const record = baselineRecord({
+    runtime_proof_id: `gpu-runtime-proof:${HASH_D}`,
+    runtime_proof_state: 'gpu-hmr-full-runtime-proven',
+    runtime_proof_accepted: true,
+    runtime_proof_observed_at_ms: 1_100,
+    hmr_observed_at_ms: 1_000,
+    runtime_session_id: 'runtime-session-1',
     output_event: {
       id: 'output-visual-1',
       kind: 'render_target_hash',
@@ -263,6 +347,7 @@ function baselineVisualRecord(overrides = {}) {
       artifact_hash: HASH_B,
       process_id: 'pid-1',
       after_dispatch_id: 'dispatch-1',
+      output_target: 'render-target-1',
       passed: true,
       timestamp_monotonic_ns: 400,
     },
@@ -282,6 +367,65 @@ function baselineVisualRecord(overrides = {}) {
     },
     ...overrides,
   });
+  for (const event of [
+    record.loader_event,
+    record.epoch_publish_event,
+    record.dispatch_event,
+    record.output_event,
+  ]) {
+    event.runtime_session_id ??= 'runtime-session-1';
+    event.device_uuid ??= 'device-1';
+  }
+  record.process_identity.runtime_session_id ??= 'runtime-session-1';
+  const artifacts = record.oracle_artifacts?.visual_oracle_artifacts;
+  if (artifacts && typeof artifacts === 'object') {
+    const gateToken = 'frame-gate:adversarial-visual-proof';
+    const evidenceBinding = buildGpuHmrFrameGateRuntimeBinding(record);
+    artifacts.capture_manifest = {
+      schema_version: 'synthi.mcp.capture_manifest.v1',
+      session_id: 'mcp-preview-session-1',
+      capture_backend: 'mcp_screenshot',
+      capture_event_id: 'screenshot:mcp-preview-session-1:12:1500',
+      frame_event_id: 'broker-frame:mcp-preview-session-1:12',
+      frame_seq: 12,
+      frame_ts_ms: 1_400,
+      capture_ts_ms: 1_500,
+      source_frame_hash: HASH_D,
+      broker_frame_hash: HASH_D,
+      image_sha256: HASH_B,
+      image_byte_length: 4096,
+      width: 640,
+      height: 480,
+      original_width: 640,
+      original_height: 480,
+      dpr: 1,
+      gate_token: gateToken,
+      gate_token_verified: true,
+      required_frame_seq: 11,
+      required_ts_ms: 1_200,
+      frame_gate: {
+        status: 'satisfied',
+        required_frame_seq: 11,
+        required_ts_ms: 1_200,
+        gate_token: gateToken,
+        gate_token_verified: true,
+        gate_token_issued_at_ms: 1_300,
+        gate_token_expires_at_ms: 2_000,
+        session_id: 'mcp-preview-session-1',
+        captured_frame_seq: 12,
+        captured_ts_ms: 1_400,
+        timeout_ms: 120_000,
+      },
+    };
+    installCaptureEvidenceBinding(artifacts.capture_manifest, evidenceBinding);
+    try {
+      artifacts.visual_capture_runtime_binding =
+        buildGpuHmrVisualCaptureRuntimeBinding(record);
+    } catch {
+      delete artifacts.capture_manifest;
+    }
+  }
+  return record;
 }
 
 function baselineContract(overrides = {}) {
@@ -642,14 +786,985 @@ function expectReject(name, record, expectedCode) {
 const accepted = assertGpuHmrProofLedgerSuccess(baselineRecord());
 assert.equal(accepted.schemaVersion, GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION);
 assert.equal(accepted.gpuHmrSuccess, true);
-assert.equal(assertGpuHmrProofLedgerSuccess(baselineRecord({
+assert.equal(
+  accepted.proofId,
+  'gpu-ledger-proof:sha256:72d8900fb278d24db9fb5186569bbd3a4835de3f28809823102844754ad7bb83',
+  'legacy canonical proof id changed',
+);
+const commitEraAccepted = assertGpuHmrProofLedgerSuccess(commitEraRecord());
+assert.equal(commitEraAccepted.record.proofCanonicalProfile,
+  GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE);
+
+const missingCommit = commitEraRecord();
+delete missingCommit.epoch_commit_event;
+expectReject('commit-era record without commit receipt', missingCommit, 'epoch_commit_event_missing');
+
+const staleCommitRegistration = commitEraRecord();
+staleCommitRegistration.epoch_commit_event.candidate_registration_id = 'dispatcher-registration-stale';
+expectReject(
+  'commit receipt with stale dispatcher registration',
+  staleCommitRegistration,
+  'epoch_commit_candidate_registration_id_mismatch',
+);
+
+const commitBeforeOutput = commitEraRecord();
+commitBeforeOutput.epoch_commit_event.timestamp_monotonic_ns = 399;
+expectReject('commit before output proof', commitBeforeOutput, 'epoch_commit_precedes_output');
+
+const retirementBeforeCommit = commitEraRecord();
+retirementBeforeCommit.retirement_event.timestamp_monotonic_ns = 449;
+expectReject(
+  'retirement before unrestricted commit',
+  retirementBeforeCommit,
+  'retirement_precedes_epoch_commit',
+);
+
+const conflictingCommitAliases = commitEraRecord();
+conflictingCommitAliases.epochCommitEvent = {
+  ...conflictingCommitAliases.epoch_commit_event,
+  publication_id: 'dispatcher-publication-conflict',
+};
+expectReject(
+  'conflicting commit receipt aliases',
+  conflictingCommitAliases,
+  'epoch_commit_event_alias_mismatch',
+);
+
+const matchingCommitAliases = commitEraRecord();
+matchingCommitAliases.epochCommitEvent = structuredClone(matchingCommitAliases.epoch_commit_event);
+assert.equal(assertGpuHmrProofLedgerSuccess(matchingCommitAliases).gpuHmrSuccess, true);
+
+const conflictingPublishAliases = commitEraRecord();
+conflictingPublishAliases.epochPublishEvent = {
+  ...conflictingPublishAliases.epoch_publish_event,
+  publication_id: 'dispatcher-publication-conflict',
+};
+expectReject(
+  'conflicting publication event aliases',
+  conflictingPublishAliases,
+  'epoch_publish_event_alias_mismatch',
+);
+
+const conflictingDispatchAliases = commitEraRecord();
+conflictingDispatchAliases.dispatchEvent = {
+  ...conflictingDispatchAliases.dispatch_event,
+  publication_id: 'dispatcher-publication-conflict',
+};
+expectReject(
+  'conflicting dispatch event aliases',
+  conflictingDispatchAliases,
+  'dispatch_event_alias_mismatch',
+);
+
+const camelOnlyPortablePublish = commitEraRecord();
+camelOnlyPortablePublish.epochPublishEvent = camelOnlyPortablePublish.epoch_publish_event;
+delete camelOnlyPortablePublish.epoch_publish_event;
+assert.equal(assertGpuHmrProofLedgerSuccess(camelOnlyPortablePublish).gpuHmrSuccess, true);
+
+const conflictingNestedPublishAlias = commitEraRecord();
+conflictingNestedPublishAlias.epoch_publish_event.publicationId =
+  'dispatcher-publication-conflict';
+expectReject(
+  'conflicting nested publication id aliases',
+  conflictingNestedPublishAlias,
+  'epoch_publish_event_field_alias_mismatch',
+);
+
+const missingGenerationTransition = commitEraRecord();
+missingGenerationTransition.epoch_publish_event.previous_epoch = '7';
+missingGenerationTransition.epoch_commit_event.previous_epoch = '7';
+missingGenerationTransition.retirement_event.epoch = '7';
+expectReject(
+  'publication without an epoch transition',
+  missingGenerationTransition,
+  'epoch_generation_transition_not_forward',
+);
+
+const skippedGeneration = commitEraRecord();
+skippedGeneration.epoch_publish_event.epoch = '9';
+skippedGeneration.epoch_commit_event.epoch = '9';
+skippedGeneration.dispatch_event.epoch = '9';
+skippedGeneration.output_event.epoch = '9';
+assert.equal(
+  assertGpuHmrProofLedgerSuccess(skippedGeneration).gpuHmrSuccess,
+  true,
+  'aborted candidates may leave valid generation gaps',
+);
+
+const nonCanonicalEqualGeneration = commitEraRecord();
+nonCanonicalEqualGeneration.epoch_publish_event.previous_epoch = '1';
+nonCanonicalEqualGeneration.epoch_commit_event.previous_epoch = '1';
+nonCanonicalEqualGeneration.retirement_event.epoch = '1';
+nonCanonicalEqualGeneration.epoch_publish_event.epoch = '01';
+nonCanonicalEqualGeneration.epoch_commit_event.epoch = '01';
+nonCanonicalEqualGeneration.dispatch_event.epoch = '01';
+nonCanonicalEqualGeneration.output_event.epoch = '01';
+expectReject(
+  'numerically equal non-canonical generation aliases',
+  nonCanonicalEqualGeneration,
+  'epoch_generation_not_canonical_decimal',
+);
+
+const unsafePortableInteger = commitEraRecord();
+unsafePortableInteger.epoch_commit_event.unsafe_integer = Number.MAX_SAFE_INTEGER + 1;
+expectReject(
+  'portable proof with unsafe integer',
+  unsafePortableInteger,
+  'portable_canonical_number_unsupported',
+);
+
+const portableFloat = commitEraRecord();
+portableFloat.epoch_commit_event.decimal_fraction = 1.25;
+expectReject(
+  'portable proof with floating point canonical value',
+  portableFloat,
+  'portable_canonical_number_unsupported',
+);
+
+const conflictingOutputAliases = commitEraRecord();
+conflictingOutputAliases.outputEvent = {
+  ...conflictingOutputAliases.output_event,
+  artifact_hash: HASH_C,
+};
+expectReject(
+  'conflicting output event aliases',
+  conflictingOutputAliases,
+  'portable_canonical_alias_mismatch',
+);
+
+const conflictingRetirementProcessAlias = commitEraRecord();
+conflictingRetirementProcessAlias.retirement_event.processId = 'pid-conflict';
+expectReject(
+  'conflicting retirement process aliases',
+  conflictingRetirementProcessAlias,
+  'retirement_event_field_alias_mismatch',
+);
+
+const conflictingOutputDispatchAlias = commitEraRecord();
+conflictingOutputDispatchAlias.output_event.afterDispatchId = 'dispatch-conflict';
+expectReject(
+  'conflicting output dispatch aliases',
+  conflictingOutputDispatchAlias,
+  'output_event_field_alias_mismatch',
+);
+
+const conflictingCanonicalProfileAliases = commitEraRecord();
+conflictingCanonicalProfileAliases.proofCanonicalProfile = null;
+expectReject(
+  'conflicting canonical profile aliases',
+  conflictingCanonicalProfileAliases,
+  'proof_canonical_profile_alias_mismatch',
+);
+
+const unsafeStringTimestamps = commitEraRecord();
+unsafeStringTimestamps.output_event.timestamp_monotonic_ns = '9007199254740993';
+unsafeStringTimestamps.epoch_commit_event.timestamp_monotonic_ns = '9007199254740992';
+unsafeStringTimestamps.retirement_event.timestamp_monotonic_ns = '9007199254740992';
+expectReject(
+  'portable proof with string timestamps beyond safe integer precision',
+  unsafeStringTimestamps,
+  'portable_event_timestamp_invalid',
+);
+
+const ignoredUnsafePortableInteger = commitEraRecord();
+ignoredUnsafePortableInteger.ignored_unsafe_integer = Number.MAX_SAFE_INTEGER + 1;
+expectReject(
+  'portable proof with unsafe ignored integer',
+  ignoredUnsafePortableInteger,
+  'portable_canonical_number_unsupported',
+);
+
+const conflictingRecordProofIds = commitEraRecord();
+conflictingRecordProofIds.proof_id = `gpu-ledger-proof:sha256:${'1'.repeat(64)}`;
+conflictingRecordProofIds.proofId = `gpu-ledger-proof:sha256:${'2'.repeat(64)}`;
+expectReject(
+  'conflicting record proof id aliases',
+  conflictingRecordProofIds,
+  'record_proof_id_alias_mismatch',
+);
+
+const conflictingLedgerProofIds = buildGpuHmrProofLedger(baselineRecord());
+conflictingLedgerProofIds.proof_id = `gpu-ledger-proof:sha256:${'3'.repeat(64)}`;
+const conflictingLedgerProofIdsResult = queryGpuHmrLedgerInvariants(conflictingLedgerProofIds);
+assert.equal(conflictingLedgerProofIdsResult.gpuHmrSuccess, false);
+assert.ok(conflictingLedgerProofIdsResult.failedInvariants.some(
+  ({ code }) => code === 'ledger_proof_id_alias_mismatch',
+));
+
+const conflictingQueryProofIds = buildGpuHmrProofLedger(baselineRecord());
+conflictingQueryProofIds.query.proof_id = `gpu-ledger-proof:sha256:${'4'.repeat(64)}`;
+const conflictingQueryProofIdsResult = queryGpuHmrLedgerInvariants(conflictingQueryProofIds);
+assert.equal(conflictingQueryProofIdsResult.gpuHmrSuccess, false);
+assert.ok(conflictingQueryProofIdsResult.failedInvariants.some(
+  ({ code }) => code === 'supplied_ledger_query_proof_id_alias_mismatch',
+));
+
+const snakeCaseQueryLedger = buildGpuHmrProofLedger(baselineRecord());
+snakeCaseQueryLedger.query = {
+  schema_version: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+  proof_id: snakeCaseQueryLedger.proofId,
+  gpu_hmr_success: true,
+  failedInvariants: [],
+};
+const snakeCaseQueryResult = queryGpuHmrLedgerInvariants(snakeCaseQueryLedger);
+assert.equal(
+  snakeCaseQueryResult.gpuHmrSuccess,
+  true,
+  snakeCaseQueryResult.failedInvariants.map(({ code }) => code).join(','),
+);
+
+const missingRecordSchema = commitEraRecord();
+delete missingRecordSchema.schema_version;
+expectReject('missing exact record schema', missingRecordSchema, 'record_schema_version_missing');
+
+const wrongRecordSchema = commitEraRecord();
+wrongRecordSchema.schema_version = 'synthi.gpu.hmr.proof_ledger.v0';
+expectReject('wrong exact record schema', wrongRecordSchema, 'record_schema_version_mismatch');
+
+const conflictingRecordSchemaAliases = commitEraRecord();
+conflictingRecordSchemaAliases.schemaVersion = 'synthi.gpu.hmr.proof_ledger.v0';
+expectReject(
+  'conflicting record schema aliases',
+  conflictingRecordSchemaAliases,
+  'record_schema_alias_mismatch',
+);
+
+const conflictingBackendAliases = commitEraRecord();
+conflictingBackendAliases.gpu_backend = 'vulkan';
+expectReject('conflicting backend aliases', conflictingBackendAliases, 'backend_alias_mismatch');
+
+const conflictingChangedArtifactAliases = commitEraRecord();
+conflictingChangedArtifactAliases.changed_gpu_artifact_hash = HASH_C;
+expectReject(
+  'conflicting changed artifact aliases',
+  conflictingChangedArtifactAliases,
+  'artifact_after_hash_alias_mismatch',
+);
+
+const conflictingEventKindAliases = commitEraRecord();
+conflictingEventKindAliases.epoch_publish_event.event_kind = 'unrestricted_visibility_commit';
+expectReject(
+  'conflicting event kind aliases',
+  conflictingEventKindAliases,
+  'epoch_publish_event_field_alias_mismatch',
+);
+
+const conflictingEventSuccessAliases = commitEraRecord();
+conflictingEventSuccessAliases.output_event.success = false;
+expectReject(
+  'conflicting event success aliases',
+  conflictingEventSuccessAliases,
+  'output_event_field_alias_mismatch',
+);
+
+const conflictingNestedOutputSuccess = commitEraRecord();
+conflictingNestedOutputSuccess.output_event.output_oracle = { passed: false };
+expectReject(
+  'conflicting nested output success',
+  conflictingNestedOutputSuccess,
+  'output_event_success_contradiction',
+);
+
+const conflictingTopNestedFirewall = commitEraRecord();
+conflictingTopNestedFirewall.firewall_evidence = {
+  cpu_hmr_used: true,
+  full_rebuild_used: false,
+  process_restarted: false,
+};
+expectReject(
+  'conflicting top and nested firewall state',
+  conflictingTopNestedFirewall,
+  'firewall_cpu_hmr_used_contradiction',
+);
+
+const conflictingNestedFirewallAliases = commitEraRecord();
+conflictingNestedFirewallAliases.firewall_evidence = {
+  cpu_hmr_used: false,
+  cpuHmrUsed: true,
+  full_rebuild_used: false,
+  process_restarted: false,
+};
+expectReject(
+  'conflicting nested firewall aliases',
+  conflictingNestedFirewallAliases,
+  'firewall_cpu_hmr_used_alias_mismatch',
+);
+
+const conflictingMetricClock = commitEraRecord();
+conflictingMetricClock.timings.metric_clock = 'unix_epoch_ms';
+expectReject(
+  'nested timing clock contradicts top-level cross-language clock',
+  conflictingMetricClock,
+  'metric_clock_nested_contradiction',
+);
+
+const missingRetiredArtifact = commitEraRecord();
+delete missingRetiredArtifact.retirement_event.artifact_hash;
+expectReject(
+  'retirement without previous artifact identity',
+  missingRetiredArtifact,
+  'retirement_artifact_hash_missing',
+);
+
+const staleRetiredArtifact = commitEraRecord();
+staleRetiredArtifact.retirement_event.artifact_hash = HASH_B;
+expectReject(
+  'retirement names candidate artifact instead of previous artifact',
+  staleRetiredArtifact,
+  'retirement_artifact_hash_mismatch',
+);
+
+const failedRetirementResult = commitEraRecord();
+failedRetirementResult.retirement_event.status = 'retirement_failed';
+expectReject(
+  'failed retirement result',
+  failedRetirementResult,
+  'retirement_result_not_successful',
+);
+
+const unrecognizedRetirementProof = commitEraRecord();
+unrecognizedRetirementProof.retirement_event.proof = 'declared_retired';
+expectReject(
+  'unrecognized retirement proof',
+  unrecognizedRetirementProof,
+  'retirement_proof_not_successful',
+);
+
+const forgedNormalizationMetadata = commitEraRecord();
+Object.assign(forgedNormalizationMetadata, {
+  portableCanonicalAliasMismatch: true,
+  portableCanonicalNumbersSupported: false,
+  portableCanonicalSourceShapeSupported: false,
+  recordProofIdAliasMismatch: true,
+  proofCanonicalProfileAliasMismatch: true,
+  epochCommitEventPresent: false,
+  epochCommitEventAliasMismatch: true,
+  epochPublishEventAliasMismatch: true,
+  dispatchEventAliasMismatch: true,
+});
+assert.equal(
+  assertGpuHmrProofLedgerSuccess(forgedNormalizationMetadata).gpuHmrSuccess,
+  true,
+  'attacker-provided normalization metadata must have no authority',
+);
+
+const forgedMetadataCannotHideConflict = commitEraRecord();
+forgedMetadataCannotHideConflict.gpu_backend = 'vulkan';
+Object.assign(forgedMetadataCannotHideConflict, {
+  portableCanonicalAliasMismatch: false,
+  recordAliasMismatchCodes: [],
+  backendAliasMismatch: false,
+});
+expectReject(
+  'forged normalization metadata cannot hide backend conflict',
+  forgedMetadataCannotHideConflict,
+  'backend_alias_mismatch',
+);
+
+const staleSuppliedRecordProofId = commitEraRecord();
+staleSuppliedRecordProofId.proof_id = `gpu-ledger-proof:sha256:${'5'.repeat(64)}`;
+expectReject(
+  'stale supplied record proof id',
+  staleSuppliedRecordProofId,
+  'record_proof_id_mismatch',
+);
+
+const commitEraLedger = buildGpuHmrProofLedger(commitEraRecord());
+const roundTrippedCommitEraLedger = JSON.parse(JSON.stringify(commitEraLedger));
+const roundTrippedCommitEraResult = queryGpuHmrLedgerInvariants(roundTrippedCommitEraLedger);
+assert.equal(
+  roundTrippedCommitEraResult.gpuHmrSuccess,
+  true,
+  `valid commit-era ledger changed across JSON transport: ${
+    roundTrippedCommitEraResult.failedInvariants.map(({ code }) => code).join(',')
+  }`,
+);
+assert.equal(roundTrippedCommitEraResult.proofId, commitEraLedger.proofId);
+
+const staleRoundTrippedRecordProofId = JSON.parse(JSON.stringify(commitEraLedger));
+staleRoundTrippedRecordProofId.records[0].proofId =
+  `gpu-ledger-proof:sha256:${'6'.repeat(64)}`;
+const staleRoundTrippedRecordProofIdResult = queryGpuHmrLedgerInvariants(
+  staleRoundTrippedRecordProofId,
+);
+assert.equal(staleRoundTrippedRecordProofIdResult.gpuHmrSuccess, false);
+assert.ok(staleRoundTrippedRecordProofIdResult.failedInvariants.some(
+  ({ code }) => code === 'record_proof_id_mismatch',
+));
+
+const duplicateRecord = buildGpuHmrProofLedger(commitEraRecord()).records[0];
+const duplicateRecordLedgerResult = queryGpuHmrLedgerInvariants({
+  schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+  records: [structuredClone(duplicateRecord), structuredClone(duplicateRecord)],
+});
+assert.equal(duplicateRecordLedgerResult.gpuHmrSuccess, false);
+assert.ok(duplicateRecordLedgerResult.failedInvariants.some(
+  ({ code }) => code === 'ledger_record_proof_ids_duplicate',
+));
+
+const malformedRecordsWrapperResult = queryGpuHmrLedgerInvariants({
+  ...structuredClone(commitEraLedger.records[0]),
+  schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+  records: 'not-an-array',
+});
+assert.equal(malformedRecordsWrapperResult.gpuHmrSuccess, false);
+assert.ok(malformedRecordsWrapperResult.failedInvariants.some(
+  ({ code }) => code === 'ledger_records_not_array',
+));
+
+for (const { snake, snakeValue, camel, camelValue, code } of [
+  {
+    snake: 'loader_event',
+    snakeValue: baselineRecord().loader_event,
+    camel: 'loaderEvent',
+    camelValue: { id: 'forged-loader' },
+    code: 'loader_event_alias_mismatch',
+  },
+  {
+    snake: 'oracle_artifacts',
+    snakeValue: baselineRecord().oracle_artifacts,
+    camel: 'oracleArtifacts',
+    camelValue: {},
+    code: 'oracle_artifacts_alias_mismatch',
+  },
+  {
+    snake: 'deterministic_visual_mode',
+    snakeValue: { fixed_seed: true },
+    camel: 'deterministicVisualMode',
+    camelValue: { fixed_seed: false },
+    code: 'deterministic_visual_mode_alias_mismatch',
+  },
+  {
+    snake: 'output_oracle_target',
+    snakeValue: { kind: 'compute', target_id: 'output-buffer-1' },
+    camel: 'outputOracleTarget',
+    camelValue: { kind: 'visual', target_id: 'framebuffer-1' },
+    code: 'output_oracle_target_alias_mismatch',
+  },
+  {
+    snake: 'timing_metrics',
+    snakeValue: baselineTimingMetrics(),
+    camel: 'timingMetrics',
+    camelValue: {},
+    code: 'timing_metrics_alias_mismatch',
+  },
+  {
+    snake: 'model_provenance',
+    snakeValue: baselineModelProvenance(),
+    camel: 'modelProvenance',
+    camelValue: {},
+    code: 'model_provenance_alias_mismatch',
+  },
+  {
+    snake: 'evidence_refs',
+    snakeValue: baselineRecord().evidence_refs,
+    camel: 'evidenceRefs',
+    camelValue: [],
+    code: 'evidence_refs_alias_mismatch',
+  },
+]) {
+  const conflictingAliases = baselineRecord({
+    [snake]: structuredClone(snakeValue),
+    [camel]: structuredClone(camelValue),
+  });
+  const conflictingAliasesResult = queryGpuHmrLedgerInvariants(conflictingAliases);
+  assert.equal(conflictingAliasesResult.gpuHmrSuccess, false, code);
+  assert.ok(
+    conflictingAliasesResult.failedInvariants.some((failure) => failure.code === code),
+    code,
+  );
+}
+
+const missingLedgerSchema = buildGpuHmrProofLedger(commitEraRecord());
+delete missingLedgerSchema.schemaVersion;
+const missingLedgerSchemaResult = queryGpuHmrLedgerInvariants(missingLedgerSchema);
+assert.equal(missingLedgerSchemaResult.gpuHmrSuccess, false);
+assert.ok(missingLedgerSchemaResult.failedInvariants.some(
+  ({ code }) => code === 'ledger_schema_version_missing',
+));
+
+const conflictingLedgerSchemaAliases = buildGpuHmrProofLedger(commitEraRecord());
+conflictingLedgerSchemaAliases.schema_version = 'synthi.gpu.hmr.proof_ledger.v0';
+const conflictingLedgerSchemaResult = queryGpuHmrLedgerInvariants(
+  conflictingLedgerSchemaAliases,
+);
+assert.equal(conflictingLedgerSchemaResult.gpuHmrSuccess, false);
+assert.ok(conflictingLedgerSchemaResult.failedInvariants.some(
+  ({ code }) => code === 'ledger_schema_alias_mismatch',
+));
+
+const portableCanonicalFixture = {
+  schema_version: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+  proof_canonical_profile: GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE,
+  project_id: 'project',
+  edit_id: 'edit',
+  backend: 'hip',
+  classification: {},
+  contract_hash: 'contract',
+  artifact_before_hash: 'before',
+  artifact_after_hash: 'after',
+  loader_event: {},
+  epoch_publish_event: {},
+  epoch_commit_event: {
+    id: 'commit',
+    safe_integer: Number.MAX_SAFE_INTEGER,
+    decimal_fraction: '1.25',
+  },
+  dispatch_event: {},
+  output_event: {},
+  retirement_event: {},
+  process_identity: {},
+  device_identity: {},
+  oracle_artifacts: {},
+  deterministic_visual_mode: {},
+  output_oracle_target: {},
+  metric_clock: null,
+  metric_scope: null,
+  cache_state: null,
+  timings: {},
+  timing_metrics: {},
+  model_provenance: {},
+  evidence_refs: [],
+  cpu_hmr_used: false,
+  full_rebuild_used: false,
+  process_restarted: false,
+  firewall_evidence: {
+    cpu_hmr_used: false,
+    full_rebuild_used: false,
+    process_restarted: false,
+  },
+};
+assert.equal(
+  normalizeGpuHmrProofLedgerRecord(portableCanonicalFixture).proofId,
+  'gpu-ledger-proof:sha256:6b7c1a2fe57042594e099b136b20ddb54fc529b9e55638bde4d089fc689f4f4e',
+  'portable canonical profile drifted from the Rust/TypeScript golden id',
+);
+expectReject('nested metric clock without top-level cross-language clock', baselineRecord({
   metric_clock: null,
   metric_scope: null,
   cache_state: null,
   timings: {
     timingMetrics: baselineTimingMetrics(),
   },
-})).gpuHmrSuccess, true);
+}), 'metric_clock_missing');
+
+const strictVisualRecord = baselineVisualRecord();
+const strictVisualRecordWithoutBinding = structuredClone(strictVisualRecord);
+delete strictVisualRecordWithoutBinding.oracle_artifacts.visual_oracle_artifacts
+  .visual_capture_runtime_binding;
+const strictVisualProofId = normalizeGpuHmrProofLedgerRecord(strictVisualRecord).proofId;
+const strictVisualBaseProofId = normalizeGpuHmrProofLedgerRecord(
+  strictVisualRecordWithoutBinding,
+).proofId;
+assert.notEqual(strictVisualProofId, strictVisualBaseProofId);
+const strictVisualBinding = evaluateGpuHmrVisualCaptureRuntimeBinding(strictVisualRecord);
+assert.equal(strictVisualBinding.accepted, true);
+assert.equal(
+  strictVisualBinding.recomputedBinding.proof_ledger_id,
+  strictVisualBaseProofId,
+);
+assert.equal(
+  strictVisualBinding.recomputedBinding.runtime_binding.output_target_id,
+  'render-target-1',
+);
+assert.equal(
+  strictVisualBinding.recomputedBinding.runtime_binding.output_target_hash,
+  contentHash('render-target-1'),
+);
+assert.equal(
+  strictVisualBinding.recomputedBinding.runtime_binding.process_identity_hash,
+  contentHash(strictVisualRecord.process_identity),
+);
+assert.deepEqual(
+  strictVisualBinding.suppliedBinding,
+  buildGpuHmrVisualCaptureRuntimeBinding(strictVisualRecord),
+);
+const strictVisualAccepted = evaluateGpuHmrProofLedger(strictVisualRecord, {
+  requireVisualCaptureRuntimeBinding: true,
+});
+assert.equal(strictVisualAccepted.gpuHmrSuccess, true);
+assert.equal(strictVisualAccepted.proofId, strictVisualProofId);
+assert.equal(strictVisualAccepted.visualCaptureRuntimeBinding?.accepted, true);
+
+for (const serializedMode of [
+  strictVisualRecord.deterministic_visual_mode,
+  {
+    ...strictVisualRecord.deterministic_visual_mode,
+    evidence_authority: 'opaque_external_runtime',
+  },
+  {
+    ...strictVisualRecord.deterministic_visual_mode,
+    proof_authority: 'target_emitted_visual_control_diagnostics_only_not_gpu_hmr_proof',
+  },
+]) {
+  const serializedVisualStateRecord = structuredClone(strictVisualRecord);
+  serializedVisualStateRecord.deterministic_visual_mode = serializedMode;
+  const serializedVisualStateResult = evaluateGpuHmrProofLedger(
+    serializedVisualStateRecord,
+    {
+      requireVisualCaptureRuntimeBinding: true,
+      requireVerifierOwnedVisualOutputState: true,
+    },
+  );
+  assert.equal(serializedVisualStateResult.gpuHmrSuccess, false);
+  assert.ok(serializedVisualStateResult.failedInvariants.some(
+    (failure) => failure.code === 'verifier_owned_visual_output_state_receipt_missing',
+  ));
+}
+
+const artifactPrefixedVisualRecord = structuredClone(strictVisualRecord);
+const artifactPrefixedCaptureManifest = artifactPrefixedVisualRecord.oracle_artifacts
+  .visual_oracle_artifacts.capture_manifest;
+const artifactPrefixedRuntimeBinding = structuredClone(
+  artifactPrefixedCaptureManifest.frame_gate.evidence_binding,
+);
+artifactPrefixedRuntimeBinding.artifact_after_hash = `artifact:${HASH_B}`;
+artifactPrefixedRuntimeBinding.dispatch_artifact_hash = `artifact:${HASH_B}`;
+artifactPrefixedRuntimeBinding.output_artifact_hash = `artifact:${HASH_B}`;
+installCaptureEvidenceBinding(artifactPrefixedCaptureManifest, artifactPrefixedRuntimeBinding);
+artifactPrefixedVisualRecord.oracle_artifacts.visual_oracle_artifacts
+  .visual_capture_runtime_binding = buildGpuHmrVisualCaptureRuntimeBinding(
+    artifactPrefixedVisualRecord,
+  );
+assert.equal(evaluateGpuHmrProofLedger(artifactPrefixedVisualRecord, {
+  requireVisualCaptureRuntimeBinding: true,
+}).gpuHmrSuccess, true);
+
+const visualEvidenceBindingHashMissingRecord = structuredClone(strictVisualRecord);
+delete visualEvidenceBindingHashMissingRecord.oracle_artifacts.visual_oracle_artifacts
+  .capture_manifest.evidence_binding_hash;
+delete visualEvidenceBindingHashMissingRecord.oracle_artifacts.visual_oracle_artifacts
+  .capture_manifest.frame_gate.evidence_binding_hash;
+const visualEvidenceBindingHashMissingResult = evaluateGpuHmrProofLedger(
+  visualEvidenceBindingHashMissingRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(visualEvidenceBindingHashMissingResult.gpuHmrSuccess, false);
+assert.ok(visualEvidenceBindingHashMissingResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_manifest_evidence_binding_hash_missing',
+));
+
+const forgedVisualEvidenceBindingHashRecord = structuredClone(strictVisualRecord);
+forgedVisualEvidenceBindingHashRecord.oracle_artifacts.visual_oracle_artifacts
+  .capture_manifest.evidence_binding_hash = HASH_D;
+forgedVisualEvidenceBindingHashRecord.oracle_artifacts.visual_oracle_artifacts
+  .capture_manifest.frame_gate.evidence_binding_hash = HASH_D;
+const forgedVisualEvidenceBindingHashResult = evaluateGpuHmrProofLedger(
+  forgedVisualEvidenceBindingHashRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(forgedVisualEvidenceBindingHashResult.gpuHmrSuccess, false);
+assert.ok(forgedVisualEvidenceBindingHashResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_manifest_evidence_binding_hash_mismatch',
+));
+
+const aliasOnlyVisualBindingRecord = structuredClone(strictVisualRecord);
+const aliasOnlyCaptureManifest = aliasOnlyVisualBindingRecord.oracle_artifacts
+  .visual_oracle_artifacts.capture_manifest;
+aliasOnlyCaptureManifest.frame_gate.runtime_binding = structuredClone(
+  aliasOnlyCaptureManifest.frame_gate.evidence_binding,
+);
+delete aliasOnlyCaptureManifest.evidence_binding;
+delete aliasOnlyCaptureManifest.evidence_binding_hash;
+delete aliasOnlyCaptureManifest.frame_gate.evidence_binding;
+delete aliasOnlyCaptureManifest.frame_gate.evidence_binding_hash;
+const aliasOnlyVisualBindingResult = evaluateGpuHmrProofLedger(aliasOnlyVisualBindingRecord, {
+  requireVisualCaptureRuntimeBinding: true,
+});
+assert.equal(aliasOnlyVisualBindingResult.gpuHmrSuccess, false);
+assert.ok(aliasOnlyVisualBindingResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_manifest_runtime_binding_alias_forbidden',
+));
+assert.ok(aliasOnlyVisualBindingResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_manifest_evidence_binding_missing',
+));
+
+const duplicatedVisualBindingAliasRecord = structuredClone(strictVisualRecord);
+duplicatedVisualBindingAliasRecord.oracle_artifacts.visual_oracle_artifacts
+  .capture_manifest.frame_gate.gpu_hmr_runtime_binding = structuredClone(
+    duplicatedVisualBindingAliasRecord.oracle_artifacts.visual_oracle_artifacts
+      .capture_manifest.frame_gate.evidence_binding,
+  );
+const duplicatedVisualBindingAliasResult = evaluateGpuHmrProofLedger(
+  duplicatedVisualBindingAliasRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(duplicatedVisualBindingAliasResult.gpuHmrSuccess, false);
+assert.ok(duplicatedVisualBindingAliasResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_manifest_runtime_binding_alias_forbidden',
+));
+
+const mismatchedVisualBindingTransportRecord = structuredClone(strictVisualRecord);
+const mismatchedVisualBindingTransportManifest = mismatchedVisualBindingTransportRecord
+  .oracle_artifacts.visual_oracle_artifacts.capture_manifest;
+mismatchedVisualBindingTransportManifest.evidence_binding.dispatch_id = 'dispatch-replayed';
+mismatchedVisualBindingTransportManifest.evidence_binding_hash = contentHash(
+  mismatchedVisualBindingTransportManifest.evidence_binding,
+);
+const mismatchedVisualBindingTransportResult = evaluateGpuHmrProofLedger(
+  mismatchedVisualBindingTransportRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(mismatchedVisualBindingTransportResult.gpuHmrSuccess, false);
+assert.ok(mismatchedVisualBindingTransportResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_manifest_evidence_binding_transport_mismatch',
+));
+
+const authorityClaimingVisualBindingRecord = structuredClone(strictVisualRecord);
+const authorityClaimingVisualCaptureManifest = authorityClaimingVisualBindingRecord
+  .oracle_artifacts.visual_oracle_artifacts.capture_manifest;
+const authorityClaimingVisualBinding = structuredClone(
+  authorityClaimingVisualCaptureManifest.frame_gate.evidence_binding,
+);
+authorityClaimingVisualBinding.gpu_hmr_success = true;
+installCaptureEvidenceBinding(
+  authorityClaimingVisualCaptureManifest,
+  authorityClaimingVisualBinding,
+);
+const authorityClaimingVisualBindingResult = evaluateGpuHmrProofLedger(
+  authorityClaimingVisualBindingRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(authorityClaimingVisualBindingResult.gpuHmrSuccess, false);
+assert.ok(authorityClaimingVisualBindingResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_manifest_runtime_binding_authority_invalid',
+));
+
+const missingVisualLoaderSessionRecord = structuredClone(strictVisualRecord);
+delete missingVisualLoaderSessionRecord.loader_event.runtime_session_id;
+const missingVisualLoaderSessionResult = evaluateGpuHmrProofLedger(
+  missingVisualLoaderSessionRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(missingVisualLoaderSessionResult.gpuHmrSuccess, false);
+assert.ok(missingVisualLoaderSessionResult.failedInvariants.some(
+  (failure) => failure.code
+    === 'visual_capture_runtime_session_identity_material_incomplete',
+));
+
+const mismatchedVisualOutputSessionRecord = structuredClone(strictVisualRecord);
+mismatchedVisualOutputSessionRecord.output_event.runtime_session_id = 'runtime-session-replayed';
+const mismatchedVisualOutputSessionResult = evaluateGpuHmrProofLedger(
+  mismatchedVisualOutputSessionRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(mismatchedVisualOutputSessionResult.gpuHmrSuccess, false);
+assert.ok(mismatchedVisualOutputSessionResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_runtime_session_identity_not_unique',
+));
+
+const missingVisualPublishDeviceRecord = structuredClone(strictVisualRecord);
+delete missingVisualPublishDeviceRecord.epoch_publish_event.device_uuid;
+const missingVisualPublishDeviceResult = evaluateGpuHmrProofLedger(
+  missingVisualPublishDeviceRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(missingVisualPublishDeviceResult.gpuHmrSuccess, false);
+assert.ok(missingVisualPublishDeviceResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_runtime_device_identity_material_incomplete',
+));
+
+const mismatchedVisualDispatchDeviceRecord = structuredClone(strictVisualRecord);
+mismatchedVisualDispatchDeviceRecord.dispatch_event.device_uuid = 'device-replayed';
+const mismatchedVisualDispatchDeviceResult = evaluateGpuHmrProofLedger(
+  mismatchedVisualDispatchDeviceRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(mismatchedVisualDispatchDeviceResult.gpuHmrSuccess, false);
+assert.ok(mismatchedVisualDispatchDeviceResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_runtime_device_identity_not_unique',
+));
+
+const missingVisualLoaderProcessRecord = structuredClone(strictVisualRecord);
+delete missingVisualLoaderProcessRecord.loader_event.process_id;
+const missingVisualLoaderProcessResult = evaluateGpuHmrProofLedger(
+  missingVisualLoaderProcessRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(missingVisualLoaderProcessResult.gpuHmrSuccess, false);
+assert.ok(missingVisualLoaderProcessResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_runtime_process_identity_material_incomplete',
+));
+
+const changedVisualProcessMaterialRecord = structuredClone(strictVisualRecord);
+changedVisualProcessMaterialRecord.process_identity.runtime_resource_ptr = '0xfeed';
+const changedVisualProcessMaterialResult = evaluateGpuHmrProofLedger(
+  changedVisualProcessMaterialRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(changedVisualProcessMaterialResult.gpuHmrSuccess, false);
+assert.ok(changedVisualProcessMaterialResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_manifest_runtime_binding_mismatch',
+));
+
+const structuredVisualTargetRecord = baselineVisualRecord({
+  output_event: {
+    id: 'output-visual-1',
+    kind: 'render_target_hash',
+    epoch: 'epoch-7',
+    artifact_hash: HASH_B,
+    process_id: 'pid-1',
+    after_dispatch_id: 'dispatch-1',
+    output_target: {
+      id: 'render-target-1',
+      format: 'rgba8unorm',
+      width: 640,
+      height: 480,
+    },
+    passed: true,
+    timestamp_monotonic_ns: 400,
+  },
+});
+assert.equal(evaluateGpuHmrProofLedger(structuredVisualTargetRecord, {
+  requireVisualCaptureRuntimeBinding: true,
+}).gpuHmrSuccess, true);
+const changedStructuredVisualTargetRecord = structuredClone(structuredVisualTargetRecord);
+changedStructuredVisualTargetRecord.output_event.output_target.format = 'rgba16float';
+const changedStructuredVisualTargetResult = evaluateGpuHmrProofLedger(
+  changedStructuredVisualTargetRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(changedStructuredVisualTargetResult.gpuHmrSuccess, false);
+assert.ok(changedStructuredVisualTargetResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_manifest_runtime_binding_mismatch',
+));
+
+const mixedClockVisualRecord = structuredClone(strictVisualRecord);
+delete mixedClockVisualRecord.dispatch_event.timestamp_monotonic_ns;
+mixedClockVisualRecord.dispatch_event.timestamp_ms = 300;
+const mixedClockVisualResult = evaluateGpuHmrProofLedger(mixedClockVisualRecord, {
+  requireVisualCaptureRuntimeBinding: true,
+});
+assert.equal(mixedClockVisualResult.gpuHmrSuccess, false);
+assert.ok(mixedClockVisualResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_runtime_binding_clock_domain_invalid',
+));
+
+const strictVisualMissingBinding = baselineVisualRecord();
+delete strictVisualMissingBinding.oracle_artifacts.visual_oracle_artifacts
+  .visual_capture_runtime_binding;
+const strictVisualMissingResult = evaluateGpuHmrProofLedger(strictVisualMissingBinding, {
+  requireVisualCaptureRuntimeBinding: true,
+});
+assert.equal(strictVisualMissingResult.gpuHmrSuccess, false);
+assert.ok(strictVisualMissingResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_runtime_binding_missing',
+));
+
+const staleVisualImageRecord = structuredClone(strictVisualRecord);
+staleVisualImageRecord.oracle_artifacts.visual_oracle_artifacts.after_image_hash = HASH_D;
+staleVisualImageRecord.oracle_artifacts.visual_oracle_artifacts.visual_pixel_verification
+  .after_image_hash = HASH_D;
+const staleVisualImageResult = evaluateGpuHmrProofLedger(staleVisualImageRecord, {
+  requireVisualCaptureRuntimeBinding: true,
+});
+assert.equal(staleVisualImageResult.gpuHmrSuccess, false);
+assert.ok(staleVisualImageResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_runtime_binding_runtime_material_mismatch',
+));
+
+const mismatchedVisualOutputRecord = structuredClone(strictVisualRecord);
+mismatchedVisualOutputRecord.output_event.id = 'output-visual-replayed';
+const mismatchedVisualOutputResult = evaluateGpuHmrProofLedger(mismatchedVisualOutputRecord, {
+  requireVisualCaptureRuntimeBinding: true,
+});
+assert.equal(mismatchedVisualOutputResult.gpuHmrSuccess, false);
+assert.ok(mismatchedVisualOutputResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_runtime_binding_runtime_material_mismatch',
+));
+
+const preDispatchVisualCaptureRecord = structuredClone(strictVisualRecord);
+preDispatchVisualCaptureRecord.oracle_artifacts.visual_oracle_artifacts
+  .capture_manifest.frame_ts_ms = 1_100;
+preDispatchVisualCaptureRecord.oracle_artifacts.visual_oracle_artifacts
+  .capture_manifest.frame_gate.captured_ts_ms = 1_100;
+const preDispatchVisualCaptureResult = evaluateGpuHmrProofLedger(
+  preDispatchVisualCaptureRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(preDispatchVisualCaptureResult.gpuHmrSuccess, false);
+assert.ok(preDispatchVisualCaptureResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_manifest_timestamp_order_invalid',
+));
+
+const staleManifestWithCurrentRuntimeRecord = structuredClone(strictVisualRecord);
+staleManifestWithCurrentRuntimeRecord.output_event.id = 'output-visual-current';
+delete staleManifestWithCurrentRuntimeRecord.oracle_artifacts.visual_oracle_artifacts
+  .visual_capture_runtime_binding;
+assert.throws(
+  () => buildGpuHmrVisualCaptureRuntimeBinding(staleManifestWithCurrentRuntimeRecord),
+  /visual_capture_manifest_runtime_binding_mismatch/,
+);
+const staleManifestWithCurrentRuntimeResult = evaluateGpuHmrProofLedger(
+  staleManifestWithCurrentRuntimeRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(staleManifestWithCurrentRuntimeResult.gpuHmrSuccess, false);
+assert.ok(staleManifestWithCurrentRuntimeResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_manifest_runtime_binding_mismatch',
+));
+
+const freshlyWrappedStaleManifestRecord = baselineVisualRecord({
+  output_event: {
+    id: 'output-visual-current',
+    kind: 'render_target_hash',
+    epoch: 'epoch-7',
+    artifact_hash: HASH_B,
+    process_id: 'pid-1',
+    after_dispatch_id: 'dispatch-1',
+    output_target: 'render-target-1',
+    passed: true,
+    timestamp_monotonic_ns: 400,
+  },
+});
+const freshlyWrappedArtifacts = freshlyWrappedStaleManifestRecord
+  .oracle_artifacts.visual_oracle_artifacts;
+freshlyWrappedArtifacts.capture_manifest = structuredClone(
+  strictVisualRecord.oracle_artifacts.visual_oracle_artifacts.capture_manifest,
+);
+const freshlyWrappedBinding = structuredClone(
+  freshlyWrappedArtifacts.visual_capture_runtime_binding,
+);
+freshlyWrappedArtifacts.visual_capture_runtime_binding = freshlyWrappedBinding;
+freshlyWrappedBinding.capture_manifest_hash = contentHash(
+  freshlyWrappedArtifacts.capture_manifest,
+);
+freshlyWrappedBinding.proof_ledger_id = normalizeGpuHmrProofLedgerRecord(
+  freshlyWrappedStaleManifestRecord,
+).proofId;
+const freshlyWrappedProjection = { ...freshlyWrappedBinding };
+delete freshlyWrappedProjection.binding_hash;
+freshlyWrappedBinding.binding_hash = contentHash(freshlyWrappedProjection);
+const freshlyWrappedStaleManifestResult = evaluateGpuHmrProofLedger(
+  freshlyWrappedStaleManifestRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(freshlyWrappedStaleManifestResult.gpuHmrSuccess, false);
+assert.ok(freshlyWrappedStaleManifestResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_manifest_runtime_binding_mismatch',
+));
+
+const forgedVisualBindingHashRecord = structuredClone(strictVisualRecord);
+forgedVisualBindingHashRecord.oracle_artifacts.visual_oracle_artifacts
+  .visual_capture_runtime_binding.binding_hash = HASH_D;
+const forgedVisualBindingHashResult = evaluateGpuHmrProofLedger(
+  forgedVisualBindingHashRecord,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(forgedVisualBindingHashResult.gpuHmrSuccess, false);
+assert.ok(forgedVisualBindingHashResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_runtime_binding_hash_mismatch',
+));
+
+const strictVisualLedgerMissingBinding = buildGpuHmrProofLedger(strictVisualMissingBinding);
+const strictVisualLedgerMissingBindingResult = queryGpuHmrLedgerInvariants(
+  strictVisualLedgerMissingBinding,
+  { requireVisualCaptureRuntimeBinding: true },
+);
+assert.equal(strictVisualLedgerMissingBindingResult.gpuHmrSuccess, false);
+assert.ok(strictVisualLedgerMissingBindingResult.failedInvariants.some(
+  (failure) => failure.code === 'visual_capture_runtime_binding_missing',
+));
 assert.equal(assertGpuHmrProofLedgerSuccess(baselineRecord({
   backend: 'vulkan',
   output_oracle_target: {
@@ -694,6 +1809,67 @@ assert.equal(runtimeArtifact.proofLedger.gpuHmrSuccess, true);
 assert.equal(runtimeArtifact.proofLedgerQuery.gpuHmrSuccess, true);
 assert.equal(runtimeArtifact.gpuHmrSuccess, true);
 assert.equal(runtimeArtifact.acceptanceContractEvaluation.accepted, true);
+
+const rejectedRealRocmMissingAppHookArtifact = buildValidationRuntimeProofArtifact({
+  workspaceSlug: 'adversarial-large-rocm-project',
+  sourceEditId: 'gpu-artifact-edit',
+  ...baselineRuntimeMetricInput(),
+  backend: 'hip',
+  gpuArch: 'gfx1201',
+  processId: 'pid-1',
+  deviceUuid: 'device-1',
+  contextHandle: 'hip-context-1',
+  classification: baselineClassification(),
+  cpuHmrUsed: false,
+  fullRebuildUsed: false,
+  processRestarted: false,
+  firewallEvidence: {
+    route: 'gpu_device_sidecar_reload',
+    evidence_source: 'adversarial-self-check:reload-boundary',
+    cpu_hmr_used: false,
+    full_rebuild_used: false,
+    process_restarted: false,
+    process_id_before: 100,
+    process_id_after: 100,
+  },
+  modelProvenance: baselineModelProvenance(),
+  computeOracleArtifacts: baselineComputeOracleArtifacts(),
+  ...baselineProofComponents(),
+  acceptanceContract: baselineContract(),
+  proofLedgerRecord: baselineRecord(),
+  fullRuntimeProof: baselineFullRuntimeProof(),
+  validationContext: {
+    realRocmAppHookContract: {
+      required: true,
+      declared: false,
+      status: 'required_app_hook_contract_missing',
+      canSatisfyRuntimeProof: false,
+      blockingGaps: [
+        'app_hook_contract_not_declared',
+        'app_hook_artifact_transport_runtime_not_observed',
+        'app_hook_epoch_publication_runtime_not_observed',
+        'app_hook_dispatch_trace_runtime_not_observed',
+        'app_hook_output_oracle_runtime_not_observed',
+      ],
+      evidenceRefs: ['native-launch-boundary:observed'],
+    },
+  },
+});
+assert.equal(rejectedRealRocmMissingAppHookArtifact.proofLedgerQuery.gpuHmrSuccess, true);
+assert.equal(rejectedRealRocmMissingAppHookArtifact.acceptanceContractEvaluation.accepted, true);
+assert.equal(rejectedRealRocmMissingAppHookArtifact.gpuHmrSuccess, false);
+assert.equal(
+  rejectedRealRocmMissingAppHookArtifact.realRocmAppHookContract.status,
+  'required_app_hook_contract_missing',
+);
+assert.ok(
+  rejectedRealRocmMissingAppHookArtifact.limitations.some((limitation) =>
+    limitation.stageId === 'real-rocm-app-hook-contract'
+    && limitation.degradedReason === 'required_app_hook_contract_missing'
+    && limitation.blockingGaps.includes('app_hook_dispatch_trace_runtime_not_observed')
+  ),
+  `missing app-hook contract expected real-rocm-app-hook-contract limitation, got ${rejectedRealRocmMissingAppHookArtifact.limitations.map((l) => l.degradedReason).join(',')}`,
+);
 
 const rejectedBlankVisualArtifact = buildValidationRuntimeProofArtifact({
   workspaceSlug: 'adversarial-generic-project',
@@ -768,26 +1944,52 @@ const rejectedSameFrameVisualArtifact = buildValidationRuntimeProofArtifact({
     visualEvidenceRefs: ['memory://before.png', 'memory://after.png'],
     outputOracle: {
       ...baselineVisualOutputProof().outputOracle,
-      visualOracleArtifacts: {
+      visualOracleArtifacts: baselineVisualOracleArtifacts({
         before_image: 'memory://before.png',
         after_image: 'memory://after.png',
-      },
+        diff_image: 'memory://diff.png',
+      }),
     },
   }),
   acceptanceContract: baselineContract(),
+  proofLedgerRecord: baselineVisualRecord(),
   fullRuntimeProof: baselineFullRuntimeProof(),
   visualEvidenceRefs: ['memory://before.png', 'memory://after.png'],
   visualEvidenceArtifacts: [
     {
       path: 'memory://before.png',
       contentHash: HASH_B,
+      content_hash: HASH_B,
+      contentHashVerified: true,
+      content_hash_verified: true,
+      byteLength: 128,
+      byte_length: 128,
+      proofId: HASH_B,
+      proof_id: HASH_B,
+      proofAuthority: 'mcp.gpu_hmr_validation',
+      proof_authority: 'mcp.gpu_hmr_validation',
+      evidenceRefs: ['adversarial-self-check:before-visual-bytes'],
+      evidence_refs: ['adversarial-self-check:before-visual-bytes'],
       visual_quality: 'gpu-hmr-visual-varied-frame',
+      acceptedAsVisualEvidence: true,
       accepted_as_visual_evidence: true,
     },
     {
       path: 'memory://after.png',
       contentHash: HASH_B,
+      content_hash: HASH_B,
+      contentHashVerified: true,
+      content_hash_verified: true,
+      byteLength: 128,
+      byte_length: 128,
+      proofId: HASH_B,
+      proof_id: HASH_B,
+      proofAuthority: 'mcp.gpu_hmr_validation',
+      proof_authority: 'mcp.gpu_hmr_validation',
+      evidenceRefs: ['adversarial-self-check:after-visual-bytes'],
+      evidence_refs: ['adversarial-self-check:after-visual-bytes'],
       visual_quality: 'gpu-hmr-visual-varied-frame',
+      acceptedAsVisualEvidence: true,
       accepted_as_visual_evidence: true,
     },
   ],
@@ -1140,11 +2342,6 @@ const cases = [
       visual_oracle_artifacts: baselineVisualOracleArtifacts({ visible_pixel_count: 0 }),
     },
   }), 'visual_visible_pixel_count_zero'],
-  ['visual invalid swapchain size', baselineVisualRecord({
-    oracle_artifacts: {
-      visual_oracle_artifacts: baselineVisualOracleArtifacts({ swapchain_size: [640, 0] }),
-    },
-  }), 'visual_swapchain_size_invalid'],
   ['visual artifact before dispatch', baselineVisualRecord({
     oracle_artifacts: {
       visual_oracle_artifacts: baselineVisualOracleArtifacts({ timestamp_after_dispatch: 250 }),
@@ -1170,6 +2367,20 @@ const cases = [
       presentation_fence_or_frame_boundary: true,
     },
   }), 'frozen_camera_unproven'],
+  ['screenshot-only deterministic controls replay', baselineVisualRecord({
+    deterministic_visual_mode: {
+      fixed_seed: true,
+      frozen_camera: true,
+      temporal_accumulation_disabled: true,
+      taa_disabled: true,
+      denoiser_disabled: true,
+      fixed_resolution: true,
+      fixed_swapchain_image_count: true,
+      frame_capture_after_epoch_dispatch: true,
+      presentation_fence_or_frame_boundary: true,
+      source: 'mcp_frame_evidence',
+    },
+  }), 'deterministic_visual_control_authority_non_authoritative'],
   ['same frame recaptured after edit', baselineVisualRecord({
     deterministic_visual_mode: {
       fixed_seed: true,
@@ -1372,6 +2583,57 @@ const rejected = cases.map(([name, record, expectedCode]) => {
   const result = expectReject(name, record, expectedCode);
   return { name, expectedCode, failedInvariants: result.failedInvariants.map((failure) => failure.code) };
 });
+
+const customModelPolicy = {
+  roles: {
+    split: { provider: 'openai', model: 'gpt-5.5' },
+    gpu_delta: { provider: 'openai', model: 'gpt-5.5-mini' },
+  },
+  providerAliases: {
+    openai: ['openai', 'open_ai'],
+  },
+};
+const customPolicyRecord = baselineRecord({
+  model_policy: customModelPolicy,
+  model_provenance: baselineModelProvenance({
+    split: {
+      ...baselineModelProvenance().split,
+      provider: 'open_ai',
+      requested_model: 'gpt-5.5',
+      actual_model: 'gpt-5.5',
+    },
+    last_gpu_delta: {
+      ...baselineModelProvenance().last_gpu_delta,
+      provider: 'openai',
+      requested_model: 'gpt-5.5-mini',
+      actual_model: 'gpt-5.5-mini',
+    },
+  }),
+});
+const customPolicyResult = evaluateGpuHmrProofLedger(customPolicyRecord);
+assert.equal(
+  customPolicyResult.gpuHmrSuccess,
+  true,
+  `custom model policy should accept matching non-default provider provenance: ${
+    customPolicyResult.failedInvariants.map((failure) => failure.code).join(',')
+  }`,
+);
+const customPolicyTopLevelLedgerResult = queryGpuHmrLedgerInvariants({
+  schemaVersion: GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+  model_policy: customModelPolicy,
+  records: [
+    baselineRecord({
+      model_provenance: customPolicyRecord.model_provenance,
+    }),
+  ],
+});
+assert.equal(
+  customPolicyTopLevelLedgerResult.gpuHmrSuccess,
+  true,
+  `top-level custom model policy should apply to ledger records: ${
+    customPolicyTopLevelLedgerResult.failedInvariants.map((failure) => failure.code).join(',')
+  }`,
+);
 
 const forgedLedger = buildGpuHmrProofLedger(baselineRecord({ cpu_hmr_used: true }));
 forgedLedger.query = {

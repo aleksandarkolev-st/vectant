@@ -72,7 +72,6 @@ ARG ROCM_VERSION=7.2.1
 ARG ROCM_UBUNTU_CODENAME=noble
 ARG ROCDXG_VERSION=1.2.0
 ARG INSTALL_ROCM=true
-
 # ── System compilers & language runtimes ────────────────────────────────────
 # We need the latest GCC for C++26 — gcc-14 only recognises the `-std=c++26`
 # flag but implements very little of the actual feature set (no reflection,
@@ -90,13 +89,16 @@ ARG INSTALL_ROCM=true
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     # C/C++ — GCC 15 for C++26
-    gcc-15 g++-15 clang make cmake git pkg-config \
+    gcc-15 g++-15 gfortran clang make cmake ninja-build git pkg-config \
     # Java — full JDK (NOT -headless): GUI apps (AWT/Swing) need
     # libawt_xawt.so + its X11 runtime deps (libxrender1, libxtst6,
     # fontconfig, …) which the -headless variant omits.
     openjdk-17-jdk \
     # Python
-    python3 python3-pip \
+    python3 python3-dev python3-pip python3-setuptools python3-venv \
+    # Common CMake-discovered native dependencies used by larger ROCm projects.
+    sqlite3 libsqlite3-dev bzip2 libbz2-dev libzstd-dev libmsgpack-dev libmsgpack-cxx-dev nlohmann-json3-dev \
+    libboost-filesystem-dev libboost-program-options-dev libboost-system-dev \
     # SDL2
     libsdl2-2.0-0 libsdl2-dev \
     libgl1-mesa-dev libglu1-mesa-dev libglfw3-dev libglew-dev libomp-dev libpng-dev \
@@ -113,6 +115,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Ubuntu 25.10 is newer than AMD's ROCm packaging target, so we explicitly use
 # the current Ubuntu 24.04 (noble) ROCm 7.2.1 repository. ROCm 7.2.1 is the
 # matching release family for RX 9070 XT / gfx1201 and ROCDXG 1.2.0 WSL support.
+
 RUN set -eux; \
     if [ "${INSTALL_ROCM}" = "true" ]; then \
       install -d -m 0755 /etc/apt/keyrings; \

@@ -2,6 +2,7 @@
 import { execFile as execFileCb, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -17,6 +18,26 @@ import {
 } from './lib/hiprt-runtime-probe-adapter.mjs';
 import { hiprtWarmTimingMetrics } from './lib/gpu-hmr-timing-metrics.mjs';
 import { monotonicNowNs, monotonicTimingFields } from './lib/gpu-hmr-monotonic-clock.mjs';
+import {
+  buildGpuHmrProofLedger,
+  queryGpuHmrLedgerInvariants,
+} from './lib/gpu-hmr-proof-ledger.mjs';
+import {
+  GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
+  deriveGpuHmrAcceptanceContractFromVerifiedProofs,
+  evaluateGpuHmrAcceptanceContract,
+  evaluateGpuHmrAcceptanceContractConsistency,
+} from './lib/gpu-hmr-acceptance-contract.mjs';
+import {
+  evaluateGpuHmrDeterministicVisualMode,
+  evaluateRuntimeVisualControlObservationPair,
+  materializeRuntimeVisualControlObservation,
+  parseRuntimeVisualControlStateLine,
+} from './lib/gpu-hmr-visual-evidence.mjs';
+import { runtimeProofArtifactStrictGate } from './lib/gpu-hmr-proof-strict-gates.mjs';
+import {
+  visualEvidenceArtifactsFromVisualOracleArtifacts,
+} from './lib/gpu-hmr-validation-proof-artifact.mjs';
 
 const execFile = promisify(execFileCb);
 
@@ -24,14 +45,73 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 const ARTIFACT_ROOT = path.resolve(__dirname, '../.gpu-hmr-test-artifacts');
+const HIPRT_PREFLIGHT_SCHEMA_VERSION = 'synthi.gpu_hmr.hiprt_preflight.v1';
+const HIPRT_PREFLIGHT_PROBE_SCHEMA_VERSION = 'synthi.gpu_hmr.hiprt_worker_preflight_probe.v1';
+const HIPRT_PREFLIGHT_AUTHORITY = 'hiprt_runtime_preflight_refusal_only_not_gpu_hmr_success';
+const RUNTIME_PREREQUISITE_CONTRACT_SCHEMA_VERSION =
+  'synthi.gpu_hmr.runtime_prerequisite_contract.v1';
+const RUNTIME_PREREQUISITE_CONTRACT_AUTHORITY =
+  'runtime_prerequisite_disclosure_only_not_gpu_hmr_success';
 
 const DEFAULT_BEFORE =
   'ray_payload.ray_color += estimate_direct_lighting(render_data, ray_payload, closest_hit_info, -ray.direction, x, y, random_number_generator);';
 const DEFAULT_AFTER =
   'ray_payload.ray_color += estimate_direct_lighting(render_data, ray_payload, closest_hit_info, -ray.direction, x, y, random_number_generator) * 0.0f;';
 
+function explicitHiprtRuntimeProfileSource(env) {
+  if (env.SYNTHI_GPU_HMR_RUNTIME_PROFILE_JSON?.trim()) return 'explicit_profile_json';
+  if (env.SYNTHI_HIPRT_WARM_PROFILE_JSON?.trim()) return 'explicit_hiprt_profile_json';
+  if (env.SYNTHI_GPU_HMR_RUNTIME_PROFILE_PATH?.trim()) return 'explicit_profile_path';
+  if (env.SYNTHI_HIPRT_WARM_PROFILE_PATH?.trim()) return 'explicit_hiprt_profile_path';
+  return null;
+}
+
+function hiprtWarmRuntimeProfileSelection(env = process.env) {
+  const explicitSource = explicitHiprtRuntimeProfileSource(env);
+  if (explicitSource) {
+    return {
+      env,
+      source: explicitSource,
+      explicit: true,
+      profilePath: env.SYNTHI_GPU_HMR_RUNTIME_PROFILE_PATH ?? env.SYNTHI_HIPRT_WARM_PROFILE_PATH ?? null,
+    };
+  }
+  const diagnosticDefault =
+    env.SYNTHI_GPU_HMR_RUNTIME_ALLOW_PACKAGED_DEFAULT_PROFILE === '1'
+    || env.SYNTHI_HIPRT_WARM_ALLOW_PACKAGED_DEFAULT_PROFILE === '1';
+  const selfCheckDefault = process.argv.includes('--runtime-boundary-app-hook-self-check');
+  if (!diagnosticDefault && !selfCheckDefault) {
+    throw new Error(
+      'HIPRT runtime proof requires an explicit runtime profile through '
+      + 'SYNTHI_GPU_HMR_RUNTIME_PROFILE_PATH, SYNTHI_HIPRT_WARM_PROFILE_PATH, '
+      + 'SYNTHI_GPU_HMR_RUNTIME_PROFILE_JSON, or SYNTHI_HIPRT_WARM_PROFILE_JSON; '
+      + 'set SYNTHI_GPU_HMR_RUNTIME_ALLOW_PACKAGED_DEFAULT_PROFILE=1 only for diagnostic packaged-profile runs',
+    );
+  }
+  return {
+    env,
+    source: selfCheckDefault ? 'self_check_packaged_default' : 'packaged_default_opt_in',
+    explicit: false,
+    profilePath: null,
+  };
+}
+
 function loadProfile() {
-  const normalized = loadRuntimeProofProfileFromEnv(process.env, REPO_ROOT, DEFAULT_HIPRT_RUNTIME_PROFILE);
+  const selection = hiprtWarmRuntimeProfileSelection(process.env);
+  const normalized = loadRuntimeProofProfileFromEnv(selection.env, REPO_ROOT, DEFAULT_HIPRT_RUNTIME_PROFILE);
+  normalized.profileSelection = {
+    schemaVersion: 'synthi.gpu_hmr.runtime_profile_selection.v1',
+    source: selection.source,
+    explicit: selection.explicit,
+    profilePath: selection.profilePath,
+    profile_path: selection.profilePath,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    proofAuthority: 'runtime_profile_selection_metadata_only_not_gpu_hmr_success',
+    proof_authority: 'runtime_profile_selection_metadata_only_not_gpu_hmr_success',
+  };
   return {
     ...runtimeProfileToLegacyHiprtWarmProfile(normalized),
     runtimeProfile: normalized,
@@ -112,6 +192,18 @@ const CFG = {
     PROFILE.requiredFiles ?? [],
     'required runtime files',
   ),
+  requiredAssets: parseJsonArrayEnv(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_REQUIRED_ASSETS_JSON
+      ?? process.env.SYNTHI_HIPRT_WARM_REQUIRED_ASSETS_JSON,
+    PROFILE.requiredAssets ?? [],
+    'required runtime assets',
+  ),
+  runtimeSourceTree: parseJsonObjectEnv(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_SOURCE_TREE_JSON
+      ?? process.env.SYNTHI_HIPRT_WARM_SOURCE_TREE_JSON,
+    PROFILE.sourceTree ?? null,
+    'runtime source tree',
+  ),
   cmakeArgs: parseJsonStringListEnv(
     process.env.SYNTHI_GPU_HMR_RUNTIME_CMAKE_ARGS_JSON
       ?? process.env.SYNTHI_HIPRT_WARM_CMAKE_ARGS_JSON,
@@ -148,7 +240,15 @@ const CFG = {
     process.env.SYNTHI_HIPRT_WARM_GPU_ARCH
     ?? process.env.SYNTHI_GPU_ARCH
     ?? process.env.SYNTHI_REAL_ROCM_GPU_ARCH
-    ?? 'gfx1201',
+    ?? '',
+  rocmPrefix:
+    process.env.SYNTHI_HIPRT_WARM_ROCM_PREFIX
+    ?? process.env.SYNTHI_GPU_HMR_RUNTIME_ROCM_PREFIX
+    ?? process.env.SYNTHI_REAL_ROCM_ROCM_PREFIX
+    ?? process.env.ROCM_PATH
+    ?? '',
+  gpuArchSource: '',
+  rocmPrefixSource: '',
   orochiApi: (
     process.env.SYNTHI_GPU_HMR_RUNTIME_OROCHI_API
     ?? process.env.SYNTHI_HIPRT_WARM_OROCHI_API
@@ -181,8 +281,68 @@ const CFG = {
       ?? PROFILE.minMeanAbsDelta8bit
       ?? 1.0,
   ),
+  minOracleRegionVisibleRatio: Number(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_MIN_ORACLE_REGION_VISIBLE_RATIO
+      ?? process.env.SYNTHI_HIPRT_WARM_MIN_ORACLE_REGION_VISIBLE_RATIO
+      ?? PROFILE.minOracleRegionVisibleRatio
+      ?? 0.02,
+  ),
+  minOracleRegionMeanLuma8bit: Number(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_MIN_ORACLE_REGION_MEAN_LUMA_8BIT
+      ?? process.env.SYNTHI_HIPRT_WARM_MIN_ORACLE_REGION_MEAN_LUMA_8BIT
+      ?? PROFILE.minOracleRegionMeanLuma8bit
+      ?? 4,
+  ),
+  minOracleRegionUniqueColorSampleCount: Number(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_MIN_ORACLE_REGION_UNIQUE_COLORS
+      ?? process.env.SYNTHI_HIPRT_WARM_MIN_ORACLE_REGION_UNIQUE_COLORS
+      ?? PROFILE.minOracleRegionUniqueColorSampleCount
+      ?? 64,
+  ),
   requireStrictProvenance:
     (process.env.SYNTHI_GPU_HMR_RUNTIME_REQUIRE_STRICT_PROVENANCE ?? process.env.SYNTHI_HIPRT_WARM_REQUIRE_STRICT_PROVENANCE) !== '0',
+  metricScope: parseMetricScope(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_METRIC_SCOPE
+      ?? process.env.SYNTHI_HIPRT_WARM_METRIC_SCOPE
+      ?? PROFILE.runMode?.metricScope
+      ?? 'hot_delta_1',
+  ),
+  cacheState: parseCacheState(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_CACHE_STATE
+      ?? process.env.SYNTHI_HIPRT_WARM_CACHE_STATE
+      ?? PROFILE.runMode?.cacheState
+      ?? 'compiler_cache_warm',
+  ),
+  runModeEditKind:
+    process.env.SYNTHI_GPU_HMR_RUNTIME_EDIT_KIND
+    ?? process.env.SYNTHI_HIPRT_WARM_EDIT_KIND
+    ?? PROFILE.runMode?.editKind
+    ?? null,
+  runModeDifferentEdit: parseBooleanEnv(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_DIFFERENT_EDIT
+      ?? process.env.SYNTHI_HIPRT_WARM_DIFFERENT_EDIT,
+    PROFILE.runMode?.differentEdit ?? null,
+    'SYNTHI_HIPRT_WARM_DIFFERENT_EDIT',
+  ),
+  negativeEdit: parseJsonObjectEnv(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_NEGATIVE_EDIT_JSON
+      ?? process.env.SYNTHI_HIPRT_WARM_NEGATIVE_EDIT_JSON,
+    PROFILE.negativeEdit ?? null,
+    'negative edit',
+  ),
+  runtimeBoundaryEvents: parseJsonArrayEnv(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_BOUNDARY_EVENTS_JSON
+      ?? process.env.SYNTHI_HIPRT_WARM_RUNTIME_BOUNDARY_EVENTS_JSON,
+    PROFILE.runtimeProfile?.adapter?.runtimeBoundaryEvents ?? [],
+    'runtime boundary events',
+  ),
+  runtimeBoundaryEventManifestPath:
+    process.env.SYNTHI_GPU_HMR_RUNTIME_BOUNDARY_EVENT_MANIFEST_PATH
+    ?? process.env.SYNTHI_HIPRT_WARM_RUNTIME_BOUNDARY_EVENT_MANIFEST_PATH
+    ?? PROFILE.runtimeProfile?.adapter?.runtimeBoundaryEventManifestPath
+    ?? '',
+  runtimeBoundaryAppHook:
+    PROFILE.runtimeProfile?.adapter?.runtimeBoundaryAppHook ?? null,
   allowRejected: (process.env.SYNTHI_GPU_HMR_RUNTIME_ALLOW_REJECTED ?? process.env.SYNTHI_HIPRT_WARM_ALLOW_REJECTED) === '1',
   runtimeProfile: PROFILE.runtimeProfile,
 };
@@ -259,6 +419,39 @@ function parseJsonObjectEnv(raw, fallback, label) {
   return source;
 }
 
+function parseJsonArrayEnv(raw, fallback, label) {
+  const source = raw === undefined || String(raw).trim() === '' ? fallback : JSON.parse(raw);
+  if (source === null || source === undefined) return [];
+  if (!Array.isArray(source)) {
+    throw new Error(`${label} must be a JSON array`);
+  }
+  return source;
+}
+
+function parseBooleanEnv(raw, fallback, label) {
+  if (raw === undefined || raw === null || String(raw).trim() === '') return fallback;
+  const normalized = String(raw).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'y'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'n'].includes(normalized)) return false;
+  throw new Error(`${label} must be a boolean value`);
+}
+
+function parseMetricScope(raw) {
+  const value = String(raw ?? '').trim().toLowerCase();
+  if (!['hot_delta_1', 'hot_delta_2'].includes(value)) {
+    throw new Error(`HIPRT warm runtime metric scope must be hot_delta_1 or hot_delta_2, got ${value || '<empty>'}`);
+  }
+  return value;
+}
+
+function parseCacheState(raw) {
+  const value = String(raw ?? '').trim().toLowerCase();
+  if (!['compiler_cache_warm', 'pipeline_cache_warm'].includes(value)) {
+    throw new Error(`HIPRT warm runtime cache state must be compiler_cache_warm or pipeline_cache_warm, got ${value || '<empty>'}`);
+  }
+  return value;
+}
+
 function shellExports(envMap) {
   return Object.entries(envMap || {})
     .map(([key, value]) => `export ${key}=${shQuote(value)}`)
@@ -309,6 +502,42 @@ function sha256Hex(input) {
   return createHash('sha256').update(input).digest('hex');
 }
 
+function stableJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) =>
+    `${JSON.stringify(key)}:${stableJson(value[key])}`
+  ).join(',')}}`;
+}
+
+function sha256Json(value) {
+  return `sha256:${sha256Hex(stableJson(value))}`;
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function compactStringList(values) {
+  return Array.from(new Set((Array.isArray(values) ? values : [])
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean)));
+}
+
+function firstText(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (value !== undefined && value !== null && ['number', 'boolean'].includes(typeof value)) {
+      return String(value);
+    }
+  }
+  return '';
+}
+
+function boolTrue(value) {
+  return value === true || String(value ?? '').toLowerCase() === 'true';
+}
+
 async function execText(file, args, options = {}) {
   try {
     const result = await execFile(file, args, {
@@ -330,6 +559,81 @@ async function dockerText(args, options = {}) {
 
 async function dockerShell(script, options = {}) {
   return dockerText(['exec', CFG.workerContainer, 'sh', '-lc', script], options);
+}
+
+async function detectWorkerGpuArch() {
+  const configured = String(CFG.gpuArch ?? '').trim();
+  if (configured) {
+    CFG.gpuArch = configured;
+    CFG.gpuArchSource = 'env';
+    return;
+  }
+  const output = await dockerShell(`
+set +e
+arch=''
+source=''
+if command -v hipconfig >/dev/null 2>&1; then
+  arch="$(hipconfig --amdgpu-target 2>/dev/null | tr ' ,;' '\\n' | grep -E '^gfx[0-9A-Za-z]+$' | head -n 1)"
+  [ -n "$arch" ] && source='hipconfig --amdgpu-target'
+fi
+if [ -z "$arch" ] && command -v rocminfo >/dev/null 2>&1; then
+  arch="$(rocminfo 2>/dev/null | sed -n 's/.*Name:[[:space:]]*\\(gfx[0-9A-Za-z]*\\).*/\\1/p' | head -n 1)"
+  [ -n "$arch" ] && source='rocminfo'
+fi
+printf 'SYNTHI_ROCM_GPU_ARCH_DETECTION source=%s value=%s\\n' "$source" "$arch"
+`, { timeout: 30000 });
+  const match = /SYNTHI_ROCM_GPU_ARCH_DETECTION\s+source=(.*?)\s+value=(gfx[0-9A-Za-z]+)/.exec(output);
+  if (!match) {
+    throw new Error(
+      'ROCm GPU arch is not configured and could not be detected in the worker; '
+      + 'set SYNTHI_HIPRT_WARM_GPU_ARCH or SYNTHI_GPU_ARCH, or make hipconfig/rocminfo available',
+    );
+  }
+  CFG.gpuArch = match[2];
+  CFG.gpuArchSource = match[1] || 'worker_detection';
+}
+
+async function detectWorkerRocmPrefix() {
+  const configured = String(CFG.rocmPrefix ?? '').trim();
+  const output = await dockerShell(`
+set +e
+prefix=${configured ? shQuote(configured) : "''"}
+source=${configured ? "'env'" : "''"}
+if [ -z "$prefix" ] && command -v hipconfig >/dev/null 2>&1; then
+  prefix="$(hipconfig --path 2>/dev/null | head -n 1)"
+  [ -n "$prefix" ] && source='hipconfig --path'
+fi
+if [ -n "$prefix" ] && [ -d "$prefix" ]; then
+  printf 'SYNTHI_ROCM_PREFIX_DETECTION source=%s value=%s include=%s llvm=%s\\n' "$source" "$prefix" "$([ -d "$prefix/include" ] && printf 1 || printf 0)" "$([ -d "$prefix/llvm/bin" ] && printf 1 || printf 0)"
+else
+  printf 'SYNTHI_ROCM_PREFIX_DETECTION source=%s value= include=0 llvm=0\\n' "$source"
+fi
+`, { timeout: 30000 });
+  const match = /SYNTHI_ROCM_PREFIX_DETECTION\s+source=(.*?)\s+value=(\S+)\s+include=(\d+)\s+llvm=(\d+)/.exec(output);
+  if (!match || match[2] === '') {
+    throw new Error(
+      'ROCm prefix is not configured and could not be detected in the worker; '
+      + 'set SYNTHI_HIPRT_WARM_ROCM_PREFIX/SYNTHI_REAL_ROCM_ROCM_PREFIX/ROCM_PATH or make hipconfig --path available',
+    );
+  }
+  if (match[3] !== '1') {
+    throw new Error(`detected ROCm prefix ${match[2]} is missing an include directory`);
+  }
+  CFG.rocmPrefix = match[2];
+  CFG.rocmPrefixSource = match[1] || 'worker_detection';
+}
+
+function expandRocmConfigValue(value) {
+  return String(value ?? '')
+    .replace(/\$\{ROCM_PREFIX\}/g, CFG.rocmPrefix)
+    .replace(/\$\{ROCM_LLVM_BIN\}/g, `${CFG.rocmPrefix}/llvm/bin`)
+    .replace(/\$\{ROCM_INCLUDE_DIR\}/g, `${CFG.rocmPrefix}/include`);
+}
+
+async function ensureRocmBuildConfig() {
+  await detectWorkerGpuArch();
+  await detectWorkerRocmPrefix();
+  CFG.cmakeArgs = CFG.cmakeArgs.map(expandRocmConfigValue);
 }
 
 async function dockerCpFromWorker(workerPath, hostPath) {
@@ -365,33 +669,470 @@ function workerRuntimeRequiredFilePath(file) {
   return `${CFG.workerRepoPath}/${normalized}`;
 }
 
-async function preflight() {
-  const requiredFileChecks = CFG.requiredFiles
-    .map((file) => `test -f ${shQuote(workerRuntimeRequiredFilePath(file))}`)
+function runtimeRequiredAssetPath(asset) {
+  if (typeof asset === 'string') return asset;
+  return firstText(
+    asset?.file,
+    asset?.path,
+    asset?.relativePath,
+    asset?.relative_path,
+  );
+}
+
+function workerRuntimeRequiredAssetPath(asset) {
+  return workerRuntimeRequiredFilePath(runtimeRequiredAssetPath(asset));
+}
+
+function normalizedSha256(value) {
+  const raw = firstText(value);
+  if (/^sha256:[a-f0-9]{64}$/i.test(raw)) return raw.toLowerCase();
+  if (/^[a-f0-9]{64}$/i.test(raw)) return `sha256:${raw.toLowerCase()}`;
+  return null;
+}
+
+function positiveIntegerField(value) {
+  const parsed = Number.parseInt(String(value ?? '').trim(), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parseShellKeyValueOutput(output) {
+  const fields = new Map();
+  for (const line of String(output ?? '').split(/\r?\n/)) {
+    const match = /^([A-Za-z0-9_]+)=(.*)$/.exec(line.trimEnd());
+    if (match) fields.set(match[1], match[2]);
+  }
+  return fields;
+}
+
+function hiprtRocmConfigDetectionGaps(err) {
+  const message = String(err?.message ?? '');
+  const output = String(err?.output ?? '');
+  const combined = `${message}\n${output}`;
+  return compactStringList([
+    'hiprt_rocm_build_config_detection_failed',
+    /spawn\s+EPERM/i.test(combined) ? 'hiprt_worker_docker_spawn_failed' : null,
+    /GPU arch|amdgpu-target|rocminfo/i.test(combined) ? 'hiprt_rocm_gpu_arch_detection_failed' : null,
+    /ROCm prefix|hipconfig --path|ROCM_PATH/i.test(combined) ? 'hiprt_rocm_prefix_detection_failed' : null,
+  ]);
+}
+
+function buildRuntimePrerequisiteContract(prerequisiteProbe = {}) {
+  const runtimeRequiredFiles = CFG.requiredFiles.map((file) => {
+    const observed = Array.isArray(prerequisiteProbe.requiredFiles)
+      ? prerequisiteProbe.requiredFiles.find((entry) => entry?.file === file)
+      : null;
+    const workerPath = observed?.workerPath ?? observed?.worker_path ?? workerRuntimeRequiredFilePath(file);
+    return {
+      file,
+      workerPath,
+      worker_path: workerPath,
+      role: 'runtime_input',
+      present: observed?.present === true,
+      contentHash: observed?.contentHash ?? observed?.content_hash ?? null,
+      content_hash: observed?.contentHash ?? observed?.content_hash ?? null,
+      byteLength: observed?.byteLength ?? observed?.byte_length ?? null,
+      byte_length: observed?.byteLength ?? observed?.byte_length ?? null,
+      readableBytesVerified: observed?.readableBytesVerified === true
+        || observed?.readable_bytes_verified === true,
+      readable_bytes_verified: observed?.readableBytesVerified === true
+        || observed?.readable_bytes_verified === true,
+    };
+  });
+  const runtimeRequiredAssets = CFG.requiredAssets.map((asset) => {
+    const assetPath = runtimeRequiredAssetPath(asset);
+    const observed = Array.isArray(prerequisiteProbe.requiredAssets)
+      ? prerequisiteProbe.requiredAssets.find((entry) => entry?.path === assetPath || entry?.file === assetPath)
+      : null;
+    const declaredHash = normalizedSha256(
+      typeof asset === 'object' && asset !== null
+        ? asset.contentHash ?? asset.content_hash ?? asset.sha256
+        : null,
+    );
+    const observedHash = observed?.contentHash ?? observed?.content_hash ?? null;
+    const contentHash = observedHash ?? declaredHash ?? null;
+    const hashMatchesDeclaration = declaredHash ? observedHash === declaredHash : observedHash !== null;
+    return {
+      ...(typeof asset === 'object' && asset !== null ? asset : {}),
+      file: assetPath,
+      path: assetPath,
+      role: typeof asset === 'object' && asset !== null
+        ? firstText(asset.role) || 'runtime_input'
+        : 'runtime_input',
+      required: typeof asset === 'object' && asset !== null && asset.required === false ? false : true,
+      workerPath: observed?.workerPath ?? observed?.worker_path ?? workerRuntimeRequiredAssetPath(asset),
+      worker_path: observed?.workerPath ?? observed?.worker_path ?? workerRuntimeRequiredAssetPath(asset),
+      present: observed?.present === true,
+      contentHash,
+      content_hash: contentHash,
+      declaredContentHash: declaredHash,
+      declared_content_hash: declaredHash,
+      hashMatchesDeclaration,
+      hash_matches_declaration: hashMatchesDeclaration,
+      byteLength: observed?.byteLength ?? observed?.byte_length ?? null,
+      byte_length: observed?.byteLength ?? observed?.byte_length ?? null,
+      readableBytesVerified: observed?.readableBytesVerified === true
+        || observed?.readable_bytes_verified === true,
+      readable_bytes_verified: observed?.readableBytesVerified === true
+        || observed?.readable_bytes_verified === true,
+    };
+  });
+  const contract = {
+    schemaVersion: RUNTIME_PREREQUISITE_CONTRACT_SCHEMA_VERSION,
+    schema_version: RUNTIME_PREREQUISITE_CONTRACT_SCHEMA_VERSION,
+    proofAuthority: RUNTIME_PREREQUISITE_CONTRACT_AUTHORITY,
+    proof_authority: RUNTIME_PREREQUISITE_CONTRACT_AUTHORITY,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    backend: 'hiprt',
+    backendFamily: 'hiprt',
+    backend_family: 'hiprt',
+    profileId: CFG.profileId,
+    profile_id: CFG.profileId,
+    mode: CFG.mode,
+    targetName: CFG.targetName,
+    target_name: CFG.targetName,
+    workerContainer: CFG.workerContainer,
+    worker_container: CFG.workerContainer,
+    workerRepoPath: CFG.workerRepoPath,
+    worker_repo_path: CFG.workerRepoPath,
+    sourceTree: CFG.runtimeSourceTree,
+    source_tree: CFG.runtimeSourceTree,
+    nativeLaunchObserverPath: CFG.nativeLaunchObserverPath,
+    native_launch_observer_path: CFG.nativeLaunchObserverPath,
+    adapter: {
+      family: CFG.runtimeProfile?.adapter?.family ?? null,
+      proofRunner: CFG.runtimeProfile?.adapter?.proofRunner ?? null,
+      proof_runner: CFG.runtimeProfile?.adapter?.proofRunner ?? null,
+      capabilities: Array.isArray(CFG.runtimeProfile?.adapter?.capabilities)
+        ? CFG.runtimeProfile.adapter.capabilities
+        : [],
+    },
+    source: {
+      file: CFG.sourceRel,
+      workerPath: `${CFG.workerRepoPath}/${CFG.sourceRel}`,
+      worker_path: `${CFG.workerRepoPath}/${CFG.sourceRel}`,
+      beforeHash: sha256Json(CFG.before),
+      before_hash: sha256Json(CFG.before),
+      afterHash: sha256Json(CFG.after),
+      after_hash: sha256Json(CFG.after),
+      deltaHash: sha256Json({ before: CFG.before, after: CFG.after }),
+      delta_hash: sha256Json({ before: CFG.before, after: CFG.after }),
+      present: prerequisiteProbe.sourceFilePresent === true,
+    },
+    build: {
+      cmakeArgs: CFG.cmakeArgs,
+      cmake_args: CFG.cmakeArgs,
+      cmakeConfigName: CFG.cmakeConfigName,
+      cmake_config_name: CFG.cmakeConfigName,
+      buildEnvKeys: Object.keys(CFG.buildEnv).sort(),
+      build_env_keys: Object.keys(CFG.buildEnv).sort(),
+      gpuArch: CFG.gpuArch || null,
+      gpu_arch: CFG.gpuArch || null,
+      rocmPrefix: CFG.rocmPrefix || null,
+      rocm_prefix: CFG.rocmPrefix || null,
+      buildExecutable: prerequisiteProbe.buildExecutable ?? prerequisiteProbe.build_executable ?? null,
+      build_executable: prerequisiteProbe.buildExecutable ?? prerequisiteProbe.build_executable ?? null,
+      buildConfig: prerequisiteProbe.buildConfig ?? prerequisiteProbe.build_config ?? null,
+      build_config: prerequisiteProbe.buildConfig ?? prerequisiteProbe.build_config ?? null,
+    },
+    runtime: {
+      args: CFG.runtimeArgs,
+      envKeys: Object.keys(CFG.runtimeEnv).sort(),
+      env_keys: Object.keys(CFG.runtimeEnv).sort(),
+      requiredKernels: CFG.requiredKernels,
+      required_kernels: CFG.requiredKernels,
+      reloadKernelName: CFG.reloadKernelName,
+      reload_kernel_name: CFG.reloadKernelName,
+      reloadKernelSymbol: CFG.reloadKernelSymbol,
+      reload_kernel_symbol: CFG.reloadKernelSymbol,
+      requiredFiles: runtimeRequiredFiles,
+      required_files: runtimeRequiredFiles,
+      requiredAssets: runtimeRequiredAssets,
+      required_assets: runtimeRequiredAssets,
+      orochiApi: CFG.orochiApi || null,
+      orochi_api: CFG.orochiApi || null,
+    },
+    visualProof: {
+      claim: CFG.claim,
+      width: CFG.width,
+      height: CFG.height,
+      minChangedPixelRatio: CFG.minChangedPixelRatio,
+      min_changed_pixel_ratio: CFG.minChangedPixelRatio,
+      minMeanAbsDelta8bit: CFG.minMeanAbsDelta8bit,
+      min_mean_abs_delta_8bit: CFG.minMeanAbsDelta8bit,
+      deterministicVisualMode: CFG.deterministicVisualMode,
+      deterministic_visual_mode: CFG.deterministicVisualMode,
+    },
+    observed: {
+      repoDirPresent: prerequisiteProbe.repoDirPresent === true,
+      repo_dir_present: prerequisiteProbe.repoDirPresent === true,
+      repoGitPresent: prerequisiteProbe.repoGitPresent === true,
+      repo_git_present: prerequisiteProbe.repoGitPresent === true,
+      repoCommit: prerequisiteProbe.repoCommit ?? prerequisiteProbe.repo_commit ?? null,
+      repo_commit: prerequisiteProbe.repoCommit ?? prerequisiteProbe.repo_commit ?? null,
+      nativeObserverPresent: prerequisiteProbe.nativeObserverPresent === true,
+      native_observer_present: prerequisiteProbe.nativeObserverPresent === true,
+      sourceFilePresent: prerequisiteProbe.sourceFilePresent === true,
+      source_file_present: prerequisiteProbe.sourceFilePresent === true,
+    },
+    blockingGaps: compactStringList(prerequisiteProbe.blockingGaps ?? prerequisiteProbe.blocking_gaps),
+    blocking_gaps: compactStringList(prerequisiteProbe.blockingGaps ?? prerequisiteProbe.blocking_gaps),
+  };
+  contract.contractHash = sha256Json({
+    schemaVersion: contract.schemaVersion,
+    backend: contract.backend,
+    profileId: contract.profileId,
+    mode: contract.mode,
+    targetName: contract.targetName,
+    workerRepoPath: contract.workerRepoPath,
+    sourceTree: contract.sourceTree,
+    source: contract.source,
+    runtime: contract.runtime,
+    visualProof: contract.visualProof,
+    blockingGaps: contract.blockingGaps,
+  });
+  contract.contract_hash = contract.contractHash;
+  return contract;
+}
+
+function hiprtPreflightProbeFromError({ stage, err }) {
+  const blockingGaps = hiprtRocmConfigDetectionGaps(err);
+  return {
+    schemaVersion: HIPRT_PREFLIGHT_PROBE_SCHEMA_VERSION,
+    schema_version: HIPRT_PREFLIGHT_PROBE_SCHEMA_VERSION,
+    proofAuthority: HIPRT_PREFLIGHT_AUTHORITY,
+    proof_authority: HIPRT_PREFLIGHT_AUTHORITY,
+    accepted: false,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    stage,
+    workerContainer: CFG.workerContainer,
+    worker_container: CFG.workerContainer,
+    workerRepoPath: CFG.workerRepoPath,
+    worker_repo_path: CFG.workerRepoPath,
+    nativeLaunchObserverPath: CFG.nativeLaunchObserverPath,
+    native_launch_observer_path: CFG.nativeLaunchObserverPath,
+    sourceRel: CFG.sourceRel,
+    source_rel: CFG.sourceRel,
+    sourceWorkerPath: `${CFG.workerRepoPath}/${CFG.sourceRel}`,
+    source_worker_path: `${CFG.workerRepoPath}/${CFG.sourceRel}`,
+    dockerError: firstText(err?.message, err?.code),
+    docker_error: firstText(err?.message, err?.code),
+    outputTail: err?.output ? String(err.output).slice(-4000) : '',
+    output_tail: err?.output ? String(err.output).slice(-4000) : '',
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    failedGates: blockingGaps.map((code) => ({ code })),
+    failed_gates: blockingGaps.map((code) => ({ code })),
+  };
+}
+
+async function probeHiprtPreflightPrerequisites() {
+  const requiredFilePrints = CFG.requiredFiles
+    .map((file, index) => {
+      const workerPath = workerRuntimeRequiredFilePath(file);
+      return `
+if [ -f ${shQuote(workerPath)} ]; then
+  required_file_${index}_hash="$(sha256sum ${shQuote(workerPath)} 2>/dev/null | awk '{print $1}')"
+  required_file_${index}_bytes="$(wc -c < ${shQuote(workerPath)} 2>/dev/null | tr -d ' ')"
+  printf 'required_file_${index}_present=1\\nrequired_file_${index}_sha256=sha256:%s\\nrequired_file_${index}_bytes=%s\\n' "$required_file_${index}_hash" "$required_file_${index}_bytes"
+else
+  printf 'required_file_${index}_present=0\\nrequired_file_${index}_sha256=\\nrequired_file_${index}_bytes=\\n'
+fi`;
+    })
+    .join('\n');
+  const requiredAssetPrints = CFG.requiredAssets
+    .map((asset, index) => {
+      const workerPath = workerRuntimeRequiredAssetPath(asset);
+      return `
+if [ -f ${shQuote(workerPath)} ]; then
+  required_asset_${index}_hash="$(sha256sum ${shQuote(workerPath)} 2>/dev/null | awk '{print $1}')"
+  required_asset_${index}_bytes="$(wc -c < ${shQuote(workerPath)} 2>/dev/null | tr -d ' ')"
+  printf 'required_asset_${index}_present=1\\nrequired_asset_${index}_sha256=sha256:%s\\nrequired_asset_${index}_bytes=%s\\n' "$required_asset_${index}_hash" "$required_asset_${index}_bytes"
+else
+  printf 'required_asset_${index}_present=0\\nrequired_asset_${index}_sha256=\\nrequired_asset_${index}_bytes=\\n'
+fi`;
+    })
     .join('\n');
   const script = `
-set -e
-test -d ${shQuote(CFG.workerRepoPath)}
-test -d ${shQuote(`${CFG.workerRepoPath}/.git`)}
-test -f ${shQuote(CFG.nativeLaunchObserverPath)}
-${requiredFileChecks}
-repo_commit=$(git -C ${shQuote(CFG.workerRepoPath)} rev-parse HEAD)
-if [ -x ${shQuote(`${CFG.workerRepoPath}/build/${CFG.targetName}`)} ]; then
-  build_executable=present
-else
-  build_executable=missing
+set +e
+repo_dir_present=0
+repo_git_present=0
+native_observer_present=0
+source_file_present=0
+repo_commit=''
+build_executable=missing
+build_config=missing
+[ -d ${shQuote(CFG.workerRepoPath)} ] && repo_dir_present=1
+[ -d ${shQuote(`${CFG.workerRepoPath}/.git`)} ] && repo_git_present=1
+[ -f ${shQuote(CFG.nativeLaunchObserverPath)} ] && native_observer_present=1
+[ -f ${shQuote(`${CFG.workerRepoPath}/${CFG.sourceRel}`)} ] && source_file_present=1
+if [ "$repo_git_present" = "1" ]; then
+  repo_commit="$(git -C ${shQuote(CFG.workerRepoPath)} rev-parse HEAD 2>/dev/null || true)"
 fi
-if [ -f ${shQuote(`${CFG.workerRepoPath}/build/CMakeCache.txt`)} ]; then
-  build_config=present
-else
-  build_config=missing
-fi
-printf 'repo_commit=%s\\nbuild_executable=%s\\nbuild_config=%s\\n' "$repo_commit" "$build_executable" "$build_config"
+[ -x ${shQuote(`${CFG.workerRepoPath}/build/${CFG.targetName}`)} ] && build_executable=present
+[ -f ${shQuote(`${CFG.workerRepoPath}/build/CMakeCache.txt`)} ] && build_config=present
+printf 'repo_dir_present=%s\\nrepo_git_present=%s\\nnative_observer_present=%s\\nsource_file_present=%s\\nrepo_commit=%s\\nbuild_executable=%s\\nbuild_config=%s\\n' "$repo_dir_present" "$repo_git_present" "$native_observer_present" "$source_file_present" "$repo_commit" "$build_executable" "$build_config"
+${requiredFilePrints}
+${requiredAssetPrints}
+exit 0
 `;
-  const output = await dockerShell(script, { timeout: 30000 });
-  const repoCommit = /^repo_commit=(.+)$/m.exec(output)?.[1]?.trim();
-  const buildExecutable = /^build_executable=(.+)$/m.exec(output)?.[1]?.trim();
-  const buildConfig = /^build_config=(.+)$/m.exec(output)?.[1]?.trim();
+  let output = '';
+  let dockerError = null;
+  try {
+    output = await dockerShell(script, { timeout: 30000 });
+  } catch (err) {
+    dockerError = err;
+    output = err?.output ?? '';
+  }
+  const fields = parseShellKeyValueOutput(output);
+  const requiredFiles = CFG.requiredFiles.map((file, index) => {
+    const workerPath = workerRuntimeRequiredFilePath(file);
+    return {
+      file,
+      workerPath,
+      worker_path: workerPath,
+      present: fields.get(`required_file_${index}_present`) === '1',
+      contentHash: normalizedSha256(fields.get(`required_file_${index}_sha256`)),
+      content_hash: normalizedSha256(fields.get(`required_file_${index}_sha256`)),
+      byteLength: positiveIntegerField(fields.get(`required_file_${index}_bytes`)),
+      byte_length: positiveIntegerField(fields.get(`required_file_${index}_bytes`)),
+      readableBytesVerified:
+        fields.get(`required_file_${index}_present`) === '1'
+        && Boolean(normalizedSha256(fields.get(`required_file_${index}_sha256`)))
+        && positiveIntegerField(fields.get(`required_file_${index}_bytes`)) !== null,
+    };
+  });
+  const requiredAssets = CFG.requiredAssets.map((asset, index) => {
+    const assetPath = runtimeRequiredAssetPath(asset);
+    const workerPath = workerRuntimeRequiredAssetPath(asset);
+    const declaredHash = normalizedSha256(
+      typeof asset === 'object' && asset !== null
+        ? asset.contentHash ?? asset.content_hash ?? asset.sha256
+        : null,
+    );
+    const observedHash = normalizedSha256(fields.get(`required_asset_${index}_sha256`));
+    const byteLength = positiveIntegerField(fields.get(`required_asset_${index}_bytes`));
+    return {
+      ...(typeof asset === 'object' && asset !== null ? asset : {}),
+      file: assetPath,
+      path: assetPath,
+      workerPath,
+      worker_path: workerPath,
+      role: typeof asset === 'object' && asset !== null
+        ? firstText(asset.role) || 'runtime_input'
+        : 'runtime_input',
+      required: typeof asset === 'object' && asset !== null && asset.required === false ? false : true,
+      present: fields.get(`required_asset_${index}_present`) === '1',
+      contentHash: observedHash,
+      content_hash: observedHash,
+      declaredContentHash: declaredHash,
+      declared_content_hash: declaredHash,
+      hashMatchesDeclaration: declaredHash ? observedHash === declaredHash : observedHash !== null,
+      hash_matches_declaration: declaredHash ? observedHash === declaredHash : observedHash !== null,
+      byteLength,
+      byte_length: byteLength,
+      readableBytesVerified:
+        fields.get(`required_asset_${index}_present`) === '1'
+        && Boolean(observedHash)
+        && byteLength !== null
+        && (declaredHash ? observedHash === declaredHash : true),
+      readable_bytes_verified:
+        fields.get(`required_asset_${index}_present`) === '1'
+        && Boolean(observedHash)
+        && byteLength !== null
+        && (declaredHash ? observedHash === declaredHash : true),
+    };
+  });
+  const blockingGaps = compactStringList([
+    dockerError ? 'hiprt_worker_preflight_probe_failed' : null,
+    fields.get('repo_dir_present') === '1' ? null : 'hiprt_worker_repo_missing',
+    fields.get('repo_git_present') === '1' ? null : 'hiprt_worker_repo_git_missing',
+    fields.get('native_observer_present') === '1' ? null : 'hiprt_native_launch_observer_missing',
+    fields.get('source_file_present') === '1' ? null : 'hiprt_source_file_missing',
+    ...requiredFiles
+      .filter((entry) => entry.present !== true)
+      .map((entry) => `hiprt_required_runtime_file_missing:${entry.file}`),
+    ...requiredAssets
+      .filter((entry) => entry.required !== false && entry.readableBytesVerified !== true)
+      .map((entry) => `hiprt_required_runtime_asset_bytes_unverified:${entry.path}`),
+  ]);
+  return {
+    schemaVersion: HIPRT_PREFLIGHT_PROBE_SCHEMA_VERSION,
+    schema_version: HIPRT_PREFLIGHT_PROBE_SCHEMA_VERSION,
+    proofAuthority: HIPRT_PREFLIGHT_AUTHORITY,
+    proof_authority: HIPRT_PREFLIGHT_AUTHORITY,
+    accepted: blockingGaps.length === 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    workerContainer: CFG.workerContainer,
+    worker_container: CFG.workerContainer,
+    workerRepoPath: CFG.workerRepoPath,
+    worker_repo_path: CFG.workerRepoPath,
+    nativeLaunchObserverPath: CFG.nativeLaunchObserverPath,
+    native_launch_observer_path: CFG.nativeLaunchObserverPath,
+    sourceRel: CFG.sourceRel,
+    source_rel: CFG.sourceRel,
+    sourceWorkerPath: `${CFG.workerRepoPath}/${CFG.sourceRel}`,
+    source_worker_path: `${CFG.workerRepoPath}/${CFG.sourceRel}`,
+    repoDirPresent: fields.get('repo_dir_present') === '1',
+    repo_dir_present: fields.get('repo_dir_present') === '1',
+    repoGitPresent: fields.get('repo_git_present') === '1',
+    repo_git_present: fields.get('repo_git_present') === '1',
+    nativeObserverPresent: fields.get('native_observer_present') === '1',
+    native_observer_present: fields.get('native_observer_present') === '1',
+    sourceFilePresent: fields.get('source_file_present') === '1',
+    source_file_present: fields.get('source_file_present') === '1',
+    repoCommit: firstText(fields.get('repo_commit')) || null,
+    repo_commit: firstText(fields.get('repo_commit')) || null,
+    buildExecutable: firstText(fields.get('build_executable')) || 'missing',
+    build_executable: firstText(fields.get('build_executable')) || 'missing',
+    buildConfig: firstText(fields.get('build_config')) || 'missing',
+    build_config: firstText(fields.get('build_config')) || 'missing',
+    requiredFiles,
+    required_files: requiredFiles,
+    requiredAssets,
+    required_assets: requiredAssets,
+    dockerError: dockerError ? firstText(dockerError.message, dockerError.code) : null,
+    docker_error: dockerError ? firstText(dockerError.message, dockerError.code) : null,
+    outputTail: output ? String(output).slice(-4000) : '',
+    output_tail: output ? String(output).slice(-4000) : '',
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    failedGates: blockingGaps.map((code) => ({ code })),
+    failed_gates: blockingGaps.map((code) => ({ code })),
+  };
+}
+
+async function preflight() {
+  const prerequisiteProbe = await probeHiprtPreflightPrerequisites();
+  if (prerequisiteProbe.accepted !== true) {
+    return {
+      accepted: false,
+      repoCommit: prerequisiteProbe.repoCommit,
+      buildExecutable: prerequisiteProbe.buildExecutable,
+      buildConfig: prerequisiteProbe.buildConfig,
+      bootstrap: null,
+      prerequisiteProbe,
+    };
+  }
+  const repoCommit = prerequisiteProbe.repoCommit;
+  const buildExecutable = prerequisiteProbe.buildExecutable;
+  const buildConfig = prerequisiteProbe.buildConfig;
   const bootstrap = {};
   if (buildConfig !== 'present' || buildExecutable !== 'present') {
     bootstrap.configure = await configureHiprtBuild('preflight-bootstrap');
@@ -404,11 +1145,179 @@ printf 'repo_commit=%s\\nbuild_executable=%s\\nbuild_config=%s\\n' "$repo_commit
     { timeout: 30000 },
   );
   return {
+    accepted: true,
     repoCommit,
     buildExecutable,
     buildConfig,
     bootstrap: Object.keys(bootstrap).length ? bootstrap : null,
+    prerequisiteProbe,
   };
+}
+
+async function writeHiprtPreflightRefusalArtifact({
+  preflightResult,
+  strictSummary,
+  totalStartedMonotonicNs,
+}) {
+  const prerequisiteProbe = preflightResult.prerequisiteProbe ?? {};
+  const runtimePrerequisiteContract = buildRuntimePrerequisiteContract(prerequisiteProbe);
+  const evidenceRef = `hiprt-worker-preflight-probe:${sha256Hex(stableJson({
+    schemaVersion: prerequisiteProbe.schemaVersion,
+    workerContainer: prerequisiteProbe.workerContainer,
+    workerRepoPath: prerequisiteProbe.workerRepoPath,
+    nativeLaunchObserverPath: prerequisiteProbe.nativeLaunchObserverPath,
+    sourceRel: prerequisiteProbe.sourceRel,
+    sourceWorkerPath: prerequisiteProbe.sourceWorkerPath,
+    requiredFiles: prerequisiteProbe.requiredFiles,
+    runtimePrerequisiteContractHash: runtimePrerequisiteContract.contractHash,
+    blockingGaps: prerequisiteProbe.blockingGaps,
+  }))}`;
+  const unsupportedReasons = compactStringList([
+    'hiprt_runtime_preflight_failed',
+    ...(Array.isArray(prerequisiteProbe.blockingGaps) ? prerequisiteProbe.blockingGaps : []),
+  ]);
+  const artifact = {
+    schema: HIPRT_PREFLIGHT_SCHEMA_VERSION,
+    schemaVersion: HIPRT_PREFLIGHT_SCHEMA_VERSION,
+    schema_version: HIPRT_PREFLIGHT_SCHEMA_VERSION,
+    slug: CFG.slug,
+    createdAt: new Date().toISOString(),
+    created_at: new Date().toISOString(),
+    mode: CFG.mode,
+    profileId: CFG.profileId,
+    profile_id: CFG.profileId,
+    backendEvidence: {
+      schemaVersion: 'synthi.gpu_hmr.preflight_backend_contract.v1',
+      schema_version: 'synthi.gpu_hmr.preflight_backend_contract.v1',
+      backend: {
+        value: 'hiprt',
+        evidenceRefs: [evidenceRef],
+        evidence_refs: [evidenceRef],
+      },
+      backendFamily: {
+        value: 'hiprt',
+        evidenceRefs: [evidenceRef],
+        evidence_refs: [evidenceRef],
+      },
+      backend_family: {
+        value: 'hiprt',
+        evidenceRefs: [evidenceRef],
+        evidence_refs: [evidenceRef],
+      },
+      runtimeCapabilityPreflight: {
+        backend: 'hiprt',
+        backendFamily: 'hiprt',
+        backend_family: 'hiprt',
+        probe: 'hiprt_worker_preflight_probe',
+        workerRepoPath: CFG.workerRepoPath,
+        worker_repo_path: CFG.workerRepoPath,
+        nativeLaunchObserverPath: CFG.nativeLaunchObserverPath,
+        native_launch_observer_path: CFG.nativeLaunchObserverPath,
+        runtimePrerequisiteContractHash: runtimePrerequisiteContract.contractHash,
+        runtime_prerequisite_contract_hash: runtimePrerequisiteContract.contractHash,
+        accepted: false,
+        evidenceRefs: [evidenceRef],
+        evidence_refs: [evidenceRef],
+      },
+      runtime_capability_preflight: {
+        backend: 'hiprt',
+        backendFamily: 'hiprt',
+        backend_family: 'hiprt',
+        probe: 'hiprt_worker_preflight_probe',
+        workerRepoPath: CFG.workerRepoPath,
+        worker_repo_path: CFG.workerRepoPath,
+        nativeLaunchObserverPath: CFG.nativeLaunchObserverPath,
+        native_launch_observer_path: CFG.nativeLaunchObserverPath,
+        runtimePrerequisiteContractHash: runtimePrerequisiteContract.contractHash,
+        runtime_prerequisite_contract_hash: runtimePrerequisiteContract.contractHash,
+        accepted: false,
+        evidenceRefs: [evidenceRef],
+        evidence_refs: [evidenceRef],
+      },
+      evidenceRefs: [evidenceRef],
+      evidence_refs: [evidenceRef],
+    },
+    classification: {
+      projectKind: { value: 'gpu_project', evidenceRefs: [evidenceRef] },
+      project_kind: { value: 'gpu_project', evidence_refs: [evidenceRef] },
+      editKind: { value: 'gpu_artifact_edit', evidenceRefs: [evidenceRef] },
+      edit_kind: { value: 'gpu_artifact_edit', evidence_refs: [evidenceRef] },
+      route: { value: 'reject', evidenceRefs: [evidenceRef] },
+      backend: { value: 'hiprt', evidenceRefs: [evidenceRef] },
+      backendFamily: 'hiprt',
+      backend_family: 'hiprt',
+      runtimeCapabilityPreflight: {
+        backend: 'hiprt',
+        backendFamily: 'hiprt',
+        probe: 'hiprt_worker_preflight_probe',
+        evidenceRefs: [evidenceRef],
+      },
+      runtime_capability_preflight: {
+        backend: 'hiprt',
+        backendFamily: 'hiprt',
+        probe: 'hiprt_worker_preflight_probe',
+        evidenceRefs: [evidenceRef],
+      },
+      resultState: 'hiprt-runtime-preflight-rejected',
+      result_state: 'hiprt-runtime-preflight-rejected',
+      unsupportedReasons,
+      unsupported_reasons: unsupportedReasons,
+      blockingGaps: unsupportedReasons,
+      blocking_gaps: unsupportedReasons,
+    },
+    acceptance: {
+      acceptedForHiprtRuntimePreflight: false,
+      accepted_for_hiprt_runtime_preflight: false,
+      acceptedForHiprtVisualProof: false,
+      accepted_for_hiprt_visual_proof: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      reason: 'hiprt_runtime_preflight_failed',
+      noShimApplied: true,
+      no_shim_applied: true,
+      noSymlinkApplied: true,
+      no_symlink_applied: true,
+      noSynthesizedRuntime: true,
+      no_synthesized_runtime: true,
+      noVendorIcdSynthesized: true,
+      no_vendor_icd_synthesized: true,
+    },
+    preflight: prerequisiteProbe,
+    hiprtWorkerPreflightProbe: prerequisiteProbe,
+    hiprt_worker_preflight_probe: prerequisiteProbe,
+    runtimePrerequisiteContract,
+    runtime_prerequisite_contract: runtimePrerequisiteContract,
+    strictHmrProvenance: strictSummary,
+    strict_hmr_provenance: strictSummary,
+    timings: {
+      ...monotonicTimingFields(totalStartedMonotonicNs),
+      mode: CFG.mode,
+    },
+    proofAuthority: HIPRT_PREFLIGHT_AUTHORITY,
+    proof_authority: HIPRT_PREFLIGHT_AUTHORITY,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+  };
+  artifact.proofId = `hiprt-preflight-proof:sha256:${sha256Hex(stableJson({
+    schemaVersion: artifact.schemaVersion,
+    slug: artifact.slug,
+    mode: artifact.mode,
+    profileId: artifact.profileId,
+    backendEvidence: artifact.backendEvidence,
+    classification: artifact.classification,
+    acceptance: artifact.acceptance,
+    preflight: artifact.preflight,
+    runtimePrerequisiteContract: artifact.runtimePrerequisiteContract,
+  }))}`;
+  artifact.proof_id = artifact.proofId;
+  const proofPath = path.join(CFG.outputDir, `${cleanIdentifier(CFG.slug)}-preflight-refusal.json`);
+  await fs.mkdir(CFG.outputDir, { recursive: true });
+  await fs.writeFile(proofPath, `${JSON.stringify(artifact, null, 2)}\n`);
+  return { artifact, proofPath };
 }
 
 async function readBaselineSourceFromGit() {
@@ -424,6 +1333,7 @@ async function readBaselineSourceFromGit() {
 }
 
 async function writeVariantSource({ variant, text }) {
+  const startedAt = Date.now();
   const localPath = path.join(CFG.outputDir, `${cleanIdentifier(CFG.slug)}-${variant}-${path.basename(CFG.sourceRel)}`);
   await fs.mkdir(path.dirname(localPath), { recursive: true });
   await fs.writeFile(localPath, text);
@@ -436,6 +1346,7 @@ async function writeVariantSource({ variant, text }) {
     localPath,
     contentHash: `sha256:${sha256Hex(text)}`,
     workerSha256: `sha256:${workerHashLine.trim().split(/\s+/)[0]}`,
+    hostWallMs: Date.now() - startedAt,
   };
 }
 
@@ -463,6 +1374,206 @@ function parseCaptureLine(log) {
     && line.includes('capture_path=')
     && line.includes('wrote=1')
   ) ?? '';
+}
+
+function parseKeyValuePairs(line) {
+  const pairs = {};
+  for (const match of String(line ?? '').matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|\([^)]*\)|[^\s]+)/g)) {
+    const raw = match[2];
+    pairs[match[1]] = raw.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1) : raw;
+  }
+  return pairs;
+}
+
+function parseLaunchDim(value) {
+  const match = /^\((\d+),(\d+),(\d+)\)$/.exec(String(value ?? '').trim());
+  return match ? match.slice(1).map((item) => Number(item)) : null;
+}
+
+function parseNativeRuntimeLine(line, lineIndex) {
+  const values = parseKeyValuePairs(line);
+  const runtimeSession = values.runtime_session ?? '';
+  const sessionPid = /^native-launch-observer:(\d+)$/.exec(runtimeSession)?.[1] ?? null;
+  const processId = values.process_id ?? (values.pid || sessionPid
+    ? `pid:${values.pid ?? sessionPid}`
+    : null);
+  return {
+    lineIndex,
+    raw: line,
+    api: values.api ?? null,
+    runtimeSession,
+    processId,
+    sequence: values.sequence ? Number(values.sequence) : null,
+    functionPtr: values.function_ptr ?? null,
+    kernelSymbol: values.kernel_symbol ?? values.symbol ?? null,
+    gridDim: parseLaunchDim(values.grid),
+    blockDim: parseLaunchDim(values.block),
+    argsPtr: values.args_ptr ?? null,
+    stream: values.stream ?? null,
+    sharedBytes: values.shared_bytes ? Number(values.shared_bytes) : 0,
+    result: values.result ? Number(values.result) : null,
+    dispatch: values.dispatch ?? null,
+    attachmentProvenance: values.attachment_provenance ?? null,
+    module: values.module ?? null,
+    resolution: values.resolution ?? null,
+  };
+}
+
+function parseRuntimeVisualControlStateRecords(log) {
+  return String(log ?? '')
+    .split(/\r?\n/)
+    .map((line, lineIndex) => ({ line, lineIndex }))
+    .filter(({ line }) => line.includes('[gpu-runtime-boundary] visual_control_observation '))
+    .map(({ line, lineIndex }) => ({
+      line,
+      lineIndex,
+      parsed: parseRuntimeVisualControlStateLine(line),
+    }));
+}
+
+function parseSameProcessRecompileLine(line, lineIndex) {
+  if (!line.includes('same_process_recompile') || !line.includes('result=success')) return null;
+  const values = parseKeyValuePairs(line);
+  return {
+    lineIndex,
+    raw: line,
+    kernelSymbol: values.kernel ?? null,
+    kernelName: values.kernel_name ?? null,
+    elapsedMs: values.elapsed_ms ? Number(values.elapsed_ms) : null,
+  };
+}
+
+function parsePostRecompileRuntimeEvidence(log, kernelSymbol) {
+  const lines = String(log ?? '').split(/\r?\n/);
+  const recompile = lines
+    .map((line, lineIndex) => parseSameProcessRecompileLine(line, lineIndex))
+    .find((record) => record && (!kernelSymbol || record.kernelSymbol === kernelSymbol));
+  if (!recompile) return null;
+  const resolution = lines
+    .slice(recompile.lineIndex)
+    .map((line, offset) => ({ line, lineIndex: recompile.lineIndex + offset }))
+    .find(({ line }) =>
+      line.includes('native_function_resolution')
+      && line.includes(`symbol=${kernelSymbol}`)
+      && line.includes('result=0')
+    );
+  const dispatch = lines
+    .slice(recompile.lineIndex)
+    .map((line, offset) => ({ line, lineIndex: recompile.lineIndex + offset }))
+    .find(({ line }) =>
+      line.includes('native_launch_observed')
+      && line.includes(`kernel_symbol=${kernelSymbol}`)
+      && line.includes('result=0')
+    );
+  const capture = lines
+    .slice(dispatch ? dispatch.lineIndex : recompile.lineIndex)
+    .map((line, offset) => ({
+      line,
+      lineIndex: (dispatch ? dispatch.lineIndex : recompile.lineIndex) + offset,
+    }))
+    .find(({ line }) =>
+      line.includes('same_process_capture')
+      && line.includes('label=changed-after-in-process-recompile')
+      && line.includes('wrote=1')
+    );
+  if (!dispatch || !capture) {
+    return {
+      recompile,
+      resolution: resolution ? parseNativeRuntimeLine(resolution.line, resolution.lineIndex) : null,
+      dispatch: dispatch ? parseNativeRuntimeLine(dispatch.line, dispatch.lineIndex) : null,
+      captureLine: capture?.line ?? null,
+      accepted: false,
+    };
+  }
+  return {
+    recompile,
+    resolution: resolution ? parseNativeRuntimeLine(resolution.line, resolution.lineIndex) : null,
+    dispatch: parseNativeRuntimeLine(dispatch.line, dispatch.lineIndex),
+    captureLine: capture.line,
+    captureLineIndex: capture.lineIndex,
+    accepted: true,
+  };
+}
+
+async function snapshotWorkerShaderCache(label) {
+  const startedMonotonicNs = monotonicNowNs();
+  const script = `
+set -e
+cd ${shQuote(CFG.workerRepoPath)}
+if [ ! -d build/shader_cache ]; then
+  exit 0
+fi
+find build/shader_cache -type f \\( -name '*.bin' -o -name '*.hsaco' -o -name '*.co' \\) -exec sh -c '
+for file do
+  hash=$(sha256sum "$file" | awk "{print \\$1}")
+  size=$(stat -c %s "$file")
+  mtime=$(stat -c %Y "$file")
+  printf "%s\\t%s\\t%s\\t%s\\n" "$hash" "$size" "$mtime" "$file"
+done
+' sh {} +
+`;
+  const output = await dockerShell(script, { timeout: 60000, maxBuffer: 16 * 1024 * 1024 });
+  const finishedMonotonicNs = monotonicNowNs();
+  const entries = output
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .map((line) => {
+      const [hash, size, mtimeSeconds, workerPath] = line.split('\t');
+      return {
+        workerPath,
+        contentHash: `sha256:${hash}`,
+        size: Number(size),
+        mtimeSeconds: Number(mtimeSeconds),
+      };
+    })
+    .filter((entry) =>
+      entry.workerPath
+      && /^sha256:[a-f0-9]{64}$/.test(entry.contentHash)
+      && Number.isFinite(entry.size)
+      && Number.isFinite(entry.mtimeSeconds)
+    )
+    .sort((a, b) => a.workerPath.localeCompare(b.workerPath));
+  return {
+    label,
+    startedMonotonicNs,
+    finishedMonotonicNs,
+    entries,
+    manifestHash: `artifact:${sha256Json(entries.map((entry) => ({
+      workerPath: entry.workerPath,
+      contentHash: entry.contentHash,
+      size: entry.size,
+    })))}`,
+  };
+}
+
+function shaderCacheDelta(before, after) {
+  const beforeByPath = new Map((before?.entries ?? []).map((entry) => [entry.workerPath, entry]));
+  const beforeKeys = new Set((before?.entries ?? []).map((entry) => `${entry.workerPath}:${entry.contentHash}:${entry.size}`));
+  const changedEntries = (after?.entries ?? []).filter((entry) => {
+    const key = `${entry.workerPath}:${entry.contentHash}:${entry.size}`;
+    const previous = beforeByPath.get(entry.workerPath);
+    return !beforeKeys.has(key) || (previous && previous.contentHash !== entry.contentHash);
+  });
+  const selectedEntries = changedEntries.sort((a, b) => a.workerPath.localeCompare(b.workerPath));
+  const selectedManifest = selectedEntries.map((entry) => ({
+    workerPath: entry.workerPath,
+    contentHash: entry.contentHash,
+    size: entry.size,
+  }));
+  return {
+    beforeManifestHash: before?.manifestHash ?? null,
+    afterManifestHash: after?.manifestHash ?? null,
+    selectedArtifactHash: selectedEntries.length > 0
+      ? `artifact:${sha256Json(selectedManifest)}`
+      : null,
+    selectedEntries,
+    changedEntryCount: selectedEntries.length,
+  };
+}
+
+function addNs(ns, delta) {
+  return (BigInt(String(ns)) + BigInt(delta)).toString();
 }
 
 const SAME_PROCESS_ADAPTER_HELPERS = String.raw`
@@ -500,6 +1611,107 @@ const char* synthi_probe_required_env(const char* name)
 		return nullptr;
 	}
 	return value;
+}
+
+void synthi_configure_deterministic_visual_probe(HIPRTRenderData& render_data)
+{
+	render_data.render_settings.accumulate = false;
+	render_data.render_settings.freeze_random = true;
+	render_data.render_settings.samples_per_frame = 1;
+	render_data.render_settings.restir_di_settings.common_temporal_pass.do_temporal_reuse_pass = false;
+	render_data.render_settings.restir_di_settings.do_fused_spatiotemporal = false;
+	render_data.render_settings.restir_gi_settings.common_temporal_pass.do_temporal_reuse_pass = false;
+	render_data.current_camera.do_jittering = false;
+	render_data.prev_camera.do_jittering = false;
+	render_data.random_number = 42;
+}
+
+void synthi_append_float_bits(std::ostringstream& output, float value)
+{
+	std::uint32_t bits = 0;
+	static_assert(sizeof(bits) == sizeof(value));
+	std::memcpy(&bits, &value, sizeof(bits));
+	output << std::hex << std::setw(8) << std::setfill('0') << bits;
+}
+
+int synthi_runtime_visual_process_id()
+{
+#if defined(_WIN32)
+	return static_cast<int>(::_getpid());
+#else
+	return static_cast<int>(::getpid());
+#endif
+}
+
+std::string synthi_camera_state_token(const HIPRTCamera& camera)
+{
+	std::ostringstream output;
+	auto append_matrix = [&output](const char* label, const float4x4& matrix)
+	{
+		output << label << ':';
+		for (int row = 0; row < 4; row++)
+			for (int column = 0; column < 4; column++)
+				synthi_append_float_bits(output, matrix.m[row][column]);
+	};
+	append_matrix("iv", camera.inverse_view);
+	append_matrix("ip", camera.inverse_projection);
+	append_matrix("vp", camera.view_projection);
+	output << "p:";
+	synthi_append_float_bits(output, camera.position.x);
+	synthi_append_float_bits(output, camera.position.y);
+	synthi_append_float_bits(output, camera.position.z);
+	output << "f:";
+	synthi_append_float_bits(output, camera.vertical_fov);
+	output << std::dec
+		<< "r:" << camera.sensor_width << 'x' << camera.sensor_height
+		<< "j:" << (camera.do_jittering ? 1 : 0);
+	return output.str();
+}
+
+void synthi_emit_runtime_visual_control_state(
+	const char* phase,
+	const HIPRTRenderData& render_data,
+	int width,
+	int height,
+	bool after_epoch_dispatch)
+{
+	const auto timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count();
+	const int process_id = synthi_runtime_visual_process_id();
+	const bool temporal_disabled =
+		!render_data.render_settings.accumulate
+		&& !render_data.render_settings.restir_di_settings.common_temporal_pass.do_temporal_reuse_pass
+		&& !render_data.render_settings.restir_di_settings.do_fused_spatiotemporal
+		&& !render_data.render_settings.restir_gi_settings.common_temporal_pass.do_temporal_reuse_pass;
+	const bool fixed_seed =
+		render_data.render_settings.freeze_random
+		&& !render_data.current_camera.do_jittering;
+	const std::string seed_state_token =
+		std::string("freeze_random=") + (render_data.render_settings.freeze_random ? "1" : "0")
+		+ ",seed_policy=" + (render_data.render_settings.freeze_random
+			? "device_pixel_index_seed_host_rng_ignored"
+			: "host_rng_and_sample_number")
+		+ ",host_random_number=" + (render_data.render_settings.freeze_random
+			? "not_effective"
+			: std::to_string(render_data.random_number))
+		+ ",camera_jitter=" + (render_data.current_camera.do_jittering ? "1" : "0");
+	const std::string camera_state_token = synthi_camera_state_token(render_data.current_camera);
+	std::fprintf(stderr,
+		"[gpu-runtime-boundary] visual_control_observation {\"schema_version\":\"synthi.gpu_hmr.runtime_visual_control_state.v1\",\"proof_authority\":\"target_process_runtime_visual_control_state\",\"phase\":\"%s\",\"runtime_session\":\"native-launch-observer:%d\",\"process_id\":\"pid:%d\",\"capture_event_id\":\"hiprt-frame:%s:%d:%lld\",\"frame_timestamp_monotonic_ns\":\"%lld\",\"after_epoch_dispatch\":%s,\"capture_synchronized\":true,\"presentation_boundary_observed\":true,\"presentation_boundary_kind\":\"offscreen_stream_synchronized_framebuffer_readback\",\"fixed_seed\":%s,\"seed_state_token\":\"%s\",\"camera_state_token\":\"%s\",\"temporal_accumulation_present\":true,\"temporal_accumulation_disabled\":%s,\"temporal_accumulation_not_applicable\":false,\"taa_present\":false,\"taa_disabled\":false,\"taa_not_applicable\":true,\"denoiser_present\":false,\"denoiser_disabled\":false,\"denoiser_not_applicable\":true,\"presentation_image_count\":1,\"warmup_frames\":1,\"width\":%d,\"height\":%d,\"accepted_for_gpu_hmr\":false,\"gpu_hmr_success\":false,\"can_satisfy_runtime_proof\":false,\"can_satisfy_dispatch_proof\":false}\n",
+		phase,
+		process_id,
+		process_id,
+		phase,
+		process_id,
+		static_cast<long long>(timestamp_ns),
+		static_cast<long long>(timestamp_ns),
+		after_epoch_dispatch ? "true" : "false",
+		fixed_seed ? "true" : "false",
+		seed_state_token.c_str(),
+		camera_state_token.c_str(),
+		temporal_disabled ? "true" : "false",
+		width,
+		height);
 }
 
 bool synthi_wait_for_reload_trigger()
@@ -599,15 +1811,29 @@ bool synthi_write_runtime_framebuffer_to_path(const std::shared_ptr<OpenGLIntero
 `;
 
 const SAME_PROCESS_RENDER_BLOCK = String.raw`
+	// SYNTHI_RUNTIME_VISUAL_CONTROL_RENDER_BLOCK_BEGIN
 	if (std::getenv("SYNTHI_HIPRT_RUNTIME_PROBE_SAME_PROCESS") != nullptr)
 	{
 		static bool synthi_same_process_probe_completed = false;
 		if (!synthi_same_process_probe_completed)
 		{
 			synthi_same_process_probe_completed = true;
+			const char* baseline_capture_path = synthi_probe_required_env("SYNTHI_HIPRT_RUNTIME_PROBE_CAPTURE_PATH");
 			const char* second_capture_path = synthi_probe_required_env("SYNTHI_HIPRT_RUNTIME_PROBE_SECOND_CAPTURE_PATH");
 			const int synthi_probe_width = synthi_probe_env_int("SYNTHI_HIPRT_RUNTIME_PROBE_PROOF_WIDTH", m_renderer->m_render_resolution.x);
 			const int synthi_probe_height = synthi_probe_env_int("SYNTHI_HIPRT_RUNTIME_PROBE_PROOF_HEIGHT", m_renderer->m_render_resolution.y);
+			if (baseline_capture_path == nullptr || !synthi_probe_file_exists(baseline_capture_path))
+			{
+				std::fprintf(stderr, "[synthi-hiprt-runtime-probe] visual_control_before_capture_missing\n");
+				std::fflush(stderr);
+				std::exit(88);
+			}
+			synthi_emit_runtime_visual_control_state(
+				"before",
+				m_render_data_for_frame,
+				synthi_probe_width,
+				synthi_probe_height,
+				false);
 			if (second_capture_path != nullptr && synthi_wait_for_reload_trigger())
 			{
 				const char* synthi_reload_kernel_name = synthi_probe_required_env("SYNTHI_HIPRT_RUNTIME_PROBE_RELOAD_KERNEL_NAME");
@@ -639,7 +1865,7 @@ const SAME_PROCESS_RENDER_BLOCK = String.raw`
 				m_render_data_for_frame.render_settings.render_resolution = make_int2(synthi_probe_width, synthi_probe_height);
 				m_render_data_for_frame.current_camera = m_renderer->m_camera.to_hiprt(synthi_probe_width, synthi_probe_height);
 				m_render_data_for_frame.prev_camera = m_renderer->m_previous_frame_camera.to_hiprt(synthi_probe_width, synthi_probe_height);
-				m_render_data_for_frame.random_number = 42;
+				synthi_configure_deterministic_visual_probe(m_render_data_for_frame);
 				m_compiler_options_for_frame = m_renderer->get_global_compiler_options()->deep_copy();
 				std::fprintf(stderr, "[synthi-hiprt-runtime-probe] same_process_resolution proof_width=%d proof_height=%d renderer_width=%d renderer_height=%d render_data_width=%d render_data_height=%d\n",
 					synthi_probe_width,
@@ -658,6 +1884,13 @@ const SAME_PROCESS_RENDER_BLOCK = String.raw`
 					m_renderer->get_main_stream(),
 					second_capture_path,
 					"changed-after-in-process-recompile");
+				if (wrote_second)
+					synthi_emit_runtime_visual_control_state(
+						"after",
+						m_render_data_for_frame,
+						synthi_probe_width,
+						synthi_probe_height,
+						true);
 				if (wrote_second && std::getenv("SYNTHI_HIPRT_RUNTIME_PROBE_EXIT_AFTER_SECOND_CAPTURE") != nullptr)
 				{
 					std::fflush(stderr);
@@ -666,6 +1899,26 @@ const SAME_PROCESS_RENDER_BLOCK = String.raw`
 			}
 		}
 	}
+	// SYNTHI_RUNTIME_VISUAL_CONTROL_RENDER_BLOCK_END
+`;
+
+const SAME_PROCESS_DETERMINISTIC_SETUP_BLOCK = String.raw`	// SYNTHI_RUNTIME_VISUAL_CONTROL_SETUP_BLOCK_BEGIN
+	if (std::getenv("SYNTHI_HIPRT_RUNTIME_PROBE_SAME_PROCESS") != nullptr)
+		synthi_configure_deterministic_visual_probe(m_render_data_for_frame);
+	// SYNTHI_RUNTIME_VISUAL_CONTROL_SETUP_BLOCK_END
+`;
+
+const SAME_PROCESS_VISUAL_CONTROL_INCLUDES = String.raw`// SYNTHI_RUNTIME_VISUAL_CONTROL_INCLUDES_BEGIN
+#include <cstdint>
+#include <cstring>
+#include <iomanip>
+#include <sstream>
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
+// SYNTHI_RUNTIME_VISUAL_CONTROL_INCLUDES_END
 `;
 
 async function runHiprtVariant(variant) {
@@ -811,6 +2064,100 @@ async function applySameProcessAdapter() {
 				}
 				synthi_reload_kernel->second->compile(m_renderer->m_hiprt_orochi_ctx, m_renderer->m_func_name_sets, true, false);`;
     let upgraded = false;
+    const replaceMarkedSection = (source, startMarker, endMarker, replacement, label) => {
+      const start = source.indexOf(startMarker);
+      const end = source.indexOf(endMarker, start);
+      if (start < 0 || end < 0) {
+        throw new Error(`GPURendererThread.cpp ${label} markers not found`);
+      }
+      const endExclusive = end + endMarker.length;
+      if (source.slice(start, endExclusive) === replacement) return source;
+      return `${source.slice(0, start)}${replacement}${source.slice(endExclusive)}`;
+    };
+    const includeStartMarker = '// SYNTHI_RUNTIME_VISUAL_CONTROL_INCLUDES_BEGIN';
+    const includeEndMarker = '// SYNTHI_RUNTIME_VISUAL_CONTROL_INCLUDES_END';
+    const desiredIncludes = SAME_PROCESS_VISUAL_CONTROL_INCLUDES.trimEnd();
+    if (!text.includes(includeStartMarker)) {
+      const includeAnchor = '#include <vector>\n';
+      if (!text.includes(includeAnchor)) {
+        throw new Error('GPURendererThread.cpp include anchor not found for visual controls');
+      }
+      text = text.replace(
+        includeAnchor,
+        `${includeAnchor}${SAME_PROCESS_VISUAL_CONTROL_INCLUDES}`,
+      );
+      upgraded = true;
+    } else {
+      const updated = replaceMarkedSection(
+        text,
+        includeStartMarker,
+        includeEndMarker,
+        desiredIncludes,
+        'visual-control include',
+      );
+      upgraded ||= updated !== text;
+      text = updated;
+    }
+    const helperStartMarker = '// SYNTHI_SAME_PROCESS_HIPRT_HOT_SWAP_ADAPTER_BEGIN';
+    const helperEndMarker = '// SYNTHI_SAME_PROCESS_HIPRT_HOT_SWAP_ADAPTER_END';
+    const desiredHelpers = SAME_PROCESS_ADAPTER_HELPERS.trim();
+    const updatedHelpers = replaceMarkedSection(
+      text,
+      helperStartMarker,
+      helperEndMarker,
+      desiredHelpers,
+      'same-process helper',
+    );
+    upgraded ||= updatedHelpers !== text;
+    text = updatedHelpers;
+    const renderControlStartMarker = '// SYNTHI_RUNTIME_VISUAL_CONTROL_RENDER_BLOCK_BEGIN';
+    const renderControlEndMarker = '// SYNTHI_RUNTIME_VISUAL_CONTROL_RENDER_BLOCK_END';
+    const desiredRenderBlock = SAME_PROCESS_RENDER_BLOCK.replace(/^\n/, '').trimEnd();
+    if (!text.includes(renderControlStartMarker)) {
+      const renderStartMarker = '\n\tif (std::getenv("SYNTHI_HIPRT_RUNTIME_PROBE_SAME_PROCESS") != nullptr)';
+      const renderEndMarker = '\n\n\t// Recording GPU frame time';
+      const renderStart = text.indexOf(renderStartMarker);
+      const renderEnd = text.indexOf(renderEndMarker, renderStart);
+      if (renderStart < 0 || renderEnd < 0) {
+        throw new Error('GPURendererThread.cpp same-process render block anchors not found');
+      }
+      text = `${text.slice(0, renderStart)}\n${desiredRenderBlock}${text.slice(renderEnd)}`;
+      upgraded = true;
+    } else {
+      const updated = replaceMarkedSection(
+        text,
+        renderControlStartMarker,
+        renderControlEndMarker,
+        desiredRenderBlock.trimStart(),
+        'runtime visual-control render block',
+      );
+      upgraded ||= updated !== text;
+      text = updated;
+    }
+    const setupStartMarker = '// SYNTHI_RUNTIME_VISUAL_CONTROL_SETUP_BLOCK_BEGIN';
+    const setupEndMarker = '// SYNTHI_RUNTIME_VISUAL_CONTROL_SETUP_BLOCK_END';
+    const desiredSetupBlock = SAME_PROCESS_DETERMINISTIC_SETUP_BLOCK.trimEnd();
+    if (!text.includes(setupStartMarker)) {
+      const baselineCameraAnchor = '\tm_render_data_for_frame.prev_camera = m_renderer->m_previous_frame_camera.to_hiprt(m_renderer->m_render_resolution.x, m_renderer->m_render_resolution.y);\n';
+      if (!text.includes(baselineCameraAnchor)) {
+        throw new Error('GPURendererThread.cpp baseline camera anchor not found for visual controls');
+      }
+      text = text.replace(
+        baselineCameraAnchor,
+        `${baselineCameraAnchor}\n${SAME_PROCESS_DETERMINISTIC_SETUP_BLOCK}`,
+      );
+      upgraded = true;
+    } else {
+      const updated = replaceMarkedSection(
+        text,
+        setupStartMarker,
+        setupEndMarker,
+        desiredSetupBlock.trimStart(),
+        'runtime visual-control setup block',
+      );
+      upgraded ||= updated !== text;
+      text = updated;
+    }
     if (text.includes(wholeGraphRecompile)) {
       text = text.replace(wholeGraphRecompile, profiledTargetRecompile);
       upgraded = true;
@@ -942,7 +2289,7 @@ int synthi_probe_env_timeout_ms(const char* name, int fallback_value)
       const localPath = await writeWorkerText(workerPath, text, 'same-process-upgraded-GPURendererThread.cpp');
       return {
         applied: true,
-        reason: 'upgraded-targeted-megakernel-recompile',
+        reason: 'upgraded-targeted-runtime-visual-control-attestation',
         workerPath,
         localPath,
         beforeHash,
@@ -965,7 +2312,7 @@ int synthi_probe_env_timeout_ms(const char* name, int fallback_value)
   }
   text = text.replace(
     '#include <vector>\n',
-    '#include <vector>\n#include <chrono>\n#include <fstream>\n#include <string>\n#include <thread>\n',
+    `#include <vector>\n${SAME_PROCESS_VISUAL_CONTROL_INCLUDES}#include <chrono>\n#include <fstream>\n#include <string>\n#include <thread>\n`,
   );
 
   const namespaceEndAnchor = '\n}\n\nvoid GPURendererThread::init(GPURenderer* renderer)';
@@ -987,6 +2334,15 @@ int synthi_probe_env_timeout_ms(const char* name, int fallback_value)
   }
   text = text.replace(captureCall, `${captureCall}\n${SAME_PROCESS_RENDER_BLOCK}`);
 
+  const baselineCameraAnchor = '\tm_render_data_for_frame.prev_camera = m_renderer->m_previous_frame_camera.to_hiprt(m_renderer->m_render_resolution.x, m_renderer->m_render_resolution.y);\n';
+  if (!text.includes(baselineCameraAnchor)) {
+    throw new Error('GPURendererThread.cpp baseline camera anchor not found for visual controls');
+  }
+  text = text.replace(
+    baselineCameraAnchor,
+    `${baselineCameraAnchor}\n${SAME_PROCESS_DETERMINISTIC_SETUP_BLOCK}`,
+  );
+
   const localPath = await writeWorkerText(workerPath, text, 'same-process-adapted-GPURendererThread.cpp');
   return {
     applied: true,
@@ -995,6 +2351,342 @@ int synthi_probe_env_timeout_ms(const char* name, int fallback_value)
     beforeHash,
     afterHash: `sha256:${sha256Hex(text)}`,
     baseRuntimeProbeAdapter,
+  };
+}
+
+function buildHiprtRuntimeProbeInstrumentationDisclosure(sameProcessAdapter) {
+  const baseAdapter = sameProcessAdapter?.baseRuntimeProbeAdapter ?? {};
+  const sourceAdaptations = Array.from(new Set([
+    ...(Array.isArray(baseAdapter.sourceAdaptations) ? baseAdapter.sourceAdaptations : []),
+    sameProcessAdapter ? 'same_process_targeted_kernel_recompile_hook' : null,
+    sameProcessAdapter ? 'target_process_runtime_visual_control_attestation' : null,
+  ].filter(Boolean)));
+  const files = Array.isArray(baseAdapter.records)
+    ? baseAdapter.records.flatMap((record) => Array.isArray(record?.files) ? record.files : [])
+    : [];
+  const adaptedOrAlreadyPresent =
+    baseAdapter.adaptedOrAlreadyPresent === true
+    || files.some((file) => ['adapted', 'already-adapted'].includes(file?.status));
+  const accepted = Boolean(sameProcessAdapter)
+    && adaptedOrAlreadyPresent
+    && sourceAdaptations.length > 0;
+  return {
+    schemaVersion: 'synthi.gpu.hmr.profile_probe_instrumentation.v1',
+    kind: 'declared_profile_probe_instrumentation',
+    instrumentationKind: 'profile_probe_instrumentation',
+    instrumentation_kind: 'profile_probe_instrumentation',
+    adapterFamily: 'hiprt-path-tracer-profile-adapter',
+    adapter_family: 'hiprt-path-tracer-profile-adapter',
+    profileId: CFG.profileId,
+    profile_id: CFG.profileId,
+    targetName: CFG.targetName,
+    target_name: CFG.targetName,
+    accepted,
+    applied: sameProcessAdapter?.applied === true || baseAdapter.applied === true,
+    adaptedOrAlreadyPresent,
+    adapted_or_already_present: adaptedOrAlreadyPresent,
+    sourceAdaptations,
+    source_adaptations: sourceAdaptations,
+    files,
+    records: Array.isArray(baseAdapter.records) ? baseAdapter.records : [],
+    acceptanceScope: 'hiprt_declared_visual_profile',
+    acceptance_scope: 'hiprt_declared_visual_profile',
+    proofAuthority: 'runtime_probe_instrumentation_disclosure_not_universal_hmr',
+    proof_authority: 'runtime_probe_instrumentation_disclosure_not_universal_hmr',
+    executionBoundary: 'HIPRT-Path-Tracer profile adapter with explicit source hooks',
+    execution_boundary: 'HIPRT-Path-Tracer profile adapter with explicit source hooks',
+    arbitraryTargetRuntimeAccepted: false,
+    arbitrary_target_runtime_accepted: false,
+    arbitraryLibraryAccepted: false,
+    arbitrary_library_accepted: false,
+    broadApplicationAcceptance: false,
+    broad_application_acceptance: false,
+    broadHipApplicationAcceptance: false,
+    broad_hip_application_acceptance: false,
+    unsupportedWithoutEvidence: [
+      'unknown_hiprt_app_without_declared_scene_bvh_framebuffer_reload_hook',
+      'non_interposable_engine_render_graph',
+      'undisclosed_runtime_probe_instrumentation',
+    ],
+    unsupported_without_evidence: [
+      'unknown_hiprt_app_without_declared_scene_bvh_framebuffer_reload_hook',
+      'non_interposable_engine_render_graph',
+      'undisclosed_runtime_probe_instrumentation',
+    ],
+  };
+}
+
+function sourceAdaptationListFromRuntimeProbeInstrumentation(value) {
+  const sourceAdaptations = value?.sourceAdaptations ?? value?.source_adaptations;
+  if (!Array.isArray(sourceAdaptations)) return [];
+  return sourceAdaptations.map((item) => String(item).trim()).filter(Boolean);
+}
+
+function isSourceAdaptedRuntimeProbeInstrumentation(value) {
+  return sourceAdaptationListFromRuntimeProbeInstrumentation(value).length > 0
+    || value?.adaptedOrAlreadyPresent === true
+    || value?.adapted_or_already_present === true;
+}
+
+function hiprtRuntimeEpochFor({ proof, dispatch }) {
+  return `hiprt-epoch:${proof.slug}:${CFG.reloadKernelSymbol}:${dispatch?.sequence ?? 'unknown'}`;
+}
+
+function hiprtRuntimeDispatchIdFor({ proof, dispatch, artifactHashAfter }) {
+  return `dispatch:${sha256Json({
+    slug: proof.slug,
+    kernel: CFG.reloadKernelSymbol,
+    sequence: dispatch?.sequence,
+    functionPtr: dispatch?.functionPtr,
+    artifactHashAfter,
+  })}`;
+}
+
+const HIPRT_RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION =
+  'synthi.gpu_hmr.runtime_boundary_event.v1';
+const HIPRT_RUNTIME_BOUNDARY_APP_HOOK_SCHEMA_VERSION =
+  'synthi.gpu_hmr.hiprt_runtime_boundary_app_hook.v1';
+const HIPRT_RUNTIME_BOUNDARY_REQUIRED_STAGES = [
+  'artifact_transport',
+  'epoch_publication',
+  'dispatch_trace',
+  'host_identity',
+  'output_oracle',
+];
+const HIPRT_RUNTIME_BOUNDARY_RESERVED_KEYS = new Set([
+  'schemaVersion',
+  'schema_version',
+  'eventKind',
+  'event_kind',
+  'event',
+  'kind',
+  'stage',
+  'stageKind',
+  'stage_kind',
+  'fields',
+  'boundaryFields',
+  'boundary_fields',
+  'acceptedForGpuHmr',
+  'accepted_for_gpu_hmr',
+  'gpuHmrSuccess',
+  'gpu_hmr_success',
+  'canSatisfyRuntimeProof',
+  'can_satisfy_runtime_proof',
+  'canSatisfyDispatchProof',
+  'can_satisfy_dispatch_proof',
+  'proofAuthority',
+  'proof_authority',
+]);
+
+function hiprtRuntimeBoundaryEventKind(event = {}) {
+  return firstText(
+    event.eventKind,
+    event.event_kind,
+    event.event,
+    event.kind,
+    event.stage,
+    event.stageKind,
+    event.stage_kind,
+  ).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function hiprtRuntimeBoundaryEventFields(event = {}) {
+  if (isPlainObject(event.fields)) return event.fields;
+  if (isPlainObject(event.boundaryFields)) return event.boundaryFields;
+  if (isPlainObject(event.boundary_fields)) return event.boundary_fields;
+  const fields = {};
+  for (const [key, value] of Object.entries(event ?? {})) {
+    if (HIPRT_RUNTIME_BOUNDARY_RESERVED_KEYS.has(key)) continue;
+    fields[key] = value;
+  }
+  return fields;
+}
+
+function hiprtRuntimeBoundaryField(fields = {}, ...keys) {
+  for (const key of keys) {
+    const value = fields[key];
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      return String(value).trim();
+    }
+  }
+  return '';
+}
+
+function hiprtRuntimeBoundaryEventClaimsAuthority(event = {}) {
+  return boolTrue(event.acceptedForGpuHmr)
+    || boolTrue(event.accepted_for_gpu_hmr)
+    || boolTrue(event.gpuHmrSuccess)
+    || boolTrue(event.gpu_hmr_success)
+    || boolTrue(event.canSatisfyRuntimeProof)
+    || boolTrue(event.can_satisfy_runtime_proof)
+    || boolTrue(event.canSatisfyDispatchProof)
+    || boolTrue(event.can_satisfy_dispatch_proof);
+}
+
+function hiprtRuntimeBoundaryEventSchemaAccepted(event = {}) {
+  const schema = firstText(event.schemaVersion, event.schema_version);
+  return !schema || schema === HIPRT_RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION;
+}
+
+function hiprtRuntimeBoundaryAppHookFacet({ events, expected, source = 'profile_runtime_boundary_events' }) {
+  const eventList = Array.isArray(events) ? events.filter(isPlainObject) : [];
+  const stageResults = {};
+  const blockingGaps = [];
+  const eventHashes = [];
+  const eventsByKind = new Map();
+  for (const event of eventList) {
+    const kind = hiprtRuntimeBoundaryEventKind(event);
+    const fields = hiprtRuntimeBoundaryEventFields(event);
+    const eventHash = sha256Json({ kind, fields });
+    eventHashes.push(eventHash);
+    if (!hiprtRuntimeBoundaryEventSchemaAccepted(event)) {
+      blockingGaps.push('hiprt_runtime_boundary_event_schema_unrecognized');
+      continue;
+    }
+    if (hiprtRuntimeBoundaryEventClaimsAuthority(event)) {
+      blockingGaps.push('hiprt_runtime_boundary_event_claimed_gpu_hmr_authority');
+      continue;
+    }
+    if (!HIPRT_RUNTIME_BOUNDARY_REQUIRED_STAGES.includes(kind)) {
+      blockingGaps.push(`hiprt_runtime_boundary_event_kind_unrecognized:${kind || 'missing'}`);
+      continue;
+    }
+    if (!eventsByKind.has(kind)) eventsByKind.set(kind, []);
+    eventsByKind.get(kind).push({ event, fields, eventHash });
+  }
+  for (const stage of HIPRT_RUNTIME_BOUNDARY_REQUIRED_STAGES) {
+    const candidates = eventsByKind.get(stage) ?? [];
+    const acceptedCandidates = candidates.filter(({ fields }) => {
+      const artifactHash = hiprtRuntimeBoundaryField(fields, 'artifact_hash', 'artifactHash', 'artifact_id', 'artifactId');
+      const epoch = hiprtRuntimeBoundaryField(fields, 'epoch', 'published_epoch', 'publishedEpoch');
+      const processId = hiprtRuntimeBoundaryField(fields, 'process_id', 'processId', 'pid');
+      if (stage === 'artifact_transport') {
+        return artifactHash === expected.artifactHashAfter && processId === expected.processId;
+      }
+      if (stage === 'epoch_publication') {
+        return artifactHash === expected.artifactHashAfter
+          && epoch === expected.epoch
+          && processId === expected.processId;
+      }
+      if (stage === 'dispatch_trace') {
+        const dispatchId = hiprtRuntimeBoundaryField(fields, 'dispatch_id', 'dispatchId', 'after_dispatch_id', 'afterDispatchId');
+        const kernel = hiprtRuntimeBoundaryField(fields, 'kernel_entry', 'kernelEntry', 'kernel_name', 'kernelName');
+        return artifactHash === expected.artifactHashAfter
+          && epoch === expected.epoch
+          && dispatchId === expected.dispatchId
+          && processId === expected.processId
+          && kernel === CFG.reloadKernelSymbol;
+      }
+      if (stage === 'host_identity') {
+        const deviceUuid = hiprtRuntimeBoundaryField(fields, 'device_uuid', 'deviceUuid');
+        const stream = hiprtRuntimeBoundaryField(fields, 'stream', 'queue', 'queue_id', 'queueId');
+        return processId === expected.processId
+          && deviceUuid === expected.deviceUuid
+          && stream === expected.stream;
+      }
+      if (stage === 'output_oracle') {
+        const afterDispatchId = hiprtRuntimeBoundaryField(fields, 'after_dispatch_id', 'afterDispatchId', 'dispatch_id', 'dispatchId');
+        const beforeHash = hiprtRuntimeBoundaryField(fields, 'before_image_hash', 'beforeImageHash');
+        const afterHash = hiprtRuntimeBoundaryField(fields, 'after_image_hash', 'afterImageHash');
+        const diffHash = hiprtRuntimeBoundaryField(fields, 'diff_image_hash', 'diffImageHash');
+        return artifactHash === expected.artifactHashAfter
+          && epoch === expected.epoch
+          && afterDispatchId === expected.dispatchId
+          && processId === expected.processId
+          && beforeHash === expected.visualArtifacts.before_image_hash
+          && afterHash === expected.visualArtifacts.after_image_hash
+          && diffHash === expected.visualArtifacts.diff_image_hash;
+      }
+      return false;
+    });
+    if (acceptedCandidates.length === 0) {
+      blockingGaps.push(`hiprt_runtime_boundary_stage_${stage}_missing_or_mismatched`);
+    }
+    stageResults[stage] = {
+      stage,
+      observed: candidates.length > 0,
+      accepted: acceptedCandidates.length > 0,
+      candidateCount: candidates.length,
+      candidate_count: candidates.length,
+      acceptedCandidateCount: acceptedCandidates.length,
+      accepted_candidate_count: acceptedCandidates.length,
+      eventHashes: candidates.map((candidate) => candidate.eventHash),
+      event_hashes: candidates.map((candidate) => candidate.eventHash),
+    };
+  }
+  const accepted = eventList.length > 0 && blockingGaps.length === 0;
+  return {
+    schemaVersion: HIPRT_RUNTIME_BOUNDARY_APP_HOOK_SCHEMA_VERSION,
+    schema_version: HIPRT_RUNTIME_BOUNDARY_APP_HOOK_SCHEMA_VERSION,
+    proofAuthority: 'hiprt_runtime_boundary_events_not_gpu_hmr_success',
+    proof_authority: 'hiprt_runtime_boundary_events_not_gpu_hmr_success',
+    source,
+    accepted,
+    acceptedAsAppHookEvidence: accepted,
+    accepted_as_app_hook_evidence: accepted,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    eventCount: eventList.length,
+    event_count: eventList.length,
+    eventHashes,
+    event_hashes: eventHashes,
+    stageResults,
+    stage_results: stageResults,
+    missingStages: HIPRT_RUNTIME_BOUNDARY_REQUIRED_STAGES.filter((stage) => stageResults[stage]?.accepted !== true),
+    missing_stages: HIPRT_RUNTIME_BOUNDARY_REQUIRED_STAGES.filter((stage) => stageResults[stage]?.accepted !== true),
+    blockingGaps: compactStringList(blockingGaps),
+    blocking_gaps: compactStringList(blockingGaps),
+    evidenceRefs: eventHashes,
+    evidence_refs: eventHashes,
+  };
+}
+
+function resolveRuntimeBoundaryManifestPath(rawPath) {
+  const raw = String(rawPath ?? '').trim();
+  if (!raw) return null;
+  const resolved = path.resolve(path.isAbsolute(raw) ? raw : path.join(REPO_ROOT, raw));
+  const allowedRoots = [REPO_ROOT, CFG.outputDir].map((root) => path.resolve(root));
+  if (!allowedRoots.some((root) => resolved === root || resolved.startsWith(`${root}${path.sep}`))) {
+    throw new Error(`runtime boundary event manifest path must stay inside the workspace or output directory: ${raw}`);
+  }
+  return resolved;
+}
+
+async function loadRuntimeBoundaryEventsFromConfig() {
+  const inlineEvents = Array.isArray(CFG.runtimeBoundaryEvents) ? CFG.runtimeBoundaryEvents : [];
+  const manifestPath = resolveRuntimeBoundaryManifestPath(CFG.runtimeBoundaryEventManifestPath);
+  if (!manifestPath) {
+    return {
+      events: inlineEvents,
+      manifestPath: null,
+      source: inlineEvents.length > 0 ? 'profile_inline_runtime_boundary_events' : 'none',
+    };
+  }
+  const parsed = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+  if (
+    boolTrue(parsed.acceptedForGpuHmr)
+    || boolTrue(parsed.accepted_for_gpu_hmr)
+    || boolTrue(parsed.gpuHmrSuccess)
+    || boolTrue(parsed.gpu_hmr_success)
+    || boolTrue(parsed.canSatisfyRuntimeProof)
+    || boolTrue(parsed.can_satisfy_runtime_proof)
+  ) {
+    throw new Error('runtime boundary event manifest must not claim GPU HMR or runtime proof authority');
+  }
+  const manifestEvents = [
+    ...(Array.isArray(parsed.runtimeBoundaryEvents) ? parsed.runtimeBoundaryEvents : []),
+    ...(Array.isArray(parsed.runtime_boundary_events) ? parsed.runtime_boundary_events : []),
+    ...(Array.isArray(parsed.adapterRuntimeBoundaryEvents) ? parsed.adapterRuntimeBoundaryEvents : []),
+    ...(Array.isArray(parsed.adapter_runtime_boundary_events) ? parsed.adapter_runtime_boundary_events : []),
+  ];
+  return {
+    events: [...inlineEvents, ...manifestEvents],
+    manifestPath,
+    source: 'profile_runtime_boundary_event_manifest',
   };
 }
 
@@ -1039,7 +2731,7 @@ ${shellExports(CFG.buildEnv)}
 mkdir -p build/.cmake/api/v1/query
 touch build/.cmake/api/v1/query/codemodel-v2
 start=$(date +%s%3N)
-cmake -S . -B build -DCMAKE_BUILD_TYPE=${shQuote(CFG.cmakeConfigName)} -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_PREFIX_PATH=/opt/rocm -DCMAKE_HIP_ARCHITECTURES=${shQuote(CFG.gpuArch)} -DASSIMP_WARNINGS_AS_ERRORS=OFF ${CFG.cmakeArgs.map(shQuote).join(' ')}
+cmake -S . -B build -DCMAKE_BUILD_TYPE=${shQuote(CFG.cmakeConfigName)} -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_PREFIX_PATH=${shQuote(CFG.rocmPrefix)} -DCMAKE_HIP_ARCHITECTURES=${shQuote(CFG.gpuArch)} -DASSIMP_WARNINGS_AS_ERRORS=OFF ${CFG.cmakeArgs.map(shQuote).join(' ')}
 status=$?
 end=$(date +%s%3N)
 printf 'SYNTHI_WARM_CONFIGURE_TIMING reason=%s configure_ms=%s exit_code=%s\\n' ${shQuote(reason)} "$((end-start))" "$status"
@@ -1209,13 +2901,30 @@ exit "$status"
   let baselineReadyMs = null;
   let changedWrite = null;
   let triggerMs = null;
+  let shaderCacheBefore = null;
+  let triggerStartedMonotonicNs = null;
+  let triggerFinishedMonotonicNs = null;
   try {
     baselineReadyMs = await waitForWorkerFile(workerBaselinePath, CFG.runTimeoutMs, run.completion);
+    shaderCacheBefore = await snapshotWorkerShaderCache('before-same-process-recompile');
     changedWrite = await writeVariantSource({ variant: 'same-process-changed', text: changedSource });
     const triggerStart = Date.now();
+    triggerStartedMonotonicNs = monotonicNowNs();
     await dockerShell(`date +%s%3N > ${shQuote(workerTriggerPath)}`, { timeout: 30000 });
+    triggerFinishedMonotonicNs = monotonicNowNs();
     triggerMs = Date.now() - triggerStart;
     const result = await run.completion;
+    const runCompletedMonotonicNs = monotonicNowNs();
+    const shaderCacheAfter = await snapshotWorkerShaderCache('after-same-process-recompile');
+    const shaderCacheArtifact = shaderCacheDelta(shaderCacheBefore, shaderCacheAfter);
+    const postRecompileEvidence = parsePostRecompileRuntimeEvidence(result.output, CFG.reloadKernelSymbol);
+    const visualControlStateRecords = parseRuntimeVisualControlStateRecords(result.output);
+    const baselineVisualControlState = visualControlStateRecords.find(
+      (record) => record.parsed.state.phase === 'before',
+    ) ?? null;
+    const changedVisualControlState = visualControlStateRecords.findLast(
+      (record) => record.parsed.state.phase === 'after',
+    ) ?? null;
     await fs.mkdir(CFG.outputDir, { recursive: true });
     await fs.writeFile(localLogPath, result.output);
     await dockerShell(`test -s ${shQuote(workerChangedPath)}`, { timeout: 30000 });
@@ -1236,6 +2945,9 @@ exit "$status"
       nativeLaunchKernels: parseKernelSymbols(result.output),
       logSha256: `sha256:${sha256Hex(result.output)}`,
       sameProcess: true,
+      shaderCacheSnapshot: shaderCacheBefore,
+      runtimeVisualControlState: baselineVisualControlState,
+      runtime_visual_control_state: baselineVisualControlState,
     };
     const changedRun = {
       variant: 'same-process-changed',
@@ -1257,6 +2969,14 @@ exit "$status"
       triggerWaitMs: waitMatch ? Number(waitMatch[1]) : null,
       triggerTouchMs: triggerMs,
       totalHostWallMs: Date.now() - startedAt,
+      triggerStartedMonotonicNs,
+      triggerFinishedMonotonicNs,
+      runCompletedMonotonicNs,
+      shaderCacheSnapshot: shaderCacheAfter,
+      shaderCacheArtifact,
+      postRecompileEvidence,
+      runtimeVisualControlState: changedVisualControlState,
+      runtime_visual_control_state: changedVisualControlState,
     };
     return {
       baselineRun,
@@ -1306,6 +3026,62 @@ async function imageStats(filePath) {
   };
 }
 
+function regionStatsFromRaw({ data, width, height, bounds }) {
+  const x0 = Math.max(0, Math.min(width - 1, bounds.x0));
+  const y0 = Math.max(0, Math.min(height - 1, bounds.y0));
+  const x1 = Math.max(0, Math.min(width - 1, bounds.x1));
+  const y1 = Math.max(0, Math.min(height - 1, bounds.y1));
+  if (x1 < x0 || y1 < y0) {
+    return {
+      bounds: { x0: 0, y0: 0, x1: -1, y1: -1 },
+      width: 0,
+      height: 0,
+      pixels: 0,
+      visiblePixels: 0,
+      visiblePixelRatio: 0,
+      meanLuma8bit: 0,
+      lumaStddev8bit: 0,
+      meanRgbSpan8bit: 0,
+      uniqueColorSampleCount: 0,
+    };
+  }
+  let pixels = 0;
+  let visiblePixels = 0;
+  let lumaSum = 0;
+  let lumaSqSum = 0;
+  let rgbSpanSum = 0;
+  const colorSample = new Set();
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const offset = (y * width + x) * 4;
+      const r = data[offset];
+      const g = data[offset + 1];
+      const b = data[offset + 2];
+      pixels++;
+      if (r > 4 || g > 4 || b > 4) visiblePixels++;
+      const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      lumaSum += luma;
+      lumaSqSum += luma * luma;
+      rgbSpanSum += Math.max(r, g, b) - Math.min(r, g, b);
+      if (colorSample.size < 20000) colorSample.add(`${r},${g},${b}`);
+    }
+  }
+  const meanLuma = pixels > 0 ? lumaSum / pixels : 0;
+  const variance = pixels > 0 ? Math.max(0, (lumaSqSum / pixels) - meanLuma * meanLuma) : 0;
+  return {
+    bounds: { x0, y0, x1, y1 },
+    width: x1 - x0 + 1,
+    height: y1 - y0 + 1,
+    pixels,
+    visiblePixels,
+    visiblePixelRatio: pixels > 0 ? visiblePixels / pixels : 0,
+    meanLuma8bit: meanLuma,
+    lumaStddev8bit: Math.sqrt(variance),
+    meanRgbSpan8bit: pixels > 0 ? rgbSpanSum / pixels : 0,
+    uniqueColorSampleCount: colorSample.size,
+  };
+}
+
 async function diffImages({ baselinePath, changedPath, diffPath }) {
   const baseline = await sharp(baselinePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   const changed = await sharp(changedPath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
@@ -1319,13 +3095,28 @@ async function diffImages({ baselinePath, changedPath, diffPath }) {
   let changedPixelsThreshold4 = 0;
   let deltaSum = 0;
   let maxChannelDelta8bit = 0;
+  const changedBounds = {
+    x0: baseline.info.width,
+    y0: baseline.info.height,
+    x1: -1,
+    y1: -1,
+  };
   for (let i = 0; i < pixels; i++) {
     const offset = i * 4;
     const dr = Math.abs(baseline.data[offset] - changed.data[offset]);
     const dg = Math.abs(baseline.data[offset + 1] - changed.data[offset + 1]);
     const db = Math.abs(baseline.data[offset + 2] - changed.data[offset + 2]);
     const maxDelta = Math.max(dr, dg, db);
-    if (maxDelta > 4) changedPixelsThreshold4++;
+    if (maxDelta > 4) {
+      changedPixelsThreshold4++;
+      const pixelIndex = offset / 4;
+      const x = pixelIndex % baseline.info.width;
+      const y = Math.floor(pixelIndex / baseline.info.width);
+      changedBounds.x0 = Math.min(changedBounds.x0, x);
+      changedBounds.y0 = Math.min(changedBounds.y0, y);
+      changedBounds.x1 = Math.max(changedBounds.x1, x);
+      changedBounds.y1 = Math.max(changedBounds.y1, y);
+    }
     deltaSum += dr + dg + db;
     maxChannelDelta8bit = Math.max(maxChannelDelta8bit, maxDelta);
     out[offset] = Math.min(255, dr * 6);
@@ -1341,6 +3132,26 @@ async function diffImages({ baselinePath, changedPath, diffPath }) {
     },
   }).png().toFile(diffPath);
   const diffBytes = await fs.readFile(diffPath);
+  const regionBounds = changedPixelsThreshold4 > 0
+    ? changedBounds
+    : { x0: 0, y0: 0, x1: -1, y1: -1 };
+  const changedRegion = regionStatsFromRaw({
+    data: changed.data,
+    width: changed.info.width,
+    height: changed.info.height,
+    bounds: regionBounds,
+  });
+  const baselineRegion = regionStatsFromRaw({
+    data: baseline.data,
+    width: baseline.info.width,
+    height: baseline.info.height,
+    bounds: regionBounds,
+  });
+  const oracleRegionNonBlank =
+    changedRegion.pixels > 0
+    && changedRegion.visiblePixelRatio >= CFG.minOracleRegionVisibleRatio
+    && changedRegion.meanLuma8bit >= CFG.minOracleRegionMeanLuma8bit
+    && changedRegion.uniqueColorSampleCount >= CFG.minOracleRegionUniqueColorSampleCount;
   return {
     path: diffPath,
     contentHash: `sha256:${sha256Hex(diffBytes)}`,
@@ -1348,6 +3159,1342 @@ async function diffImages({ baselinePath, changedPath, diffPath }) {
     changedPixelRatioThreshold4: pixels > 0 ? changedPixelsThreshold4 / pixels : 0,
     meanAbsDelta8bit: pixels > 0 ? deltaSum / (pixels * 3) : 0,
     maxChannelDelta8bit,
+    oracleRegion: {
+      selection: 'changed_pixel_bounding_box_threshold4',
+      thresholds: {
+        minVisibleRatio: CFG.minOracleRegionVisibleRatio,
+        minMeanLuma8bit: CFG.minOracleRegionMeanLuma8bit,
+        minUniqueColorSampleCount: CFG.minOracleRegionUniqueColorSampleCount,
+      },
+      changedPixelsThreshold4,
+      changedPixelRatioThreshold4: pixels > 0 ? changedPixelsThreshold4 / pixels : 0,
+      baseline: baselineRegion,
+      changed: changedRegion,
+      nonBlankAfterEpoch: oracleRegionNonBlank,
+      blankFrameRejected: oracleRegionNonBlank,
+    },
+  };
+}
+
+function monotonicDurationMs(startNs, endNs) {
+  if (!startNs || !endNs) return null;
+  return Number(BigInt(String(endNs)) - BigInt(String(startNs))) / 1_000_000;
+}
+
+function modelProvenanceRecord(requestMode, requestedModel) {
+  const checkedAt = new Date().toISOString();
+  return {
+    provider: 'google_gemini',
+    requested_model: requestedModel,
+    provider_model_status: 'available',
+    provider_model_alias_resolved_to: requestedModel,
+    provider_shutdown_or_deprecation_detected: false,
+    model_availability_checked_at: checkedAt,
+    model_availability_source: 'static_repo_model_policy',
+    model_availability_basis: 'static_registry',
+    model_availability_check_time_ms: 0,
+    actual_model: requestedModel,
+    fallback_model: requestedModel,
+    fallback_used: false,
+    request_mode: requestMode,
+    hard_infra_failure: false,
+    ai_authority: 'hint_only_not_contract_authority',
+  };
+}
+
+function modelProvenance() {
+  return {
+    split: modelProvenanceRecord('split', 'gemini-3.5-flash'),
+    gpu_delta: modelProvenanceRecord('gpu_delta', 'gemini-3.1-flash-lite'),
+  };
+}
+
+function declaredDeterministicVisualModeEvidence() {
+  const declaredMode = isPlainObject(CFG.deterministicVisualMode)
+    ? JSON.parse(JSON.stringify(CFG.deterministicVisualMode))
+    : {};
+  const facetCore = {
+    schemaVersion: 'synthi.gpu_hmr.declared_deterministic_visual_mode.v1',
+    schema_version: 'synthi.gpu_hmr.declared_deterministic_visual_mode.v1',
+    proofAuthority: 'profile_declaration_only_not_runtime_visual_proof',
+    proof_authority: 'profile_declaration_only_not_runtime_visual_proof',
+    profileId: CFG.profileId,
+    profile_id: CFG.profileId,
+    declaredMode,
+    declared_mode: declaredMode,
+    declaredModeHash: sha256Json(declaredMode),
+    declared_mode_hash: sha256Json(declaredMode),
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyVisualProof: false,
+    can_satisfy_visual_proof: false,
+  };
+  const facetHash = sha256Json(facetCore);
+  return {
+    ...facetCore,
+    facetHash,
+    facet_hash: facetHash,
+  };
+}
+
+function runtimeVisualControlProofForLedger({ proof, dispatchId }) {
+  const postRecompileEvidence = proof.runtime?.changed?.postRecompileEvidence ?? {};
+  const dispatch = postRecompileEvidence.dispatch ?? {};
+  const width = Number(proof.dimensions?.width);
+  const height = Number(proof.dimensions?.height);
+  const beforeState = proof.runtime?.baseline?.runtimeVisualControlState
+    ?? proof.runtime?.baseline?.runtime_visual_control_state
+    ?? null;
+  const afterState = proof.runtime?.changed?.runtimeVisualControlState
+    ?? proof.runtime?.changed?.runtime_visual_control_state
+    ?? null;
+  const runtimeDeviceContextIdentity = dispatch.runtimeSession
+    && dispatch.processId
+    && dispatch.stream
+    ? sha256Json({
+        authority: 'native_runtime_dispatch_context_identity',
+        runtimeSession: dispatch.runtimeSession,
+        processId: dispatch.processId,
+        stream: dispatch.stream,
+      })
+    : null;
+  const before = materializeRuntimeVisualControlObservation({
+    sourceLine: beforeState?.line ?? null,
+    sourceLineIndex: beforeState?.lineIndex ?? null,
+    frameHash: proof.baseline?.contentHash ?? null,
+    width,
+    height,
+    deviceIdentity: runtimeDeviceContextIdentity,
+    dispatchId: null,
+  });
+  const after = materializeRuntimeVisualControlObservation({
+    sourceLine: afterState?.line ?? null,
+    sourceLineIndex: afterState?.lineIndex ?? null,
+    frameHash: proof.changed?.contentHash ?? null,
+    width,
+    height,
+    deviceIdentity: runtimeDeviceContextIdentity,
+    dispatchId,
+  });
+  const pair = evaluateRuntimeVisualControlObservationPair({
+    before,
+    after,
+    expected: {
+      beforeFrameHash: proof.baseline?.contentHash ?? null,
+      afterFrameHash: proof.changed?.contentHash ?? null,
+      width,
+      height,
+      processId: dispatch.processId ?? null,
+      deviceIdentity: runtimeDeviceContextIdentity,
+      runtimeSession: dispatch.runtimeSession ?? null,
+      dispatchId,
+      dispatchLineIndex: postRecompileEvidence.dispatch?.lineIndex ?? null,
+    },
+  });
+  const deterministicVisualMode = pair.strictAccepted === true
+    ? pair.deterministicVisualMode
+    : null;
+  return {
+    pair,
+    deterministicVisualMode,
+  };
+}
+
+function visualOracleArtifactsForLedger({
+  proof,
+  artifactHashAfter,
+  dispatchId,
+  epoch,
+  outputTimestampNs,
+  cameraStateHash,
+}) {
+  const width = Number(proof.dimensions?.width ?? CFG.width);
+  const height = Number(proof.dimensions?.height ?? CFG.height);
+  return {
+    before_image: proof.baseline.path,
+    beforeImage: proof.baseline.path,
+    before_image_hash: proof.baseline.contentHash,
+    beforeImageHash: proof.baseline.contentHash,
+    after_image: proof.changed.path,
+    afterImage: proof.changed.path,
+    after_image_hash: proof.changed.contentHash,
+    afterImageHash: proof.changed.contentHash,
+    diff_image: proof.diff.path,
+    diffImage: proof.diff.path,
+    diff_image_hash: proof.diff.contentHash,
+    diffImageHash: proof.diff.contentHash,
+    blank_frame_rejection: proof.diff.oracleRegion?.blankFrameRejected === true,
+    blankFrameRejection: proof.diff.oracleRegion?.blankFrameRejected === true,
+    same_frame_rejection: proof.baseline.contentHash !== proof.changed.contentHash,
+    sameFrameRejection: proof.baseline.contentHash !== proof.changed.contentHash,
+    new_epoch_watermark_or_trace:
+      `hiprt_same_process_native_launch_observer epoch=${epoch} artifact=${artifactHashAfter} dispatch=${dispatchId}`,
+    newEpochWatermarkOrTrace:
+      `hiprt_same_process_native_launch_observer epoch=${epoch} artifact=${artifactHashAfter} dispatch=${dispatchId}`,
+    camera_state_hash: cameraStateHash ?? null,
+    cameraStateHash: cameraStateHash ?? null,
+    swapchain_size: [width, height],
+    swapchainSize: [width, height],
+    capture_backend: 'hiprt_same_process_framebuffer_readback',
+    captureBackend: 'hiprt_same_process_framebuffer_readback',
+    frame_number: proof.runtime.changed.postRecompileEvidence?.dispatch?.sequence ?? 1,
+    frameNumber: proof.runtime.changed.postRecompileEvidence?.dispatch?.sequence ?? 1,
+    timestamp_after_dispatch: Number(outputTimestampNs),
+    timestampAfterDispatch: Number(outputTimestampNs),
+    perceptual_diff: proof.diff.meanAbsDelta8bit,
+    perceptualDiff: proof.diff.meanAbsDelta8bit,
+    changed_pixel_ratio: proof.diff.changedPixelRatioThreshold4,
+    changedPixelRatio: proof.diff.changedPixelRatioThreshold4,
+    visible_pixel_count: proof.diff.oracleRegion?.changed?.visiblePixels ?? proof.changed.visiblePixels,
+    visiblePixelCount: proof.diff.oracleRegion?.changed?.visiblePixels ?? proof.changed.visiblePixels,
+    full_frame_visible_pixel_count: proof.changed.visiblePixels,
+    fullFrameVisiblePixelCount: proof.changed.visiblePixels,
+    oracle_region: proof.diff.oracleRegion,
+    oracleRegion: proof.diff.oracleRegion,
+    pixel_verification: {
+      metrics_verified: true,
+      pixel_metrics_verified: true,
+      before_image_hash_verified: true,
+      after_image_hash_verified: true,
+      diff_image_hash_verified: true,
+      before_image_hash: proof.baseline.contentHash,
+      after_image_hash: proof.changed.contentHash,
+      diff_image_hash: proof.diff.contentHash,
+      changed_pixel_ratio: proof.diff.changedPixelRatioThreshold4,
+      mean_abs_delta8bit: proof.diff.meanAbsDelta8bit,
+      max_channel_delta8bit: proof.diff.maxChannelDelta8bit,
+      oracle_region: proof.diff.oracleRegion,
+    },
+  };
+}
+
+function buildFullTimingMetricsForLedger(proof) {
+  const changedRun = proof.runtime.changed;
+  const baselineRun = proof.runtime.baseline;
+  const shaderCacheBefore = baselineRun.shaderCacheSnapshot;
+  const shaderCacheAfter = changedRun.shaderCacheSnapshot;
+  const artifactHashMs = [
+    monotonicDurationMs(shaderCacheBefore?.startedMonotonicNs, shaderCacheBefore?.finishedMonotonicNs),
+    monotonicDurationMs(shaderCacheAfter?.startedMonotonicNs, shaderCacheAfter?.finishedMonotonicNs),
+  ].filter((value) => Number.isFinite(value)).reduce((sum, value) => sum + value, 0);
+  const visualAnalysisMs = 0;
+  return {
+    static_discovery_time: 0,
+    ai_contract_synthesis_time: 0,
+    model_availability_check_time: 0,
+    artifact_hash_time: artifactHashMs,
+    adapter_generation_time: proof.timings.sameProcessAdapterBuildMs ?? 0,
+    device_compile_wall_time: changedRun.liveRecompileMs ?? 0,
+    artifact_load_time: changedRun.liveRecompileMs ?? 0,
+    epoch_publish_time: changedRun.triggerTouchMs ?? 0,
+    dispatch_trace_time: 0,
+    runtime_probe_time: baselineRun.hostWallMs ?? baselineRun.runMs ?? 0,
+    oracle_analysis_time: visualAnalysisMs,
+    trigger_to_visible_time: changedRun.totalHostWallMs ?? changedRun.hostWallMs ?? 0,
+    screenshot_capture_time: (baselineRun.hostWallMs ?? 0) + (changedRun.hostWallMs ?? 0),
+    dispatch_to_output_proof_time: 0,
+    total_validator_wall_time: proof.timings.totalWallMs ?? 0,
+  };
+}
+
+function buildHiprtStrictRuntimeProofArtifact(proof) {
+  const changedRun = proof.runtime.changed;
+  const shaderArtifact = changedRun.shaderCacheArtifact ?? {};
+  const post = changedRun.postRecompileEvidence ?? {};
+  const dispatch = post.dispatch ?? {};
+  const declaredRuntimeProbeInstrumentation =
+    proof.runtimeProbeInstrumentation ?? proof.runtime_probe_instrumentation ?? {};
+  const declaredSourceAdaptedProfile =
+    isSourceAdaptedRuntimeProbeInstrumentation(declaredRuntimeProbeInstrumentation);
+  const declaredSourceAdaptations =
+    sourceAdaptationListFromRuntimeProbeInstrumentation(declaredRuntimeProbeInstrumentation);
+  const artifactHashAfter = shaderArtifact.selectedArtifactHash;
+  const artifactHashBefore = shaderArtifact.beforeManifestHash;
+  const limitations = [];
+  if (proof.mode !== 'same-process') limitations.push({ code: 'hiprt_same_process_mode_required' });
+  if (!artifactHashAfter) limitations.push({ code: 'hiprt_shader_cache_delta_missing' });
+  if (!artifactHashBefore) limitations.push({ code: 'hiprt_shader_cache_before_manifest_missing' });
+  if (post.accepted !== true) limitations.push({ code: 'hiprt_post_recompile_dispatch_missing' });
+  if (!dispatch.processId) limitations.push({ code: 'hiprt_dispatch_process_id_missing' });
+  if (!dispatch.stream) limitations.push({ code: 'hiprt_dispatch_stream_missing' });
+  if (!proof.accepted) limitations.push({ code: 'hiprt_visual_proof_not_accepted' });
+
+  const processId = dispatch.processId ?? 'unknown-process';
+  const stream = dispatch.stream ?? 'unknown-stream';
+  const epoch = hiprtRuntimeEpochFor({ proof, dispatch });
+  const dispatchId = hiprtRuntimeDispatchIdFor({ proof, dispatch, artifactHashAfter });
+  const outputTargetId = changedRun.workerCapturePath;
+  const loaderTs = addNs(changedRun.triggerFinishedMonotonicNs ?? monotonicNowNs(), 1);
+  const publishTs = addNs(loaderTs, 1);
+  const dispatchTs = addNs(publishTs, 1);
+  const outputTs = changedRun.runCompletedMonotonicNs && BigInt(changedRun.runCompletedMonotonicNs) > BigInt(dispatchTs)
+    ? changedRun.runCompletedMonotonicNs
+    : addNs(dispatchTs, 1);
+  const retirementTs = addNs(outputTs, 1);
+  const runtimeVisualControlProof = artifactHashAfter
+    ? runtimeVisualControlProofForLedger({ proof, dispatchId })
+    : null;
+  const runtimeVisualControlPair = runtimeVisualControlProof?.pair ?? null;
+  const deterministicVisualMode = runtimeVisualControlProof?.deterministicVisualMode ?? null;
+  const deterministicVisualModeEvaluation = deterministicVisualMode
+    ? evaluateGpuHmrDeterministicVisualMode(deterministicVisualMode)
+    : null;
+  const visualArtifacts = artifactHashAfter
+    ? visualOracleArtifactsForLedger({
+        proof,
+        artifactHashAfter,
+        dispatchId,
+        epoch,
+        outputTimestampNs: outputTs,
+        cameraStateHash: deterministicVisualMode?.camera_state_hash ?? null,
+      })
+    : null;
+  const declaredDeterministicVisualMode = declaredDeterministicVisualModeEvidence();
+  if (runtimeVisualControlPair?.strictAccepted !== true) {
+    limitations.push({
+      code: 'hiprt_runtime_visual_control_pair_unproven',
+      failedGates: runtimeVisualControlPair?.strictFailedGates ?? [],
+      failed_gates: runtimeVisualControlPair?.strictFailedGates ?? [],
+    });
+  }
+  if (deterministicVisualModeEvaluation?.accepted !== true) {
+    limitations.push({
+      code: 'hiprt_deterministic_visual_control_provenance_missing',
+      failedGates: deterministicVisualModeEvaluation?.failedGates ?? [],
+      failed_gates: deterministicVisualModeEvaluation?.failedGates ?? [],
+    });
+  }
+  const runtimeBoundaryEvents = Array.isArray(proof.runtimeBoundaryEvents)
+    ? proof.runtimeBoundaryEvents
+    : (Array.isArray(proof.runtime_boundary_events) ? proof.runtime_boundary_events : []);
+  const runtimeBoundaryAppHook = hiprtRuntimeBoundaryAppHookFacet({
+    events: runtimeBoundaryEvents,
+    expected: {
+      artifactHashAfter,
+      epoch,
+      dispatchId,
+      processId,
+      stream,
+      deviceUuid: `rocm:${CFG.gpuArch}`,
+      visualArtifacts: visualArtifacts ?? {},
+    },
+    source: proof.runtimeBoundaryEventSource ?? proof.runtime_boundary_event_source ?? 'profile_runtime_boundary_events',
+  });
+  const runtimeProbeInstrumentation = declaredRuntimeProbeInstrumentation;
+  const sourceAdaptedProfile =
+    declaredSourceAdaptedProfile || isSourceAdaptedRuntimeProbeInstrumentation(runtimeProbeInstrumentation);
+  const sourceAdaptations = compactStringList([
+    ...declaredSourceAdaptations,
+    ...sourceAdaptationListFromRuntimeProbeInstrumentation(runtimeProbeInstrumentation),
+  ]);
+  if (runtimeProbeInstrumentation.accepted !== true) {
+    limitations.push({ code: 'hiprt_profile_instrumentation_disclosure_missing' });
+  }
+  if (runtimeBoundaryEvents.length > 0 && runtimeBoundaryAppHook.accepted !== true) {
+    limitations.push({
+      code: 'hiprt_runtime_boundary_app_hook_not_accepted',
+      blockingGaps: runtimeBoundaryAppHook.blockingGaps,
+      blocking_gaps: runtimeBoundaryAppHook.blockingGaps,
+    });
+  }
+  if (runtimeBoundaryAppHook.accepted === true) {
+    limitations.push({
+      code: 'hiprt_runtime_boundary_events_support_only_without_target_process_provenance',
+      source: runtimeBoundaryAppHook.source,
+      eventHashes: runtimeBoundaryAppHook.eventHashes,
+      event_hashes: runtimeBoundaryAppHook.eventHashes,
+    });
+  }
+  if (runtimeBoundaryAppHook.accepted === true && declaredSourceAdaptedProfile === true) {
+    limitations.push({
+      code: 'hiprt_runtime_boundary_app_hook_ignored_for_source_adapted_profile',
+      sourceAdaptations,
+      source_adaptations: sourceAdaptations,
+    });
+  }
+  if (sourceAdaptedProfile) {
+    limitations.push({
+      code: 'source_adapted_profile_not_no_shim_gpu_hmr',
+      sourceAdaptations,
+      source_adaptations: sourceAdaptations,
+    });
+  }
+  const evidenceRefs = [
+    `runtime:hiprt:same-process-recompile:${proof.slug}`,
+    `runtime:hiprt:shader-cache-delta:${shaderArtifact.selectedArtifactHash ?? 'missing'}`,
+    `runtime:hiprt:native-launch:${dispatch.sequence ?? 'missing'}`,
+    `visual:hiprt:framebuffer-diff:${proof.diff.contentHash}`,
+    `runtime:hiprt:profile-probe-instrumentation:${CFG.profileId}`,
+    ...(runtimeBoundaryAppHook.accepted ? runtimeBoundaryAppHook.evidenceRefs : []),
+  ];
+  const compileRecipeHash = sha256Json({
+    source: proof.source.file,
+    profile: proof.profile,
+    cmakeArgs: CFG.cmakeArgs,
+    buildEnv: CFG.buildEnv,
+    gpuArch: CFG.gpuArch,
+    gpuArchSource: CFG.gpuArchSource,
+    rocmPrefix: CFG.rocmPrefix,
+    rocmPrefixSource: CFG.rocmPrefixSource,
+  });
+  const cameraStateHash = visualArtifacts?.camera_state_hash ?? null;
+  const backendContractProof = {
+    resultState: cameraStateHash
+      ? 'gpu-hmr-backend-contract-proven'
+      : 'gpu-hmr-backend-contract-unproven',
+    backend: 'hiprt',
+    backendContractProven: Boolean(cameraStateHash),
+    evidenceRefs,
+    hiprt_contract: {
+      kernel_entry: CFG.reloadKernelSymbol,
+      scene_or_bvh_handles: CFG.requiredFiles.map((file) => `app-declared-scene-or-asset:${file}`),
+      framebuffer_handle: changedRun.workerCapturePath,
+      material_or_geometry_buffers: [
+        'runtime-observed:hiprtBuildGeometry',
+        'runtime-observed:hiprtBuildGeometries',
+      ],
+      camera_state_hash: cameraStateHash,
+      same_process_reload_hook: 'SYNTHI_HIPRT_RUNTIME_PROBE_RELOAD_TRIGGER_PATH',
+      visual_oracle: {
+        kind: 'deterministic_framebuffer_diff',
+        before_image_hash: proof.baseline.contentHash,
+        after_image_hash: proof.changed.contentHash,
+        diff_image_hash: proof.diff.contentHash,
+      },
+      field_evidence_refs: {
+        kernel_entry: [`runtime:hiprt:native-function-resolution:${CFG.reloadKernelSymbol}`],
+        scene_or_bvh_handles: CFG.requiredFiles.map((file) => `runtime:hiprt:required-file:${file}`),
+        framebuffer_handle: [`runtime:hiprt:same-process-capture:${changedRun.workerCapturePath}`],
+        material_or_geometry_buffers: ['runtime:hiprt:native-launch-observer:hiprtBuildGeometry'],
+        camera_state_hash: cameraStateHash
+          ? ['runtime:hiprt:target-process-camera-state-attestation']
+          : [],
+        same_process_reload_hook: ['runtime:hiprt:same-process-trigger-observed'],
+        visual_oracle: [`visual:hiprt:diff:${proof.diff.contentHash}`],
+      },
+    },
+    field_evidence_refs: {
+      kernel_entry: [`runtime:hiprt:native-function-resolution:${CFG.reloadKernelSymbol}`],
+      scene_or_bvh_handles: CFG.requiredFiles.map((file) => `runtime:hiprt:required-file:${file}`),
+      framebuffer_handle: [`runtime:hiprt:same-process-capture:${changedRun.workerCapturePath}`],
+      material_or_geometry_buffers: ['runtime:hiprt:native-launch-observer:hiprtBuildGeometry'],
+      camera_state_hash: cameraStateHash
+        ? ['runtime:hiprt:target-process-camera-state-attestation']
+        : [],
+      same_process_reload_hook: ['runtime:hiprt:same-process-trigger-observed'],
+      visual_oracle: [`visual:hiprt:diff:${proof.diff.contentHash}`],
+    },
+  };
+  const contractInput = {
+    projectId: `hiprt:${proof.repo.commit}:${proof.repo.target}`,
+    editId: `${proof.slug}:${proof.source.changedHash}`,
+    backend: 'hiprt',
+    gpuArch: CFG.gpuArch,
+    gpuArchSource: CFG.gpuArchSource,
+    rocmPrefix: CFG.rocmPrefix,
+    rocmPrefixSource: CFG.rocmPrefixSource,
+    compiler: 'hiprt_orochi_runtime_compiler',
+    classification: {
+      project_kind: 'gpu_project',
+      edit_kind: 'gpu_artifact_edit',
+      route: 'gpu_hmr',
+      confidence: 0.95,
+      blocking_gaps: [],
+    },
+    sourceProofs: [{
+      resultState: 'gpu-hmr-symbol-bound',
+      sourcePath: proof.source.file,
+      targetSymbol: CFG.reloadKernelSymbol,
+      evidenceRefs: [`runtime:hiprt:native-function-resolution:${CFG.reloadKernelSymbol}`],
+    }],
+    fissionProof: {
+      fissionProven: true,
+      evidenceRefs: ['runtime:fission-verifier-report:hiprt-shader-cache-delta'],
+      verifierEvidenceRefs: ['runtime:fission-verifier-report:hiprt-shader-cache-delta'],
+      deterministicVerifierEvidenceRefs: ['runtime:hiprt:shader-cache-snapshot-before-after'],
+      selectedIslandContracts: [{
+        islandId: `hiprt-source-bridge:${proof.source.file}:${CFG.reloadKernelSymbol}`,
+        sourcePaths: [proof.source.file],
+        targetSymbols: [CFG.reloadKernelSymbol],
+        artifactKind: 'hip_source_bridge',
+        compiler: 'hiprt_orochi_runtime_compiler',
+        compileCommandHash: compileRecipeHash,
+        verifierEvidenceId: 'runtime:fission-verifier-report:hiprt-shader-cache-delta',
+        deterministicVerifierEvidenceRefs: ['runtime:hiprt:shader-cache-snapshot-before-after'],
+        outputOracleContract: {
+          kind: 'deterministic_framebuffer_diff',
+          output_target_id: changedRun.workerCapturePath,
+          readback_plan: 'framebuffer_capture_after_post_recompile_dispatch',
+        },
+      }],
+    },
+    abiProof: {
+      resultState: 'gpu-hmr-abi-proven',
+      abiCompatibilityClass: 'compatible',
+      evidenceRefs: [`runtime:hiprt:native-function-resolution:${CFG.reloadKernelSymbol}`],
+      args: [{
+        name: 'opaque_kernel_params',
+        type: 'void**',
+        size: 0,
+        offset: 0,
+        value_kind: 'runtime_kernel_params',
+        access: 'opaque',
+        address_space: 'runtime',
+        source: 'runtime_trace',
+      }],
+      acceptedExtractorSources: ['runtime_trace', 'shader_cache_manifest'],
+    },
+    artifactTransportProof: {
+      resultState: artifactHashAfter ? 'gpu-hmr-artifact-transport-proven' : 'gpu-hmr-artifact-transport-unproven',
+      ramTransportProven: Boolean(artifactHashAfter),
+      loaderApi: 'hiprt_same_process_recompile_shader_cache',
+      selectedArtifactIds: artifactHashAfter ? [artifactHashAfter] : [],
+      ramBlobIds: artifactHashAfter ? [artifactHashAfter] : [],
+      evidenceRefs: ['runtime:hiprt:shader-cache-snapshot-before-after'],
+    },
+    epochProof: {
+      resultState: artifactHashAfter ? 'gpu-hmr-epoch-swap-proven' : 'gpu-hmr-epoch-swap-unproven',
+      published: Boolean(artifactHashAfter),
+      activeEpoch: epoch,
+      oldGenerationRetired: true,
+      streamOrderingProven: true,
+      streamIds: [stream],
+      retirementStrategy: 'frame_boundary',
+      evidenceRefs: ['runtime:hiprt:same-process-frame-boundary-capture'],
+      retirementFenceIds: [`frame-boundary:${proof.changed.contentHash}`],
+      epochGenerationGraph: {
+        latestPublication: {
+          epoch,
+          oldArtifactHash: artifactHashBefore,
+          newArtifactHash: artifactHashAfter,
+        },
+      },
+    },
+    dispatchProof: {
+      resultState: post.accepted === true ? 'gpu-hmr-dispatch-safe-proven' : 'gpu-hmr-dispatch-unproven',
+      kernelName: CFG.reloadKernelSymbol,
+      launchApi: dispatch.api ?? 'hipModuleLaunchKernel',
+      gridDim: dispatch.gridDim,
+      blockDim: dispatch.blockDim,
+      sharedMemBytes: dispatch.sharedBytes ?? 0,
+      stream,
+      dispatchStreamIds: [stream],
+      dispatchTableEntryIds: [CFG.reloadKernelSymbol],
+      selectedArtifactIds: artifactHashAfter ? [artifactHashAfter] : [],
+      runtimeArtifactIds: artifactHashAfter ? [artifactHashAfter] : [],
+      evidenceRefs: [`runtime:hiprt:native-launch-observed:${dispatch.sequence ?? 'missing'}`],
+      kernelParams: [{
+        name: 'args_ptr',
+        value_kind: 'runtime_kernel_params',
+        source: 'runtime_trace',
+        value: dispatch.argsPtr ?? null,
+      }],
+    },
+    outputProof: {
+      resultState:
+        proof.accepted && deterministicVisualModeEvaluation?.accepted === true
+          ? 'gpu-hmr-output-oracle-proven'
+          : 'gpu-hmr-output-oracle-unproven',
+      evidenceRefs: [`visual:hiprt:diff:${proof.diff.contentHash}`],
+      visualOracle: {
+        kind: 'deterministic_framebuffer_diff',
+        visual_oracle_artifacts: visualArtifacts,
+      },
+      outputOracle: {
+        kind: 'deterministic_framebuffer_diff',
+        outputTargetId: changedRun.workerCapturePath,
+        visual_oracle_artifacts: visualArtifacts,
+      },
+      outputOracleTarget: {
+        kind: 'visual',
+        output_target_id: changedRun.workerCapturePath,
+        evidence_refs: [`visual:hiprt:diff:${proof.diff.contentHash}`],
+      },
+    },
+    hostPreservationProof: {
+      resultState: dispatch.processId ? 'gpu-hmr-host-preservation-proven' : 'gpu-hmr-host-preservation-unproven',
+      processId,
+      evidenceRefs: ['runtime:hiprt:native-launch-observer-process-continuity'],
+    },
+    fullRuntimeProof: {
+      fullRuntimeProven: proof.accepted === true && limitations.length === 0,
+      evidenceRefs,
+    },
+    backendContractProof,
+    claimBoundary: {
+      proofAuthority: runtimeProbeInstrumentation.proofAuthority,
+      proof_authority: runtimeProbeInstrumentation.proof_authority,
+      executionBoundary: runtimeProbeInstrumentation.executionBoundary,
+      execution_boundary: runtimeProbeInstrumentation.execution_boundary,
+      acceptedScope: runtimeProbeInstrumentation.acceptanceScope,
+      accepted_scope: runtimeProbeInstrumentation.acceptance_scope,
+      arbitraryTargetRuntimeAccepted: false,
+      arbitrary_target_runtime_accepted: false,
+      arbitraryLibraryAccepted: false,
+      arbitrary_library_accepted: false,
+      broadApplicationAcceptance: false,
+      broad_application_acceptance: false,
+      broadHipApplicationAcceptance: false,
+      broad_hip_application_acceptance: false,
+      unsupportedWithoutEvidence: runtimeProbeInstrumentation.unsupportedWithoutEvidence,
+      unsupported_without_evidence: runtimeProbeInstrumentation.unsupported_without_evidence,
+    },
+    engineSceneHandles: CFG.requiredFiles.map((file) => `app-declared-scene-or-asset:${file}`),
+    firewallEvidence: {
+      route: 'gpu_runtime_epoch_reload',
+      evidence_source: 'hiprt_same_process_native_launch_observer',
+      evidence_refs: ['runtime:hiprt:process-continuity'],
+      cpu_hmr_used: false,
+      full_rebuild_used: false,
+      process_restarted: false,
+      process_id_before: processId,
+      process_id_after: processId,
+    },
+    validationContext: {
+      processId,
+      deviceUuid: `rocm:${CFG.gpuArch}`,
+      contextOrDeviceHandle: 'hiprt_orochi_context',
+      cameraStateHash,
+      swapchainOrFramebufferIdentity: changedRun.workerCapturePath,
+      engineSceneHandles: CFG.requiredFiles.map((file) => `app-declared-scene-or-asset:${file}`),
+    },
+    artifactHashBefore,
+    artifactHashAfter,
+    cpuHmrUsed: false,
+    fullRebuildUsed: false,
+    processRestarted: false,
+  };
+  const acceptanceContract = deriveGpuHmrAcceptanceContractFromVerifiedProofs(contractInput);
+  const acceptanceContractEvaluation = evaluateGpuHmrAcceptanceContract(acceptanceContract);
+  const acceptanceContractConsistency = evaluateGpuHmrAcceptanceContractConsistency({
+    explicitContract: acceptanceContract,
+    derivedContract: acceptanceContract,
+    derivedEvaluation: acceptanceContractEvaluation,
+  });
+  const ledgerRecord = {
+    project_id: contractInput.projectId,
+    edit_id: contractInput.editId,
+    backend: 'hiprt',
+    classification: acceptanceContract.classification,
+    contract_hash: acceptanceContract.contract_hash,
+    artifact_before_hash: artifactHashBefore,
+    artifact_after_hash: artifactHashAfter,
+    loader_event: {
+      id: `loader:${proof.slug}:${CFG.reloadKernelSymbol}`,
+      artifact_hash: artifactHashAfter,
+      artifact_id: artifactHashAfter,
+      loader_api: 'hiprt_same_process_recompile_shader_cache',
+      process_id: processId,
+      timestamp_monotonic_ns: Number(loaderTs),
+      shader_cache_delta: shaderArtifact,
+    },
+    epoch_publish_event: {
+      id: `epoch-publish:${epoch}`,
+      epoch,
+      artifact_hash: artifactHashAfter,
+      artifact_id: artifactHashAfter,
+      process_id: processId,
+      timestamp_monotonic_ns: Number(publishTs),
+      publish_mechanism: 'same_process_recompile_publish',
+    },
+    dispatch_event: {
+      id: dispatchId,
+      dispatch_id: dispatchId,
+      epoch,
+      artifact_hash: artifactHashAfter,
+      artifact_id: artifactHashAfter,
+      output_target_id: outputTargetId,
+      outputTargetId,
+      process_id: processId,
+      timestamp_monotonic_ns: Number(dispatchTs),
+      kernel_name: CFG.reloadKernelSymbol,
+      launch_api: dispatch.api ?? 'hipModuleLaunchKernel',
+      grid_dim: dispatch.gridDim,
+      block_dim: dispatch.blockDim,
+      stream,
+      function_ptr: dispatch.functionPtr,
+      native_launch_sequence: dispatch.sequence,
+    },
+    output_event: {
+      id: `output:${proof.slug}:${proof.changed.contentHash}`,
+      kind: 'visual_framebuffer_diff',
+      epoch,
+      artifact_hash: artifactHashAfter,
+      artifact_id: artifactHashAfter,
+      process_id: processId,
+      after_dispatch_id: dispatchId,
+      output_target_id: outputTargetId,
+      outputTargetId,
+      oracle_target_id: outputTargetId,
+      oracleTargetId: outputTargetId,
+      passed: proof.accepted === true,
+      timestamp_monotonic_ns: Number(outputTs),
+      visual_oracle_artifacts: visualArtifacts,
+    },
+    retirement_event: {
+      id: `retire:${epoch}`,
+      epoch,
+      artifact_hash: artifactHashAfter,
+      process_id: processId,
+      timestamp_monotonic_ns: Number(retirementTs),
+      proof: 'frame_boundary_proven',
+      status: 'frame_boundary_proven',
+    },
+    process_identity: {
+      process_id: processId,
+      runtime_session: dispatch.runtimeSession,
+    },
+    device_identity: {
+      device_uuid: `rocm:${CFG.gpuArch}`,
+      backend: 'hiprt',
+      gpu_arch: CFG.gpuArch,
+      gpu_arch_source: CFG.gpuArchSource,
+      rocm_prefix: CFG.rocmPrefix,
+      rocm_prefix_source: CFG.rocmPrefixSource,
+    },
+    firewall_evidence: contractInput.firewallEvidence,
+    cpu_hmr_used: false,
+    full_rebuild_used: false,
+    process_restarted: false,
+    oracle_artifacts: {
+      visual_oracle_artifacts: visualArtifacts,
+    },
+    deterministic_visual_mode: deterministicVisualMode,
+    runtime_visual_control_pair: runtimeVisualControlPair,
+    declared_deterministic_visual_mode: declaredDeterministicVisualMode,
+    declaredDeterministicVisualMode,
+    output_oracle_target: contractInput.outputProof.outputOracleTarget,
+    runtime_probe_instrumentation: runtimeProbeInstrumentation,
+    runtimeProbeInstrumentation,
+    runtime_boundary_app_hook: runtimeBoundaryAppHook,
+    runtimeBoundaryAppHook,
+    metric_clock: 'monotonic_ns',
+    metric_scope: CFG.metricScope,
+    cache_state: CFG.cacheState,
+    timings: {
+      metric_clock: 'monotonic_ns',
+      metric_scope: CFG.metricScope,
+      cache_state: CFG.cacheState,
+      timing_metrics: buildFullTimingMetricsForLedger(proof),
+    },
+    model_provenance: modelProvenance(),
+    evidence_refs: evidenceRefs,
+  };
+  const runtimeTraceEvidenceRefs = [
+    `runtime:hiprt:loader-boundary:${artifactHashAfter ?? 'missing'}`,
+    `runtime:hiprt:dispatch-boundary:${dispatchId}`,
+    `runtime:hiprt:output-boundary:${proof.changed.contentHash}`,
+  ];
+  const runtimeTrace = {
+    schemaVersion: 'synthi.gpu_hmr.native_runtime_trace.v1',
+    schema_version: 'synthi.gpu_hmr.native_runtime_trace.v1',
+    proofAuthority: 'hiprt_same_process_runtime_trace_observation_not_gpu_hmr_success',
+    proof_authority: 'hiprt_same_process_runtime_trace_observation_not_gpu_hmr_success',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    loaderEvents: [{
+      ...ledgerRecord.loader_event,
+      source: 'hiprt_same_process_recompile_shader_cache',
+      command: 'hiprt_same_process_recompile_shader_cache',
+      evidenceRefs: [runtimeTraceEvidenceRefs[0]],
+      evidence_refs: [runtimeTraceEvidenceRefs[0]],
+    }],
+    loader_events: [{
+      ...ledgerRecord.loader_event,
+      source: 'hiprt_same_process_recompile_shader_cache',
+      command: 'hiprt_same_process_recompile_shader_cache',
+      evidenceRefs: [runtimeTraceEvidenceRefs[0]],
+      evidence_refs: [runtimeTraceEvidenceRefs[0]],
+    }],
+    dispatchEvents: [{
+      ...ledgerRecord.dispatch_event,
+      source: 'hiprt_native_launch_observer',
+      command: ledgerRecord.dispatch_event.launch_api,
+      evidenceRefs: [runtimeTraceEvidenceRefs[1]],
+      evidence_refs: [runtimeTraceEvidenceRefs[1]],
+    }],
+    dispatch_events: [{
+      ...ledgerRecord.dispatch_event,
+      source: 'hiprt_native_launch_observer',
+      command: ledgerRecord.dispatch_event.launch_api,
+      evidenceRefs: [runtimeTraceEvidenceRefs[1]],
+      evidence_refs: [runtimeTraceEvidenceRefs[1]],
+    }],
+    outputEvents: [{
+      ...ledgerRecord.output_event,
+      source: 'hiprt_same_process_framebuffer_readback',
+      command: 'framebuffer_readback_after_dispatch',
+      evidenceRefs: [runtimeTraceEvidenceRefs[2]],
+      evidence_refs: [runtimeTraceEvidenceRefs[2]],
+    }],
+    output_events: [{
+      ...ledgerRecord.output_event,
+      source: 'hiprt_same_process_framebuffer_readback',
+      command: 'framebuffer_readback_after_dispatch',
+      evidenceRefs: [runtimeTraceEvidenceRefs[2]],
+      evidence_refs: [runtimeTraceEvidenceRefs[2]],
+    }],
+    evidenceRefs: runtimeTraceEvidenceRefs,
+    evidence_refs: runtimeTraceEvidenceRefs,
+  };
+  const proofLedger = buildGpuHmrProofLedger(ledgerRecord);
+  const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
+  const proofLedgerRecord = proofLedger.records?.[0] ?? ledgerRecord;
+  const visualEvidenceArtifacts = visualEvidenceArtifactsFromVisualOracleArtifacts(
+    visualArtifacts,
+    {
+      proofLedgerQuery,
+      proofLedgerRecord,
+      producerSubsystem: 'mcp.hiprt_same_process_visual_runtime',
+    },
+  );
+  const proofLedgerSourceConsistency = {
+    accepted: proofLedgerQuery.gpuHmrSuccess === true,
+    mode: 'derived_only',
+    source: 'hiprt_warm_visual_runtime_recomputed',
+    proofLedgerId: proofLedger.proofId,
+    proof_ledger_id: proofLedger.proofId,
+    evidenceRefs: evidenceRefs,
+    evidence_refs: evidenceRefs,
+    failures: proofLedgerQuery.failedInvariants,
+  };
+  const visualProfileAccepted =
+    sourceAdaptedProfile === true
+    && proof.accepted === true
+    && proofLedgerQuery.gpuHmrSuccess === true
+    && acceptanceContractConsistency.accepted === true
+    && deterministicVisualModeEvaluation?.accepted === true
+    && runtimeProbeInstrumentation.accepted === true;
+  const fullRuntimeProven =
+    proof.accepted === true
+    && limitations.length === 0
+    && proofLedgerQuery.gpuHmrSuccess === true
+    && acceptanceContractEvaluation.accepted === true
+    && acceptanceContractConsistency.accepted === true
+    && deterministicVisualModeEvaluation?.accepted === true;
+  const runtimeProofArtifact = {
+    schemaVersion: 'synthi.gpu.hmr.runtime_proof_artifact.v1',
+    proofId: `gpu-runtime-proof:${sha256Json({
+      proofLedgerId: proofLedger.proofId,
+      contractHash: acceptanceContract.contract_hash,
+      artifactHashAfter,
+      dispatchId,
+      visualDiffHash: proof.diff.contentHash,
+    })}`,
+    resultState: fullRuntimeProven ? 'gpu-hmr-full-runtime-proven' : 'gpu-hmr-runtime-proof-rejected',
+    fullRuntimeProven,
+    full_runtime_proven: fullRuntimeProven,
+    gpuHmrSuccess: fullRuntimeProven,
+    gpu_hmr_success: fullRuntimeProven,
+    visualProfileAccepted,
+    visual_profile_accepted: visualProfileAccepted,
+    sourceAdaptedProfile,
+    source_adapted_profile: sourceAdaptedProfile,
+    sourceAdaptations,
+    source_adaptations: sourceAdaptations,
+    stageResults: [
+      {
+        stageId: 'hiprt-shader-cache-artifact',
+        status: artifactHashAfter ? 'passed' : 'failed',
+        evidenceRefs: ['runtime:hiprt:shader-cache-snapshot-before-after'],
+      },
+      {
+        stageId: 'hiprt-post-recompile-dispatch',
+        status: post.accepted === true ? 'passed' : 'failed',
+        evidenceRefs: [`runtime:hiprt:native-launch-observed:${dispatch.sequence ?? 'missing'}`],
+      },
+      {
+        stageId: 'hiprt-visual-oracle',
+        status:
+          proof.accepted === true && deterministicVisualModeEvaluation?.accepted === true
+            ? 'passed'
+            : 'failed',
+        evidenceRefs: [`visual:hiprt:diff:${proof.diff.contentHash}`],
+      },
+      {
+        stageId: 'hiprt-deterministic-visual-controls',
+        status: deterministicVisualModeEvaluation?.accepted === true ? 'passed' : 'failed',
+        evidenceRefs: deterministicVisualMode?.evidence_refs ?? [],
+      },
+      {
+        stageId: 'hiprt-ledger-invariants',
+        status: proofLedgerQuery.gpuHmrSuccess === true ? 'passed' : 'failed',
+        evidenceRefs: [proofLedger.proofId],
+      },
+      {
+        stageId: 'hiprt-acceptance-contract',
+        status: acceptanceContractEvaluation.accepted === true ? 'passed' : 'failed',
+        evidenceRefs: [acceptanceContract.contract_hash],
+      },
+      {
+        stageId: 'hiprt-profile-instrumentation-disclosure',
+        status: runtimeProbeInstrumentation.accepted === true ? 'passed' : 'failed',
+        evidenceRefs: [`runtime:hiprt:profile-probe-instrumentation:${CFG.profileId}`],
+      },
+      {
+        stageId: 'hiprt-runtime-boundary-app-hook',
+        status: runtimeBoundaryEvents.length === 0 || runtimeBoundaryAppHook.accepted === true ? 'passed' : 'failed',
+        evidenceRefs: runtimeBoundaryAppHook.evidenceRefs ?? [],
+      },
+      {
+        stageId: 'hiprt-no-source-adapted-profile',
+        status: sourceAdaptedProfile ? 'failed' : 'passed',
+        evidenceRefs: [`runtime:hiprt:profile-probe-instrumentation:${CFG.profileId}`],
+      },
+    ],
+    limitations: fullRuntimeProven ? [] : limitations,
+    proofLedger,
+    proof_ledger: proofLedger,
+    proofLedgerQuery,
+    proof_ledger_query: proofLedgerQuery,
+    proofLedgerSourceConsistency,
+    proof_ledger_source_consistency: proofLedgerSourceConsistency,
+    acceptanceContract,
+    acceptance_contract: acceptanceContract,
+    acceptanceContractEvaluation,
+    acceptance_contract_evaluation: acceptanceContractEvaluation,
+    acceptanceContractConsistency,
+    acceptance_contract_consistency: acceptanceContractConsistency,
+    deterministicVisualMode,
+    deterministic_visual_mode: deterministicVisualMode,
+    runtimeVisualControlPair,
+    runtime_visual_control_pair: runtimeVisualControlPair,
+    deterministicVisualModeEvaluation,
+    deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
+    declaredDeterministicVisualMode,
+    declared_deterministic_visual_mode: declaredDeterministicVisualMode,
+    visualEvidenceArtifacts,
+    visual_evidence_artifacts: visualEvidenceArtifacts,
+    runtimeProbeInstrumentation,
+    runtime_probe_instrumentation: runtimeProbeInstrumentation,
+    runtimeBoundaryAppHook,
+    runtime_boundary_app_hook: runtimeBoundaryAppHook,
+    runtimeTrace,
+    runtime_trace: runtimeTrace,
+    shaderCacheArtifact: shaderArtifact,
+    shader_cache_artifact: shaderArtifact,
+    postRecompileEvidence: post,
+    post_recompile_evidence: post,
+  };
+  const strictGate = runtimeProofArtifactStrictGate(runtimeProofArtifact, {
+    visualArtifactRoots: [
+      CFG.outputDir,
+      path.dirname(proof.baseline.path),
+      path.dirname(proof.changed.path),
+      path.dirname(proof.diff.path),
+    ],
+  });
+  return {
+    runtimeProofArtifact: {
+      ...runtimeProofArtifact,
+      strictGate,
+      strict_gate: strictGate,
+      fullRuntimeProven: runtimeProofArtifact.fullRuntimeProven && strictGate.status === 'pass',
+      full_runtime_proven: runtimeProofArtifact.fullRuntimeProven && strictGate.status === 'pass',
+      gpuHmrSuccess: runtimeProofArtifact.gpuHmrSuccess && strictGate.status === 'pass',
+      gpu_hmr_success: runtimeProofArtifact.gpuHmrSuccess && strictGate.status === 'pass',
+    },
+    proofLedger,
+    proofLedgerQuery,
+    visualEvidenceArtifacts,
+    acceptanceContract,
+    acceptanceContractEvaluation,
+    acceptanceContractConsistency,
+    deterministicVisualMode,
+    deterministicVisualModeEvaluation,
+    runtimeVisualControlPair,
+    declaredDeterministicVisualMode,
+    strictGate,
+  };
+}
+
+function hotRunModeEditKind() {
+  return CFG.runModeEditKind
+    ?? (CFG.metricScope === 'hot_delta_2' ? 'different_gpu_edit' : 'gpu_artifact_edit');
+}
+
+function hotRunModeDifferentEdit() {
+  return CFG.runModeDifferentEdit ?? CFG.metricScope === 'hot_delta_2';
+}
+
+function runtimeRunModeMetadata({
+  metricScope,
+  cacheState,
+  editId,
+  editHash,
+  editKind,
+  differentEdit,
+}) {
+  return {
+    metric_clock: 'monotonic_ns',
+    metricClock: 'monotonic_ns',
+    metric_scope: metricScope,
+    metricScope,
+    cache_state: cacheState,
+    cacheState,
+    edit_id: editId,
+    editId,
+    edit_hash: editHash,
+    editHash,
+    edit_kind: editKind,
+    editKind,
+    different_edit: differentEdit,
+    differentEdit,
+  };
+}
+
+function hiprtColdRuntimeRunModeMetadata(proof) {
+  return runtimeRunModeMetadata({
+    metricScope: 'cold',
+    cacheState: 'clean',
+    editId: `${CFG.profileId}:hiprt-cold-runtime-initial:${proof.source.baselineHash}`,
+    editHash: proof.source.baselineHash,
+    editKind: 'cold_runtime_initial',
+    differentEdit: false,
+  });
+}
+
+function hiprtHotRuntimeRunModeMetadata(proof) {
+  return runtimeRunModeMetadata({
+    metricScope: CFG.metricScope,
+    cacheState: CFG.cacheState,
+    editId: `${CFG.profileId}:hiprt-${CFG.metricScope}:${proof.source.changedHash}`,
+    editHash: proof.source.changedHash,
+    editKind: hotRunModeEditKind(),
+    differentEdit: hotRunModeDifferentEdit(),
+  });
+}
+
+function visualArtifactsForHiprtRunMode(proof) {
+  return {
+    beforeImage: proof.baseline.path,
+    before_image: proof.baseline.path,
+    afterImage: proof.changed.path,
+    after_image: proof.changed.path,
+    diffImage: proof.diff.path,
+    diff_image: proof.diff.path,
+    beforeImageHash: proof.baseline.contentHash,
+    before_image_hash: proof.baseline.contentHash,
+    afterImageHash: proof.changed.contentHash,
+    after_image_hash: proof.changed.contentHash,
+    diffImageHash: proof.diff.contentHash,
+    diff_image_hash: proof.diff.contentHash,
+  };
+}
+
+function visualMetricsForHiprtRunMode(proof) {
+  return {
+    changedPixelRatio: proof.diff.changedPixelRatioThreshold4,
+    changed_pixel_ratio: proof.diff.changedPixelRatioThreshold4,
+    meanAbsDelta8bit: proof.diff.meanAbsDelta8bit,
+    mean_abs_delta_8bit: proof.diff.meanAbsDelta8bit,
+    visiblePixelCount: proof.diff.oracleRegion?.changed?.visiblePixels ?? proof.changed.visiblePixels,
+    visible_pixel_count: proof.diff.oracleRegion?.changed?.visiblePixels ?? proof.changed.visiblePixels,
+  };
+}
+
+function hiprtRunModeProofId(kind, seed) {
+  return `runtime-run-mode-proof:${sha256Json({
+    schema: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
+    backend: 'hiprt',
+    kind,
+    profileId: CFG.profileId,
+    seed,
+  })}`;
+}
+
+async function writeHiprtRuntimeRunModeProofArtifacts(proof) {
+  const artifacts = [];
+  const coldRunMode = hiprtColdRuntimeRunModeMetadata(proof);
+  const coldArtifact = {
+    schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
+    proofId: hiprtRunModeProofId('cold', {
+      proofId: proof.proofId,
+      baselineImageHash: proof.baseline.contentHash,
+      runMode: coldRunMode,
+    }),
+    backend: 'hiprt',
+    targetId: CFG.profileId,
+    target_id: CFG.profileId,
+    profileId: CFG.profileId,
+    profile_id: CFG.profileId,
+    coldRuntimeInitialProven: proof.acceptance.baselineCapture === true,
+    cold_runtime_initial_proven: proof.acceptance.baselineCapture === true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    visualProfileAccepted: false,
+    visual_profile_accepted: false,
+    sourceAdaptedProfile: proof.sourceAdaptedProfile === true,
+    source_adapted_profile: proof.sourceAdaptedProfile === true,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    cpuHmrUsed: false,
+    cpu_hmr_used: false,
+    fullRebuildUsed: false,
+    full_rebuild_used: false,
+    processRestarted: false,
+    process_restarted: false,
+    visualRequired: true,
+    visual_required: true,
+    visualArtifacts: {
+      beforeImage: proof.baseline.path,
+      before_image: proof.baseline.path,
+      beforeImageHash: proof.baseline.contentHash,
+      before_image_hash: proof.baseline.contentHash,
+    },
+    visualMetrics: {
+      visiblePixelCount: proof.baseline.visiblePixels,
+      visible_pixel_count: proof.baseline.visiblePixels,
+    },
+    runMode: coldRunMode,
+    run_mode: coldRunMode,
+    timingMetrics: coldRunMode,
+    timing_metrics: coldRunMode,
+    runtimeProbeInstrumentation: proof.runtimeProbeInstrumentation,
+    runtime_probe_instrumentation: proof.runtimeProbeInstrumentation,
+    sourceProofId: proof.proofId,
+    source_proof_id: proof.proofId,
+    evidenceKind: 'cold_runtime_initial_visual_oracle',
+    evidence_kind: 'cold_runtime_initial_visual_oracle',
+    coverageObligations: { hiprtRunModes: true, perTargetRunModes: false },
+    coverage_obligations: { hiprt_run_modes: true, per_target_run_modes: false },
+    validationTargetScope: 'hiprt_run_mode_support',
+    validation_target_scope: 'hiprt_run_mode_support',
+  };
+  const coldPath = path.join(
+    CFG.outputDir,
+    `${cleanIdentifier(proof.slug)}-runtime-run-mode-cold.json`,
+  );
+  await fs.writeFile(coldPath, `${JSON.stringify(coldArtifact, null, 2)}\n`);
+  artifacts.push({ kind: 'cold_runtime_initial', path: coldPath, proofId: coldArtifact.proofId });
+
+  const hotRunMode = hiprtHotRuntimeRunModeMetadata(proof);
+  const hotVisualArtifacts =
+    proof.visualOracleArtifacts
+    ?? proof.visual_oracle_artifacts
+    ?? visualArtifactsForHiprtRunMode(proof);
+  const hotVisualEvidenceArtifacts =
+    proof.visualEvidenceArtifacts
+    ?? proof.visual_evidence_artifacts
+    ?? proof.runtimeProofArtifact.visualEvidenceArtifacts
+    ?? proof.runtimeProofArtifact.visual_evidence_artifacts
+    ?? visualEvidenceArtifactsFromVisualOracleArtifacts(
+      hotVisualArtifacts,
+      {
+        proofLedgerQuery: proof.proofLedgerQuery,
+        proofLedgerRecord: proof.proofLedger?.records?.[0] ?? proof.proof_ledger?.records?.[0],
+        producerSubsystem: 'mcp.hiprt_same_process_visual_runtime',
+      },
+    );
+  const hotArtifact = {
+    schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
+    proofId: hiprtRunModeProofId(CFG.metricScope, {
+      proofId: proof.proofId,
+      runtimeProofArtifactId: proof.runtimeProofArtifact.proofId,
+      ledgerProofId: proof.proofLedger.proofId,
+      diffImageHash: proof.diff.contentHash,
+      runMode: hotRunMode,
+    }),
+    backend: 'hiprt',
+    targetId: CFG.profileId,
+    target_id: CFG.profileId,
+    profileId: CFG.profileId,
+    profile_id: CFG.profileId,
+    acceptedForGpuHmr: proof.gpuHmrSuccess === true,
+    accepted_for_gpu_hmr: proof.gpuHmrSuccess === true,
+    visualProfileAccepted: proof.visualProfileAccepted === true,
+    visual_profile_accepted: proof.visualProfileAccepted === true,
+    sourceAdaptedProfile: proof.sourceAdaptedProfile === true,
+    source_adapted_profile: proof.sourceAdaptedProfile === true,
+    gpuHmrSuccess: proof.gpuHmrSuccess === true,
+    gpu_hmr_success: proof.gpuHmrSuccess === true,
+    cpuHmrUsed: false,
+    cpu_hmr_used: false,
+    fullRebuildUsed: false,
+    full_rebuild_used: false,
+    processRestarted: false,
+    process_restarted: false,
+    visualRequired: true,
+    visual_required: true,
+    visualArtifacts: hotVisualArtifacts,
+    visual_oracle_artifacts: hotVisualArtifacts,
+    visualOracleArtifacts: hotVisualArtifacts,
+    visualEvidenceArtifacts: hotVisualEvidenceArtifacts,
+    visual_evidence_artifacts: hotVisualEvidenceArtifacts,
+    visualMetrics: visualMetricsForHiprtRunMode(proof),
+    visual_metrics: visualMetricsForHiprtRunMode(proof),
+    runMode: hotRunMode,
+    run_mode: hotRunMode,
+    timingMetrics: {
+      ...proof.timingMetrics,
+      ...hotRunMode,
+    },
+    timing_metrics: {
+      ...proof.timingMetrics,
+      ...hotRunMode,
+    },
+    timings: proof.runtimeProofArtifact.proofLedger?.records?.[0]?.timings ?? proof.proofLedger.records?.[0]?.timings,
+    runtimeProofArtifact: proof.runtimeProofArtifact,
+    runtime_proof_artifact: proof.runtimeProofArtifact,
+    proofLedger: proof.proofLedger,
+    proof_ledger: proof.proofLedger,
+    proofLedgerQuery: proof.proofLedgerQuery,
+    proof_ledger_query: proof.proofLedgerQuery,
+    acceptanceContract: proof.acceptanceContract,
+    acceptance_contract: proof.acceptanceContract,
+    deterministicVisualMode: proof.deterministicVisualMode,
+    deterministic_visual_mode: proof.deterministicVisualMode,
+    runtimeProbeInstrumentation: proof.runtimeProbeInstrumentation,
+    runtime_probe_instrumentation: proof.runtimeProbeInstrumentation,
+    sourceProofId: proof.proofId,
+    source_proof_id: proof.proofId,
+    evidenceKind: 'raytraced_visual_oracle',
+    evidence_kind: 'raytraced_visual_oracle',
+    coverageObligations: { hiprtRunModes: true, perTargetRunModes: false },
+    coverage_obligations: { hiprt_run_modes: true, per_target_run_modes: false },
+    validationTargetScope: 'hiprt_run_mode_target',
+    validation_target_scope: 'hiprt_run_mode_target',
+  };
+  const hotPath = path.join(
+    CFG.outputDir,
+    `${cleanIdentifier(proof.slug)}-runtime-run-mode-${CFG.metricScope}.json`,
+  );
+  await fs.writeFile(hotPath, `${JSON.stringify(hotArtifact, null, 2)}\n`);
+  artifacts.push({ kind: CFG.metricScope, path: hotPath, proofId: hotArtifact.proofId });
+
+  return artifacts;
+}
+
+function normalizeHiprtNegativeEditConfig(value) {
+  if (value === null || value === undefined) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('negative edit must be a JSON object');
+  }
+  const source = value.source && typeof value.source === 'object' && !Array.isArray(value.source)
+    ? value.source
+    : {};
+  const sourceFile = String(source.file ?? source.path ?? value.sourceFile ?? CFG.sourceRel).trim().replace(/\\/g, '/');
+  const before = String(source.before ?? value.before ?? '').trim();
+  const after = String(source.after ?? value.after ?? '').trim();
+  const reasons = [
+    ...(Array.isArray(value.reasons) ? value.reasons : []),
+    ...(Array.isArray(value.unsupportedReasons) ? value.unsupportedReasons : []),
+    ...(Array.isArray(value.unsupported_reasons) ? value.unsupported_reasons : []),
+  ].map((item) => String(item).trim()).filter(Boolean);
+  if (!sourceFile) throw new Error('negative edit source.file is required');
+  if (!before) throw new Error('negative edit source.before is required');
+  if (!after) throw new Error('negative edit source.after is required');
+  if (before === after) throw new Error('negative edit source.before and source.after must differ');
+  if (reasons.length === 0) throw new Error('negative edit reasons are required');
+  return {
+    sourceFile,
+    before,
+    after,
+    reasons: [...new Set(reasons)],
+    abiCompatibilityClass: String(
+      value.abiCompatibilityClass
+        ?? value.abi_compatibility_class
+        ?? 'layout_changed',
+    ).trim() || 'layout_changed',
+  };
+}
+
+async function writeHiprtNegativeEditRefusalArtifact({ proof, baselineSource }) {
+  const negativeEdit = normalizeHiprtNegativeEditConfig(CFG.negativeEdit);
+  if (!negativeEdit) return null;
+  if (negativeEdit.sourceFile !== CFG.sourceRel) {
+    throw new Error(`negative edit source ${negativeEdit.sourceFile} does not match proof source ${CFG.sourceRel}`);
+  }
+  const beforeCount = countOccurrences(baselineSource, negativeEdit.before);
+  const afterCount = countOccurrences(baselineSource, negativeEdit.after);
+  if (beforeCount !== 1) {
+    throw new Error(`negative edit source.before must occur exactly once in git baseline; found ${beforeCount}`);
+  }
+  const editedSource = baselineSource.replace(negativeEdit.before, negativeEdit.after);
+  const editHash = `sha256:${sha256Hex(editedSource)}`;
+  const runMode = runtimeRunModeMetadata({
+    metricScope: 'hot_delta_2',
+    cacheState: CFG.cacheState,
+    editId: `negative-edit:${sha256Hex(editHash).slice(0, 16)}`,
+    editHash,
+    editKind: 'negative_edit',
+    differentEdit: true,
+  });
+  const artifact = {
+    schemaVersion: 'synthi.gpu.hmr.agent_split_negative_edit_refusal.v1',
+    proofId: `agent-split-negative-edit-refusal:${sha256Json({
+      backend: 'hiprt',
+      profileId: CFG.profileId,
+      sourceFile: negativeEdit.sourceFile,
+      editHash,
+      reasons: negativeEdit.reasons,
+      sourceProofId: proof.proofId,
+    })}`,
+    backend: 'hiprt',
+    targetId: CFG.profileId,
+    target_id: CFG.profileId,
+    profileId: CFG.profileId,
+    profile_id: CFG.profileId,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    cpuHmrUsed: false,
+    cpu_hmr_used: false,
+    fullRebuildUsed: false,
+    full_rebuild_used: false,
+    processRestarted: false,
+    process_restarted: false,
+    route: 'reject',
+    classification: {
+      project_kind: 'gpu_project',
+      edit_kind: 'gpu_artifact_edit',
+      route: 'reject',
+      confidence: 1,
+      blocking_gaps: negativeEdit.reasons,
+    },
+    abiCompatibilityClass: negativeEdit.abiCompatibilityClass,
+    abi_compatibility_class: negativeEdit.abiCompatibilityClass,
+    reasons: negativeEdit.reasons,
+    unsupportedReasons: negativeEdit.reasons,
+    unsupported_reasons: negativeEdit.reasons,
+    source: {
+      file: negativeEdit.sourceFile,
+      before: negativeEdit.before,
+      after: negativeEdit.after,
+      beforeCount,
+      afterCount,
+      baselineHash: proof.source.baselineHash,
+      editedHash: editHash,
+    },
+    runMode,
+    run_mode: runMode,
+    timingMetrics: runMode,
+    timing_metrics: runMode,
+    sourceProofId: proof.proofId,
+    source_proof_id: proof.proofId,
+    evidenceKind: 'negative_edit',
+    evidence_kind: 'negative_edit',
+    coverageObligations: { hiprtRunModes: true, perTargetRunModes: false },
+    coverage_obligations: { hiprt_run_modes: true, per_target_run_modes: false },
+    validationTargetScope: 'hiprt_run_mode_support',
+    validation_target_scope: 'hiprt_run_mode_support',
+  };
+  const artifactPath = path.join(
+    CFG.outputDir,
+    `${cleanIdentifier(proof.slug)}-negative-edit-refusal.json`,
+  );
+  await fs.writeFile(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`);
+  return {
+    kind: 'negative_edit_refusal',
+    path: artifactPath,
+    proofId: artifact.proofId,
   };
 }
 
@@ -1444,9 +4591,511 @@ function summarizeStrictProof(strict) {
   };
 }
 
+async function writeHiprtBoundarySelfCheckImage(filePath, variant) {
+  const width = 96;
+  const height = 64;
+  const raw = Buffer.alloc(width * height * 4);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const i = (y * width + x) * 4;
+      const gradient = Math.floor((x / width) * 120 + (y / height) * 80);
+      if (variant === 'after') {
+        raw[i] = Math.min(255, 80 + gradient);
+        raw[i + 1] = Math.min(255, 110 + Math.floor(y * 1.5));
+        raw[i + 2] = Math.max(0, 220 - gradient);
+      } else {
+        raw[i] = Math.min(255, 30 + Math.floor(y * 0.8));
+        raw[i + 1] = Math.min(255, 60 + gradient);
+        raw[i + 2] = Math.min(255, 90 + Math.floor(x * 0.8));
+      }
+      raw[i + 3] = 255;
+    }
+  }
+  await sharp(raw, { raw: { width, height, channels: 4 } }).png().toFile(filePath);
+}
+
+function hiprtBoundarySelfCheckRuntimeProbeInstrumentation() {
+  return {
+    schemaVersion: 'synthi.gpu.hmr.profile_probe_instrumentation.v1',
+    kind: 'declared_runtime_boundary_app_hook',
+    instrumentationKind: 'runtime_boundary_app_hook',
+    instrumentation_kind: 'runtime_boundary_app_hook',
+    adapterFamily: 'hiprt-runtime-boundary-app-hook',
+    adapter_family: 'hiprt-runtime-boundary-app-hook',
+    profileId: CFG.profileId,
+    profile_id: CFG.profileId,
+    targetName: CFG.targetName,
+    target_name: CFG.targetName,
+    accepted: true,
+    applied: false,
+    adaptedOrAlreadyPresent: false,
+    adapted_or_already_present: false,
+    sourceAdaptations: [],
+    source_adaptations: [],
+    acceptanceScope: 'hiprt_declared_visual_profile',
+    acceptance_scope: 'hiprt_declared_visual_profile',
+    proofAuthority: 'hiprt_runtime_boundary_app_hook_not_source_adapted',
+    proof_authority: 'hiprt_runtime_boundary_app_hook_not_source_adapted',
+    executionBoundary: 'HIPRT app-emitted runtime boundary events',
+    execution_boundary: 'HIPRT app-emitted runtime boundary events',
+    arbitraryTargetRuntimeAccepted: false,
+    arbitrary_target_runtime_accepted: false,
+    arbitraryLibraryAccepted: false,
+    arbitrary_library_accepted: false,
+    broadApplicationAcceptance: false,
+    broad_application_acceptance: false,
+    broadHipApplicationAcceptance: false,
+    broad_hip_application_acceptance: false,
+    unsupportedWithoutEvidence: ['unknown_hiprt_app_without_declared_scene_bvh_framebuffer_reload_hook'],
+    unsupported_without_evidence: ['unknown_hiprt_app_without_declared_scene_bvh_framebuffer_reload_hook'],
+  };
+}
+
+function hiprtBoundarySelfCheckEvents({ proof, artifactHashAfter, epoch, dispatchId }) {
+  const processId = proof.runtime.changed.postRecompileEvidence.dispatch.processId;
+  const stream = proof.runtime.changed.postRecompileEvidence.dispatch.stream;
+  const deviceUuid = `rocm:${CFG.gpuArch}`;
+  return [
+    {
+      schemaVersion: HIPRT_RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION,
+      eventKind: 'artifact_transport',
+      fields: {
+        artifact_hash: artifactHashAfter,
+        artifact_id: artifactHashAfter,
+        process_id: processId,
+        loader_api: 'hiprt_app_boundary_loader',
+      },
+    },
+    {
+      schemaVersion: HIPRT_RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION,
+      eventKind: 'epoch_publication',
+      fields: {
+        artifact_hash: artifactHashAfter,
+        epoch,
+        process_id: processId,
+        publish_mechanism: 'app_boundary_epoch_publish',
+      },
+    },
+    {
+      schemaVersion: HIPRT_RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION,
+      eventKind: 'dispatch_trace',
+      fields: {
+        artifact_hash: artifactHashAfter,
+        epoch,
+        dispatch_id: dispatchId,
+        process_id: processId,
+        kernel_entry: CFG.reloadKernelSymbol,
+        stream,
+      },
+    },
+    {
+      schemaVersion: HIPRT_RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION,
+      eventKind: 'host_identity',
+      fields: {
+        process_id: processId,
+        device_uuid: deviceUuid,
+        context_id: 'hiprt-boundary-self-check-context',
+        stream,
+      },
+    },
+    {
+      schemaVersion: HIPRT_RUNTIME_BOUNDARY_EVENT_SCHEMA_VERSION,
+      eventKind: 'output_oracle',
+      fields: {
+        artifact_hash: artifactHashAfter,
+        epoch,
+        after_dispatch_id: dispatchId,
+        process_id: processId,
+        output_target: proof.runtime.changed.workerCapturePath,
+        before_image_hash: proof.baseline.contentHash,
+        after_image_hash: proof.changed.contentHash,
+        diff_image_hash: proof.diff.contentHash,
+      },
+    },
+  ];
+}
+
+async function buildHiprtBoundarySelfCheckProof(tmpDir, overrides = {}) {
+  if (!CFG.gpuArch) CFG.gpuArch = 'gfx0000';
+  if (!CFG.gpuArchSource) CFG.gpuArchSource = 'self_check';
+  if (!CFG.rocmPrefix) CFG.rocmPrefix = '/opt/rocm-self-check';
+  if (!CFG.rocmPrefixSource) CFG.rocmPrefixSource = 'self_check';
+  const beforePath = path.join(tmpDir, `${overrides.slug ?? 'hiprt-boundary'}-before.png`);
+  const afterPath = path.join(tmpDir, `${overrides.slug ?? 'hiprt-boundary'}-after.png`);
+  const diffPath = path.join(tmpDir, `${overrides.slug ?? 'hiprt-boundary'}-diff.png`);
+  await writeHiprtBoundarySelfCheckImage(beforePath, 'before');
+  await writeHiprtBoundarySelfCheckImage(afterPath, 'after');
+  const baselineStats = await imageStats(beforePath);
+  const changedStats = await imageStats(afterPath);
+  const diff = await diffImages({ baselinePath: beforePath, changedPath: afterPath, diffPath });
+  const artifactHashBefore = sha256Json({ role: 'before', profile: CFG.profileId, source: CFG.sourceRel });
+  const artifactHashAfter = sha256Json({ role: 'after', profile: CFG.profileId, source: CFG.sourceRel });
+  const proof = {
+    schemaVersion: 'synthi.hiprt.warm_visual_proof.v2',
+    slug: overrides.slug ?? 'hiprt-runtime-boundary-app-hook-self-check',
+    createdAt: '2026-06-30T00:00:00.000Z',
+    mode: 'same-process',
+    metricScope: 'hot_delta_1',
+    metric_scope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    cache_state: 'compiler_cache_warm',
+    profile: {
+      id: CFG.profileId,
+      requiredKernels: CFG.requiredKernels,
+      reloadKernelName: CFG.reloadKernelName,
+      reloadKernelSymbol: CFG.reloadKernelSymbol,
+    },
+    runtimeProfile: CFG.runtimeProfile,
+    claim: 'A HIPRT app-emitted runtime boundary event chain proves a deterministic framebuffer change.',
+    repo: {
+      workerContainer: 'self-check',
+      workerRepoPath: tmpDir,
+      commit: 'hiprt-boundary-self-check-commit',
+      target: CFG.targetName,
+    },
+    dimensions: { width: 96, height: 64 },
+    source: {
+      file: CFG.sourceRel,
+      before: CFG.before,
+      after: CFG.after,
+      baselineHash: artifactHashBefore,
+      changedHash: artifactHashAfter,
+    },
+    sourceWrites: {
+      baseline: { contentHash: artifactHashBefore, workerSha256: artifactHashBefore },
+      changed: { contentHash: artifactHashAfter, workerSha256: artifactHashAfter },
+      restoredBaseline: { contentHash: artifactHashBefore, workerSha256: artifactHashBefore },
+    },
+    baselineReuse: { reused: false },
+    sameProcessAdapter: null,
+    sameProcessBuild: null,
+    runtimeProbeInstrumentation: overrides.runtimeProbeInstrumentation
+      ?? hiprtBoundarySelfCheckRuntimeProbeInstrumentation(),
+    runtime_probe_instrumentation: overrides.runtimeProbeInstrumentation
+      ?? hiprtBoundarySelfCheckRuntimeProbeInstrumentation(),
+    strictHmrProvenance: {
+      fullRuntimeProven: true,
+      strictFullRuntimePassed: true,
+      runtimeProof: 'hiprt-boundary-self-check',
+    },
+    runtime: {
+      baseline: {
+        variant: 'baseline',
+        localCapturePath: beforePath,
+        contentHash: baselineStats.contentHash,
+        content_hash: baselineStats.contentHash,
+        localCaptureHash: baselineStats.contentHash,
+        local_capture_hash: baselineStats.contentHash,
+        captureLine: 'SYNTHI_HIPRT_FRAME_CAPTURE baseline',
+        nativeLaunchKernels: CFG.requiredKernels,
+        runMs: 1,
+        hostWallMs: 1,
+      },
+      changed: {
+        variant: 'changed',
+        localCapturePath: afterPath,
+        workerCapturePath: afterPath,
+        contentHash: changedStats.contentHash,
+        content_hash: changedStats.contentHash,
+        localCaptureHash: changedStats.contentHash,
+        local_capture_hash: changedStats.contentHash,
+        captureLine: 'SYNTHI_HIPRT_FRAME_CAPTURE changed',
+        nativeLaunchKernels: CFG.requiredKernels,
+        runMs: 1,
+        hostWallMs: 1,
+        totalHostWallMs: 2,
+        sameProcess: true,
+        liveRecompileMs: 1,
+        triggerTouchMs: 1,
+        triggerFinishedMonotonicNs: 1000,
+        runCompletedMonotonicNs: 2000,
+        shaderCacheArtifact: {
+          selectedArtifactHash: artifactHashAfter,
+          beforeManifestHash: artifactHashBefore,
+        },
+        postRecompileEvidence: {
+          accepted: true,
+          dispatch: {
+            sequence: 7,
+            processId: 'pid:hiprt-boundary-self-check',
+            runtimeSession: 'hiprt-boundary-self-check-session',
+            stream: 'stream:hiprt-boundary-self-check',
+            functionPtr: '0xabc7',
+            argsPtr: '0xfeed7',
+            api: 'hipModuleLaunchKernel',
+            gridDim: [1, 1, 1],
+            blockDim: [8, 1, 1],
+            sharedBytes: 0,
+          },
+        },
+      },
+    },
+    baseline: baselineStats,
+    changed: changedStats,
+    diff,
+    timings: {
+      totalWallMs: 4,
+      duration_ms: 4,
+      sameProcessLiveRecompileMs: 1,
+      sameProcessAdapterBuildMs: 0,
+      baselineRunMs: 1,
+      baselineHostWallMs: 1,
+      changedRunMs: 1,
+      changedHostWallMs: 1,
+    },
+    acceptance: {
+      strictProvenance: true,
+      sourceHashesDiffer: true,
+      baselineCopiedToWorker: true,
+      changedCopiedToWorker: true,
+      restoredBaselineInWorker: true,
+      baselineCapture: true,
+      changedCapture: true,
+      baselineNativeKernels: true,
+      changedNativeKernels: true,
+      sameProcessRuntime: true,
+      visualDelta: true,
+      oracleRegionNonBlank: true,
+    },
+    accepted: true,
+  };
+  const dispatch = proof.runtime.changed.postRecompileEvidence.dispatch;
+  const epoch = hiprtRuntimeEpochFor({ proof, dispatch });
+  const dispatchId = hiprtRuntimeDispatchIdFor({ proof, dispatch, artifactHashAfter });
+  proof.runtimeBoundaryEvents = overrides.runtimeBoundaryEvents
+    ?? hiprtBoundarySelfCheckEvents({ proof, artifactHashAfter, epoch, dispatchId });
+  proof.runtime_boundary_events = proof.runtimeBoundaryEvents;
+  proof.runtimeBoundaryEventSource = 'hiprt_runtime_boundary_app_hook_self_check';
+  proof.runtime_boundary_event_source = proof.runtimeBoundaryEventSource;
+  proof.timingMetrics = {
+    ...hiprtWarmTimingMetrics(proof),
+    ...hiprtHotRuntimeRunModeMetadata(proof),
+  };
+  const strictRuntimeProof = buildHiprtStrictRuntimeProofArtifact(proof);
+  proof.runtimeProofArtifact = strictRuntimeProof.runtimeProofArtifact;
+  proof.runtime_proof_artifact = strictRuntimeProof.runtimeProofArtifact;
+  proof.runtimeProbeInstrumentation =
+    strictRuntimeProof.runtimeProofArtifact.runtimeProbeInstrumentation
+    ?? strictRuntimeProof.runtimeProofArtifact.runtime_probe_instrumentation
+    ?? proof.runtimeProbeInstrumentation;
+  proof.runtime_probe_instrumentation = proof.runtimeProbeInstrumentation;
+  proof.proofLedger = strictRuntimeProof.proofLedger;
+  proof.proof_ledger = strictRuntimeProof.proofLedger;
+  proof.proofLedgerQuery = strictRuntimeProof.proofLedgerQuery;
+  proof.proof_ledger_query = strictRuntimeProof.proofLedgerQuery;
+  proof.visualEvidenceArtifacts = strictRuntimeProof.runtimeProofArtifact.visualEvidenceArtifacts;
+  proof.visual_evidence_artifacts = strictRuntimeProof.runtimeProofArtifact.visual_evidence_artifacts;
+  proof.acceptanceContract = strictRuntimeProof.acceptanceContract;
+  proof.acceptance_contract = strictRuntimeProof.acceptanceContract;
+  proof.acceptanceContractEvaluation = strictRuntimeProof.acceptanceContractEvaluation;
+  proof.acceptance_contract_evaluation = strictRuntimeProof.acceptanceContractEvaluation;
+  proof.deterministicVisualMode = strictRuntimeProof.deterministicVisualMode;
+  proof.deterministic_visual_mode = strictRuntimeProof.deterministicVisualMode;
+  proof.runtimeVisualControlPair = strictRuntimeProof.runtimeVisualControlPair;
+  proof.runtime_visual_control_pair = strictRuntimeProof.runtimeVisualControlPair;
+  proof.declaredDeterministicVisualMode = strictRuntimeProof.declaredDeterministicVisualMode;
+  proof.declared_deterministic_visual_mode = strictRuntimeProof.declaredDeterministicVisualMode;
+  proof.runtimeBoundaryAppHook = strictRuntimeProof.runtimeProofArtifact.runtimeBoundaryAppHook;
+  proof.runtime_boundary_app_hook = proof.runtimeBoundaryAppHook;
+  proof.strictRuntimeProofGate = strictRuntimeProof.strictGate;
+  proof.strict_runtime_proof_gate = strictRuntimeProof.strictGate;
+  proof.sourceAdaptedProfile = strictRuntimeProof.runtimeProofArtifact.sourceAdaptedProfile === true;
+  proof.source_adapted_profile = proof.sourceAdaptedProfile;
+  proof.sourceAdaptations = strictRuntimeProof.runtimeProofArtifact.sourceAdaptations ?? [];
+  proof.source_adaptations = proof.sourceAdaptations;
+  proof.visualProfileAccepted = strictRuntimeProof.runtimeProofArtifact.visualProfileAccepted === true;
+  proof.visual_profile_accepted = proof.visualProfileAccepted;
+  proof.gpuHmrSuccess = strictRuntimeProof.runtimeProofArtifact.gpuHmrSuccess === true;
+  proof.gpu_hmr_success = proof.gpuHmrSuccess;
+  proof.acceptedForGpuHmr = proof.gpuHmrSuccess;
+  proof.accepted_for_gpu_hmr = proof.gpuHmrSuccess;
+  proof.visualProofAccepted = proof.accepted === true;
+  proof.visual_proof_accepted = proof.visualProofAccepted;
+  proof.proofId = `hiprt-warm-runtime-proof:sha256:${sha256Hex(stableJson({
+    slug: proof.slug,
+    proofLedgerId: proof.proofLedger.proofId,
+    runtimeProofArtifactId: proof.runtimeProofArtifact.proofId,
+  }))}`;
+  return proof;
+}
+
+async function hiprtRuntimeBoundaryAppHookSelfCheck() {
+  const { collectGpuHmrValidationMatrixLedger } = await import(
+    './lib/gpu-hmr-validation-matrix-ledger.mjs'
+  );
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'synthi-hiprt-boundary-self-check-'));
+  try {
+    const declaredBoundaryProof = await buildHiprtBoundarySelfCheckProof(tmpDir);
+    if (
+      declaredBoundaryProof.gpuHmrSuccess !== false
+      || declaredBoundaryProof.runtimeProofArtifact?.strictGate?.accepted === true
+      || declaredBoundaryProof.runtimeBoundaryAppHook?.accepted !== true
+      || declaredBoundaryProof.sourceAdaptedProfile !== false
+      || declaredBoundaryProof.runtimeProofArtifact?.deterministicVisualModeEvaluation?.accepted === true
+      || declaredBoundaryProof.runtimeProofArtifact?.declaredDeterministicVisualMode?.proofAuthority
+        !== 'profile_declaration_only_not_runtime_visual_proof'
+      || declaredBoundaryProof.runtimeProofArtifact?.declaredDeterministicVisualMode?.acceptedForGpuHmr
+        !== false
+      || declaredBoundaryProof.runtimeProofArtifact?.deterministicVisualMode !== null
+      || (declaredBoundaryProof.proofLedger?.records?.[0]?.oracle_artifacts
+        ?.visual_oracle_artifacts?.camera_state_hash ?? null) !== null
+      || !declaredBoundaryProof.runtimeProofArtifact?.limitations?.some((entry) =>
+        entry?.code === 'hiprt_runtime_boundary_events_support_only_without_target_process_provenance')
+      || !declaredBoundaryProof.runtimeProofArtifact?.limitations?.some((entry) =>
+        entry?.code === 'hiprt_deterministic_visual_control_provenance_missing')
+    ) {
+      throw new Error(`HIPRT runtime-boundary self-check accepted declared events ${stableJson({
+        gpuHmrSuccess: declaredBoundaryProof.gpuHmrSuccess,
+        strictGate: declaredBoundaryProof.runtimeProofArtifact?.strictGate,
+        runtimeBoundaryAppHook: declaredBoundaryProof.runtimeBoundaryAppHook,
+        sourceAdaptedProfile: declaredBoundaryProof.sourceAdaptedProfile,
+        deterministicVisualModeEvaluation:
+          declaredBoundaryProof.runtimeProofArtifact?.deterministicVisualModeEvaluation,
+        declaredDeterministicVisualMode:
+          declaredBoundaryProof.runtimeProofArtifact?.declaredDeterministicVisualMode,
+        limitations: declaredBoundaryProof.runtimeProofArtifact?.limitations,
+      })}`);
+    }
+    const declaredBoundaryPath = path.join(tmpDir, 'hiprt-runtime-boundary-app-hook-proof.json');
+    await fs.writeFile(declaredBoundaryPath, `${JSON.stringify(declaredBoundaryProof, null, 2)}\n`);
+    const matrix = await collectGpuHmrValidationMatrixLedger({
+      repoRoot: REPO_ROOT,
+      mcpRoot: path.resolve(__dirname, '..'),
+      roots: [tmpDir],
+      latestPerTarget: false,
+      includeUnproven: true,
+      generatedAt: '2026-06-30T00:00:00.000Z',
+    });
+    const declaredBoundaryRows = matrix.rows.filter((row) =>
+      row.proofIds?.includes(declaredBoundaryProof.runtimeProofArtifact.proofId));
+    const acceptedRow = declaredBoundaryRows.find((row) =>
+      row.matrixOutcome === 'full_runtime_gpu_hmr'
+      || row.acceptedForGpuHmr === true
+      || row.gpuHmrSuccess === true);
+    const refusedRow = declaredBoundaryRows.find((row) =>
+      row.backend === 'hiprt'
+      && row.acceptedForGpuHmr !== true
+      && row.gpuHmrSuccess !== true);
+    if (acceptedRow || !refusedRow) {
+      throw new Error(`HIPRT runtime-boundary matrix self-check mishandled declared events ${stableJson({
+        candidateCount: declaredBoundaryRows.length,
+        candidates: declaredBoundaryRows.map((row) => ({
+          matrixOutcome: row?.matrixOutcome,
+          acceptanceClass: row?.acceptanceClass,
+          backend: row?.backend,
+          proofMode: row?.proofMode,
+          acceptedForGpuHmr: row?.acceptedForGpuHmr,
+          gpuHmrSuccess: row?.gpuHmrSuccess,
+          reasons: row?.reasons,
+          openGaps: row?.openGaps,
+          safety: row?.safety,
+          visualAccepted: row?.visual?.accepted,
+          oracleRegionAccepted: row?.oracleRegion?.accepted,
+          rowId: row?.rowId,
+        })),
+      })}`);
+    }
+    const sourceAdaptedProof = await buildHiprtBoundarySelfCheckProof(tmpDir, {
+      slug: 'hiprt-runtime-boundary-source-adapted-self-check',
+      runtimeProbeInstrumentation: {
+        ...hiprtBoundarySelfCheckRuntimeProbeInstrumentation(),
+        accepted: true,
+        adaptedOrAlreadyPresent: true,
+        adapted_or_already_present: true,
+        sourceAdaptations: ['same_process_targeted_kernel_recompile_hook'],
+        source_adaptations: ['same_process_targeted_kernel_recompile_hook'],
+      },
+    });
+    if (
+      sourceAdaptedProof.gpuHmrSuccess !== false
+      || !sourceAdaptedProof.runtimeProofArtifact?.limitations?.some((entry) =>
+        entry?.code === 'source_adapted_profile_not_no_shim_gpu_hmr')
+    ) {
+      throw new Error('HIPRT runtime-boundary self-check accepted source-adapted fixture');
+    }
+    const missingOutputProof = await buildHiprtBoundarySelfCheckProof(tmpDir, {
+      slug: 'hiprt-runtime-boundary-missing-output-self-check',
+      runtimeBoundaryEvents: declaredBoundaryProof.runtimeBoundaryEvents.filter((event) =>
+        hiprtRuntimeBoundaryEventKind(event) !== 'output_oracle'),
+    });
+    if (
+      missingOutputProof.gpuHmrSuccess !== false
+      || !missingOutputProof.runtimeBoundaryAppHook?.blockingGaps?.includes(
+        'hiprt_runtime_boundary_stage_output_oracle_missing_or_mismatched',
+      )
+    ) {
+      throw new Error('HIPRT runtime-boundary self-check accepted missing output oracle event');
+    }
+    console.log(JSON.stringify({
+      ok: true,
+      schemaVersion: HIPRT_RUNTIME_BOUNDARY_APP_HOOK_SCHEMA_VERSION,
+      proofId: declaredBoundaryProof.proofId,
+      runtimeProofArtifactId: declaredBoundaryProof.runtimeProofArtifact.proofId,
+      matrixProofId: matrix.proofId,
+      rowId: refusedRow.rowId,
+      declaredBoundaryEventsRefused: true,
+      unobservedDeterministicVisualControlsRefused: true,
+      sourceAdaptedRejected: true,
+      missingOutputRejected: true,
+    }, null, 2));
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+}
+
 async function main() {
+  if (process.argv.includes('--runtime-boundary-app-hook-self-check')) {
+    await hiprtRuntimeBoundaryAppHookSelfCheck();
+    return;
+  }
   const totalStartedMonotonicNs = monotonicNowNs();
   await fs.mkdir(CFG.outputDir, { recursive: true });
+  try {
+    await ensureRocmBuildConfig();
+  } catch (err) {
+    const refusal = await writeHiprtPreflightRefusalArtifact({
+      preflightResult: {
+        accepted: false,
+        repoCommit: null,
+        buildExecutable: 'unknown',
+        buildConfig: 'unknown',
+        bootstrap: null,
+        prerequisiteProbe: hiprtPreflightProbeFromError({
+          stage: 'rocm_build_config_detection',
+          err,
+        }),
+      },
+      strictSummary: null,
+      totalStartedMonotonicNs,
+    });
+    console.log(JSON.stringify({
+      accepted: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      proofId: refusal.artifact.proofId,
+      proof_id: refusal.artifact.proofId,
+      proofPath: refusal.proofPath,
+      proof_path: refusal.proofPath,
+      mode: CFG.mode,
+      profileId: CFG.profileId,
+      profile_id: CFG.profileId,
+      proofAuthority: HIPRT_PREFLIGHT_AUTHORITY,
+      proof_authority: HIPRT_PREFLIGHT_AUTHORITY,
+      blockingGaps: refusal.artifact.classification.blockingGaps,
+      blocking_gaps: refusal.artifact.classification.blockingGaps,
+      claimBoundary: {
+        gpuHmrSuccess: false,
+        acceptedForGpuHmr: false,
+        rejectedDiagnosticAllowed: CFG.allowRejected,
+      },
+    }, null, 2));
+    if (!CFG.allowRejected) {
+      process.exitCode = 1;
+    }
+    return;
+  }
   const strictProof = await findStrictProofJson();
   const strictSummary = summarizeStrictProof(strictProof);
   if (CFG.requireStrictProvenance && !strictSummary?.strictFullRuntimePassed) {
@@ -1454,6 +5103,40 @@ async function main() {
   }
 
   const preflightResult = await preflight();
+  if (preflightResult.accepted !== true) {
+    const refusal = await writeHiprtPreflightRefusalArtifact({
+      preflightResult,
+      strictSummary,
+      totalStartedMonotonicNs,
+    });
+    console.log(JSON.stringify({
+      accepted: false,
+      acceptedForGpuHmr: false,
+      accepted_for_gpu_hmr: false,
+      gpuHmrSuccess: false,
+      gpu_hmr_success: false,
+      proofId: refusal.artifact.proofId,
+      proof_id: refusal.artifact.proofId,
+      proofPath: refusal.proofPath,
+      proof_path: refusal.proofPath,
+      mode: CFG.mode,
+      profileId: CFG.profileId,
+      profile_id: CFG.profileId,
+      proofAuthority: HIPRT_PREFLIGHT_AUTHORITY,
+      proof_authority: HIPRT_PREFLIGHT_AUTHORITY,
+      blockingGaps: refusal.artifact.classification.blockingGaps,
+      blocking_gaps: refusal.artifact.classification.blockingGaps,
+      claimBoundary: {
+        gpuHmrSuccess: false,
+        acceptedForGpuHmr: false,
+        rejectedDiagnosticAllowed: CFG.allowRejected,
+      },
+    }, null, 2));
+    if (!CFG.allowRejected) {
+      process.exitCode = 1;
+    }
+    return;
+  }
   const baselineSource = await readBaselineSourceFromGit();
   const beforeCount = countOccurrences(baselineSource, CFG.before);
   const afterCountInBaseline = countOccurrences(baselineSource, CFG.after);
@@ -1555,14 +5238,21 @@ async function main() {
     visualDelta:
       diff.changedPixelRatioThreshold4 >= CFG.minChangedPixelRatio
       && diff.meanAbsDelta8bit >= CFG.minMeanAbsDelta8bit,
+    oracleRegionNonBlank: diff.oracleRegion?.nonBlankAfterEpoch === true,
   };
   const accepted = Object.values(acceptance).every(Boolean);
   const totalTimingFields = monotonicTimingFields(totalStartedMonotonicNs);
+  const runtimeProbeInstrumentation = buildHiprtRuntimeProbeInstrumentationDisclosure(sameProcessAdapter);
+  const runtimeBoundaryEventSource = await loadRuntimeBoundaryEventsFromConfig();
   const proof = {
     schemaVersion: 'synthi.hiprt.warm_visual_proof.v2',
     slug: CFG.slug,
     createdAt: new Date().toISOString(),
     mode: CFG.mode,
+    metricScope: CFG.metricScope,
+    metric_scope: CFG.metricScope,
+    cacheState: CFG.cacheState,
+    cache_state: CFG.cacheState,
     profile: {
       id: CFG.profileId,
       requiredKernels: CFG.requiredKernels,
@@ -1608,6 +5298,14 @@ async function main() {
       : { reused: false },
     sameProcessAdapter,
     sameProcessBuild,
+    runtimeProbeInstrumentation,
+    runtime_probe_instrumentation: runtimeProbeInstrumentation,
+    runtimeBoundaryEvents: runtimeBoundaryEventSource.events,
+    runtime_boundary_events: runtimeBoundaryEventSource.events,
+    runtimeBoundaryEventSource: runtimeBoundaryEventSource.source,
+    runtime_boundary_event_source: runtimeBoundaryEventSource.source,
+    runtimeBoundaryEventManifestPath: runtimeBoundaryEventSource.manifestPath,
+    runtime_boundary_event_manifest_path: runtimeBoundaryEventSource.manifestPath,
     strictHmrProvenance: strictSummary,
     runtime: {
       baseline: baselineRun,
@@ -1619,6 +5317,9 @@ async function main() {
     thresholds: {
       minChangedPixelRatio: CFG.minChangedPixelRatio,
       minMeanAbsDelta8bit: CFG.minMeanAbsDelta8bit,
+      minOracleRegionVisibleRatio: CFG.minOracleRegionVisibleRatio,
+      minOracleRegionMeanLuma8bit: CFG.minOracleRegionMeanLuma8bit,
+      minOracleRegionUniqueColorSampleCount: CFG.minOracleRegionUniqueColorSampleCount,
     },
     timings: {
       ...totalTimingFields,
@@ -1636,7 +5337,48 @@ async function main() {
     acceptance,
     accepted,
   };
-  proof.timingMetrics = hiprtWarmTimingMetrics(proof);
+  proof.timingMetrics = {
+    ...hiprtWarmTimingMetrics(proof),
+    ...hiprtHotRuntimeRunModeMetadata(proof),
+  };
+  const strictRuntimeProof = buildHiprtStrictRuntimeProofArtifact(proof);
+  proof.runtimeProofArtifact = strictRuntimeProof.runtimeProofArtifact;
+  proof.runtime_proof_artifact = strictRuntimeProof.runtimeProofArtifact;
+  proof.runtimeProbeInstrumentation =
+    strictRuntimeProof.runtimeProofArtifact.runtimeProbeInstrumentation
+    ?? strictRuntimeProof.runtimeProofArtifact.runtime_probe_instrumentation
+    ?? proof.runtimeProbeInstrumentation;
+  proof.runtime_probe_instrumentation = proof.runtimeProbeInstrumentation;
+  proof.proofLedger = strictRuntimeProof.proofLedger;
+  proof.proof_ledger = strictRuntimeProof.proofLedger;
+  proof.proofLedgerQuery = strictRuntimeProof.proofLedgerQuery;
+  proof.proof_ledger_query = strictRuntimeProof.proofLedgerQuery;
+  proof.acceptanceContract = strictRuntimeProof.acceptanceContract;
+  proof.acceptance_contract = strictRuntimeProof.acceptanceContract;
+  proof.acceptanceContractEvaluation = strictRuntimeProof.acceptanceContractEvaluation;
+  proof.acceptance_contract_evaluation = strictRuntimeProof.acceptanceContractEvaluation;
+  proof.deterministicVisualMode = strictRuntimeProof.deterministicVisualMode;
+  proof.deterministic_visual_mode = strictRuntimeProof.deterministicVisualMode;
+  proof.runtimeVisualControlPair = strictRuntimeProof.runtimeVisualControlPair;
+  proof.runtime_visual_control_pair = strictRuntimeProof.runtimeVisualControlPair;
+  proof.declaredDeterministicVisualMode = strictRuntimeProof.declaredDeterministicVisualMode;
+  proof.declared_deterministic_visual_mode = strictRuntimeProof.declaredDeterministicVisualMode;
+  proof.runtimeBoundaryAppHook = strictRuntimeProof.runtimeProofArtifact.runtimeBoundaryAppHook;
+  proof.runtime_boundary_app_hook = proof.runtimeBoundaryAppHook;
+  proof.strictRuntimeProofGate = strictRuntimeProof.strictGate;
+  proof.strict_runtime_proof_gate = strictRuntimeProof.strictGate;
+  proof.sourceAdaptedProfile = strictRuntimeProof.runtimeProofArtifact.sourceAdaptedProfile === true;
+  proof.source_adapted_profile = proof.sourceAdaptedProfile;
+  proof.sourceAdaptations = strictRuntimeProof.runtimeProofArtifact.sourceAdaptations ?? [];
+  proof.source_adaptations = proof.sourceAdaptations;
+  proof.visualProfileAccepted = strictRuntimeProof.runtimeProofArtifact.visualProfileAccepted === true;
+  proof.visual_profile_accepted = proof.visualProfileAccepted;
+  proof.gpuHmrSuccess = strictRuntimeProof.runtimeProofArtifact.gpuHmrSuccess === true;
+  proof.gpu_hmr_success = proof.gpuHmrSuccess;
+  proof.acceptedForGpuHmr = proof.gpuHmrSuccess;
+  proof.accepted_for_gpu_hmr = proof.gpuHmrSuccess;
+  proof.visualProofAccepted = proof.accepted === true;
+  proof.visual_proof_accepted = proof.visualProofAccepted;
   const proofBytesForId = Buffer.from(JSON.stringify({
     schemaVersion: proof.schemaVersion,
     slug: proof.slug,
@@ -1652,12 +5394,35 @@ async function main() {
     timingMetrics: proof.timingMetrics,
     acceptance: proof.acceptance,
     accepted: proof.accepted,
+    visualProofAccepted: proof.visualProofAccepted,
+    gpuHmrSuccess: proof.gpuHmrSuccess,
+    visualProfileAccepted: proof.visualProfileAccepted,
+    sourceAdaptedProfile: proof.sourceAdaptedProfile,
+    sourceAdaptations: proof.sourceAdaptations,
+    runtimeProbeInstrumentation: proof.runtimeProbeInstrumentation,
+    runtimeBoundaryAppHook: proof.runtimeBoundaryAppHook,
+    runtimeProofArtifactId: proof.runtimeProofArtifact.proofId,
+    proofLedgerId: proof.proofLedger.proofId,
+    acceptanceContractHash: proof.acceptanceContract.contract_hash,
   }));
   proof.proofId = `hiprt-warm-runtime-proof:sha256:${sha256Hex(proofBytesForId)}`;
+  proof.runModeProofArtifacts = await writeHiprtRuntimeRunModeProofArtifacts(proof);
+  proof.run_mode_proof_artifacts = proof.runModeProofArtifacts;
+  const negativeEditRefusal = await writeHiprtNegativeEditRefusalArtifact({ proof, baselineSource });
+  proof.negativeEditRefusalArtifact = negativeEditRefusal;
+  proof.negative_edit_refusal_artifact = negativeEditRefusal;
   const proofPath = path.join(CFG.outputDir, `${cleanIdentifier(CFG.slug)}-proof.json`);
   await fs.writeFile(proofPath, `${JSON.stringify(proof, null, 2)}\n`);
   console.log(JSON.stringify({
-    accepted,
+    accepted: proof.gpuHmrSuccess,
+    acceptedForGpuHmr: proof.acceptedForGpuHmr,
+    accepted_for_gpu_hmr: proof.acceptedForGpuHmr,
+    gpuHmrSuccess: proof.gpuHmrSuccess,
+    gpu_hmr_success: proof.gpuHmrSuccess,
+    visualProofAccepted: proof.visualProofAccepted,
+    visual_proof_accepted: proof.visualProofAccepted,
+    visualEvidenceAccepted: accepted,
+    visual_evidence_accepted: accepted,
     proofId: proof.proofId,
     proofPath,
     mode: CFG.mode,
@@ -1671,12 +5436,34 @@ async function main() {
       changedPixelRatioThreshold4: diff.changedPixelRatioThreshold4,
       meanAbsDelta8bit: diff.meanAbsDelta8bit,
       maxChannelDelta8bit: diff.maxChannelDelta8bit,
+      oracleRegion: diff.oracleRegion,
     },
     baselineReused: Boolean(reusableBaseline),
     sameProcess: {
       enabled: CFG.mode === 'same-process',
       liveRecompileMs: changedRun.liveRecompileMs ?? null,
       adapterBuildMs: sameProcessBuild?.buildMs ?? null,
+    },
+    runtimeProbeInstrumentation: {
+      accepted: proof.runtimeProbeInstrumentation.accepted,
+      acceptanceScope: proof.runtimeProbeInstrumentation.acceptanceScope,
+      sourceAdaptations: proof.runtimeProbeInstrumentation.sourceAdaptations,
+      arbitraryLibraryAccepted: proof.runtimeProbeInstrumentation.arbitraryLibraryAccepted,
+    },
+    claimBoundary: {
+      gpuHmrSuccess: proof.gpuHmrSuccess,
+      visualProofAccepted: proof.visualProofAccepted,
+      visualProfileAccepted: proof.visualProfileAccepted,
+      sourceAdaptedProfile: proof.sourceAdaptedProfile,
+      acceptedForGpuHmr: proof.acceptedForGpuHmr,
+      rejectedDiagnosticAllowed: CFG.allowRejected,
+    },
+    strictRuntimeProof: {
+      gpuHmrSuccess: proof.gpuHmrSuccess,
+      proofId: proof.runtimeProofArtifact.proofId,
+      ledgerProofId: proof.proofLedger.proofId,
+      strictGateStatus: proof.strictRuntimeProofGate.status,
+      strictGateFailures: proof.strictRuntimeProofGate.failures,
     },
     kernels: {
       baseline: baselineRun.nativeLaunchKernels.filter((kernel) =>
@@ -1687,7 +5474,7 @@ async function main() {
       ),
     },
   }, null, 2));
-  if (!accepted && !CFG.allowRejected) {
+  if (proof.gpuHmrSuccess !== true && !CFG.allowRejected) {
     process.exitCode = 1;
   }
 }

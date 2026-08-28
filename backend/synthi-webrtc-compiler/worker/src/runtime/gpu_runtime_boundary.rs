@@ -16,11 +16,14 @@
 
 #![cfg(feature = "gpu-hmr")]
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_char, c_void, CStr};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::marker::PhantomData;
+use std::rc::Rc;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
+use std::thread::ThreadId;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::runtime::capability::HmrStatus;
 use sha2::{Digest, Sha256};
@@ -88,6 +91,7 @@ pub struct LaunchRecord {
     pub dispatched: bool,
     pub dispatch_id: Option<String>,
     pub dispatch_timestamp_ms: Option<u128>,
+    pub dispatch_timestamp_monotonic_ns: Option<u128>,
     pub dispatch_error: Option<String>,
 }
 
@@ -111,6 +115,7 @@ pub struct OutputOracleRecord {
     pub producer: Option<String>,
     pub output_target_id: Option<String>,
     pub readback_timestamp_ms: Option<u128>,
+    pub readback_timestamp_monotonic_ns: u128,
     pub artifact_id: Option<String>,
     pub after_dispatch_id: Option<String>,
     pub visual_evidence_ref: Option<String>,
@@ -148,12 +153,433 @@ pub struct GpuLaunchRequest {
     pub arg_count: usize,
 }
 
+pub const GPU_DISPATCH_DEVICE_ATTESTATION_SCHEMA: &str =
+    "synthi.gpu_hmr.dispatch_device_attestation.v2";
+pub const GPU_DISPATCH_DEVICE_ATTESTATION_AUTHORITY: &str =
+    "runtime_driver_native_launch_device_observation";
+pub const GPU_DISPATCH_DEVICE_ATTESTATION_UNAVAILABLE_AUTHORITY: &str =
+    "dispatch_device_attestation_unavailable";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GpuDispatchAttestationChallenge {
+    runtime_session_id: String,
+    active_generation: u64,
+    dispatch_id: String,
+    dispatch_nonce: String,
+    stream_token: usize,
+    host_thread_id: String,
+    started_monotonic_ns: u128,
+}
+
+impl GpuDispatchAttestationChallenge {
+    fn new(
+        runtime_session_id: String,
+        active_generation: u64,
+        dispatch_id: String,
+        stream_token: usize,
+        started_monotonic_ns: u128,
+    ) -> Self {
+        let host_thread_id = current_host_thread_id();
+        Self {
+            dispatch_nonce: dispatch_attestation_nonce(
+                &runtime_session_id,
+                active_generation,
+                &dispatch_id,
+                stream_token,
+                &host_thread_id,
+                started_monotonic_ns,
+            ),
+            runtime_session_id,
+            active_generation,
+            dispatch_id,
+            stream_token,
+            host_thread_id,
+            started_monotonic_ns,
+        }
+    }
+}
+
+fn dispatch_attestation_nonce(
+    runtime_session_id: &str,
+    active_generation: u64,
+    dispatch_id: &str,
+    stream_token: usize,
+    host_thread_id: &str,
+    started_monotonic_ns: u128,
+) -> String {
+    let nonce_material = format!(
+        "{runtime_session_id}|{active_generation}|{dispatch_id}|{stream_token}|{host_thread_id}|{started_monotonic_ns}"
+    );
+    format!(
+        "dispatch-nonce:sha256:{}",
+        sha256_hex_raw(nonce_material.as_bytes())
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuDispatchDeviceObservation {
+    device_ordinal: i32,
+    device_uuid: [u8; 16],
+    stream_device_ordinal: i32,
+}
+
+impl GpuDispatchDeviceObservation {
+    pub fn new(
+        device_ordinal: i32,
+        device_uuid: [u8; 16],
+        stream_device_ordinal: i32,
+    ) -> Result<Self, String> {
+        if device_ordinal < 0 {
+            return Err("dispatch_device_ordinal_invalid".to_string());
+        }
+        if device_uuid.iter().all(|byte| *byte == 0) {
+            return Err("dispatch_device_uuid_all_zero".to_string());
+        }
+        if stream_device_ordinal < 0 {
+            return Err("dispatch_stream_device_ordinal_invalid".to_string());
+        }
+        if stream_device_ordinal != device_ordinal {
+            return Err("dispatch_stream_device_mismatch".to_string());
+        }
+        Ok(Self {
+            device_ordinal,
+            device_uuid,
+            stream_device_ordinal,
+        })
+    }
+
+    pub fn identity_key(&self) -> String {
+        format!("gpu-hardware-uuid:{}", hex::encode(self.device_uuid))
+    }
+
+    pub fn device_ordinal(&self) -> i32 {
+        self.device_ordinal
+    }
+
+    pub fn device_uuid(&self) -> [u8; 16] {
+        self.device_uuid
+    }
+
+    pub fn stream_device_ordinal(&self) -> i32 {
+        self.stream_device_ordinal
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuDispatchDeviceAttestation {
+    schema_version: String,
+    authority: String,
+    stream_token: usize,
+    host_thread_id: String,
+    challenge_runtime_session_id: Option<String>,
+    challenge_active_generation: Option<u64>,
+    challenge_dispatch_id: Option<String>,
+    challenge_nonce: Option<String>,
+    challenge_started_monotonic_ns: Option<u128>,
+    completed_monotonic_ns: Option<u128>,
+    before: Option<GpuDispatchDeviceObservation>,
+    after: Option<GpuDispatchDeviceObservation>,
+    blocking_gap: Option<String>,
+}
+
+impl GpuDispatchDeviceAttestation {
+    pub fn unavailable(stream_token: usize, blocking_gap: impl Into<String>) -> Self {
+        let challenge = current_dispatch_attestation_challenge().filter(|challenge| {
+            challenge.stream_token == stream_token
+                && challenge.host_thread_id == current_host_thread_id()
+        });
+        let completed_monotonic_ns = challenge.as_ref().map(|_| monotonic_timestamp_ns());
+        Self {
+            schema_version: GPU_DISPATCH_DEVICE_ATTESTATION_SCHEMA.to_string(),
+            authority: GPU_DISPATCH_DEVICE_ATTESTATION_UNAVAILABLE_AUTHORITY.to_string(),
+            stream_token,
+            host_thread_id: current_host_thread_id(),
+            challenge_runtime_session_id: challenge
+                .as_ref()
+                .map(|challenge| challenge.runtime_session_id.clone()),
+            challenge_active_generation: challenge
+                .as_ref()
+                .map(|challenge| challenge.active_generation),
+            challenge_dispatch_id: challenge
+                .as_ref()
+                .map(|challenge| challenge.dispatch_id.clone()),
+            challenge_nonce: challenge
+                .as_ref()
+                .map(|challenge| challenge.dispatch_nonce.clone()),
+            challenge_started_monotonic_ns: challenge
+                .as_ref()
+                .map(|challenge| challenge.started_monotonic_ns),
+            completed_monotonic_ns,
+            before: None,
+            after: None,
+            blocking_gap: Some(blocking_gap.into()),
+        }
+    }
+
+    pub fn runtime_driver_observed(
+        stream_token: usize,
+        before: GpuDispatchDeviceObservation,
+        after: GpuDispatchDeviceObservation,
+    ) -> Result<Self, String> {
+        if before.device_ordinal != after.device_ordinal {
+            return Err("dispatch_active_device_changed".to_string());
+        }
+        if before.device_uuid != after.device_uuid {
+            return Err("dispatch_device_uuid_changed".to_string());
+        }
+        if before.stream_device_ordinal != after.stream_device_ordinal {
+            return Err("dispatch_stream_device_changed".to_string());
+        }
+        let challenge = current_dispatch_attestation_challenge()
+            .ok_or_else(|| "dispatch_device_attestation_challenge_missing".to_string())?;
+        if challenge.stream_token != stream_token {
+            return Err("dispatch_device_attestation_challenge_stream_mismatch".to_string());
+        }
+        if challenge.host_thread_id != current_host_thread_id() {
+            return Err("dispatch_device_attestation_challenge_thread_mismatch".to_string());
+        }
+        Ok(Self {
+            schema_version: GPU_DISPATCH_DEVICE_ATTESTATION_SCHEMA.to_string(),
+            authority: GPU_DISPATCH_DEVICE_ATTESTATION_AUTHORITY.to_string(),
+            stream_token,
+            host_thread_id: challenge.host_thread_id.clone(),
+            challenge_runtime_session_id: Some(challenge.runtime_session_id),
+            challenge_active_generation: Some(challenge.active_generation),
+            challenge_dispatch_id: Some(challenge.dispatch_id),
+            challenge_nonce: Some(challenge.dispatch_nonce),
+            challenge_started_monotonic_ns: Some(challenge.started_monotonic_ns),
+            completed_monotonic_ns: Some(monotonic_timestamp_ns()),
+            before: Some(before),
+            after: Some(after),
+            blocking_gap: None,
+        })
+    }
+
+    pub fn verified_observation(&self) -> Option<&GpuDispatchDeviceObservation> {
+        if self.schema_version != GPU_DISPATCH_DEVICE_ATTESTATION_SCHEMA
+            || self.authority != GPU_DISPATCH_DEVICE_ATTESTATION_AUTHORITY
+            || self.host_thread_id.is_empty()
+            || self.blocking_gap.is_some()
+            || self
+                .challenge_runtime_session_id
+                .as_deref()
+                .is_none_or(str::is_empty)
+            || self.challenge_active_generation.is_none()
+            || self
+                .challenge_dispatch_id
+                .as_deref()
+                .is_none_or(str::is_empty)
+            || self.challenge_nonce.as_deref().is_none_or(str::is_empty)
+            || self.challenge_started_monotonic_ns.is_none()
+            || self.completed_monotonic_ns.is_none()
+        {
+            return None;
+        }
+        if self.completed_monotonic_ns? < self.challenge_started_monotonic_ns? {
+            return None;
+        }
+        let before = self.before.as_ref()?;
+        let after = self.after.as_ref()?;
+        let validated = GpuDispatchDeviceObservation::new(
+            after.device_ordinal,
+            after.device_uuid,
+            after.stream_device_ordinal,
+        )
+        .ok()?;
+        if before != after || validated != *after {
+            return None;
+        }
+        Some(after)
+    }
+
+    pub fn authority(&self) -> &str {
+        &self.authority
+    }
+
+    pub fn stream_token(&self) -> usize {
+        self.stream_token
+    }
+
+    pub fn host_thread_id(&self) -> &str {
+        &self.host_thread_id
+    }
+
+    pub fn blocking_gap(&self) -> Option<&str> {
+        self.blocking_gap.as_deref()
+    }
+
+    pub fn challenge_runtime_session_id(&self) -> Option<&str> {
+        self.challenge_runtime_session_id.as_deref()
+    }
+
+    pub fn challenge_active_generation(&self) -> Option<u64> {
+        self.challenge_active_generation
+    }
+
+    pub fn challenge_dispatch_id(&self) -> Option<&str> {
+        self.challenge_dispatch_id.as_deref()
+    }
+
+    pub fn challenge_nonce(&self) -> Option<&str> {
+        self.challenge_nonce.as_deref()
+    }
+
+    pub fn challenge_started_monotonic_ns(&self) -> Option<u128> {
+        self.challenge_started_monotonic_ns
+    }
+
+    pub fn completed_monotonic_ns(&self) -> Option<u128> {
+        self.completed_monotonic_ns
+    }
+
+    fn validate_for_challenge(
+        &mut self,
+        challenge: &GpuDispatchAttestationChallenge,
+        dispatch_id: &str,
+        dispatch_completed_monotonic_ns: u128,
+    ) -> Result<(), String> {
+        if self.schema_version != GPU_DISPATCH_DEVICE_ATTESTATION_SCHEMA {
+            return Err("dispatch_device_attestation_schema_mismatch".to_string());
+        }
+        if self.stream_token != challenge.stream_token {
+            return Err("dispatch_device_attestation_stream_token_mismatch".to_string());
+        }
+        if self.authority != GPU_DISPATCH_DEVICE_ATTESTATION_AUTHORITY
+            && self.authority != GPU_DISPATCH_DEVICE_ATTESTATION_UNAVAILABLE_AUTHORITY
+        {
+            return Err("dispatch_device_attestation_authority_invalid".to_string());
+        }
+        if self.host_thread_id != challenge.host_thread_id
+            || self.challenge_runtime_session_id.as_deref()
+                != Some(challenge.runtime_session_id.as_str())
+            || self.challenge_active_generation != Some(challenge.active_generation)
+            || self.challenge_dispatch_id.as_deref() != Some(challenge.dispatch_id.as_str())
+            || self.challenge_nonce.as_deref() != Some(challenge.dispatch_nonce.as_str())
+            || self.challenge_started_monotonic_ns != Some(challenge.started_monotonic_ns)
+        {
+            return Err("dispatch_device_attestation_challenge_mismatch".to_string());
+        }
+        let completed_monotonic_ns = self
+            .completed_monotonic_ns
+            .ok_or_else(|| "dispatch_device_attestation_completion_missing".to_string())?;
+        if completed_monotonic_ns < challenge.started_monotonic_ns
+            || completed_monotonic_ns > dispatch_completed_monotonic_ns
+        {
+            return Err("dispatch_device_attestation_completion_out_of_bounds".to_string());
+        }
+        if self.authority == GPU_DISPATCH_DEVICE_ATTESTATION_UNAVAILABLE_AUTHORITY {
+            if self.before.is_some()
+                || self.after.is_some()
+                || self.blocking_gap.as_deref().is_none_or(str::is_empty)
+            {
+                return Err("dispatch_device_attestation_unavailable_shape_invalid".to_string());
+            }
+            self.bind_final_dispatch(challenge, dispatch_id);
+            return Ok(());
+        }
+        if self.verified_observation().is_none() {
+            return Err("dispatch_device_attestation_observation_unverified".to_string());
+        }
+        self.bind_final_dispatch(challenge, dispatch_id);
+        Ok(())
+    }
+
+    fn bind_final_dispatch(
+        &mut self,
+        challenge: &GpuDispatchAttestationChallenge,
+        dispatch_id: &str,
+    ) {
+        self.challenge_dispatch_id = Some(dispatch_id.to_string());
+        self.challenge_nonce = Some(dispatch_attestation_nonce(
+            &challenge.runtime_session_id,
+            challenge.active_generation,
+            dispatch_id,
+            challenge.stream_token,
+            &challenge.host_thread_id,
+            challenge.started_monotonic_ns,
+        ));
+    }
+}
+
+fn current_host_thread_id() -> String {
+    format!("thread:{:?}", std::thread::current().id())
+}
+
+thread_local! {
+    static ACTIVE_DISPATCH_ATTESTATION_CHALLENGES: RefCell<Vec<GpuDispatchAttestationChallenge>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+fn current_dispatch_attestation_challenge() -> Option<GpuDispatchAttestationChallenge> {
+    ACTIVE_DISPATCH_ATTESTATION_CHALLENGES.with(|challenges| challenges.borrow().last().cloned())
+}
+
+struct DispatchAttestationChallengeGuard;
+
+impl Drop for DispatchAttestationChallengeGuard {
+    fn drop(&mut self) {
+        ACTIVE_DISPATCH_ATTESTATION_CHALLENGES.with(|challenges| {
+            challenges
+                .borrow_mut()
+                .pop()
+                .expect("gpu dispatch attestation challenge stack underflow");
+        });
+    }
+}
+
+fn with_dispatch_attestation_challenge<T>(
+    challenge: GpuDispatchAttestationChallenge,
+    dispatch: impl FnOnce() -> T,
+) -> T {
+    ACTIVE_DISPATCH_ATTESTATION_CHALLENGES.with(|challenges| {
+        challenges.borrow_mut().push(challenge);
+    });
+    let guard = DispatchAttestationChallengeGuard;
+    let result = dispatch();
+    drop(guard);
+    result
+}
+
 pub trait GpuLaunchDispatcher: Send + Sync {
     fn dispatch(
         &self,
         request: &GpuLaunchRequest,
         args: *const *const c_void,
     ) -> Result<(), String>;
+
+    fn dispatch_with_device_attestation(
+        &self,
+        request: &GpuLaunchRequest,
+        args: *const *const c_void,
+    ) -> Result<GpuDispatchDeviceAttestation, GpuDispatchAttestationError> {
+        self.dispatch(request, args)
+            .map_err(GpuDispatchAttestationError::native_dispatch_failed)?;
+        Ok(GpuDispatchDeviceAttestation::unavailable(
+            request.stream_token,
+            "native_dispatch_device_observation_unavailable",
+        ))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GpuDispatchAttestationError {
+    NativeDispatchFailed(String),
+    AttestationRejectedBeforeDispatch(String),
+    AttestationRejectedAfterDispatch(String),
+}
+
+impl GpuDispatchAttestationError {
+    pub fn native_dispatch_failed(error: impl Into<String>) -> Self {
+        Self::NativeDispatchFailed(error.into())
+    }
+
+    pub fn attestation_rejected_before_dispatch(error: impl Into<String>) -> Self {
+        Self::AttestationRejectedBeforeDispatch(error.into())
+    }
+
+    pub fn attestation_rejected_after_dispatch(error: impl Into<String>) -> Self {
+        Self::AttestationRejectedAfterDispatch(error.into())
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -162,6 +588,17 @@ pub struct GpuLaunchDispatcherMetadata {
     pub dispatch_table_hash: Option<String>,
     pub changed_symbols: Vec<String>,
     pub function_handle_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuDispatchSlotBinding {
+    pub runtime_session_id: String,
+    pub generation: u64,
+    pub dispatcher_registration_id: String,
+    pub artifact_id: String,
+    pub artifact_content_hash: String,
+    pub dispatch_table_hash: String,
+    pub dispatch_table_entry_id: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -174,12 +611,329 @@ struct ActiveDispatcherMetadata {
     function_handle_ids: Vec<String>,
 }
 
+#[derive(Clone)]
+struct ActiveDispatcher {
+    dispatcher: Arc<dyn GpuLaunchDispatcher>,
+    metadata: ActiveDispatcherMetadata,
+}
+
+#[derive(Debug, Clone)]
+struct ProvisionalDispatcherPublication {
+    publication_id: String,
+    owner_thread: ThreadId,
+    previous_generation: u64,
+    previous_metadata: Option<ActiveDispatcherMetadata>,
+    candidate_generation: Option<u64>,
+    candidate_registration_id: Option<String>,
+}
+
+/// Opaque ownership token for one provisional dispatcher publication.
+///
+/// The token retains the complete prior dispatcher and metadata. It must be
+/// resolved by `commit_launch_dispatcher_publication` or
+/// `rollback_launch_dispatcher_publication` on the thread that began it. An
+/// unresolved token rolls back on drop; if exact restoration is no longer
+/// safe, the provisional dispatcher is deactivated instead.
+#[must_use = "a dispatcher publication must be committed or rolled back"]
+pub struct DispatcherPublication {
+    publication_id: String,
+    owner_thread: ThreadId,
+    previous: Option<ActiveDispatcher>,
+    previous_generation: u64,
+    candidate_generation: u64,
+    candidate_registration_id: String,
+    publication_timestamp_monotonic_ns: u128,
+    resolved: bool,
+    _owner_thread_affinity: PhantomData<Rc<()>>,
+}
+
+impl std::fmt::Debug for DispatcherPublication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DispatcherPublication")
+            .field("publication_id", &self.publication_id)
+            .field("owner_thread", &self.owner_thread)
+            .field("previous_generation", &self.previous_generation)
+            .field("candidate_generation", &self.candidate_generation)
+            .field("candidate_registration_id", &self.candidate_registration_id)
+            .field(
+                "publication_timestamp_monotonic_ns",
+                &self.publication_timestamp_monotonic_ns,
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for DispatcherPublication {
+    fn drop(&mut self) {
+        if self.resolved {
+            return;
+        }
+
+        let mut guard = dispatcher_state_slot()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let publication_matches = guard
+            .provisional
+            .as_ref()
+            .is_some_and(|provisional| provisional.publication_id == self.publication_id);
+        if !publication_matches {
+            return;
+        }
+
+        let active_candidate_matches = guard.active.as_ref().is_some_and(|active| {
+            active.metadata.generation == self.candidate_generation
+                && active.metadata.registration_id == self.candidate_registration_id
+        });
+        let candidate_in_flight = guard
+            .in_flight_by_generation
+            .get(&self.candidate_generation)
+            .copied()
+            .unwrap_or(0);
+        if active_candidate_matches && candidate_in_flight == 0 {
+            guard.active = self.previous.take();
+            guard.generation = self.previous_generation;
+        } else if active_candidate_matches {
+            guard.active = None;
+            if let Some(invalidated_generation) = guard.generation_high_watermark.checked_add(1) {
+                guard.generation_high_watermark = invalidated_generation;
+                guard.generation = invalidated_generation;
+            }
+        }
+        guard.provisional = None;
+        self.resolved = true;
+        drop(guard);
+        dispatcher_state_changed().notify_all();
+    }
+}
+
+impl DispatcherPublication {
+    pub fn publication_id(&self) -> &str {
+        &self.publication_id
+    }
+
+    pub fn previous_generation(&self) -> u64 {
+        self.previous_generation
+    }
+
+    pub fn candidate_generation(&self) -> u64 {
+        self.candidate_generation
+    }
+
+    pub fn candidate_registration_id(&self) -> &str {
+        &self.candidate_registration_id
+    }
+
+    pub fn publication_timestamp_monotonic_ns(&self) -> u128 {
+        self.publication_timestamp_monotonic_ns
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DispatcherPublicationValidationCapability {
+    publication_id: String,
+    owner_thread: ThreadId,
+    previous_generation: u64,
+    candidate_generation: u64,
+    candidate_registration_id: String,
+}
+
+thread_local! {
+    static ACTIVE_DISPATCHER_PUBLICATION_VALIDATIONS:
+        RefCell<Vec<DispatcherPublicationValidationCapability>> = const { RefCell::new(Vec::new()) };
+}
+
+fn current_dispatcher_publication_validation() -> Option<DispatcherPublicationValidationCapability>
+{
+    ACTIVE_DISPATCHER_PUBLICATION_VALIDATIONS
+        .with(|validations| validations.borrow().last().cloned())
+}
+
+pub fn current_dispatch_has_provisional_validation_capability() -> bool {
+    let Some(validation) = current_dispatcher_publication_validation() else {
+        return false;
+    };
+    let guard = lock_dispatcher_state();
+    dispatcher_publication_validation_matches(&guard, &validation)
+}
+
+struct DispatcherPublicationValidationGuard {
+    capability: DispatcherPublicationValidationCapability,
+}
+
+impl Drop for DispatcherPublicationValidationGuard {
+    fn drop(&mut self) {
+        ACTIVE_DISPATCHER_PUBLICATION_VALIDATIONS.with(|validations| {
+            let popped = validations
+                .borrow_mut()
+                .pop()
+                .expect("dispatcher publication validation stack underflow");
+            assert_eq!(
+                popped, self.capability,
+                "dispatcher publication validation stack order mismatch"
+            );
+        });
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatcherCommitReceipt {
+    publication_id: String,
+    previous_generation: u64,
+    candidate_generation: u64,
+    candidate_registration_id: String,
+    publication_timestamp_monotonic_ns: u128,
+    committed_timestamp_monotonic_ns: u128,
+}
+
+impl DispatcherCommitReceipt {
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        publication_id: impl Into<String>,
+        previous_generation: u64,
+        candidate_generation: u64,
+        candidate_registration_id: impl Into<String>,
+        publication_timestamp_monotonic_ns: u128,
+        committed_timestamp_monotonic_ns: u128,
+    ) -> Self {
+        Self {
+            publication_id: publication_id.into(),
+            previous_generation,
+            candidate_generation,
+            candidate_registration_id: candidate_registration_id.into(),
+            publication_timestamp_monotonic_ns,
+            committed_timestamp_monotonic_ns,
+        }
+    }
+
+    pub fn publication_id(&self) -> &str {
+        &self.publication_id
+    }
+
+    pub fn previous_generation(&self) -> u64 {
+        self.previous_generation
+    }
+
+    pub fn candidate_generation(&self) -> u64 {
+        self.candidate_generation
+    }
+
+    pub fn candidate_registration_id(&self) -> &str {
+        &self.candidate_registration_id
+    }
+
+    pub fn publication_timestamp_monotonic_ns(&self) -> u128 {
+        self.publication_timestamp_monotonic_ns
+    }
+
+    pub fn committed_timestamp_monotonic_ns(&self) -> u128 {
+        self.committed_timestamp_monotonic_ns
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatcherRollbackReceipt {
+    pub publication_id: String,
+    pub previous_generation: u64,
+    pub candidate_generation: u64,
+    pub candidate_registration_id: String,
+    pub restored_generation: u64,
+    pub restored_registration_id: Option<String>,
+    pub restored_artifact_id: Option<String>,
+    pub publication_timestamp_monotonic_ns: u128,
+    pub rollback_timestamp_monotonic_ns: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DispatcherPublicationError {
+    PublicationAlreadyInProgress,
+    PublicationOwnerMismatch,
+    StalePublication,
+    GenerationExhausted,
+    QuiescenceTimedOut { generation: u64, in_flight: usize },
+    CandidateDispatchStillInFlight { generation: u64, in_flight: usize },
+}
+
+impl std::fmt::Display for DispatcherPublicationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PublicationAlreadyInProgress => {
+                write!(f, "a dispatcher publication is already in progress")
+            }
+            Self::PublicationOwnerMismatch => {
+                write!(f, "dispatcher publication used from a non-owner thread")
+            }
+            Self::StalePublication => write!(f, "dispatcher publication token is stale"),
+            Self::GenerationExhausted => write!(f, "GPU launch generation exhausted"),
+            Self::QuiescenceTimedOut {
+                generation,
+                in_flight,
+            } => write!(
+                f,
+                "timed out waiting for generation {generation} ({in_flight} host dispatches in flight)"
+            ),
+            Self::CandidateDispatchStillInFlight {
+                generation,
+                in_flight,
+            } => write!(
+                f,
+                "cannot resolve generation {generation} ({in_flight} host dispatches in flight)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DispatcherPublicationError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DispatcherMutationError {
+    PublicationInProgress { publication_id: String },
+    GenerationExhausted,
+}
+
+impl std::fmt::Display for DispatcherMutationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PublicationInProgress { publication_id } => write!(
+                f,
+                "dispatcher mutation refused while publication {publication_id} is unresolved"
+            ),
+            Self::GenerationExhausted => write!(f, "GPU launch generation exhausted"),
+        }
+    }
+}
+
+impl std::error::Error for DispatcherMutationError {}
+
+struct DispatcherState {
+    generation: u64,
+    generation_high_watermark: u64,
+    active: Option<ActiveDispatcher>,
+    in_flight_by_generation: HashMap<u64, usize>,
+    provisional: Option<ProvisionalDispatcherPublication>,
+    next_publication_sequence: u64,
+}
+
+impl Default for DispatcherState {
+    fn default() -> Self {
+        Self {
+            generation: 1,
+            generation_high_watermark: 1,
+            active: None,
+            in_flight_by_generation: HashMap::new(),
+            provisional: None,
+            next_publication_sequence: 1,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct BoundaryState {
     buffers_by_ptr: HashMap<usize, ManagedBufferRecord>,
     ptr_by_name: HashMap<String, usize>,
     next_allocation_sequence: u64,
     launches: Vec<LaunchRecord>,
+    dispatch_device_attestations: Vec<GpuDispatchDeviceAttestationRecord>,
+    dispatch_device_attestation_rejections: Vec<GpuDispatchDeviceAttestationRejectionRecord>,
     host_identities: Vec<HostIdentityRecord>,
     output_oracles: Vec<OutputOracleRecord>,
     original_host_paths: Vec<OriginalHostPathRecord>,
@@ -187,61 +941,430 @@ struct BoundaryState {
 }
 
 static STATE: OnceLock<Mutex<BoundaryState>> = OnceLock::new();
-static DISPATCHER: OnceLock<Mutex<Option<Arc<dyn GpuLaunchDispatcher>>>> = OnceLock::new();
-static DISPATCHER_METADATA: OnceLock<Mutex<Option<ActiveDispatcherMetadata>>> = OnceLock::new();
-static LAUNCH_GENERATION: AtomicU64 = AtomicU64::new(1);
+static DISPATCHER_STATE: OnceLock<Mutex<DispatcherState>> = OnceLock::new();
+static DISPATCHER_STATE_CHANGED: OnceLock<Condvar> = OnceLock::new();
 static RUNTIME_SESSION_ID: OnceLock<String> = OnceLock::new();
+static MONOTONIC_ORIGIN: OnceLock<Instant> = OnceLock::new();
 #[cfg(test)]
 static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+#[cfg(test)]
+static DISPATCHER_SNAPSHOT_TEST_HOOK: OnceLock<Mutex<Option<Box<dyn FnOnce() + Send>>>> =
+    OnceLock::new();
 
 fn state() -> &'static Mutex<BoundaryState> {
     STATE.get_or_init(|| Mutex::new(BoundaryState::default()))
 }
 
-fn dispatcher_slot() -> &'static Mutex<Option<Arc<dyn GpuLaunchDispatcher>>> {
-    DISPATCHER.get_or_init(|| Mutex::new(None))
+fn dispatcher_state_slot() -> &'static Mutex<DispatcherState> {
+    DISPATCHER_STATE.get_or_init(|| Mutex::new(DispatcherState::default()))
 }
 
-fn dispatcher_metadata_slot() -> &'static Mutex<Option<ActiveDispatcherMetadata>> {
-    DISPATCHER_METADATA.get_or_init(|| Mutex::new(None))
+fn dispatcher_state_changed() -> &'static Condvar {
+    DISPATCHER_STATE_CHANGED.get_or_init(Condvar::new)
+}
+
+fn lock_dispatcher_state() -> MutexGuard<'static, DispatcherState> {
+    dispatcher_state_slot()
+        .lock()
+        .expect("gpu runtime dispatcher state mutex poisoned")
+}
+
+fn try_lock_dispatcher_for_mutation(
+) -> Result<MutexGuard<'static, DispatcherState>, DispatcherMutationError> {
+    let guard = lock_dispatcher_state();
+    if let Some(publication) = guard.provisional.as_ref() {
+        return Err(DispatcherMutationError::PublicationInProgress {
+            publication_id: publication.publication_id.clone(),
+        });
+    }
+    Ok(guard)
+}
+
+#[cfg(test)]
+fn set_dispatcher_snapshot_test_hook(hook: impl FnOnce() + Send + 'static) {
+    *DISPATCHER_SNAPSHOT_TEST_HOOK
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .expect("gpu runtime dispatcher snapshot test hook mutex poisoned") = Some(Box::new(hook));
+}
+
+#[cfg(test)]
+fn run_dispatcher_snapshot_test_hook() {
+    let hook = DISPATCHER_SNAPSHOT_TEST_HOOK
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .expect("gpu runtime dispatcher snapshot test hook mutex poisoned")
+        .take();
+    if let Some(hook) = hook {
+        hook();
+    }
 }
 
 pub fn install_launch_dispatcher(
     dispatcher: Arc<dyn GpuLaunchDispatcher>,
 ) -> Option<Arc<dyn GpuLaunchDispatcher>> {
-    install_launch_dispatcher_with_metadata(dispatcher, GpuLaunchDispatcherMetadata::default()).0
+    try_install_launch_dispatcher(dispatcher)
+        .unwrap_or_else(|error| panic!("install_launch_dispatcher failed: {error}"))
+}
+
+pub fn try_install_launch_dispatcher(
+    dispatcher: Arc<dyn GpuLaunchDispatcher>,
+) -> Result<Option<Arc<dyn GpuLaunchDispatcher>>, DispatcherMutationError> {
+    try_install_launch_dispatcher_with_metadata(dispatcher, GpuLaunchDispatcherMetadata::default())
+        .map(|(previous, _)| previous)
 }
 
 pub fn install_launch_dispatcher_with_metadata(
     dispatcher: Arc<dyn GpuLaunchDispatcher>,
     metadata: GpuLaunchDispatcherMetadata,
 ) -> (Option<Arc<dyn GpuLaunchDispatcher>>, u64) {
-    let mut guard = dispatcher_slot()
-        .lock()
-        .expect("gpu runtime dispatcher mutex poisoned");
-    let previous = guard.replace(dispatcher);
-    let generation = LAUNCH_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-    let active = active_dispatcher_metadata(generation, metadata);
-    *dispatcher_metadata_slot()
-        .lock()
-        .expect("gpu runtime dispatcher metadata mutex poisoned") = Some(active);
-    (previous, generation)
+    try_install_launch_dispatcher_with_metadata(dispatcher, metadata)
+        .unwrap_or_else(|error| panic!("install_launch_dispatcher_with_metadata failed: {error}"))
+}
+
+pub fn try_install_launch_dispatcher_with_metadata(
+    dispatcher: Arc<dyn GpuLaunchDispatcher>,
+    metadata: GpuLaunchDispatcherMetadata,
+) -> Result<(Option<Arc<dyn GpuLaunchDispatcher>>, u64), DispatcherMutationError> {
+    try_install_launch_dispatcher_with_metadata_timed(dispatcher, metadata)
+        .map(|(previous, generation, _)| (previous, generation))
+}
+
+pub fn install_launch_dispatcher_with_metadata_timed(
+    dispatcher: Arc<dyn GpuLaunchDispatcher>,
+    metadata: GpuLaunchDispatcherMetadata,
+) -> (Option<Arc<dyn GpuLaunchDispatcher>>, u64, u128) {
+    try_install_launch_dispatcher_with_metadata_timed(dispatcher, metadata).unwrap_or_else(
+        |error| panic!("install_launch_dispatcher_with_metadata_timed failed: {error}"),
+    )
+}
+
+pub fn try_install_launch_dispatcher_with_metadata_timed(
+    dispatcher: Arc<dyn GpuLaunchDispatcher>,
+    metadata: GpuLaunchDispatcherMetadata,
+) -> Result<(Option<Arc<dyn GpuLaunchDispatcher>>, u64, u128), DispatcherMutationError> {
+    let mut guard = try_lock_dispatcher_for_mutation()?;
+    guard.generation_high_watermark = guard
+        .generation_high_watermark
+        .checked_add(1)
+        .ok_or(DispatcherMutationError::GenerationExhausted)?;
+    let generation = guard.generation_high_watermark;
+    guard.generation = generation;
+    let previous = guard.active.replace(ActiveDispatcher {
+        dispatcher,
+        metadata: active_dispatcher_metadata(generation, metadata),
+    });
+    let publication_timestamp_monotonic_ns = monotonic_timestamp_ns();
+    Ok((
+        previous.map(|active| active.dispatcher),
+        generation,
+        publication_timestamp_monotonic_ns,
+    ))
 }
 
 pub fn clear_launch_dispatcher() -> Option<Arc<dyn GpuLaunchDispatcher>> {
-    let mut guard = dispatcher_slot()
-        .lock()
-        .expect("gpu runtime dispatcher mutex poisoned");
-    let previous = guard.take();
-    LAUNCH_GENERATION.fetch_add(1, Ordering::SeqCst);
-    *dispatcher_metadata_slot()
-        .lock()
-        .expect("gpu runtime dispatcher metadata mutex poisoned") = None;
-    previous
+    try_clear_launch_dispatcher()
+        .unwrap_or_else(|error| panic!("clear_launch_dispatcher failed: {error}"))
+}
+
+pub fn try_clear_launch_dispatcher(
+) -> Result<Option<Arc<dyn GpuLaunchDispatcher>>, DispatcherMutationError> {
+    let mut guard = try_lock_dispatcher_for_mutation()?;
+    let next_generation = guard
+        .generation_high_watermark
+        .checked_add(1)
+        .ok_or(DispatcherMutationError::GenerationExhausted)?;
+    let previous = guard.active.take();
+    guard.generation_high_watermark = next_generation;
+    guard.generation = next_generation;
+    Ok(previous.map(|active| active.dispatcher))
 }
 
 pub fn current_launch_generation() -> u64 {
-    LAUNCH_GENERATION.load(Ordering::SeqCst)
+    let guard = lock_dispatcher_state();
+    if let Some(validation) = current_dispatcher_publication_validation() {
+        if dispatcher_publication_validation_matches(&guard, &validation) {
+            return validation.candidate_generation;
+        }
+    }
+    match guard.provisional.as_ref() {
+        Some(publication) => publication.previous_generation,
+        _ => guard.generation,
+    }
+}
+
+/// Begins a gated dispatcher publication after all host calls using the prior
+/// generation have left the runtime boundary. GPU stream retirement remains a
+/// separate backend-specific obligation owned by the adapter. Normal launches
+/// cannot use the candidate while the token is unresolved; only
+/// `with_dispatcher_publication_validation` grants scoped access to it.
+pub fn begin_launch_dispatcher_publication(
+    dispatcher: Arc<dyn GpuLaunchDispatcher>,
+    metadata: GpuLaunchDispatcherMetadata,
+    quiescence_timeout: Duration,
+) -> Result<DispatcherPublication, DispatcherPublicationError> {
+    let owner_thread = std::thread::current().id();
+    let mut guard = lock_dispatcher_state();
+    if guard.provisional.is_some() {
+        return Err(DispatcherPublicationError::PublicationAlreadyInProgress);
+    }
+
+    let publication_sequence = guard.next_publication_sequence;
+    guard.next_publication_sequence = publication_sequence
+        .checked_add(1)
+        .ok_or(DispatcherPublicationError::GenerationExhausted)?;
+    let previous_generation = guard.generation;
+    let publication_id = format!(
+        "dispatcher-publication:sha256:{}",
+        sha256_hex_raw(
+            format!(
+                "{}|{}|{}|{:?}",
+                runtime_session_id(),
+                publication_sequence,
+                previous_generation,
+                owner_thread
+            )
+            .as_bytes()
+        )
+    );
+    let previous_metadata = guard.active.as_ref().map(|active| active.metadata.clone());
+    guard.provisional = Some(ProvisionalDispatcherPublication {
+        publication_id: publication_id.clone(),
+        owner_thread,
+        previous_generation,
+        previous_metadata,
+        candidate_generation: None,
+        candidate_registration_id: None,
+    });
+
+    let wait_started = Instant::now();
+    loop {
+        let in_flight = guard
+            .in_flight_by_generation
+            .get(&previous_generation)
+            .copied()
+            .unwrap_or(0);
+        if in_flight == 0 {
+            break;
+        }
+        let elapsed = wait_started.elapsed();
+        if elapsed >= quiescence_timeout {
+            guard.provisional = None;
+            dispatcher_state_changed().notify_all();
+            return Err(DispatcherPublicationError::QuiescenceTimedOut {
+                generation: previous_generation,
+                in_flight,
+            });
+        }
+        let remaining = quiescence_timeout.saturating_sub(elapsed);
+        let (next_guard, wait_result) = dispatcher_state_changed()
+            .wait_timeout(guard, remaining)
+            .expect("gpu runtime dispatcher state mutex poisoned while draining generation");
+        guard = next_guard;
+        if wait_result.timed_out() {
+            let in_flight = guard
+                .in_flight_by_generation
+                .get(&previous_generation)
+                .copied()
+                .unwrap_or(0);
+            if in_flight != 0 {
+                guard.provisional = None;
+                dispatcher_state_changed().notify_all();
+                return Err(DispatcherPublicationError::QuiescenceTimedOut {
+                    generation: previous_generation,
+                    in_flight,
+                });
+            }
+        }
+    }
+
+    let Some(candidate_generation) = guard.generation_high_watermark.checked_add(1) else {
+        guard.provisional = None;
+        dispatcher_state_changed().notify_all();
+        return Err(DispatcherPublicationError::GenerationExhausted);
+    };
+    let candidate_metadata = active_dispatcher_metadata(candidate_generation, metadata);
+    let candidate_registration_id = candidate_metadata.registration_id.clone();
+    let previous = guard.active.replace(ActiveDispatcher {
+        dispatcher,
+        metadata: candidate_metadata,
+    });
+    guard.generation_high_watermark = candidate_generation;
+    guard.generation = candidate_generation;
+    if let Some(provisional) = guard.provisional.as_mut() {
+        provisional.candidate_generation = Some(candidate_generation);
+        provisional.candidate_registration_id = Some(candidate_registration_id.clone());
+    }
+    let publication_timestamp_monotonic_ns = monotonic_timestamp_ns();
+
+    Ok(DispatcherPublication {
+        publication_id,
+        owner_thread,
+        previous,
+        previous_generation,
+        candidate_generation,
+        candidate_registration_id,
+        publication_timestamp_monotonic_ns,
+        resolved: false,
+        _owner_thread_affinity: PhantomData,
+    })
+}
+
+/// Runs validation with scoped access to an unresolved dispatcher candidate.
+///
+/// The exact publication token must be used on its owner thread. Candidate
+/// access is removed when the closure exits, including during panic unwinding.
+pub fn with_dispatcher_publication_validation<R>(
+    publication: &DispatcherPublication,
+    validation: impl FnOnce() -> R,
+) -> Result<R, DispatcherPublicationError> {
+    {
+        let guard = lock_dispatcher_state();
+        validate_dispatcher_publication(&guard, publication)?;
+    }
+
+    let capability = DispatcherPublicationValidationCapability {
+        publication_id: publication.publication_id.clone(),
+        owner_thread: publication.owner_thread,
+        previous_generation: publication.previous_generation,
+        candidate_generation: publication.candidate_generation,
+        candidate_registration_id: publication.candidate_registration_id.clone(),
+    };
+    ACTIVE_DISPATCHER_PUBLICATION_VALIDATIONS.with(|validations| {
+        validations.borrow_mut().push(capability.clone());
+    });
+    let guard = DispatcherPublicationValidationGuard { capability };
+    let result = validation();
+    drop(guard);
+    Ok(result)
+}
+
+pub fn commit_launch_dispatcher_publication(
+    publication: &mut DispatcherPublication,
+) -> Result<DispatcherCommitReceipt, DispatcherPublicationError> {
+    let mut guard = lock_dispatcher_state();
+    validate_dispatcher_publication(&guard, publication)?;
+    let candidate_in_flight = guard
+        .in_flight_by_generation
+        .get(&publication.candidate_generation)
+        .copied()
+        .unwrap_or(0);
+    if candidate_in_flight != 0 {
+        return Err(DispatcherPublicationError::CandidateDispatchStillInFlight {
+            generation: publication.candidate_generation,
+            in_flight: candidate_in_flight,
+        });
+    }
+    guard.provisional = None;
+    publication.resolved = true;
+    let previous = publication.previous.take();
+    let receipt = DispatcherCommitReceipt {
+        publication_id: publication.publication_id.clone(),
+        previous_generation: publication.previous_generation,
+        candidate_generation: publication.candidate_generation,
+        candidate_registration_id: publication.candidate_registration_id.clone(),
+        publication_timestamp_monotonic_ns: publication.publication_timestamp_monotonic_ns,
+        committed_timestamp_monotonic_ns: monotonic_timestamp_ns(),
+    };
+    drop(guard);
+    dispatcher_state_changed().notify_all();
+    drop(previous);
+    Ok(receipt)
+}
+
+pub fn rollback_launch_dispatcher_publication(
+    publication: &mut DispatcherPublication,
+) -> Result<DispatcherRollbackReceipt, DispatcherPublicationError> {
+    let mut guard = lock_dispatcher_state();
+    validate_dispatcher_publication(&guard, publication)?;
+    let candidate_in_flight = guard
+        .in_flight_by_generation
+        .get(&publication.candidate_generation)
+        .copied()
+        .unwrap_or(0);
+    if candidate_in_flight != 0 {
+        return Err(DispatcherPublicationError::CandidateDispatchStillInFlight {
+            generation: publication.candidate_generation,
+            in_flight: candidate_in_flight,
+        });
+    }
+
+    let restored_generation = publication.previous_generation;
+    let restored = publication.previous.take();
+    let restored_registration_id = restored
+        .as_ref()
+        .map(|active| active.metadata.registration_id.clone());
+    let restored_artifact_id = restored
+        .as_ref()
+        .and_then(|active| active.metadata.artifact_id.clone());
+    guard.active = restored;
+    guard.generation = restored_generation;
+    guard.provisional = None;
+    publication.resolved = true;
+    let receipt = DispatcherRollbackReceipt {
+        publication_id: publication.publication_id.clone(),
+        previous_generation: publication.previous_generation,
+        candidate_generation: publication.candidate_generation,
+        candidate_registration_id: publication.candidate_registration_id.clone(),
+        restored_generation,
+        restored_registration_id,
+        restored_artifact_id,
+        publication_timestamp_monotonic_ns: publication.publication_timestamp_monotonic_ns,
+        rollback_timestamp_monotonic_ns: monotonic_timestamp_ns(),
+    };
+    drop(guard);
+    dispatcher_state_changed().notify_all();
+    Ok(receipt)
+}
+
+fn validate_dispatcher_publication(
+    guard: &DispatcherState,
+    publication: &DispatcherPublication,
+) -> Result<(), DispatcherPublicationError> {
+    if publication.owner_thread != std::thread::current().id() {
+        return Err(DispatcherPublicationError::PublicationOwnerMismatch);
+    }
+    let Some(provisional) = guard.provisional.as_ref() else {
+        return Err(DispatcherPublicationError::StalePublication);
+    };
+    let active_matches = guard.active.as_ref().is_some_and(|active| {
+        active.metadata.generation == publication.candidate_generation
+            && active.metadata.registration_id == publication.candidate_registration_id
+    });
+    if provisional.publication_id != publication.publication_id
+        || provisional.owner_thread != publication.owner_thread
+        || provisional.previous_generation != publication.previous_generation
+        || provisional.candidate_generation != Some(publication.candidate_generation)
+        || provisional.candidate_registration_id.as_deref()
+            != Some(publication.candidate_registration_id.as_str())
+        || guard.generation != publication.candidate_generation
+        || !active_matches
+    {
+        return Err(DispatcherPublicationError::StalePublication);
+    }
+    Ok(())
+}
+
+fn dispatcher_publication_validation_matches(
+    guard: &DispatcherState,
+    validation: &DispatcherPublicationValidationCapability,
+) -> bool {
+    let Some(provisional) = guard.provisional.as_ref() else {
+        return false;
+    };
+    let active_matches = guard.active.as_ref().is_some_and(|active| {
+        active.metadata.generation == validation.candidate_generation
+            && active.metadata.registration_id == validation.candidate_registration_id
+    });
+    validation.owner_thread == std::thread::current().id()
+        && provisional.publication_id == validation.publication_id
+        && provisional.owner_thread == validation.owner_thread
+        && provisional.previous_generation == validation.previous_generation
+        && provisional.candidate_generation == Some(validation.candidate_generation)
+        && provisional.candidate_registration_id.as_deref()
+            == Some(validation.candidate_registration_id.as_str())
+        && guard.generation == validation.candidate_generation
+        && active_matches
 }
 
 pub fn runtime_session_id() -> &'static str {
@@ -286,27 +1409,179 @@ fn active_dispatcher_metadata(
     }
 }
 
+fn canonical_prefixed_sha256(value: &str, prefix: &str) -> bool {
+    value.strip_prefix(prefix).is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    })
+}
+
+fn dispatch_slot_binding(
+    runtime_session_id: &str,
+    active_generation: u64,
+    metadata: &ActiveDispatcherMetadata,
+    kernel_name: &str,
+) -> Option<GpuDispatchSlotBinding> {
+    if metadata.generation != active_generation
+        || !canonical_prefixed_sha256(&metadata.registration_id, "dispatcher:sha256:")
+    {
+        return None;
+    }
+    let artifact_id = metadata.artifact_id.as_deref()?;
+    if !canonical_prefixed_sha256(artifact_id, "artifact:sha256:") {
+        return None;
+    }
+    let artifact_digest = artifact_id.strip_prefix("artifact:sha256:")?;
+    let dispatch_table_hash = metadata.dispatch_table_hash.as_deref()?;
+    if !canonical_prefixed_sha256(dispatch_table_hash, "sha256:") {
+        return None;
+    }
+    let entry_index = metadata
+        .changed_symbols
+        .iter()
+        .position(|symbol| symbol == kernel_name)?;
+    let dispatch_table_entry_id = metadata.function_handle_ids.get(entry_index)?;
+    if dispatch_table_entry_id.is_empty()
+        || dispatch_table_entry_id.chars().any(char::is_whitespace)
+    {
+        return None;
+    }
+    Some(GpuDispatchSlotBinding {
+        runtime_session_id: runtime_session_id.to_string(),
+        generation: active_generation,
+        dispatcher_registration_id: metadata.registration_id.clone(),
+        artifact_id: artifact_id.to_string(),
+        artifact_content_hash: format!("sha256:{artifact_digest}"),
+        dispatch_table_hash: dispatch_table_hash.to_string(),
+        dispatch_table_entry_id: dispatch_table_entry_id.clone(),
+    })
+}
+
 fn sha256_hex_raw(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hex::encode(hasher.finalize())
 }
 
-fn dispatcher_metadata_snapshot() -> Option<ActiveDispatcherMetadata> {
-    dispatcher_metadata_slot()
-        .lock()
-        .expect("gpu runtime dispatcher metadata mutex poisoned")
-        .clone()
+struct DispatcherLaunchLease {
+    generation: u64,
+    dispatcher: Option<Arc<dyn GpuLaunchDispatcher>>,
+    metadata: Option<ActiveDispatcherMetadata>,
+    blocked_error: Option<String>,
+    tracked: bool,
 }
 
-fn active_dispatcher_artifact_id() -> Option<String> {
-    dispatcher_metadata_snapshot()
-        .and_then(|metadata| metadata.artifact_id)
-        .filter(|artifact_id| !artifact_id.trim().is_empty())
+impl Drop for DispatcherLaunchLease {
+    fn drop(&mut self) {
+        if !self.tracked {
+            return;
+        }
+        let mut guard = lock_dispatcher_state();
+        let remove_generation = match guard.in_flight_by_generation.get_mut(&self.generation) {
+            Some(in_flight) if *in_flight > 0 => {
+                *in_flight -= 1;
+                *in_flight == 0
+            }
+            _ => {
+                drop(guard);
+                dispatcher_state_changed().notify_all();
+                panic!(
+                    "GPU dispatcher generation {} lease accounting underflow",
+                    self.generation
+                );
+            }
+        };
+        if remove_generation {
+            guard.in_flight_by_generation.remove(&self.generation);
+        }
+        drop(guard);
+        dispatcher_state_changed().notify_all();
+    }
 }
 
-fn cstr_or_active_artifact_id(ptr: *const c_char) -> Option<String> {
-    cstr(ptr).or_else(active_dispatcher_artifact_id)
+fn active_dispatcher_snapshot() -> DispatcherLaunchLease {
+    let mut guard = lock_dispatcher_state();
+    if guard.provisional.is_some() {
+        if let Some(validation) = current_dispatcher_publication_validation()
+            .filter(|validation| dispatcher_publication_validation_matches(&guard, validation))
+        {
+            let generation = validation.candidate_generation;
+            let active = guard
+                .active
+                .as_ref()
+                .expect("validated dispatcher publication candidate missing");
+            let dispatcher = active.dispatcher.clone();
+            let metadata = active.metadata.clone();
+            let in_flight = guard.in_flight_by_generation.entry(generation).or_default();
+            *in_flight = in_flight
+                .checked_add(1)
+                .expect("GPU dispatcher in-flight counter exhausted");
+            return DispatcherLaunchLease {
+                generation,
+                dispatcher: Some(dispatcher),
+                metadata: Some(metadata),
+                blocked_error: None,
+                tracked: true,
+            };
+        }
+        let publication = guard
+            .provisional
+            .as_ref()
+            .expect("provisional dispatcher publication disappeared");
+        return DispatcherLaunchLease {
+            generation: publication.previous_generation,
+            dispatcher: None,
+            metadata: publication.previous_metadata.clone(),
+            blocked_error: Some("reload_failed.dispatcher_publication_in_progress".to_string()),
+            tracked: false,
+        };
+    }
+    let generation = guard.generation;
+    let (dispatcher, metadata, tracked) = match guard.active.as_ref() {
+        Some(active) => (
+            Some(active.dispatcher.clone()),
+            Some(active.metadata.clone()),
+            true,
+        ),
+        None => (None, None, false),
+    };
+    if tracked {
+        let in_flight = guard.in_flight_by_generation.entry(generation).or_default();
+        *in_flight = in_flight
+            .checked_add(1)
+            .expect("GPU dispatcher in-flight counter exhausted");
+    }
+    DispatcherLaunchLease {
+        generation,
+        dispatcher,
+        metadata,
+        blocked_error: None,
+        tracked,
+    }
+}
+
+fn dispatcher_attribution_snapshot() -> (u64, Option<ActiveDispatcherMetadata>) {
+    let guard = lock_dispatcher_state();
+    if let Some(validation) = current_dispatcher_publication_validation() {
+        if dispatcher_publication_validation_matches(&guard, &validation) {
+            return (
+                validation.candidate_generation,
+                guard.active.as_ref().map(|active| active.metadata.clone()),
+            );
+        }
+    }
+    match guard.provisional.as_ref() {
+        Some(publication) => (
+            publication.previous_generation,
+            publication.previous_metadata.clone(),
+        ),
+        _ => (
+            guard.generation,
+            guard.active.as_ref().map(|active| active.metadata.clone()),
+        ),
+    }
 }
 
 fn dispatch_table_entry_id_for_kernel(
@@ -726,6 +2001,22 @@ fn stable_hash64(value: &str) -> u64 {
 fn record_host_identity_event(role: String, identity_ptr: *const c_void, aux_identity: u64) {
     let generation = current_launch_generation();
     let runtime_session = runtime_session_id().to_string();
+    record_host_identity_event_at(
+        role,
+        identity_ptr,
+        aux_identity,
+        generation,
+        runtime_session,
+    );
+}
+
+fn record_host_identity_event_at(
+    role: String,
+    identity_ptr: *const c_void,
+    aux_identity: u64,
+    generation: u64,
+    runtime_session: String,
+) {
     let ptr = identity_ptr as usize;
     {
         let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
@@ -785,57 +2076,85 @@ fn record_launch_host_identities(
     kernel_name_ptr: *const c_void,
     gpu: *const c_void,
     stream_token: usize,
+    generation: u64,
+    runtime_session: &str,
 ) {
     let pid = std::process::id() as usize;
-    let session_hash = stable_hash64(runtime_session_id());
-    record_host_identity_event(
+    let session_hash = stable_hash64(runtime_session);
+    record_host_identity_event_at(
         "runner_process".to_string(),
         pid as *const c_void,
         session_hash,
+        generation,
+        runtime_session.to_string(),
     );
     if !kernel_name_ptr.is_null() {
         let kernel_hash = stable_hash64(kernel_name);
-        record_host_identity_event(
+        record_host_identity_event_at(
             format!("launch_kernel_{kernel_hash:016x}"),
             kernel_name_ptr,
             kernel_hash,
+            generation,
+            runtime_session.to_string(),
         );
     }
     if !gpu.is_null() {
-        record_host_identity_event("runtime_context".to_string(), gpu, 0);
+        record_host_identity_event_at(
+            "runtime_context".to_string(),
+            gpu,
+            0,
+            generation,
+            runtime_session.to_string(),
+        );
     }
     if stream_token != 0 {
-        record_host_identity_event(
+        record_host_identity_event_at(
             "launch_stream".to_string(),
             stream_token as *const c_void,
             0,
+            generation,
+            runtime_session.to_string(),
         );
     }
 }
 
 pub fn record_hmr_runtime_identity_snapshot() {
     let generation = current_launch_generation();
+    #[cfg(test)]
+    run_dispatcher_snapshot_test_hook();
     let runtime_session = runtime_session_id().to_string();
     let retained_host_identities = latest_replayable_host_identities(generation, &runtime_session);
     let pid = std::process::id() as usize;
     let session_hash = stable_hash64(&runtime_session);
-    record_host_identity_event(
+    record_host_identity_event_at(
         "runner_process".to_string(),
         pid as *const c_void,
         session_hash,
+        generation,
+        runtime_session.clone(),
     );
-    record_host_identity_event(
+    record_host_identity_event_at(
         "hmr_boundary_state".to_string(),
         (state() as *const Mutex<BoundaryState>).cast::<c_void>(),
         stable_hash64("hmr_boundary_state"),
+        generation,
+        runtime_session.clone(),
     );
-    record_host_identity_event(
+    record_host_identity_event_at(
         "runtime_context".to_string(),
-        (dispatcher_slot() as *const Mutex<Option<Arc<dyn GpuLaunchDispatcher>>>).cast::<c_void>(),
+        (dispatcher_state_slot() as *const Mutex<DispatcherState>).cast::<c_void>(),
         stable_hash64("runtime_context"),
+        generation,
+        runtime_session.clone(),
     );
     for record in retained_host_identities {
-        record_host_identity_event(record.role, record.ptr as *const c_void, record.aux);
+        record_host_identity_event_at(
+            record.role,
+            record.ptr as *const c_void,
+            record.aux,
+            generation,
+            runtime_session.clone(),
+        );
     }
 }
 
@@ -922,17 +2241,17 @@ fn latest_runtime_dispatch_table_entry_id(
         .filter(|entry_id| !entry_id.trim().is_empty())
 }
 
-pub fn latest_dispatch_id_for_generation(
-    generation: u64,
-    runtime_session: &str,
-) -> Option<String> {
+pub fn latest_dispatch_id_for_generation(generation: u64, runtime_session: &str) -> Option<String> {
     let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
     guard
         .launches
         .iter()
         .rev()
         .find(|record| {
-            record.active_generation == generation && record.runtime_session_id == runtime_session
+            record.active_generation == generation
+                && record.runtime_session_id == runtime_session
+                && record.dispatched
+                && record.dispatch_error.is_none()
         })
         .and_then(|record| record.dispatch_id.clone())
         .filter(|dispatch_id| !dispatch_id.trim().is_empty())
@@ -980,6 +2299,14 @@ fn epoch_millis_now() -> u128 {
         .unwrap_or(0)
 }
 
+pub fn monotonic_timestamp_ns() -> u128 {
+    MONOTONIC_ORIGIN
+        .get_or_init(Instant::now)
+        .elapsed()
+        .as_nanos()
+        .saturating_add(1)
+}
+
 fn append_log_token(line: &mut String, key: &str, value: Option<&str>) {
     if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
         line.push(' ');
@@ -1013,10 +2340,21 @@ fn record_output_oracle_event_with_metadata(
     expected: String,
     actual: String,
     passed: bool,
-    metadata: OutputOracleMetadata,
+    mut metadata: OutputOracleMetadata,
 ) {
-    let generation = current_launch_generation();
+    let (generation, active_dispatcher_metadata) = dispatcher_attribution_snapshot();
+    #[cfg(test)]
+    run_dispatcher_snapshot_test_hook();
     let runtime_session = runtime_session_id().to_string();
+    metadata.artifact_id = metadata
+        .artifact_id
+        .filter(|artifact_id| !artifact_id.trim().is_empty())
+        .or_else(|| {
+            active_dispatcher_metadata
+                .and_then(|active| active.artifact_id)
+                .filter(|artifact_id| !artifact_id.trim().is_empty())
+        });
+    let readback_timestamp_monotonic_ns = monotonic_timestamp_ns();
     let after_dispatch_id = metadata
         .after_dispatch_id
         .clone()
@@ -1033,6 +2371,7 @@ fn record_output_oracle_event_with_metadata(
             producer: metadata.producer.clone(),
             output_target_id: metadata.output_target_id.clone(),
             readback_timestamp_ms: metadata.readback_timestamp_ms,
+            readback_timestamp_monotonic_ns,
             artifact_id: metadata.artifact_id.clone(),
             after_dispatch_id: after_dispatch_id.clone(),
             visual_evidence_ref: metadata.visual_evidence_ref.clone(),
@@ -1070,12 +2409,10 @@ fn record_output_oracle_event_with_metadata(
         line.push_str(" readback_timestamp=");
         line.push_str(&readback_timestamp_ms.to_string());
     }
+    line.push_str(" readback_timestamp_monotonic_ns=");
+    line.push_str(&readback_timestamp_monotonic_ns.to_string());
     append_log_token(&mut line, "artifact_id", metadata.artifact_id.as_deref());
-    append_log_token(
-        &mut line,
-        "after_dispatch_id",
-        after_dispatch_id.as_deref(),
-    );
+    append_log_token(&mut line, "after_dispatch_id", after_dispatch_id.as_deref());
     append_log_token(
         &mut line,
         "visual_evidence_ref",
@@ -1229,7 +2566,7 @@ pub extern "C" fn synthi_gpu_record_output_oracle_with_provenance(
             producer: cstr(producer),
             output_target_id: cstr(output_target_id),
             readback_timestamp_ms: Some(epoch_millis_now()),
-            artifact_id: cstr_or_active_artifact_id(artifact_id),
+            artifact_id: cstr(artifact_id),
             visual_evidence_ref: cstr(visual_evidence_ref),
             ..OutputOracleMetadata::default()
         },
@@ -1267,7 +2604,7 @@ pub extern "C" fn synthi_gpu_record_output_oracle_with_probe(
             producer: cstr(producer),
             output_target_id: cstr(output_target_id),
             readback_timestamp_ms: Some(epoch_millis_now()),
-            artifact_id: cstr_or_active_artifact_id(artifact_id),
+            artifact_id: cstr(artifact_id),
             visual_evidence_ref: cstr(visual_evidence_ref),
             probe_mode: cstr(probe_mode),
             probe_config_hash: cstr(probe_config_hash),
@@ -1336,7 +2673,7 @@ pub extern "C" fn synthi_gpu_record_output_buffer_checksum_with_provenance(
         producer: cstr(producer),
         output_target_id: cstr(output_target_id),
         readback_timestamp_ms: Some(epoch_millis_now()),
-        artifact_id: cstr_or_active_artifact_id(artifact_id),
+        artifact_id: cstr(artifact_id),
         visual_evidence_ref: cstr(visual_evidence_ref),
         ..OutputOracleMetadata::default()
     };
@@ -1384,7 +2721,7 @@ pub extern "C" fn synthi_gpu_record_output_buffer_checksum_with_probe(
         producer: cstr(producer),
         output_target_id: cstr(output_target_id),
         readback_timestamp_ms: Some(epoch_millis_now()),
-        artifact_id: cstr_or_active_artifact_id(artifact_id),
+        artifact_id: cstr(artifact_id),
         visual_evidence_ref: cstr(visual_evidence_ref),
         probe_mode: cstr(probe_mode),
         probe_config_hash: cstr(probe_config_hash),
@@ -1454,9 +2791,7 @@ pub fn record_output_buffer_checksum_with_probe_bytes_after_dispatch(
         producer: Some(producer.to_string()),
         output_target_id: Some(output_target_id.to_string()),
         readback_timestamp_ms: Some(epoch_millis_now()),
-        artifact_id: artifact_id.map(str::to_string).or_else(|| {
-            dispatcher_metadata_snapshot().and_then(|metadata| metadata.artifact_id)
-        }),
+        artifact_id: artifact_id.map(str::to_string),
         after_dispatch_id: after_dispatch_id.map(str::to_string),
         visual_evidence_ref: visual_evidence_ref.map(str::to_string),
         probe_mode: Some(probe_mode.to_string()),
@@ -1567,6 +2902,7 @@ pub extern "C" fn synthi_gpu_launch_raw_checked(
         expected_generation,
         None,
     )
+    .dispatched
 }
 
 #[no_mangle]
@@ -1598,6 +2934,7 @@ pub extern "C" fn synthi_gpu_launch_raw_arg_info_checked(
         expected_generation,
         None,
     )
+    .dispatched
 }
 
 #[no_mangle]
@@ -1642,6 +2979,7 @@ pub extern "C" fn synthi_gpu_launch_original_host_path_raw_arg_info_checked(
         expected_generation,
         original_host_path,
     )
+    .dispatched
 }
 
 #[no_mangle]
@@ -1684,6 +3022,7 @@ pub extern "C" fn synthi_gpu_launch_source_location_raw_arg_info_checked(
         expected_generation,
         original_host_path,
     )
+    .dispatched
 }
 
 #[no_mangle]
@@ -1714,6 +3053,7 @@ pub extern "C" fn synthi_gpu_launch_raw(
         current_launch_generation(),
         None,
     )
+    .dispatched
 }
 
 #[no_mangle]
@@ -1735,6 +3075,71 @@ pub extern "C" fn synthi_gpu_launch_raw_arg_info(
         _grid,
         grid_size,
         _block,
+        block_size,
+        shared_bytes,
+        stream_token,
+        std::ptr::null(),
+        args,
+        arg_count,
+        current_launch_generation(),
+        None,
+    )
+    .dispatched
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuLaunchReceipt {
+    pub dispatched: bool,
+    pub dispatch_id: String,
+    pub active_generation: u64,
+    pub runtime_session_id: String,
+    pub stream_token: usize,
+    pub dispatch_timestamp_monotonic_ns: u128,
+    pub dispatch_slot: Option<GpuDispatchSlotBinding>,
+    pub dispatch_device_attestation: Option<GpuDispatchDeviceAttestation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuDispatchDeviceAttestationRecord {
+    pub runtime_session_id: String,
+    pub active_generation: u64,
+    pub dispatch_id: String,
+    pub dispatch_timestamp_monotonic_ns: u128,
+    pub attestation: GpuDispatchDeviceAttestation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuDispatchDeviceAttestationRejectionRecord {
+    pub runtime_session_id: String,
+    pub active_generation: u64,
+    pub dispatch_id: String,
+    pub dispatch_timestamp_monotonic_ns: u128,
+    pub native_dispatch_occurred: bool,
+    pub error: String,
+}
+
+/// Rust-only launch entry point that returns the identity of this exact
+/// dispatch. Callers that bind output evidence must use this receipt instead
+/// of querying whichever launch happened to be recorded most recently.
+#[allow(clippy::too_many_arguments)]
+pub fn synthi_gpu_launch_raw_arg_info_with_receipt(
+    gpu: *mut c_void,
+    kernel_name: *const c_char,
+    grid: *const c_void,
+    grid_size: usize,
+    block: *const c_void,
+    block_size: usize,
+    shared_bytes: usize,
+    stream_token: usize,
+    args: *const SynthiGpuLaunchArg,
+    arg_count: usize,
+) -> GpuLaunchReceipt {
+    synthi_gpu_launch_raw_impl(
+        gpu,
+        kernel_name,
+        grid,
+        grid_size,
+        block,
         block_size,
         shared_bytes,
         stream_token,
@@ -1766,17 +3171,29 @@ fn synthi_gpu_launch_raw_impl(
     arg_count: usize,
     expected_generation: u64,
     original_host_path: Option<OriginalHostPathLaunchAttachment>,
-) -> bool {
+) -> GpuLaunchReceipt {
     let kernel_name_ptr = kernel_name.cast::<c_void>();
     let kernel_name = cstr(kernel_name).unwrap_or_else(|| "<unknown>".to_string());
     let grid_decoded = decode_launch_dims("grid", _grid, grid_size);
     let block_decoded = decode_launch_dims("block", _block, block_size);
     let grid = grid_decoded.dims;
     let block = block_decoded.dims;
-    let active_generation = current_launch_generation();
+    let dispatcher_lease = active_dispatcher_snapshot();
+    let active_generation = dispatcher_lease.generation;
+    let dispatcher = dispatcher_lease.dispatcher.clone();
+    let active_dispatcher_metadata = dispatcher_lease.metadata.clone();
+    let dispatcher_blocked_error = dispatcher_lease.blocked_error.clone();
+    #[cfg(test)]
+    run_dispatcher_snapshot_test_hook();
     let runtime_session_id = runtime_session_id().to_string();
-    let active_dispatcher_metadata =
-        dispatcher_metadata_snapshot().filter(|metadata| metadata.generation == active_generation);
+    let dispatch_slot = active_dispatcher_metadata.as_ref().and_then(|metadata| {
+        dispatch_slot_binding(
+            &runtime_session_id,
+            active_generation,
+            metadata,
+            &kernel_name,
+        )
+    });
     let active_dispatch_table_entry_id = active_dispatcher_metadata
         .as_ref()
         .and_then(|metadata| dispatch_table_entry_id_for_kernel(metadata, &kernel_name));
@@ -1785,6 +3202,8 @@ fn synthi_gpu_launch_raw_impl(
         kernel_name_ptr,
         _gpu.cast_const(),
         stream_token,
+        active_generation,
+        &runtime_session_id,
     );
     if let Some(attachment) = original_host_path {
         let dispatch_table_entry_id = attachment
@@ -1817,7 +3236,7 @@ fn synthi_gpu_launch_raw_impl(
         arg_value_ptrs.as_ptr()
     };
 
-    let (launch_index, dispatcher, arg_provenance, arg_provenance_complete) = {
+    let (launch_index, arg_provenance, arg_provenance_complete) = {
         let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
         for record in guard.buffers_by_ptr.values_mut() {
             // Until launch-graph write-set inference is connected, every launch
@@ -1854,23 +3273,27 @@ fn synthi_gpu_launch_raw_impl(
             dispatched: false,
             dispatch_id: None,
             dispatch_timestamp_ms: None,
+            dispatch_timestamp_monotonic_ns: None,
             dispatch_error: None,
         });
-        let dispatcher = if stale_generation {
-            None
-        } else {
-            dispatcher_slot()
-                .lock()
-                .expect("gpu runtime dispatcher mutex poisoned")
-                .clone()
-        };
-        (
-            launch_index,
-            dispatcher,
-            arg_provenance,
-            arg_provenance_complete,
-        )
+        (launch_index, arg_provenance, arg_provenance_complete)
     };
+    let challenge_started_timestamp_ms = epoch_millis_now();
+    let challenge_started_monotonic_ns = monotonic_timestamp_ns();
+    let dispatch_challenge_id = dispatch_id_for_launch(
+        &runtime_session_id,
+        active_generation,
+        launch_index,
+        &kernel_name,
+        challenge_started_timestamp_ms,
+    );
+    let dispatch_attestation_challenge = GpuDispatchAttestationChallenge::new(
+        runtime_session_id.clone(),
+        active_generation,
+        dispatch_challenge_id,
+        stream_token,
+        challenge_started_monotonic_ns,
+    );
 
     let invalid_launch_dims = grid_decoded
         .invalid_reason
@@ -1878,16 +3301,28 @@ fn synthi_gpu_launch_raw_impl(
         .map(|reason| format!("gpu_launch_invalid_dimensions: {reason}"));
 
     let dispatch_result = if let Some(reason) = invalid_launch_dims {
-        Some(Err(reason))
+        Some(Err(GpuDispatchAttestationError::native_dispatch_failed(
+            reason,
+        )))
     } else if stale_generation {
-        Some(Err("reload_failed.stale_launch_pointer".to_string()))
+        Some(Err(GpuDispatchAttestationError::native_dispatch_failed(
+            "reload_failed.stale_launch_pointer",
+        )))
+    } else if let Some(reason) = dispatcher_blocked_error {
+        Some(Err(GpuDispatchAttestationError::native_dispatch_failed(
+            reason,
+        )))
     } else {
-        dispatcher
-            .as_ref()
-            .map(|d| d.dispatch(&request, dispatch_args))
+        dispatcher.as_ref().map(|d| {
+            with_dispatch_attestation_challenge(dispatch_attestation_challenge.clone(), || {
+                d.dispatch_with_device_attestation(&request, dispatch_args)
+            })
+        })
     };
+    drop(dispatcher_lease);
 
     let dispatch_timestamp_ms = epoch_millis_now();
+    let dispatch_timestamp_monotonic_ns = monotonic_timestamp_ns();
     let dispatch_id = dispatch_id_for_launch(
         &runtime_session_id,
         active_generation,
@@ -1895,16 +3330,42 @@ fn synthi_gpu_launch_raw_impl(
         &kernel_name,
         dispatch_timestamp_ms,
     );
+    let mut returned_dispatch_device_attestation = None;
+    let mut returned_dispatch_device_attestation_error = None;
+    let mut attestation_rejection_native_dispatch_occurred = false;
     let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
     if let Some(record) = guard.launches.get_mut(launch_index) {
         record.dispatch_id = Some(dispatch_id.clone());
         record.dispatch_timestamp_ms = Some(dispatch_timestamp_ms);
+        record.dispatch_timestamp_monotonic_ns = Some(dispatch_timestamp_monotonic_ns);
         match dispatch_result {
-            Some(Ok(())) => {
+            Some(Ok(mut attestation)) => {
                 record.dispatched = true;
+                match attestation.validate_for_challenge(
+                    &dispatch_attestation_challenge,
+                    &dispatch_id,
+                    dispatch_timestamp_monotonic_ns,
+                ) {
+                    Ok(()) => {
+                        returned_dispatch_device_attestation = Some(attestation);
+                    }
+                    Err(error) => {
+                        attestation_rejection_native_dispatch_occurred = true;
+                        returned_dispatch_device_attestation_error = Some(error);
+                    }
+                }
             }
-            Some(Err(e)) => {
+            Some(Err(GpuDispatchAttestationError::NativeDispatchFailed(e))) => {
                 record.dispatch_error = Some(e);
+            }
+            Some(Err(GpuDispatchAttestationError::AttestationRejectedBeforeDispatch(error))) => {
+                record.dispatch_error = Some(error.clone());
+                returned_dispatch_device_attestation_error = Some(error);
+            }
+            Some(Err(GpuDispatchAttestationError::AttestationRejectedAfterDispatch(error))) => {
+                record.dispatched = true;
+                attestation_rejection_native_dispatch_occurred = true;
+                returned_dispatch_device_attestation_error = Some(error);
             }
             None => {
                 record.dispatch_error = Some("no GPU launch dispatcher installed".to_string());
@@ -1917,12 +3378,40 @@ fn synthi_gpu_launch_raw_impl(
         let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
         match guard.launches.get(launch_index) {
             Some(record) => (
-                record.dispatch_error.is_none(),
+                record.dispatched && record.dispatch_error.is_none(),
                 record.dispatch_error.clone(),
             ),
             None => (false, Some("launch record disappeared".to_string())),
         }
     };
+    let dispatch_device_attestation = returned_dispatch_device_attestation;
+    if let Some(attestation) = dispatch_device_attestation.as_ref() {
+        state()
+            .lock()
+            .expect("gpu runtime boundary mutex poisoned")
+            .dispatch_device_attestations
+            .push(GpuDispatchDeviceAttestationRecord {
+                runtime_session_id: runtime_session_id.clone(),
+                active_generation,
+                dispatch_id: dispatch_id.clone(),
+                dispatch_timestamp_monotonic_ns,
+                attestation: attestation.clone(),
+            });
+    }
+    if let Some(error) = returned_dispatch_device_attestation_error.as_ref() {
+        state()
+            .lock()
+            .expect("gpu runtime boundary mutex poisoned")
+            .dispatch_device_attestation_rejections
+            .push(GpuDispatchDeviceAttestationRejectionRecord {
+                runtime_session_id: runtime_session_id.clone(),
+                active_generation,
+                dispatch_id: dispatch_id.clone(),
+                dispatch_timestamp_monotonic_ns,
+                native_dispatch_occurred: attestation_rejection_native_dispatch_occurred,
+                error: error.clone(),
+            });
+    }
     let dispatch_label = if stale_generation {
         "stale-pointer"
     } else if dispatcher.is_some() {
@@ -1952,7 +3441,7 @@ fn synthi_gpu_launch_raw_impl(
 
     if let Some(error) = dispatch_error.as_deref() {
         eprintln!(
-            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} generation={} runtime_session={} artifact_id={} dispatcher_registration_id={} dispatch_table_hash={} dispatch_table_entry_id={} dispatch_timestamp={} dispatch_id={} error={}",
+            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} generation={} runtime_session={} artifact_id={} dispatcher_registration_id={} dispatch_table_hash={} dispatch_table_entry_id={} dispatch_timestamp={} dispatch_timestamp_monotonic_ns={} dispatch_id={} error={}",
             kernel_name,
             grid,
             block,
@@ -1967,13 +3456,14 @@ fn synthi_gpu_launch_raw_impl(
             log_token(dispatch_table_hash),
             log_token(&dispatch_table_entry_id),
             dispatch_timestamp_ms,
+            dispatch_timestamp_monotonic_ns,
             log_token(&dispatch_id),
             log_safe(error)
         );
         maybe_emit_launch_failure_status(&kernel_name, error, dispatch_label, active_generation);
     } else {
         eprintln!(
-            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} generation={} runtime_session={} artifact_id={} dispatcher_registration_id={} dispatch_table_hash={} dispatch_table_entry_id={} dispatch_timestamp={} dispatch_id={}",
+            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} generation={} runtime_session={} artifact_id={} dispatcher_registration_id={} dispatch_table_hash={} dispatch_table_entry_id={} dispatch_timestamp={} dispatch_timestamp_monotonic_ns={} dispatch_id={}",
             kernel_name,
             grid,
             block,
@@ -1988,9 +3478,74 @@ fn synthi_gpu_launch_raw_impl(
             log_token(dispatch_table_hash),
             log_token(&dispatch_table_entry_id),
             dispatch_timestamp_ms,
+            dispatch_timestamp_monotonic_ns,
             log_token(&dispatch_id)
         );
     }
+    let verified_dispatch_device = dispatch_device_attestation
+        .as_ref()
+        .and_then(GpuDispatchDeviceAttestation::verified_observation);
+    let attestation_event = if verified_dispatch_device.is_some() {
+        "verified"
+    } else {
+        "refused"
+    };
+    let attestation_authority = dispatch_device_attestation
+        .as_ref()
+        .map(|attestation| attestation.authority.as_str())
+        .unwrap_or(GPU_DISPATCH_DEVICE_ATTESTATION_UNAVAILABLE_AUTHORITY);
+    let attestation_thread = dispatch_device_attestation
+        .as_ref()
+        .map(|attestation| attestation.host_thread_id.as_str())
+        .unwrap_or("none");
+    let attestation_gap = dispatch_device_attestation
+        .as_ref()
+        .and_then(|attestation| attestation.blocking_gap.as_deref())
+        .or_else(|| returned_dispatch_device_attestation_error.as_deref())
+        .or_else(|| dispatch_error.as_deref())
+        .unwrap_or("none");
+    let attestation_nonce = dispatch_device_attestation
+        .as_ref()
+        .and_then(GpuDispatchDeviceAttestation::challenge_nonce)
+        .unwrap_or("none");
+    let attestation_started_monotonic_ns = dispatch_device_attestation
+        .as_ref()
+        .and_then(GpuDispatchDeviceAttestation::challenge_started_monotonic_ns)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let attestation_completed_monotonic_ns = dispatch_device_attestation
+        .as_ref()
+        .and_then(GpuDispatchDeviceAttestation::completed_monotonic_ns)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let attested_device_ordinal = verified_dispatch_device
+        .map(|observation| observation.device_ordinal.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let attested_stream_device_ordinal = verified_dispatch_device
+        .map(|observation| observation.stream_device_ordinal.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let attested_device_identity = verified_dispatch_device
+        .map(GpuDispatchDeviceObservation::identity_key)
+        .unwrap_or_else(|| "none".to_string());
+    eprintln!(
+        "[gpu-runtime-boundary] dispatch_device_attestation schema={} event={} runtime_session={} process_id=pid:{} generation={} dispatch_id={} stream_token={} host_thread_id={} authority={} dispatch_nonce={} challenge_started_monotonic_ns={} attestation_completed_monotonic_ns={} device_ordinal={} stream_device_ordinal={} device_identity_key={} blocking_gap={} accepted_for_gpu_hmr=false gpu_hmr_success=false can_satisfy_runtime_proof=false can_satisfy_dispatch_proof=false",
+        GPU_DISPATCH_DEVICE_ATTESTATION_SCHEMA,
+        attestation_event,
+        runtime_session_id,
+        std::process::id(),
+        active_generation,
+        log_token(&dispatch_id),
+        stream_token,
+        log_token(attestation_thread),
+        log_token(attestation_authority),
+        log_token(attestation_nonce),
+        attestation_started_monotonic_ns,
+        attestation_completed_monotonic_ns,
+        attested_device_ordinal,
+        attested_stream_device_ordinal,
+        log_token(&attested_device_identity),
+        log_safe(attestation_gap),
+    );
     let known_arg_count = arg_provenance
         .iter()
         .filter(|arg| arg_provenance_is_runtime_proven(arg))
@@ -2002,12 +3557,13 @@ fn synthi_gpu_launch_raw_impl(
         "gpu-hmr-unknown-arg-provenance"
     };
     eprintln!(
-        "[gpu-runtime-boundary] launch_arg_provenance kernel={} generation={} runtime_session={} dispatch_table_entry_id={} dispatch_timestamp={} dispatch_id={} complete={} known_args={} unknown_args={} degradedState={} details={}",
+        "[gpu-runtime-boundary] launch_arg_provenance kernel={} generation={} runtime_session={} dispatch_table_entry_id={} dispatch_timestamp={} dispatch_timestamp_monotonic_ns={} dispatch_id={} complete={} known_args={} unknown_args={} degradedState={} details={}",
         kernel_name,
         active_generation,
         runtime_session_id,
         log_token(&dispatch_table_entry_id),
         dispatch_timestamp_ms,
+        dispatch_timestamp_monotonic_ns,
         log_token(&dispatch_id),
         arg_provenance_complete,
         known_arg_count,
@@ -2015,7 +3571,16 @@ fn synthi_gpu_launch_raw_impl(
         degraded_state,
         log_safe(&arg_provenance_details(&arg_provenance))
     );
-    ok
+    GpuLaunchReceipt {
+        dispatched: ok,
+        dispatch_id,
+        active_generation,
+        runtime_session_id,
+        stream_token,
+        dispatch_timestamp_monotonic_ns,
+        dispatch_slot,
+        dispatch_device_attestation,
+    }
 }
 
 #[no_mangle]
@@ -2077,6 +3642,17 @@ pub fn managed_buffers_snapshot() -> Vec<ManagedBufferRecord> {
 pub fn launch_records_snapshot() -> Vec<LaunchRecord> {
     let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
     guard.launches.clone()
+}
+
+pub fn dispatch_device_attestation_records_snapshot() -> Vec<GpuDispatchDeviceAttestationRecord> {
+    let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+    guard.dispatch_device_attestations.clone()
+}
+
+pub fn dispatch_device_attestation_rejection_records_snapshot(
+) -> Vec<GpuDispatchDeviceAttestationRejectionRecord> {
+    let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+    guard.dispatch_device_attestation_rejections.clone()
 }
 
 pub fn host_identity_records_snapshot() -> Vec<HostIdentityRecord> {
@@ -2183,8 +3759,13 @@ fn maybe_emit_launch_failure_status(
 pub fn reset_for_test() {
     let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
     *guard = BoundaryState::default();
-    clear_launch_dispatcher();
-    LAUNCH_GENERATION.store(1, Ordering::SeqCst);
+    drop(guard);
+    *lock_dispatcher_state() = DispatcherState::default();
+    dispatcher_state_changed().notify_all();
+    *DISPATCHER_SNAPSHOT_TEST_HOOK
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .expect("gpu runtime dispatcher snapshot test hook mutex poisoned") = None;
 }
 
 #[cfg(test)]
@@ -2199,7 +3780,7 @@ pub fn test_guard_for_test() -> std::sync::MutexGuard<'static, ()> {
 mod tests {
     use super::*;
     use std::ffi::CString;
-    use std::sync::Arc;
+    use std::sync::{mpsc, Arc};
 
     #[test]
     fn register_pack_and_restore_managed_buffer() {
@@ -2344,6 +3925,47 @@ mod tests {
                 role_records[1].runtime_session_id
             );
         }
+    }
+
+    #[test]
+    fn identity_snapshot_keeps_one_generation_during_concurrent_publication() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let (_previous, first_generation) = install_launch_dispatcher_with_metadata(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: calls.clone(),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:identity-first".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+        );
+        set_dispatcher_snapshot_test_hook(move || {
+            install_launch_dispatcher_with_metadata(
+                Arc::new(TestDispatcher {
+                    should_fail: false,
+                    calls,
+                }),
+                GpuLaunchDispatcherMetadata {
+                    artifact_id: Some("artifact:sha256:identity-second".to_string()),
+                    ..GpuLaunchDispatcherMetadata::default()
+                },
+            );
+        });
+
+        record_hmr_runtime_identity_snapshot();
+
+        assert!(current_launch_generation() > first_generation);
+        let identities = host_identity_records_snapshot();
+        assert_eq!(identities.len(), 3);
+        assert!(identities
+            .iter()
+            .all(|identity| identity.generation == first_generation));
+        assert!(identities
+            .iter()
+            .all(|identity| { identity.runtime_session_id == runtime_session_id() }));
     }
 
     #[test]
@@ -2698,6 +4320,10 @@ mod tests {
             records[0].after_dispatch_id.as_deref(),
             Some(dispatch_id.as_str())
         );
+        let dispatch_timestamp = launch_records_snapshot()[0]
+            .dispatch_timestamp_monotonic_ns
+            .expect("dispatch monotonic timestamp");
+        assert!(records[0].readback_timestamp_monotonic_ns >= dispatch_timestamp);
     }
 
     #[test]
@@ -2755,6 +4381,52 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].artifact_id.as_deref(), Some("artifact:active"));
         assert_eq!(records[1].artifact_id.as_deref(), Some("artifact:active"));
+    }
+
+    #[test]
+    fn output_oracle_fallback_keeps_artifact_and_generation_atomic() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let (_previous, first_generation) = install_launch_dispatcher_with_metadata(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: calls.clone(),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:oracle-first".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+        );
+        set_dispatcher_snapshot_test_hook(move || {
+            install_launch_dispatcher_with_metadata(
+                Arc::new(TestDispatcher {
+                    should_fail: false,
+                    calls,
+                }),
+                GpuLaunchDispatcherMetadata {
+                    artifact_id: Some("artifact:sha256:oracle-second".to_string()),
+                    ..GpuLaunchDispatcherMetadata::default()
+                },
+            );
+        });
+
+        record_output_oracle_event(
+            "probe.atomic-attribution".to_string(),
+            "buffer_checksum".to_string(),
+            "sha256:expected".to_string(),
+            "sha256:expected".to_string(),
+            true,
+        );
+
+        assert!(current_launch_generation() > first_generation);
+        let records = output_oracle_records_snapshot();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].generation, first_generation);
+        assert_eq!(
+            records[0].artifact_id.as_deref(),
+            Some("artifact:sha256:oracle-first")
+        );
     }
 
     #[test]
@@ -3509,6 +5181,682 @@ mod tests {
         }
     }
 
+    fn launch_test_kernel(kernel_name: &str) -> bool {
+        let kernel = CString::new(kernel_name).unwrap();
+        let dim = 1_u32;
+        synthi_gpu_launch_raw(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0,
+            std::ptr::null(),
+            0,
+        )
+    }
+
+    #[derive(Debug, Default)]
+    struct BlockingDispatchState {
+        entered: bool,
+        released: bool,
+    }
+
+    struct BlockingDispatcher {
+        calls: Arc<Mutex<Vec<GpuLaunchRequest>>>,
+        state: Arc<(Mutex<BlockingDispatchState>, Condvar)>,
+    }
+
+    impl GpuLaunchDispatcher for BlockingDispatcher {
+        fn dispatch(
+            &self,
+            request: &GpuLaunchRequest,
+            _args: *const *const c_void,
+        ) -> Result<(), String> {
+            self.calls.lock().unwrap().push(request.clone());
+            let (lock, changed) = &*self.state;
+            let mut state = lock.lock().unwrap();
+            state.entered = true;
+            changed.notify_all();
+            while !state.released {
+                state = changed.wait(state).unwrap();
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct ObservationCallbackState {
+        entered: bool,
+        callback_requested: bool,
+        observation: Option<(u64, Option<String>)>,
+        nested_launch_result: Option<bool>,
+    }
+
+    struct ObservationCallbackDispatcher {
+        state: Arc<(Mutex<ObservationCallbackState>, Condvar)>,
+    }
+
+    impl GpuLaunchDispatcher for ObservationCallbackDispatcher {
+        fn dispatch(
+            &self,
+            _request: &GpuLaunchRequest,
+            _args: *const *const c_void,
+        ) -> Result<(), String> {
+            let (lock, changed) = &*self.state;
+            let mut state = lock.lock().unwrap();
+            state.entered = true;
+            changed.notify_all();
+            while !state.callback_requested {
+                state = changed.wait(state).unwrap();
+            }
+            drop(state);
+
+            let (observation, nested_launch_result) = std::thread::spawn(|| {
+                let (generation, metadata) = dispatcher_attribution_snapshot();
+                let observation = (
+                    generation,
+                    metadata.and_then(|metadata| metadata.artifact_id),
+                );
+                let kernel = CString::new("nested_callback_kernel").unwrap();
+                let dim = 1_u32;
+                let nested_launch_result = synthi_gpu_launch_raw(
+                    std::ptr::null_mut(),
+                    kernel.as_ptr(),
+                    (&dim as *const u32).cast(),
+                    std::mem::size_of_val(&dim),
+                    (&dim as *const u32).cast(),
+                    std::mem::size_of_val(&dim),
+                    0,
+                    0,
+                    std::ptr::null(),
+                    0,
+                );
+                (observation, nested_launch_result)
+            })
+            .join()
+            .unwrap();
+            let mut state = lock.lock().unwrap();
+            state.observation = Some(observation);
+            state.nested_launch_result = Some(nested_launch_result);
+            changed.notify_all();
+            Ok(())
+        }
+    }
+
+    struct AttestingTestDispatcher {
+        calls: std::sync::Arc<Mutex<Vec<GpuLaunchRequest>>>,
+        device_uuid: [u8; 16],
+    }
+
+    impl GpuLaunchDispatcher for AttestingTestDispatcher {
+        fn dispatch(
+            &self,
+            request: &GpuLaunchRequest,
+            _args: *const *const c_void,
+        ) -> Result<(), String> {
+            self.calls.lock().unwrap().push(request.clone());
+            Ok(())
+        }
+
+        fn dispatch_with_device_attestation(
+            &self,
+            request: &GpuLaunchRequest,
+            args: *const *const c_void,
+        ) -> Result<GpuDispatchDeviceAttestation, GpuDispatchAttestationError> {
+            self.dispatch(request, args)
+                .map_err(GpuDispatchAttestationError::native_dispatch_failed)?;
+            let before = GpuDispatchDeviceObservation::new(2, self.device_uuid, 2)
+                .map_err(GpuDispatchAttestationError::attestation_rejected_after_dispatch)?;
+            let after = GpuDispatchDeviceObservation::new(2, self.device_uuid, 2)
+                .map_err(GpuDispatchAttestationError::attestation_rejected_after_dispatch)?;
+            GpuDispatchDeviceAttestation::runtime_driver_observed(
+                request.stream_token,
+                before,
+                after,
+            )
+            .map_err(GpuDispatchAttestationError::attestation_rejected_after_dispatch)
+        }
+    }
+
+    struct AttestationRejectingAfterDispatch {
+        calls: Arc<Mutex<Vec<GpuLaunchRequest>>>,
+        error: &'static str,
+    }
+
+    struct AttestationRejectingBeforeDispatch {
+        calls: Arc<Mutex<Vec<GpuLaunchRequest>>>,
+        error: &'static str,
+    }
+
+    impl GpuLaunchDispatcher for AttestationRejectingBeforeDispatch {
+        fn dispatch(
+            &self,
+            request: &GpuLaunchRequest,
+            _args: *const *const c_void,
+        ) -> Result<(), String> {
+            self.calls.lock().unwrap().push(request.clone());
+            Ok(())
+        }
+
+        fn dispatch_with_device_attestation(
+            &self,
+            _request: &GpuLaunchRequest,
+            _args: *const *const c_void,
+        ) -> Result<GpuDispatchDeviceAttestation, GpuDispatchAttestationError> {
+            Err(GpuDispatchAttestationError::attestation_rejected_before_dispatch(self.error))
+        }
+    }
+
+    impl GpuLaunchDispatcher for AttestationRejectingAfterDispatch {
+        fn dispatch(
+            &self,
+            request: &GpuLaunchRequest,
+            _args: *const *const c_void,
+        ) -> Result<(), String> {
+            self.calls.lock().unwrap().push(request.clone());
+            Ok(())
+        }
+
+        fn dispatch_with_device_attestation(
+            &self,
+            request: &GpuLaunchRequest,
+            args: *const *const c_void,
+        ) -> Result<GpuDispatchDeviceAttestation, GpuDispatchAttestationError> {
+            self.dispatch(request, args)
+                .map_err(GpuDispatchAttestationError::native_dispatch_failed)?;
+            Err(GpuDispatchAttestationError::attestation_rejected_after_dispatch(self.error))
+        }
+    }
+
+    struct ReplayingAttestationDispatcher {
+        calls: Arc<Mutex<Vec<GpuLaunchRequest>>>,
+        cached: Arc<Mutex<Option<GpuDispatchDeviceAttestation>>>,
+        device_uuid: [u8; 16],
+    }
+
+    impl GpuLaunchDispatcher for ReplayingAttestationDispatcher {
+        fn dispatch(
+            &self,
+            request: &GpuLaunchRequest,
+            _args: *const *const c_void,
+        ) -> Result<(), String> {
+            self.calls.lock().unwrap().push(request.clone());
+            Ok(())
+        }
+
+        fn dispatch_with_device_attestation(
+            &self,
+            request: &GpuLaunchRequest,
+            args: *const *const c_void,
+        ) -> Result<GpuDispatchDeviceAttestation, GpuDispatchAttestationError> {
+            self.dispatch(request, args)
+                .map_err(GpuDispatchAttestationError::native_dispatch_failed)?;
+            let mut cached = self.cached.lock().unwrap();
+            if let Some(attestation) = cached.as_ref() {
+                return Ok(attestation.clone());
+            }
+            let before = GpuDispatchDeviceObservation::new(3, self.device_uuid, 3)
+                .map_err(GpuDispatchAttestationError::attestation_rejected_after_dispatch)?;
+            let after = GpuDispatchDeviceObservation::new(3, self.device_uuid, 3)
+                .map_err(GpuDispatchAttestationError::attestation_rejected_after_dispatch)?;
+            let attestation = GpuDispatchDeviceAttestation::runtime_driver_observed(
+                request.stream_token,
+                before,
+                after,
+            )
+            .map_err(GpuDispatchAttestationError::attestation_rejected_after_dispatch)?;
+            *cached = Some(attestation.clone());
+            Ok(attestation)
+        }
+    }
+
+    struct ReplayingUnavailableAttestationDispatcher {
+        calls: Arc<Mutex<Vec<GpuLaunchRequest>>>,
+        cached: Arc<Mutex<Option<GpuDispatchDeviceAttestation>>>,
+    }
+
+    impl GpuLaunchDispatcher for ReplayingUnavailableAttestationDispatcher {
+        fn dispatch(
+            &self,
+            request: &GpuLaunchRequest,
+            _args: *const *const c_void,
+        ) -> Result<(), String> {
+            self.calls.lock().unwrap().push(request.clone());
+            Ok(())
+        }
+
+        fn dispatch_with_device_attestation(
+            &self,
+            request: &GpuLaunchRequest,
+            args: *const *const c_void,
+        ) -> Result<GpuDispatchDeviceAttestation, GpuDispatchAttestationError> {
+            self.dispatch(request, args)
+                .map_err(GpuDispatchAttestationError::native_dispatch_failed)?;
+            let mut cached = self.cached.lock().unwrap();
+            if let Some(attestation) = cached.as_ref() {
+                return Ok(attestation.clone());
+            }
+            let attestation = GpuDispatchDeviceAttestation::unavailable(
+                request.stream_token,
+                "native_dispatch_device_observation_unavailable",
+            );
+            *cached = Some(attestation.clone());
+            Ok(attestation)
+        }
+    }
+
+    struct PanickingOnceAttestationDispatcher {
+        calls: Arc<Mutex<Vec<GpuLaunchRequest>>>,
+        panic_next: Arc<Mutex<bool>>,
+        device_uuid: [u8; 16],
+    }
+
+    impl GpuLaunchDispatcher for PanickingOnceAttestationDispatcher {
+        fn dispatch(
+            &self,
+            request: &GpuLaunchRequest,
+            _args: *const *const c_void,
+        ) -> Result<(), String> {
+            self.calls.lock().unwrap().push(request.clone());
+            let should_panic = {
+                let mut panic_next = self.panic_next.lock().unwrap();
+                let should_panic = *panic_next;
+                *panic_next = false;
+                should_panic
+            };
+            if should_panic {
+                panic!("synthetic dispatcher panic");
+            }
+            Ok(())
+        }
+
+        fn dispatch_with_device_attestation(
+            &self,
+            request: &GpuLaunchRequest,
+            args: *const *const c_void,
+        ) -> Result<GpuDispatchDeviceAttestation, GpuDispatchAttestationError> {
+            self.dispatch(request, args)
+                .map_err(GpuDispatchAttestationError::native_dispatch_failed)?;
+            let before = GpuDispatchDeviceObservation::new(5, self.device_uuid, 5)
+                .map_err(GpuDispatchAttestationError::attestation_rejected_after_dispatch)?;
+            let after = GpuDispatchDeviceObservation::new(5, self.device_uuid, 5)
+                .map_err(GpuDispatchAttestationError::attestation_rejected_after_dispatch)?;
+            GpuDispatchDeviceAttestation::runtime_driver_observed(
+                request.stream_token,
+                before,
+                after,
+            )
+            .map_err(GpuDispatchAttestationError::attestation_rejected_after_dispatch)
+        }
+    }
+
+    #[test]
+    fn dispatch_device_attestation_rejects_invalid_or_changed_identity() {
+        let uuid = [0xabu8; 16];
+        assert_eq!(
+            GpuDispatchDeviceObservation::new(-1, uuid, 0),
+            Err("dispatch_device_ordinal_invalid".to_string())
+        );
+        assert_eq!(
+            GpuDispatchDeviceObservation::new(0, [0u8; 16], 0),
+            Err("dispatch_device_uuid_all_zero".to_string())
+        );
+        assert_eq!(
+            GpuDispatchDeviceObservation::new(0, uuid, 1),
+            Err("dispatch_stream_device_mismatch".to_string())
+        );
+
+        let before = GpuDispatchDeviceObservation::new(0, uuid, 0).unwrap();
+        let after = GpuDispatchDeviceObservation::new(0, [0xcdu8; 16], 0).unwrap();
+        assert_eq!(
+            GpuDispatchDeviceAttestation::runtime_driver_observed(0, before, after),
+            Err("dispatch_device_uuid_changed".to_string())
+        );
+    }
+
+    #[test]
+    fn exact_dispatch_receipt_retains_runtime_owned_device_attestation() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let device_uuid = [0x42u8; 16];
+        install_launch_dispatcher(Arc::new(AttestingTestDispatcher {
+            calls: calls.clone(),
+            device_uuid,
+        }));
+
+        let kernel = CString::new("attested_dispatch").unwrap();
+        let dim = 1_u32;
+        let receipt = synthi_gpu_launch_raw_arg_info_with_receipt(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0xfeed,
+            std::ptr::null(),
+            0,
+        );
+
+        assert!(receipt.dispatched);
+        let receipt_attestation = receipt
+            .dispatch_device_attestation
+            .as_ref()
+            .expect("exact dispatch device attestation");
+        let observation = receipt_attestation
+            .verified_observation()
+            .expect("verified dispatch observation");
+        assert_eq!(receipt_attestation.stream_token, 0xfeed);
+        assert_eq!(observation.device_ordinal, 2);
+        assert_eq!(observation.stream_device_ordinal, 2);
+        assert_eq!(observation.device_uuid, device_uuid);
+        assert_eq!(
+            receipt_attestation.challenge_runtime_session_id(),
+            Some(receipt.runtime_session_id.as_str())
+        );
+        assert_eq!(
+            receipt_attestation.challenge_active_generation(),
+            Some(receipt.active_generation)
+        );
+        assert_eq!(
+            receipt_attestation.challenge_dispatch_id(),
+            Some(receipt.dispatch_id.as_str())
+        );
+        assert!(receipt_attestation
+            .challenge_nonce()
+            .is_some_and(|nonce| nonce.starts_with("dispatch-nonce:sha256:")));
+        let expected_nonce = dispatch_attestation_nonce(
+            &receipt.runtime_session_id,
+            receipt.active_generation,
+            &receipt.dispatch_id,
+            receipt.stream_token,
+            &receipt_attestation.host_thread_id,
+            receipt_attestation
+                .challenge_started_monotonic_ns()
+                .expect("attestation challenge start"),
+        );
+        assert_eq!(
+            receipt_attestation.challenge_nonce(),
+            Some(expected_nonce.as_str())
+        );
+        assert!(receipt_attestation
+            .challenge_started_monotonic_ns()
+            .is_some_and(|started| started <= receipt.dispatch_timestamp_monotonic_ns));
+        assert!(receipt_attestation
+            .completed_monotonic_ns()
+            .is_some_and(|completed| completed <= receipt.dispatch_timestamp_monotonic_ns));
+
+        let records = dispatch_device_attestation_records_snapshot();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].dispatch_id, receipt.dispatch_id);
+        assert_eq!(records[0].active_generation, receipt.active_generation);
+        assert_eq!(records[0].runtime_session_id, receipt.runtime_session_id);
+        assert_eq!(records[0].attestation, *receipt_attestation);
+        let launches = launch_records_snapshot();
+        assert_eq!(launches.len(), 1);
+        assert_eq!(
+            receipt.dispatch_id,
+            dispatch_id_for_launch(
+                &receipt.runtime_session_id,
+                receipt.active_generation,
+                0,
+                "attested_dispatch",
+                launches[0]
+                    .dispatch_timestamp_ms
+                    .expect("recorded dispatch timestamp"),
+            )
+        );
+        assert_eq!(calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn post_dispatch_attestation_rejection_preserves_native_launch_truth() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        install_launch_dispatcher(Arc::new(AttestationRejectingAfterDispatch {
+            calls: calls.clone(),
+            error: "dispatch_device_uuid_changed",
+        }));
+
+        let kernel = CString::new("attestation_rejected_after_dispatch").unwrap();
+        let dim = 1_u32;
+        let receipt = synthi_gpu_launch_raw_arg_info_with_receipt(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0x77,
+            std::ptr::null(),
+            0,
+        );
+
+        assert!(receipt.dispatched);
+        assert!(receipt.dispatch_device_attestation.is_none());
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        let launches = launch_records_snapshot();
+        assert_eq!(launches.len(), 1);
+        assert!(launches[0].dispatched);
+        assert!(launches[0].dispatch_error.is_none());
+        let rejections = dispatch_device_attestation_rejection_records_snapshot();
+        assert_eq!(rejections.len(), 1);
+        assert_eq!(rejections[0].dispatch_id, receipt.dispatch_id);
+        assert!(rejections[0].native_dispatch_occurred);
+        assert_eq!(rejections[0].error, "dispatch_device_uuid_changed");
+    }
+
+    #[test]
+    fn pre_dispatch_attestation_rejection_prevents_native_launch() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        install_launch_dispatcher(Arc::new(AttestationRejectingBeforeDispatch {
+            calls: calls.clone(),
+            error: "device_identity_active_device_symbol_missing",
+        }));
+
+        let kernel = CString::new("attestation_rejected_before_dispatch").unwrap();
+        let dim = 1_u32;
+        let receipt = synthi_gpu_launch_raw_arg_info_with_receipt(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0x77,
+            std::ptr::null(),
+            0,
+        );
+
+        assert!(!receipt.dispatched);
+        assert!(receipt.dispatch_device_attestation.is_none());
+        assert!(calls.lock().unwrap().is_empty());
+        let launches = launch_records_snapshot();
+        assert_eq!(launches.len(), 1);
+        assert!(!launches[0].dispatched);
+        assert_eq!(
+            launches[0].dispatch_error.as_deref(),
+            Some("device_identity_active_device_symbol_missing")
+        );
+        let rejections = dispatch_device_attestation_rejection_records_snapshot();
+        assert_eq!(rejections.len(), 1);
+        assert_eq!(rejections[0].dispatch_id, receipt.dispatch_id);
+        assert!(!rejections[0].native_dispatch_occurred);
+        assert_eq!(
+            rejections[0].error,
+            "device_identity_active_device_symbol_missing"
+        );
+    }
+
+    #[test]
+    fn stale_device_attestation_replay_is_rejected_for_the_new_dispatch() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let cached = Arc::new(Mutex::new(None));
+        install_launch_dispatcher(Arc::new(ReplayingAttestationDispatcher {
+            calls: calls.clone(),
+            cached,
+            device_uuid: [0x24u8; 16],
+        }));
+
+        let kernel = CString::new("replayed_attestation").unwrap();
+        let dim = 1_u32;
+        let first = synthi_gpu_launch_raw_arg_info_with_receipt(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0x44,
+            std::ptr::null(),
+            0,
+        );
+        let second = synthi_gpu_launch_raw_arg_info_with_receipt(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0x44,
+            std::ptr::null(),
+            0,
+        );
+
+        assert!(first.dispatched);
+        assert!(second.dispatched);
+        assert_ne!(first.dispatch_id, second.dispatch_id);
+        assert!(second.dispatch_device_attestation.is_none());
+        let launches = launch_records_snapshot();
+        assert_eq!(launches.len(), 2);
+        assert!(launches[1].dispatched);
+        assert!(launches[1].dispatch_error.is_none());
+        let rejections = dispatch_device_attestation_rejection_records_snapshot();
+        assert_eq!(rejections.len(), 1);
+        assert_eq!(rejections[0].dispatch_id, second.dispatch_id);
+        assert_eq!(
+            rejections[0].error,
+            "dispatch_device_attestation_challenge_mismatch"
+        );
+        let attestations = dispatch_device_attestation_records_snapshot();
+        assert_eq!(attestations.len(), 1);
+        assert_eq!(attestations[0].dispatch_id, first.dispatch_id);
+        assert_eq!(calls.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn stale_unavailable_attestation_replay_is_rejected_without_reclassifying_dispatch() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let cached = Arc::new(Mutex::new(None));
+        install_launch_dispatcher(Arc::new(ReplayingUnavailableAttestationDispatcher {
+            calls: calls.clone(),
+            cached,
+        }));
+
+        let kernel = CString::new("replayed_unavailable_attestation").unwrap();
+        let dim = 1_u32;
+        let launch = || {
+            synthi_gpu_launch_raw_arg_info_with_receipt(
+                std::ptr::null_mut(),
+                kernel.as_ptr(),
+                (&dim as *const u32).cast(),
+                std::mem::size_of_val(&dim),
+                (&dim as *const u32).cast(),
+                std::mem::size_of_val(&dim),
+                0,
+                0x55,
+                std::ptr::null(),
+                0,
+            )
+        };
+        let first = launch();
+        let second = launch();
+
+        assert!(first.dispatched);
+        assert!(first.dispatch_device_attestation.is_some());
+        assert!(second.dispatched);
+        assert!(second.dispatch_device_attestation.is_none());
+        let launches = launch_records_snapshot();
+        assert_eq!(launches.len(), 2);
+        assert!(launches[1].dispatched);
+        assert!(launches[1].dispatch_error.is_none());
+        let rejections = dispatch_device_attestation_rejection_records_snapshot();
+        assert_eq!(rejections.len(), 1);
+        assert_eq!(rejections[0].dispatch_id, second.dispatch_id);
+        assert_eq!(
+            rejections[0].error,
+            "dispatch_device_attestation_challenge_mismatch"
+        );
+        let attestations = dispatch_device_attestation_records_snapshot();
+        assert_eq!(attestations.len(), 1);
+        assert_eq!(attestations[0].dispatch_id, first.dispatch_id);
+        assert_eq!(calls.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn dispatcher_panic_cleans_up_attestation_challenge_stack() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        install_launch_dispatcher(Arc::new(PanickingOnceAttestationDispatcher {
+            calls: calls.clone(),
+            panic_next: Arc::new(Mutex::new(true)),
+            device_uuid: [0x61u8; 16],
+        }));
+
+        let kernel = CString::new("panic_cleanup").unwrap();
+        let dim = 1_u32;
+        let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            synthi_gpu_launch_raw_arg_info_with_receipt(
+                std::ptr::null_mut(),
+                kernel.as_ptr(),
+                (&dim as *const u32).cast(),
+                std::mem::size_of_val(&dim),
+                (&dim as *const u32).cast(),
+                std::mem::size_of_val(&dim),
+                0,
+                0x66,
+                std::ptr::null(),
+                0,
+            )
+        }));
+        assert!(first.is_err());
+        assert!(current_dispatch_attestation_challenge().is_none());
+
+        let second = synthi_gpu_launch_raw_arg_info_with_receipt(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0x66,
+            std::ptr::null(),
+            0,
+        );
+        assert!(second.dispatched);
+        assert!(second.dispatch_device_attestation.is_some());
+        assert!(current_dispatch_attestation_challenge().is_none());
+        assert_eq!(calls.lock().unwrap().len(), 2);
+    }
+
     #[test]
     fn launch_dispatcher_receives_decoded_dimensions() {
         let _guard = test_guard_for_test();
@@ -3549,6 +5897,7 @@ mod tests {
         assert!(launches[0].dispatched);
         assert!(launches[0].dispatch_error.is_none());
         assert!(launches[0].dispatch_timestamp_ms.is_some());
+        assert!(launches[0].dispatch_timestamp_monotonic_ns.is_some());
         assert_eq!(
             launches[0].expected_generation,
             launches[0].active_generation
@@ -3558,22 +5907,84 @@ mod tests {
     }
 
     #[test]
+    fn launch_receipt_identifies_its_exact_dispatch() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
+        install_launch_dispatcher(Arc::new(TestDispatcher {
+            should_fail: false,
+            calls,
+        }));
+
+        let first_kernel = CString::new("receipt_first").unwrap();
+        let second_kernel = CString::new("receipt_second").unwrap();
+        let dim = 1_u32;
+        let first = synthi_gpu_launch_raw_arg_info_with_receipt(
+            std::ptr::null_mut(),
+            first_kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            1,
+            (&dim as *const u32).cast(),
+            1,
+            0,
+            0x11,
+            std::ptr::null(),
+            0,
+        );
+        let second = synthi_gpu_launch_raw_arg_info_with_receipt(
+            std::ptr::null_mut(),
+            second_kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            1,
+            (&dim as *const u32).cast(),
+            1,
+            0,
+            0x22,
+            std::ptr::null(),
+            0,
+        );
+
+        assert!(first.dispatched);
+        assert!(second.dispatched);
+        assert_ne!(first.dispatch_id, second.dispatch_id);
+        assert_eq!(first.active_generation, second.active_generation);
+        assert_eq!(first.runtime_session_id, second.runtime_session_id);
+        assert_eq!(first.stream_token, 0x11);
+        assert_eq!(second.stream_token, 0x22);
+        let launches = launch_records_snapshot();
+        let first_record = launches
+            .iter()
+            .find(|record| record.dispatch_id.as_deref() == Some(first.dispatch_id.as_str()))
+            .expect("first receipt launch record");
+        let second_record = launches
+            .iter()
+            .find(|record| record.dispatch_id.as_deref() == Some(second.dispatch_id.as_str()))
+            .expect("second receipt launch record");
+        assert_eq!(first_record.kernel_name, "receipt_first");
+        assert_eq!(first_record.stream_token, first.stream_token);
+        assert_eq!(second_record.kernel_name, "receipt_second");
+        assert_eq!(second_record.stream_token, second.stream_token);
+    }
+
+    #[test]
     fn launch_records_dispatcher_artifact_binding_metadata() {
         let _guard = test_guard_for_test();
         reset_for_test();
         let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
-        let (_previous, generation) = install_launch_dispatcher_with_metadata(
-            Arc::new(TestDispatcher {
-                should_fail: false,
-                calls: calls.clone(),
-            }),
-            GpuLaunchDispatcherMetadata {
-                artifact_id: Some("artifact:sha256:test".to_string()),
-                dispatch_table_hash: Some("0xabc".to_string()),
-                changed_symbols: vec!["bound_kernel".to_string()],
-                function_handle_ids: vec!["bound_kernel:0x10".to_string()],
-            },
-        );
+        let (_previous, generation, publication_timestamp_monotonic_ns) =
+            install_launch_dispatcher_with_metadata_timed(
+                Arc::new(TestDispatcher {
+                    should_fail: false,
+                    calls: calls.clone(),
+                }),
+                GpuLaunchDispatcherMetadata {
+                    artifact_id: Some("artifact:sha256:test".to_string()),
+                    dispatch_table_hash: Some("0xabc".to_string()),
+                    changed_symbols: vec!["bound_kernel".to_string()],
+                    function_handle_ids: vec!["bound_kernel:0x10".to_string()],
+                },
+            );
+        assert!(publication_timestamp_monotonic_ns > 0);
 
         let kernel = CString::new("bound_kernel").unwrap();
         let dim = 1_u32;
@@ -3606,6 +6017,1155 @@ mod tests {
             .dispatcher_registration_id
             .as_deref()
             .is_some_and(|value| value.starts_with("dispatcher:sha256:")));
+    }
+
+    #[test]
+    fn dispatch_slot_binding_rejects_noncanonical_or_mismatched_metadata() {
+        let valid_metadata = active_dispatcher_metadata(
+            7,
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some(format!("artifact:sha256:{}", "1".repeat(64))),
+                dispatch_table_hash: Some(format!("sha256:{}", "2".repeat(64))),
+                changed_symbols: vec!["kernel".to_string()],
+                function_handle_ids: vec!["function:1".to_string()],
+            },
+        );
+        let binding = dispatch_slot_binding("runtime-session:test", 7, &valid_metadata, "kernel")
+            .expect("canonical dispatch slot");
+        assert_eq!(binding.generation, 7);
+        assert_eq!(binding.dispatch_table_entry_id, "function:1");
+        assert_eq!(
+            binding.artifact_content_hash,
+            format!("sha256:{}", "1".repeat(64))
+        );
+        assert!(
+            dispatch_slot_binding("runtime-session:test", 8, &valid_metadata, "kernel").is_none()
+        );
+        assert!(dispatch_slot_binding(
+            "runtime-session:test",
+            7,
+            &valid_metadata,
+            "unregistered_kernel"
+        )
+        .is_none());
+
+        let missing_function_handle = active_dispatcher_metadata(
+            7,
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some(format!("artifact:sha256:{}", "1".repeat(64))),
+                dispatch_table_hash: Some(format!("sha256:{}", "2".repeat(64))),
+                changed_symbols: vec!["kernel".to_string()],
+                function_handle_ids: Vec::new(),
+            },
+        );
+        assert!(dispatch_slot_binding(
+            "runtime-session:test",
+            7,
+            &missing_function_handle,
+            "kernel"
+        )
+        .is_none());
+
+        let invalid_artifact = active_dispatcher_metadata(
+            7,
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:not-content-addressed".to_string()),
+                dispatch_table_hash: Some(format!("sha256:{}", "2".repeat(64))),
+                ..Default::default()
+            },
+        );
+        assert!(
+            dispatch_slot_binding("runtime-session:test", 7, &invalid_artifact, "kernel").is_none()
+        );
+
+        let invalid_table = active_dispatcher_metadata(
+            7,
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some(format!("artifact:sha256:{}", "1".repeat(64))),
+                dispatch_table_hash: Some("declared-table-name".to_string()),
+                ..Default::default()
+            },
+        );
+        assert!(
+            dispatch_slot_binding("runtime-session:test", 7, &invalid_table, "kernel").is_none()
+        );
+    }
+
+    #[test]
+    fn publication_after_snapshot_cannot_split_dispatcher_generation_and_metadata() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let first_calls = Arc::new(Mutex::new(Vec::new()));
+        let second_calls = Arc::new(Mutex::new(Vec::new()));
+        let first_artifact_digest = "1".repeat(64);
+        let second_artifact_digest = "2".repeat(64);
+        let first_dispatch_table_hash = format!("sha256:{}", "a".repeat(64));
+        let second_dispatch_table_hash = format!("sha256:{}", "b".repeat(64));
+        let (_previous, first_generation) = install_launch_dispatcher_with_metadata(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: first_calls.clone(),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some(format!("artifact:sha256:{first_artifact_digest}")),
+                dispatch_table_hash: Some(first_dispatch_table_hash.clone()),
+                changed_symbols: vec!["concurrent_kernel".to_string()],
+                function_handle_ids: vec!["concurrent_kernel:first".to_string()],
+            },
+        );
+        let first_attribution = dispatcher_attribution_snapshot().1.unwrap();
+        let hook_calls = second_calls.clone();
+        let hook_artifact_digest = second_artifact_digest.clone();
+        let hook_dispatch_table_hash = second_dispatch_table_hash.clone();
+        set_dispatcher_snapshot_test_hook(move || {
+            install_launch_dispatcher_with_metadata(
+                Arc::new(TestDispatcher {
+                    should_fail: false,
+                    calls: hook_calls,
+                }),
+                GpuLaunchDispatcherMetadata {
+                    artifact_id: Some(format!("artifact:sha256:{hook_artifact_digest}")),
+                    dispatch_table_hash: Some(hook_dispatch_table_hash),
+                    changed_symbols: vec!["concurrent_kernel".to_string()],
+                    function_handle_ids: vec!["concurrent_kernel:second".to_string()],
+                },
+            );
+        });
+
+        let kernel = CString::new("concurrent_kernel").unwrap();
+        let dim = 1_u32;
+        let receipt = synthi_gpu_launch_raw_arg_info_with_receipt(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0,
+            std::ptr::null(),
+            0,
+        );
+        let second_generation = current_launch_generation();
+
+        assert!(receipt.dispatched);
+        assert_eq!(receipt.active_generation, first_generation);
+        let dispatch_slot = receipt.dispatch_slot.as_ref().expect("exact dispatch slot");
+        assert_eq!(dispatch_slot.runtime_session_id, runtime_session_id());
+        assert_eq!(dispatch_slot.generation, first_generation);
+        assert_eq!(
+            dispatch_slot.dispatcher_registration_id,
+            first_attribution.registration_id
+        );
+        assert_eq!(
+            dispatch_slot.artifact_id,
+            format!("artifact:sha256:{first_artifact_digest}")
+        );
+        assert_eq!(
+            dispatch_slot.artifact_content_hash,
+            format!("sha256:{first_artifact_digest}")
+        );
+        assert_eq!(dispatch_slot.dispatch_table_hash, first_dispatch_table_hash);
+        assert_eq!(
+            dispatch_slot.dispatch_table_entry_id,
+            "concurrent_kernel:first"
+        );
+        assert!(second_generation > first_generation);
+        assert_eq!(current_launch_generation(), second_generation);
+        assert_eq!(first_calls.lock().unwrap().len(), 1);
+        assert!(second_calls.lock().unwrap().is_empty());
+        let launches = launch_records_snapshot();
+        assert_eq!(launches.len(), 1);
+        assert_eq!(launches[0].active_generation, first_generation);
+        assert_eq!(
+            launches[0].active_artifact_id.as_deref(),
+            Some(format!("artifact:sha256:{first_artifact_digest}").as_str())
+        );
+        assert_eq!(
+            launches[0].dispatch_table_hash.as_deref(),
+            Some(first_dispatch_table_hash.as_str())
+        );
+        assert_eq!(
+            launches[0].dispatcher_registration_id.as_deref(),
+            Some(dispatch_slot.dispatcher_registration_id.as_str())
+        );
+        assert_eq!(
+            launches[0].dispatch_table_entry_id.as_deref(),
+            Some("concurrent_kernel:first")
+        );
+    }
+
+    #[test]
+    fn dispatcher_publication_rollback_restores_complete_prior_attribution() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let old_calls = Arc::new(Mutex::new(Vec::new()));
+        let candidate_calls = Arc::new(Mutex::new(Vec::new()));
+        let (_previous, old_generation) = install_launch_dispatcher_with_metadata(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: old_calls.clone(),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:prior".to_string()),
+                dispatch_table_hash: Some("dispatch-table:prior".to_string()),
+                changed_symbols: vec!["transaction_kernel".to_string()],
+                function_handle_ids: vec!["transaction_kernel:prior".to_string()],
+            },
+        );
+        let old_attribution = dispatcher_attribution_snapshot().1.unwrap();
+
+        let mut publication = begin_launch_dispatcher_publication(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: candidate_calls.clone(),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:candidate".to_string()),
+                dispatch_table_hash: Some("dispatch-table:candidate".to_string()),
+                changed_symbols: vec!["transaction_kernel".to_string()],
+                function_handle_ids: vec!["transaction_kernel:candidate".to_string()],
+            },
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        assert_eq!(publication.previous_generation(), old_generation);
+        assert_eq!(publication.candidate_generation(), old_generation + 1);
+
+        let kernel = CString::new("transaction_kernel").unwrap();
+        let dim = 1_u32;
+        assert!(!synthi_gpu_launch_raw(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0,
+            std::ptr::null(),
+            0,
+        ));
+
+        let rollback = rollback_launch_dispatcher_publication(&mut publication).unwrap();
+        assert_eq!(rollback.previous_generation, old_generation);
+        assert_eq!(rollback.candidate_generation, old_generation + 1);
+        assert_eq!(rollback.restored_generation, old_generation);
+        assert_eq!(
+            rollback.restored_artifact_id.as_deref(),
+            Some("artifact:sha256:prior")
+        );
+        assert_eq!(
+            rollback.restored_registration_id.as_deref(),
+            Some(old_attribution.registration_id.as_str())
+        );
+
+        let (restored_generation, restored_attribution) = dispatcher_attribution_snapshot();
+        let restored_attribution = restored_attribution.unwrap();
+        assert_eq!(restored_generation, rollback.restored_generation);
+        assert_eq!(
+            restored_attribution.artifact_id.as_deref(),
+            Some("artifact:sha256:prior")
+        );
+        assert_eq!(
+            restored_attribution.dispatch_table_hash.as_deref(),
+            Some("dispatch-table:prior")
+        );
+        assert_eq!(
+            restored_attribution.function_handle_ids,
+            vec!["transaction_kernel:prior"]
+        );
+        assert!(synthi_gpu_launch_raw(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0,
+            std::ptr::null(),
+            0,
+        ));
+
+        assert!(candidate_calls.lock().unwrap().is_empty());
+        assert_eq!(old_calls.lock().unwrap().len(), 1);
+        let launches = launch_records_snapshot();
+        assert_eq!(launches.len(), 2);
+        assert_eq!(launches[0].active_generation, old_generation);
+        assert!(!launches[0].dispatched);
+        assert_eq!(
+            launches[0].dispatch_error.as_deref(),
+            Some("reload_failed.dispatcher_publication_in_progress")
+        );
+        assert_eq!(
+            launches[0].active_artifact_id.as_deref(),
+            Some("artifact:sha256:prior")
+        );
+        assert_eq!(launches[1].active_generation, old_generation);
+        assert_eq!(
+            launches[1].active_artifact_id.as_deref(),
+            Some("artifact:sha256:prior")
+        );
+
+        let mut next_publication = begin_launch_dispatcher_publication(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: candidate_calls,
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:next-candidate".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        assert_eq!(next_publication.previous_generation(), old_generation);
+        assert_eq!(next_publication.candidate_generation(), old_generation + 2);
+        let next_rollback = rollback_launch_dispatcher_publication(&mut next_publication).unwrap();
+        assert_eq!(next_rollback.restored_generation, old_generation);
+        assert_eq!(current_launch_generation(), old_generation);
+    }
+
+    #[test]
+    fn provisional_candidate_cannot_dispatch_before_commit() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        install_launch_dispatcher(Arc::new(TestDispatcher {
+            should_fail: false,
+            calls: Arc::new(Mutex::new(Vec::new())),
+        }));
+        let candidate_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut publication = begin_launch_dispatcher_publication(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: candidate_calls.clone(),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:scope-candidate".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        let kernel = CString::new("scope_kernel").unwrap();
+        let dim = 1_u32;
+
+        assert!(!synthi_gpu_launch_raw(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0,
+            std::ptr::null(),
+            0,
+        ));
+        assert!(candidate_calls.lock().unwrap().is_empty());
+        assert_eq!(
+            launch_records_snapshot()[0].dispatch_error.as_deref(),
+            Some("reload_failed.dispatcher_publication_in_progress")
+        );
+
+        commit_launch_dispatcher_publication(&mut publication).unwrap();
+        assert!(synthi_gpu_launch_raw(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0,
+            std::ptr::null(),
+            0,
+        ));
+        assert_eq!(candidate_calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn dispatcher_publication_validation_keeps_other_threads_gated() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let old_calls = Arc::new(Mutex::new(Vec::new()));
+        let candidate_calls = Arc::new(Mutex::new(Vec::new()));
+        let (_previous, old_generation) = install_launch_dispatcher_with_metadata(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: old_calls.clone(),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:validation-prior".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+        );
+        let mut publication = begin_launch_dispatcher_publication(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: candidate_calls.clone(),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:validation-candidate".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        let candidate_generation = publication.candidate_generation();
+
+        let launched = with_dispatcher_publication_validation(&publication, || {
+            assert_eq!(current_launch_generation(), candidate_generation);
+            std::thread::spawn(|| launch_test_kernel("validation_other_thread"))
+                .join()
+                .unwrap()
+        })
+        .unwrap();
+
+        assert!(!launched);
+        assert_eq!(current_launch_generation(), old_generation);
+        assert!(old_calls.lock().unwrap().is_empty());
+        assert!(candidate_calls.lock().unwrap().is_empty());
+        let launches = launch_records_snapshot();
+        assert_eq!(launches.len(), 1);
+        assert_eq!(launches[0].active_generation, old_generation);
+        assert_eq!(
+            launches[0].dispatch_error.as_deref(),
+            Some("reload_failed.dispatcher_publication_in_progress")
+        );
+        rollback_launch_dispatcher_publication(&mut publication).unwrap();
+    }
+
+    #[test]
+    fn scoped_dispatcher_publication_launch_records_candidate_generation_and_artifact() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let candidate_calls = Arc::new(Mutex::new(Vec::new()));
+        let (_previous, old_generation) = install_launch_dispatcher_with_metadata(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:scoped-prior".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+        );
+        let mut publication = begin_launch_dispatcher_publication(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: candidate_calls.clone(),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:scoped-candidate".to_string()),
+                dispatch_table_hash: Some("dispatch-table:scoped-candidate".to_string()),
+                changed_symbols: vec!["scoped_candidate_kernel".to_string()],
+                function_handle_ids: vec!["scoped_candidate_kernel:candidate".to_string()],
+            },
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        let candidate_generation = publication.candidate_generation();
+
+        let launched = with_dispatcher_publication_validation(&publication, || {
+            assert_eq!(current_launch_generation(), candidate_generation);
+            launch_test_kernel("scoped_candidate_kernel")
+        })
+        .unwrap();
+
+        assert!(launched);
+        assert_eq!(current_launch_generation(), old_generation);
+        assert_eq!(candidate_calls.lock().unwrap().len(), 1);
+        let launches = launch_records_snapshot();
+        assert_eq!(launches.len(), 1);
+        assert_eq!(launches[0].expected_generation, candidate_generation);
+        assert_eq!(launches[0].active_generation, candidate_generation);
+        assert_eq!(
+            launches[0].active_artifact_id.as_deref(),
+            Some("artifact:sha256:scoped-candidate")
+        );
+        assert_eq!(
+            launches[0].dispatch_table_hash.as_deref(),
+            Some("dispatch-table:scoped-candidate")
+        );
+        assert_eq!(
+            launches[0].dispatch_table_entry_id.as_deref(),
+            Some("scoped_candidate_kernel:candidate")
+        );
+        rollback_launch_dispatcher_publication(&mut publication).unwrap();
+    }
+
+    #[test]
+    fn dispatcher_publication_validation_rejects_stale_or_wrong_token() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        install_launch_dispatcher(Arc::new(TestDispatcher {
+            should_fail: false,
+            calls: Arc::new(Mutex::new(Vec::new())),
+        }));
+        let mut stale_publication = begin_launch_dispatcher_publication(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:stale-validation".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        rollback_launch_dispatcher_publication(&mut stale_publication).unwrap();
+
+        let mut current_publication = begin_launch_dispatcher_publication(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:current-validation".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        let mut closure_ran = false;
+
+        let error = with_dispatcher_publication_validation(&stale_publication, || {
+            closure_ran = true;
+        })
+        .unwrap_err();
+
+        assert_eq!(error, DispatcherPublicationError::StalePublication);
+        assert!(!closure_ran);
+        rollback_launch_dispatcher_publication(&mut current_publication).unwrap();
+    }
+
+    #[test]
+    fn dispatcher_publication_rollback_after_scoped_validation_restores_prior_dispatcher() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let old_calls = Arc::new(Mutex::new(Vec::new()));
+        let candidate_calls = Arc::new(Mutex::new(Vec::new()));
+        install_launch_dispatcher_with_metadata(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: old_calls.clone(),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:rollback-validation-prior".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+        );
+        let mut publication = begin_launch_dispatcher_publication(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: candidate_calls.clone(),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:rollback-validation-candidate".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        let candidate_generation = publication.candidate_generation();
+
+        assert!(with_dispatcher_publication_validation(&publication, || {
+            launch_test_kernel("rollback_validation_candidate")
+        })
+        .unwrap());
+        let rollback = rollback_launch_dispatcher_publication(&mut publication).unwrap();
+        assert!(launch_test_kernel("rollback_validation_prior"));
+
+        assert_eq!(candidate_calls.lock().unwrap().len(), 1);
+        assert_eq!(old_calls.lock().unwrap().len(), 1);
+        let launches = launch_records_snapshot();
+        assert_eq!(launches.len(), 2);
+        assert_eq!(launches[0].active_generation, candidate_generation);
+        assert_eq!(launches[1].active_generation, rollback.restored_generation);
+        assert_eq!(
+            launches[1].active_artifact_id.as_deref(),
+            Some("artifact:sha256:rollback-validation-prior")
+        );
+    }
+
+    #[test]
+    fn dispatcher_publication_validation_scope_clears_on_panic() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let candidate_calls = Arc::new(Mutex::new(Vec::new()));
+        let (_previous, old_generation) = install_launch_dispatcher_with_metadata(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }),
+            GpuLaunchDispatcherMetadata::default(),
+        );
+        let mut publication = begin_launch_dispatcher_publication(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: candidate_calls.clone(),
+            }),
+            GpuLaunchDispatcherMetadata::default(),
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        let candidate_generation = publication.candidate_generation();
+
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_dispatcher_publication_validation(&publication, || {
+                assert_eq!(current_launch_generation(), candidate_generation);
+                panic!("validation panic");
+            })
+        }));
+
+        assert!(panic_result.is_err());
+        assert_eq!(current_launch_generation(), old_generation);
+        assert!(!launch_test_kernel("after_validation_panic"));
+        assert!(candidate_calls.lock().unwrap().is_empty());
+        rollback_launch_dispatcher_publication(&mut publication).unwrap();
+    }
+
+    #[test]
+    fn dispatcher_publication_commit_refuses_candidate_lease_in_flight() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        install_launch_dispatcher(Arc::new(TestDispatcher {
+            should_fail: false,
+            calls: Arc::new(Mutex::new(Vec::new())),
+        }));
+        let mut publication = begin_launch_dispatcher_publication(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }),
+            GpuLaunchDispatcherMetadata::default(),
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        let candidate_generation = publication.candidate_generation();
+        let lease =
+            with_dispatcher_publication_validation(&publication, || active_dispatcher_snapshot())
+                .unwrap();
+
+        let error = commit_launch_dispatcher_publication(&mut publication).unwrap_err();
+        assert_eq!(
+            error,
+            DispatcherPublicationError::CandidateDispatchStillInFlight {
+                generation: candidate_generation,
+                in_flight: 1,
+            }
+        );
+        drop(lease);
+        commit_launch_dispatcher_publication(&mut publication).unwrap();
+    }
+
+    #[test]
+    fn prior_dispatch_observation_callback_does_not_deadlock_publication_drain() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let callback_state = Arc::new((
+            Mutex::new(ObservationCallbackState::default()),
+            Condvar::new(),
+        ));
+        let (_previous, old_generation) = install_launch_dispatcher_with_metadata(
+            Arc::new(ObservationCallbackDispatcher {
+                state: callback_state.clone(),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:callback-prior".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+        );
+        let launch_thread = std::thread::spawn(|| {
+            let kernel = CString::new("callback_kernel").unwrap();
+            let dim = 1_u32;
+            synthi_gpu_launch_raw(
+                std::ptr::null_mut(),
+                kernel.as_ptr(),
+                (&dim as *const u32).cast(),
+                std::mem::size_of_val(&dim),
+                (&dim as *const u32).cast(),
+                std::mem::size_of_val(&dim),
+                0,
+                0,
+                std::ptr::null(),
+                0,
+            )
+        });
+        {
+            let (lock, changed) = &*callback_state;
+            let mut state = lock.lock().unwrap();
+            while !state.entered {
+                state = changed.wait(state).unwrap();
+            }
+        }
+        let callback_state_for_coordinator = callback_state.clone();
+        let coordinator = std::thread::spawn(move || {
+            loop {
+                if lock_dispatcher_state().provisional.is_some() {
+                    break;
+                }
+                std::thread::yield_now();
+            }
+            let (lock, changed) = &*callback_state_for_coordinator;
+            let mut state = lock.lock().unwrap();
+            state.callback_requested = true;
+            changed.notify_all();
+        });
+
+        let mut publication = begin_launch_dispatcher_publication(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:callback-candidate".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        coordinator.join().unwrap();
+        assert!(launch_thread.join().unwrap());
+        let callback_state = callback_state.0.lock().unwrap();
+        let observation = callback_state.observation.clone();
+        let nested_launch_result = callback_state.nested_launch_result;
+        drop(callback_state);
+        assert_eq!(
+            observation,
+            Some((
+                old_generation,
+                Some("artifact:sha256:callback-prior".to_string())
+            ))
+        );
+        assert_eq!(nested_launch_result, Some(false));
+        let nested_launch = launch_records_snapshot()
+            .into_iter()
+            .find(|launch| launch.kernel_name == "nested_callback_kernel")
+            .unwrap();
+        assert_eq!(
+            nested_launch.dispatch_error.as_deref(),
+            Some("reload_failed.dispatcher_publication_in_progress")
+        );
+        rollback_launch_dispatcher_publication(&mut publication).unwrap();
+    }
+
+    #[test]
+    fn non_owner_launch_cannot_cross_provisional_epoch() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let old_calls = Arc::new(Mutex::new(Vec::new()));
+        let candidate_calls = Arc::new(Mutex::new(Vec::new()));
+        install_launch_dispatcher(Arc::new(TestDispatcher {
+            should_fail: false,
+            calls: old_calls.clone(),
+        }));
+        let mut publication = begin_launch_dispatcher_publication(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: candidate_calls.clone(),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:gated-candidate".to_string()),
+                dispatch_table_hash: Some("dispatch-table:gated-candidate".to_string()),
+                changed_symbols: vec!["gated_kernel".to_string()],
+                function_handle_ids: vec!["gated_kernel:candidate".to_string()],
+            },
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        let candidate_generation = publication.candidate_generation();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let launch_thread = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let kernel = CString::new("gated_kernel").unwrap();
+            let dim = 1_u32;
+            let launched = synthi_gpu_launch_raw(
+                std::ptr::null_mut(),
+                kernel.as_ptr(),
+                (&dim as *const u32).cast(),
+                std::mem::size_of_val(&dim),
+                (&dim as *const u32).cast(),
+                std::mem::size_of_val(&dim),
+                0,
+                0,
+                std::ptr::null(),
+                0,
+            );
+            done_tx.send(launched).unwrap();
+        });
+
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(!done_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+        launch_thread.join().unwrap();
+        assert!(old_calls.lock().unwrap().is_empty());
+        assert!(candidate_calls.lock().unwrap().is_empty());
+
+        let commit = commit_launch_dispatcher_publication(&mut publication).unwrap();
+        assert_eq!(commit.candidate_generation, candidate_generation);
+        assert!(old_calls.lock().unwrap().is_empty());
+        assert!(candidate_calls.lock().unwrap().is_empty());
+        let kernel = CString::new("gated_kernel").unwrap();
+        let dim = 1_u32;
+        assert!(synthi_gpu_launch_raw(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0,
+            std::ptr::null(),
+            0,
+        ));
+        assert_eq!(candidate_calls.lock().unwrap().len(), 1);
+        let launches = launch_records_snapshot();
+        assert_eq!(launches.len(), 2);
+        assert!(!launches[0].dispatched);
+        assert_eq!(launches[1].active_generation, candidate_generation);
+        assert_eq!(
+            launches[1].active_artifact_id.as_deref(),
+            Some("artifact:sha256:gated-candidate")
+        );
+    }
+
+    #[test]
+    fn dispatcher_publication_timeout_preserves_prior_dispatcher_and_releases_gate() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let old_calls = Arc::new(Mutex::new(Vec::new()));
+        let blocking_state =
+            Arc::new((Mutex::new(BlockingDispatchState::default()), Condvar::new()));
+        let (_previous, old_generation) = install_launch_dispatcher_with_metadata(
+            Arc::new(BlockingDispatcher {
+                calls: old_calls.clone(),
+                state: blocking_state.clone(),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:blocking-prior".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+        );
+        let launch_thread = std::thread::spawn(|| {
+            let kernel = CString::new("blocking_kernel").unwrap();
+            let dim = 1_u32;
+            synthi_gpu_launch_raw(
+                std::ptr::null_mut(),
+                kernel.as_ptr(),
+                (&dim as *const u32).cast(),
+                std::mem::size_of_val(&dim),
+                (&dim as *const u32).cast(),
+                std::mem::size_of_val(&dim),
+                0,
+                0,
+                std::ptr::null(),
+                0,
+            )
+        });
+        {
+            let (lock, changed) = &*blocking_state;
+            let mut state = lock.lock().unwrap();
+            while !state.entered {
+                state = changed.wait(state).unwrap();
+            }
+        }
+
+        let candidate_calls = Arc::new(Mutex::new(Vec::new()));
+        let error = begin_launch_dispatcher_publication(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: candidate_calls.clone(),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:unpublished".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+            Duration::from_millis(40),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            DispatcherPublicationError::QuiescenceTimedOut {
+                generation: old_generation,
+                in_flight: 1,
+            }
+        );
+        assert_eq!(current_launch_generation(), old_generation);
+        assert!(candidate_calls.lock().unwrap().is_empty());
+
+        {
+            let (lock, changed) = &*blocking_state;
+            let mut state = lock.lock().unwrap();
+            state.released = true;
+            changed.notify_all();
+        }
+        assert!(launch_thread.join().unwrap());
+
+        let kernel = CString::new("blocking_kernel_after_timeout").unwrap();
+        let dim = 1_u32;
+        assert!(synthi_gpu_launch_raw(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0,
+            std::ptr::null(),
+            0,
+        ));
+        assert_eq!(old_calls.lock().unwrap().len(), 2);
+        assert_eq!(current_launch_generation(), old_generation);
+    }
+
+    #[test]
+    fn nested_dispatcher_publication_is_rejected_without_replacing_candidate() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let (_previous, old_generation) = install_launch_dispatcher_with_metadata(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:nested-prior".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+        );
+        let first_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut publication = begin_launch_dispatcher_publication(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: first_calls.clone(),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:first-candidate".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        let candidate_generation = publication.candidate_generation();
+
+        let error = begin_launch_dispatcher_publication(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:nested-candidate".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+            Duration::from_millis(100),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            DispatcherPublicationError::PublicationAlreadyInProgress
+        );
+        assert_eq!(current_launch_generation(), old_generation);
+        assert_eq!(
+            dispatcher_attribution_snapshot()
+                .1
+                .unwrap()
+                .artifact_id
+                .as_deref(),
+            Some("artifact:sha256:nested-prior")
+        );
+        let guard = lock_dispatcher_state();
+        assert_eq!(guard.generation, candidate_generation);
+        assert_eq!(
+            guard
+                .active
+                .as_ref()
+                .and_then(|active| active.metadata.artifact_id.as_deref()),
+            Some("artifact:sha256:first-candidate")
+        );
+        drop(guard);
+        rollback_launch_dispatcher_publication(&mut publication).unwrap();
+        assert!(first_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn legacy_dispatcher_mutations_refuse_immediately_during_publication() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let (_previous, old_generation) = install_launch_dispatcher_with_metadata(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:mutation-prior".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+        );
+        let mut publication = begin_launch_dispatcher_publication(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:mutation-candidate".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        let publication_id = publication.publication_id().to_string();
+
+        let owner_error = match try_install_launch_dispatcher(Arc::new(TestDispatcher {
+            should_fail: false,
+            calls: Arc::new(Mutex::new(Vec::new())),
+        })) {
+            Err(error) => error,
+            Ok(_) => panic!("legacy owner mutation unexpectedly succeeded"),
+        };
+        assert_eq!(
+            owner_error,
+            DispatcherMutationError::PublicationInProgress {
+                publication_id: publication_id.clone()
+            }
+        );
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let mutation_thread = std::thread::spawn(move || {
+            done_tx.send(try_clear_launch_dispatcher()).unwrap();
+        });
+        let non_owner_error = match done_rx.recv_timeout(Duration::from_secs(1)).unwrap() {
+            Err(error) => error,
+            Ok(_) => panic!("legacy non-owner mutation unexpectedly succeeded"),
+        };
+        mutation_thread.join().unwrap();
+        assert_eq!(
+            non_owner_error,
+            DispatcherMutationError::PublicationInProgress { publication_id }
+        );
+        assert_eq!(current_launch_generation(), old_generation);
+        rollback_launch_dispatcher_publication(&mut publication).unwrap();
+    }
+
+    #[test]
+    fn abandoned_dispatcher_publication_rolls_back_and_releases_gate() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let old_calls = Arc::new(Mutex::new(Vec::new()));
+        let (_previous, old_generation) = install_launch_dispatcher_with_metadata(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: old_calls.clone(),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:drop-prior".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+        );
+        let publication = begin_launch_dispatcher_publication(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:drop-candidate".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        assert_eq!(publication.candidate_generation(), old_generation + 1);
+
+        drop(publication);
+
+        assert_eq!(current_launch_generation(), old_generation);
+        let guard = lock_dispatcher_state();
+        assert!(guard.provisional.is_none());
+        assert_eq!(
+            guard
+                .active
+                .as_ref()
+                .and_then(|active| active.metadata.artifact_id.as_deref()),
+            Some("artifact:sha256:drop-prior")
+        );
+        drop(guard);
+        let kernel = CString::new("drop_recovery_kernel").unwrap();
+        let dim = 1_u32;
+        assert!(synthi_gpu_launch_raw(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0,
+            std::ptr::null(),
+            0,
+        ));
+        assert_eq!(old_calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn stale_dispatcher_publication_cannot_clobber_newer_runtime_state() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        install_launch_dispatcher(Arc::new(TestDispatcher {
+            should_fail: false,
+            calls: Arc::new(Mutex::new(Vec::new())),
+        }));
+        let mut publication = begin_launch_dispatcher_publication(
+            Arc::new(TestDispatcher {
+                should_fail: false,
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }),
+            GpuLaunchDispatcherMetadata {
+                artifact_id: Some("artifact:sha256:stale-candidate".to_string()),
+                ..GpuLaunchDispatcherMetadata::default()
+            },
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        let newer_generation = publication.candidate_generation() + 1;
+        {
+            let mut guard = lock_dispatcher_state();
+            guard.generation = newer_generation;
+            guard.generation_high_watermark = newer_generation;
+            guard.active = Some(ActiveDispatcher {
+                dispatcher: Arc::new(TestDispatcher {
+                    should_fail: false,
+                    calls: Arc::new(Mutex::new(Vec::new())),
+                }),
+                metadata: active_dispatcher_metadata(
+                    newer_generation,
+                    GpuLaunchDispatcherMetadata {
+                        artifact_id: Some("artifact:sha256:newer-state".to_string()),
+                        ..GpuLaunchDispatcherMetadata::default()
+                    },
+                ),
+            });
+        }
+
+        let error = rollback_launch_dispatcher_publication(&mut publication).unwrap_err();
+        assert_eq!(error, DispatcherPublicationError::StalePublication);
+        let guard = lock_dispatcher_state();
+        assert!(guard.provisional.is_some());
+        assert_eq!(guard.generation, newer_generation);
+        assert_eq!(
+            guard
+                .active
+                .as_ref()
+                .and_then(|active| active.metadata.artifact_id.as_deref()),
+            Some("artifact:sha256:newer-state")
+        );
+        drop(guard);
+        drop(publication);
+        assert!(lock_dispatcher_state().provisional.is_none());
+        reset_for_test();
     }
 
     #[test]
@@ -3721,6 +7281,13 @@ mod tests {
         assert_eq!(
             launches[0].dispatch_error.as_deref(),
             Some("synthetic launch failure")
+        );
+        assert_eq!(
+            latest_dispatch_id_for_generation(
+                launches[0].active_generation,
+                &launches[0].runtime_session_id,
+            ),
+            None
         );
     }
 

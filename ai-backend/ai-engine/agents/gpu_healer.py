@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, List, Optional
 
 try:
     from pydantic import BaseModel, Field
@@ -22,12 +22,13 @@ except ImportError:  # pragma: no cover
 
 from agents.gpu_error_triage import triage_gpu_error
 from agents.gpu_mod_delta import validate_gpu_edit_list
+from build_manifest import ModuleFilesBlock
 from llm.prompts import (
     GPU_HEAL_COMPILE_PROMPT,
     GPU_HEAL_PERF_PROMPT,
     GPU_HEAL_RUNTIME_PROMPT,
 )
-from verifier_gpu import verify_heal_output
+from verifier_gpu import validate_heal_role_bindings, verify_heal_output
 
 
 PROMPTS = {
@@ -35,6 +36,20 @@ PROMPTS = {
     "compile_soft": GPU_HEAL_PERF_PROMPT,
     "runtime": GPU_HEAL_RUNTIME_PROMPT,
 }
+
+
+class HealModuleFilesBlock(ModuleFilesBlock):
+    shared: str
+    core: str
+    gui: str
+    host_runner: str
+    device: str
+
+    if hasattr(BaseModel, "model_validate"):
+        model_config = {**ModuleFilesBlock.model_config, "extra": "forbid"}
+    else:  # pragma: no cover - Pydantic v1 compatibility
+        class Config:
+            extra = "forbid"
 
 
 class GpuHealRequest(BaseModel):
@@ -46,7 +61,8 @@ class GpuHealRequest(BaseModel):
     manifest_gpu: Dict[str, Any] = Field(default_factory=dict)
     kernel_sig_hashes: Dict[str, str] = Field(default_factory=dict)
     previous_heal_attempts: List[dict] = Field(default_factory=list)
-    project_files: List[str] = Field(default_factory=lambda: ["shared.h", "core.cpp", "gui.cpp", "host_runner.cpp", "device.cu"])
+    project_files: List[str]
+    module_files: HealModuleFilesBlock
     existing_device_source: str = ""
     host_launch_sites: Dict[str, str] = Field(default_factory=dict)
     model: Optional[str] = None
@@ -54,6 +70,12 @@ class GpuHealRequest(BaseModel):
 
 
 def build_gpu_heal_prompt(req: GpuHealRequest) -> tuple[str, dict]:
+    role_validation = validate_heal_role_bindings(
+        req.project_files,
+        _module_files_dict(req.module_files),
+    )
+    if not role_validation.ok:
+        raise HTTPException(status_code=422, detail=role_validation.to_dict())
     triage = triage_gpu_error(
         {
             "runtime_error": req.error if req.tier == "runtime" else None,
@@ -74,6 +96,8 @@ def build_gpu_heal_prompt(req: GpuHealRequest) -> tuple[str, dict]:
         "arch_cache": req.arch_cache,
         "launch_graph": req.launch_graph,
         "manifest_gpu": req.manifest_gpu,
+        "project_files": req.project_files,
+        "module_files": _module_files_dict(req.module_files),
         "kernel_sig_hashes": req.kernel_sig_hashes,
         "previous_heal_attempts": req.previous_heal_attempts,
         "requires_restart": triage.requires_restart,
@@ -87,11 +111,11 @@ def parse_gpu_heal_response(raw: str, req: GpuHealRequest) -> dict:
     if not isinstance(parsed, dict):
         raise HTTPException(status_code=400, detail="GPU heal response must be a JSON object")
     edits = validate_gpu_edit_list(parsed.get("edits", []))
-    verifier_edits = [_to_file_module(edit, req.project_files) for edit in edits]
     verification = verify_heal_output(
         tier=req.tier or "compile_hard",
         project_files=req.project_files,
-        edits=verifier_edits,
+        module_files=_module_files_dict(req.module_files),
+        edits=edits,
         existing_kernels=req.kernel_sig_hashes.keys(),
         existing_device_source=req.existing_device_source,
         host_launch_sites=req.host_launch_sites,
@@ -101,21 +125,10 @@ def parse_gpu_heal_response(raw: str, req: GpuHealRequest) -> dict:
     return {"edits": edits, "verification": verification.to_dict()}
 
 
-def _to_file_module(edit: Mapping[str, str], project_files: Iterable[str]) -> dict:
-    out = dict(edit)
-    module = out.get("module")
-    files = set(project_files)
-    if module == "device":
-        out["module"] = "device.cu" if "device.cu" in files else "device.hip"
-    elif module == "core":
-        out["module"] = "core.cpp"
-    elif module == "gui":
-        out["module"] = "gui.cpp"
-    elif module == "shared":
-        out["module"] = "shared.h"
-    elif module == "host_runner":
-        out["module"] = "host_runner.cpp"
-    return out
+def _module_files_dict(module_files: ModuleFilesBlock) -> dict:
+    if hasattr(module_files, "model_dump"):
+        return module_files.model_dump()
+    return module_files.dict()
 
 
 def _strip_json_fence(raw: str) -> str:

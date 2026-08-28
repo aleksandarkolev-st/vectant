@@ -1,4 +1,4 @@
-from agents.launch_graph_extractor import launch_graph_as_dicts
+from agents.launch_graph_extractor import extract_launch_sites, launch_graph_as_dicts
 
 
 def test_extracts_synthi_launch_boundary():
@@ -77,6 +77,21 @@ def test_extracts_raw_launch_from_gpu_translation_unit():
         {"render.cu": "void step(){ shade<<<grid, block, 0, stream>>>(payload); }"}
     )
     assert len(graph) == 1
+    assert graph[0]["kernel"] == "shade"
+    assert graph[0]["args"] == ["payload"]
+
+
+def test_extracts_launch_sites_from_source_with_an_opaque_path():
+    graph = [
+        site.to_dict()
+        for site in extract_launch_sites(
+            "units/dispatch.payload",
+            'void step(){ synthi_gpu_launch(gpu, "shade", grid, block, 0, stream, {&payload}); }',
+        )
+    ]
+
+    assert len(graph) == 1
+    assert graph[0]["site"].startswith("units/dispatch.payload:")
     assert graph[0]["kernel"] == "shade"
     assert graph[0]["args"] == ["payload"]
 

@@ -2,6 +2,11 @@
   "schemaVersion": "synthi.gpu.hmr.external_project_profile.v1",
   "id": "bevy-wgsl-shader-material",
   "proofMode": "mcp_preview",
+  "backend": "bevy_wgsl",
+  "backendFamily": "wgpu_vulkan",
+  "libraryFamily": "bevy",
+  "runtimeEnvironment": "mcp_preview",
+  "profileClass": "engine_asset_reload_visual_profile",
   "project": {
     "name": "Bevy shader_material WGSL hot reload",
     "repoUrl": "https://github.com/bevyengine/bevy.git",

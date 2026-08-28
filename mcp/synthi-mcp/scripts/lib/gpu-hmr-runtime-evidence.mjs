@@ -36,6 +36,38 @@ function integerValue(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function firstRuntimeField(fields, ...keys) {
+  if (!fields || typeof fields !== 'object') return null;
+  for (const key of keys) {
+    const value = fields[key];
+    if (value !== undefined && value !== null && String(value).trim()) return value;
+  }
+  return null;
+}
+
+function dim3Text(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const match = String(value).trim().match(/^\(?\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)?$/);
+  return match ? `${Number(match[1])}x${Number(match[2])}x${Number(match[3])}` : null;
+}
+
+function dim3LogField(line, key) {
+  const match = String(line ?? '').match(
+    new RegExp(String.raw`\b${key}=\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)\)`, 'i'),
+  );
+  return match ? `${Number(match[1])}x${Number(match[2])}x${Number(match[3])}` : null;
+}
+
+function runtimeDim3Field(line, fields, ...keys) {
+  const direct = dim3Text(firstRuntimeField(fields, ...keys));
+  if (direct) return direct;
+  for (const key of keys) {
+    const parsed = dim3LogField(line, key);
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
 function compactStringList(values) {
   return Array.isArray(values)
     ? [...new Set(values.filter((value) => typeof value === 'string' && value.trim()).map((value) => value.trim()))]
@@ -84,6 +116,22 @@ function artifactIdDigest(value) {
   return value.trim().match(/^artifact:sha256:([0-9a-f]{64})$/i)?.[1]?.toLowerCase() ?? null;
 }
 
+function artifactIdFromDigest(digest) {
+  return typeof digest === 'string' && /^[0-9a-f]{64}$/i.test(digest)
+    ? `artifact:sha256:${digest.toLowerCase()}`
+    : null;
+}
+
+function contentAddressedArtifactIds(values) {
+  return compactStringList(values)
+    .map((value) =>
+      artifactIdFromDigest(artifactIdDigest(value))
+      ?? artifactIdFromDigest(sha256Digest(value))
+    )
+    .filter(Boolean)
+    .filter((value, index, all) => all.indexOf(value) === index);
+}
+
 function evidenceRefToken(value) {
   const token = String(value ?? '')
     .trim()
@@ -92,10 +140,31 @@ function evidenceRefToken(value) {
   return token || 'unknown';
 }
 
+function nativeLaunchEvidenceRef(kind, record) {
+  return [
+    `worker-log:${kind}`,
+    evidenceRefToken(record?.runtimeSession),
+    evidenceRefToken(record?.kernelSymbol ?? record?.api),
+    Number.isFinite(record?.sequence) ? record.sequence : 'unknown',
+  ].join(':');
+}
+
 function processIdFromRuntimeSession(value) {
   const session = String(value ?? '').trim();
   const match = session.match(/^pid(\d+)(?:[-:]|$)/i);
   return match ? `pid:${match[1]}` : null;
+}
+
+function normalizedProcessId(value) {
+  const token = String(value ?? '').trim();
+  if (!token) return null;
+  const prefixed = token.match(/^pid:(\d+)$/i);
+  if (prefixed) return `pid:${prefixed[1]}`;
+  const compact = token.match(/^pid(\d+)$/i);
+  if (compact) return `pid:${compact[1]}`;
+  const numeric = token.match(/^\d+$/);
+  if (numeric) return `pid:${numeric[0]}`;
+  return null;
 }
 
 function processIdsFromRuntimeSessions(values) {
@@ -590,6 +659,10 @@ function hostIdentityRecord(line) {
     aux: fields.aux ?? null,
     generation: integerValue(fields.generation),
     runtimeSession: fields.runtime_session ?? null,
+    processId: normalizedProcessId(fields.process_id ?? fields.pid),
+    deviceUuid: fields.device_uuid ?? fields.device_id ?? null,
+    contextId: fields.context_id ?? fields.context ?? null,
+    queueId: fields.queue_id ?? fields.queue ?? fields.stream ?? null,
   };
 }
 
@@ -708,7 +781,6 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
     }
   }
   const runtimeSessionIds = compactStringList(records.map((record) => record.runtimeSession));
-  const processIds = processIdsFromRuntimeSessions(runtimeSessionIds);
   const runtimeSessionConsistent = runtimeSessionIds.length <= 1;
   const byRole = new Map();
   for (const record of records) {
@@ -755,6 +827,13 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
   optionalChangedRoles.sort();
   lineageMissingRoles.sort();
   optionalLineageMissingRoles.sort();
+  const processIds = compactStringList([
+    ...records.map((record) => record.processId),
+    ...processIdsFromRuntimeSessions(runtimeSessionIds),
+  ]);
+  const deviceUuids = compactStringList(records.map((record) => record.deviceUuid));
+  const contextIds = compactStringList(records.map((record) => record.contextId));
+  const queueIds = compactStringList(records.map((record) => record.queueId));
   const preservedRoleCategories = compactStringList(
     preservedRoles.map((role) => hostIdentityRoleCategory(role)),
   );
@@ -784,6 +863,12 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
     role_count: byRole.size,
     process_id: processIds.length === 1 ? processIds[0] : null,
     process_ids: processIds,
+    device_uuid: deviceUuids.length === 1 ? deviceUuids[0] : null,
+    device_uuids: deviceUuids,
+    context_id: contextIds.length === 1 ? contextIds[0] : null,
+    context_ids: contextIds,
+    queue_id: queueIds.length === 1 ? queueIds[0] : null,
+    queue_ids: queueIds,
     expected_runtime_session_ids: expectedSessions,
     runtime_session_ids: runtimeSessionIds,
     runtime_session_observed: records.length > 0,
@@ -844,28 +929,77 @@ function outputOracleRecord(line) {
   const fields = parseRuntimeKeyValues(line);
   return {
     line,
-    oracleId: fields.id ?? fields.oracle_id ?? null,
+    oracleId:
+      fields.id
+      ?? fields.oracle_id
+      ?? fields.oracleId
+      ?? null,
     requiredOracleId:
       fields.required_oracle_id
       ?? fields.requiredOracleId
       ?? fields.required_oracle
       ?? fields.required_id
       ?? null,
-    kind: fields.kind ?? null,
+    kind: fields.kind ?? fields.oracle_kind ?? fields.oracleKind ?? null,
     producer: fields.producer ?? fields.producer_id ?? null,
-    expected: Object.prototype.hasOwnProperty.call(fields, 'expected') ? fields.expected : null,
-    actual: Object.prototype.hasOwnProperty.call(fields, 'actual') ? fields.actual : null,
+    expected:
+      Object.prototype.hasOwnProperty.call(fields, 'expected')
+        ? fields.expected
+        : fields.expected_sha256
+          ?? fields.expectedSha256
+          ?? fields.expected_hash
+          ?? fields.expectedHash
+          ?? fields.expected_checksum
+          ?? fields.expectedChecksum
+          ?? null,
+    actual:
+      Object.prototype.hasOwnProperty.call(fields, 'actual')
+        ? fields.actual
+        : fields.actual_sha256
+          ?? fields.actualSha256
+          ?? fields.actual_hash
+          ?? fields.actualHash
+          ?? fields.actual_checksum
+          ?? fields.actualChecksum
+          ?? null,
     tolerance: fields.tolerance ?? fields.absolute_tolerance ?? fields.abs_tolerance ?? null,
     passed: boolValue(fields.passed),
-    generation: integerValue(fields.generation),
-    runtimeSession: fields.runtime_session ?? null,
-    outputTargetId: fields.output_target_id ?? fields.output_target ?? fields.target ?? null,
+    generation: integerValue(fields.generation ?? fields.active_generation ?? fields.activeGeneration),
+    runtimeSession:
+      fields.runtime_session
+      ?? fields.runtimeSession
+      ?? fields.runtime_session_id
+      ?? fields.runtimeSessionId
+      ?? fields.session_id
+      ?? fields.sessionId
+      ?? null,
+    outputTargetId:
+      fields.output_target_id
+      ?? fields.outputTargetId
+      ?? fields.output_target
+      ?? fields.outputTarget
+      ?? fields.target_id
+      ?? fields.targetId
+      ?? fields.target
+      ?? null,
     readbackTimestamp:
       fields.readback_timestamp
       ?? fields.readback_ts
       ?? fields.readback_elapsed_ms
+      ?? fields.timestamp_after_dispatch
+      ?? fields.timestampAfterDispatch
       ?? null,
-    artifactId: fields.artifact_id ?? fields.artifact ?? null,
+    artifactId:
+      fields.artifact_id
+      ?? fields.artifactId
+      ?? fields.artifact
+      ?? fields.artifact_hash
+      ?? fields.artifactHash
+      ?? fields.artifact_content_hash
+      ?? fields.artifactContentHash
+      ?? fields.loaded_artifact_hash
+      ?? fields.loadedArtifactHash
+      ?? null,
     afterDispatchId:
       fields.after_dispatch_id
       ?? fields.afterDispatchId
@@ -873,6 +1007,73 @@ function outputOracleRecord(line) {
       ?? null,
     dispatchId: fields.dispatch_id ?? fields.dispatchId ?? null,
     visualEvidenceRef: fields.visual_evidence_ref ?? fields.visual_ref ?? null,
+    beforeImage:
+      fields.before_image
+      ?? fields.beforeImage
+      ?? fields.before_image_path
+      ?? fields.beforeImagePath
+      ?? null,
+    beforeImageCasManifest:
+      fields.before_image_cas_manifest
+      ?? fields.beforeImageCasManifest
+      ?? fields.before_image_locator
+      ?? fields.beforeImageLocator
+      ?? null,
+    afterImage:
+      fields.after_image
+      ?? fields.afterImage
+      ?? fields.after_image_path
+      ?? fields.afterImagePath
+      ?? null,
+    afterImageCasManifest:
+      fields.after_image_cas_manifest
+      ?? fields.afterImageCasManifest
+      ?? fields.after_image_locator
+      ?? fields.afterImageLocator
+      ?? null,
+    diffImage:
+      fields.diff_image
+      ?? fields.diffImage
+      ?? fields.diff_image_path
+      ?? fields.diffImagePath
+      ?? null,
+    diffImageCasManifest:
+      fields.diff_image_cas_manifest
+      ?? fields.diffImageCasManifest
+      ?? fields.diff_image_locator
+      ?? fields.diffImageLocator
+      ?? null,
+    beforeImageHash:
+      fields.before_image_hash
+      ?? fields.beforeImageHash
+      ?? fields.before_hash
+      ?? fields.beforeHash
+      ?? null,
+    afterImageHash:
+      fields.after_image_hash
+      ?? fields.afterImageHash
+      ?? fields.after_hash
+      ?? fields.afterHash
+      ?? null,
+    diffImageHash:
+      fields.diff_image_hash
+      ?? fields.diffImageHash
+      ?? fields.diff_hash
+      ?? fields.diffHash
+      ?? null,
+    cameraStateHash:
+      fields.camera_state_hash
+      ?? fields.cameraStateHash
+      ?? null,
+    swapchainSize:
+      fields.swapchain_size
+      ?? fields.swapchainSize
+      ?? null,
+    captureBackend:
+      fields.capture_backend
+      ?? fields.captureBackend
+      ?? null,
+    frameNumber: integerValue(fields.frame_number ?? fields.frameNumber),
     probeMode: fields.probe_mode ?? fields.deterministic_probe_mode ?? null,
     probeConfigHash:
       fields.probe_config_hash
@@ -884,6 +1085,92 @@ function outputOracleRecord(line) {
     readbackSampleStride: integerValue(fields.readback_sample_stride),
     readbackSampleSha256: fields.readback_sample_sha256 ?? null,
     readbackSampleHex: fields.readback_sample_hex ?? null,
+    rawReadbackBin:
+      fields.raw_readback_bin
+      ?? fields.rawReadbackBin
+      ?? fields.raw_readback_path
+      ?? fields.rawReadbackPath
+      ?? null,
+    rawReadbackCasManifest:
+      fields.raw_readback_cas_manifest
+      ?? fields.rawReadbackCasManifest
+      ?? fields.raw_readback_locator
+      ?? fields.rawReadbackLocator
+      ?? null,
+    readbackSchemaJson:
+      fields.readback_schema_json
+      ?? fields.readbackSchemaJson
+      ?? fields.readback_schema_path
+      ?? fields.readbackSchemaPath
+      ?? null,
+    readbackSchemaCasManifest:
+      fields.readback_schema_cas_manifest
+      ?? fields.readbackSchemaCasManifest
+      ?? fields.schema_cas_manifest
+      ?? fields.schemaCasManifest
+      ?? fields.readback_schema_locator
+      ?? fields.readbackSchemaLocator
+      ?? null,
+    renderedCardPng:
+      fields.rendered_card_png
+      ?? fields.renderedCardPng
+      ?? fields.proof_card_png
+      ?? fields.proofCardPng
+      ?? null,
+    renderedCardCasManifest:
+      fields.rendered_card_cas_manifest
+      ?? fields.renderedCardCasManifest
+      ?? fields.proof_card_cas_manifest
+      ?? fields.proofCardCasManifest
+      ?? fields.rendered_card_locator
+      ?? fields.renderedCardLocator
+      ?? null,
+    rawReadbackHash:
+      fields.raw_readback_hash
+      ?? fields.rawReadbackHash
+      ?? fields.readback_hash
+      ?? fields.readbackHash
+      ?? null,
+    rawReadbackSource:
+      fields.raw_readback_source
+      ?? fields.rawReadbackSource
+      ?? null,
+    expectedOutputVerified: boolValue(
+      fields.expected_output_verified
+      ?? fields.expectedOutputVerified
+      ?? fields.expected_output_verified_by_runtime
+      ?? fields.expectedOutputVerifiedByRuntime,
+    ),
+    checksumBefore:
+      fields.checksum_before
+      ?? fields.checksumBefore
+      ?? fields.baseline
+      ?? fields.baseline_hash
+      ?? null,
+    checksumAfter:
+      fields.checksum_after
+      ?? fields.checksumAfter
+      ?? fields.actual_checksum
+      ?? fields.actualChecksum
+      ?? null,
+    deterministicSliceOffset: integerValue(
+      fields.deterministic_slice_offset
+      ?? fields.deterministicSliceOffset
+      ?? fields.slice_offset
+      ?? fields.sliceOffset,
+    ),
+    deterministicSliceLength: integerValue(
+      fields.deterministic_slice_length
+      ?? fields.deterministicSliceLength
+      ?? fields.slice_length
+      ?? fields.sliceLength,
+    ),
+    deterministicSliceHash:
+      fields.deterministic_slice_hash
+      ?? fields.deterministicSliceHash
+      ?? fields.slice_hash
+      ?? fields.sliceHash
+      ?? null,
   };
 }
 
@@ -1035,6 +1322,7 @@ function originalHostPathCandidateRecord(line) {
 const ACCEPTED_ORIGINAL_HOST_PATH_ATTACHMENT_PROVENANCE = new Set([
   'runtime_explicit',
   'host_runtime_explicit',
+  'native_runtime_bridge',
 ]);
 
 function originalHostPathAttachmentProvenanceAccepted(provenance) {
@@ -1069,14 +1357,29 @@ function launchBoundaryRecord(line) {
 
 function dispatchBoundaryRecord(line) {
   const fields = parseRuntimeKeyValues(line);
+  const nativeRuntimeBridgeEvent =
+    runtimeBoundaryEventLine(line, /\bnative_(?:rocm_)?runtime_dispatch\b/i);
   return {
     line,
+    eventKind: nativeRuntimeBridgeEvent ? 'native_runtime_dispatch' : 'synthi_gpu_launch',
     runtimeSession: fields.runtime_session ?? null,
     dispatch: fields.dispatch ?? null,
     dispatchId: fields.dispatch_id ?? fields.dispatchId ?? null,
     artifactId: fields.artifact_id ?? fields.artifact ?? null,
     dispatchTableEntryId: fields.dispatch_table_entry_id ?? fields.dispatchTableEntryId ?? null,
+    proofBridge: fields.proof_bridge ?? fields.proofBridge ?? null,
+    attachmentProvenance:
+      fields.attachment_provenance
+      ?? fields.attachmentProvenance
+      ?? fields.provenance
+      ?? null,
   };
+}
+
+function dispatchBoundaryRuntimeBridgeAccepted(record) {
+  if (record?.eventKind !== 'native_runtime_dispatch') return true;
+  return String(record.proofBridge ?? '').trim().toLowerCase() === 'complete'
+    && String(record.attachmentProvenance ?? '').trim().toLowerCase() === 'native_runtime_bridge';
 }
 
 function runtimeErrorRecord(line) {
@@ -1288,6 +1591,28 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
           ?? fields.kernel
           ?? fields.symbol
           ?? null,
+        generation: integerValue(fields.generation ?? fields.active_generation ?? fields.activeGeneration),
+        epoch: firstRuntimeField(fields, 'epoch', 'active_epoch', 'activeEpoch'),
+        dispatchTimestamp: integerValue(
+          fields.dispatch_timestamp
+          ?? fields.dispatch_timestamp_ms
+          ?? fields.dispatchTimestamp
+          ?? fields.dispatchTimestampMs,
+        ),
+        gridDimensions: runtimeDim3Field(line, fields, 'grid', 'grid_dimensions', 'gridDimensions'),
+        blockDimensions: runtimeDim3Field(line, fields, 'block', 'block_dimensions', 'blockDimensions'),
+        argsPtr: firstRuntimeField(fields, 'args_ptr', 'argsPtr', 'arguments_ptr', 'argumentsPtr'),
+        argsCount: integerValue(firstRuntimeField(fields, 'args', 'arg_count', 'argCount', 'args_count', 'argsCount')),
+        streamId: firstRuntimeField(fields, 'stream', 'stream_id', 'streamId'),
+        sharedMemoryBytes: integerValue(
+          firstRuntimeField(fields, 'shared_bytes', 'shared_memory_bytes', 'sharedMemoryBytes', 'shared_mem_bytes'),
+        ),
+        dispatcherRegistrationId:
+          firstRuntimeField(fields, 'dispatcher_registration_id', 'dispatcherRegistrationId'),
+        dispatchTableHash: firstRuntimeField(fields, 'dispatch_table_hash', 'dispatchTableHash'),
+        dispatchTableEntryId:
+          firstRuntimeField(fields, 'dispatch_table_entry_id', 'dispatchTableEntryId'),
+        dispatch: fields.dispatch ?? null,
         realLaunchResolved: boolValue(fields.real_launch_resolved ?? fields.realLaunchResolved),
       };
     })
@@ -1312,6 +1637,29 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
           ?? fields.kernel
           ?? fields.symbol
           ?? null,
+        generation: integerValue(fields.generation ?? fields.active_generation ?? fields.activeGeneration),
+        epoch: firstRuntimeField(fields, 'epoch', 'active_epoch', 'activeEpoch'),
+        dispatchTimestamp: integerValue(
+          fields.dispatch_timestamp
+          ?? fields.dispatch_timestamp_ms
+          ?? fields.dispatchTimestamp
+          ?? fields.dispatchTimestampMs,
+        ),
+        gridDimensions: runtimeDim3Field(line, fields, 'grid', 'grid_dimensions', 'gridDimensions'),
+        blockDimensions: runtimeDim3Field(line, fields, 'block', 'block_dimensions', 'blockDimensions'),
+        argsPtr: firstRuntimeField(fields, 'args_ptr', 'argsPtr', 'arguments_ptr', 'argumentsPtr'),
+        argsCount: integerValue(firstRuntimeField(fields, 'args', 'arg_count', 'argCount', 'args_count', 'argsCount')),
+        streamId: firstRuntimeField(fields, 'stream', 'stream_id', 'streamId'),
+        sharedMemoryBytes: integerValue(
+          firstRuntimeField(fields, 'shared_bytes', 'shared_memory_bytes', 'sharedMemoryBytes', 'shared_mem_bytes'),
+        ),
+        dispatcherRegistrationId:
+          firstRuntimeField(fields, 'dispatcher_registration_id', 'dispatcherRegistrationId'),
+        dispatchTableHash: firstRuntimeField(fields, 'dispatch_table_hash', 'dispatchTableHash'),
+        dispatchTableEntryId:
+          firstRuntimeField(fields, 'dispatch_table_entry_id', 'dispatchTableEntryId'),
+        result: integerValue(fields.result),
+        dispatch: fields.dispatch ?? null,
       };
     })
     .filter((record) =>
@@ -1345,12 +1693,16 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
       && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
     );
   const dispatchBoundaryRecords = (Array.isArray(lines) ? lines : [])
-    .filter((line) => runtimeBoundaryEventLine(line, /\bsynthi_gpu_launch\b/i))
+    .filter((line) =>
+      runtimeBoundaryEventLine(line, /\bsynthi_gpu_launch\b/i)
+      || runtimeBoundaryEventLine(line, /\bnative_(?:rocm_)?runtime_dispatch\b/i)
+    )
     .map(dispatchBoundaryRecord)
     .filter((record) =>
       typeof record.runtimeSession === 'string'
       && record.runtimeSession.trim()
       && String(record.dispatch ?? '').trim().toLowerCase() === 'ok'
+      && dispatchBoundaryRuntimeBridgeAccepted(record)
       && typeof record.dispatchTableEntryId === 'string'
       && record.dispatchTableEntryId.trim()
       && record.dispatchTableEntryId !== 'none'
@@ -1436,6 +1788,12 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     evidenceRefToken(record.api),
     Number.isFinite(record.sequence) ? record.sequence : 'unknown',
   ].join(':'));
+  const nativeLaunchAttemptEvidenceRefs = nativeLaunchAttemptRecords.slice(-20).map((record) =>
+    nativeLaunchEvidenceRef('native_launch_attempt', record)
+  );
+  const nativeLaunchEvidenceRefs = nativeLaunchRecords.slice(-20).map((record) =>
+    nativeLaunchEvidenceRef('native_launch_observed', record)
+  );
   const runtimeErrorEvidenceRefs = compactStringList(
     runtimeErrorRecords.map((record) => record.evidence_ref),
   );
@@ -1609,13 +1967,29 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     native_launch_function_ptrs: compactStringList(
       [...nativeLaunchAttemptRecords, ...nativeLaunchRecords].map((record) => record.functionPtr),
     ),
+    native_launch_attempt_evidence_refs: nativeLaunchAttemptEvidenceRefs,
+    native_launch_evidence_refs: nativeLaunchEvidenceRefs,
     native_launch_attempt_records: nativeLaunchAttemptRecords.slice(-20).map((record) => ({
       runtime_session: record.runtimeSession,
       sequence: record.sequence,
       api: record.api,
       function_ptr: record.functionPtr,
       kernel_symbol: record.kernelSymbol,
+      generation: record.generation,
+      epoch: record.epoch,
+      dispatch_timestamp: record.dispatchTimestamp,
+      grid_dimensions: record.gridDimensions,
+      block_dimensions: record.blockDimensions,
+      args_ptr: record.argsPtr,
+      args_count: record.argsCount,
+      stream_id: record.streamId,
+      shared_memory_bytes: record.sharedMemoryBytes,
+      dispatcher_registration_id: record.dispatcherRegistrationId,
+      dispatch_table_hash: record.dispatchTableHash,
+      dispatch_table_entry_id: record.dispatchTableEntryId,
+      dispatch: record.dispatch,
       real_launch_resolved: record.realLaunchResolved,
+      evidence_ref: nativeLaunchEvidenceRef('native_launch_attempt', record),
     })),
     native_launch_records: nativeLaunchRecords.slice(-20).map((record) => ({
       runtime_session: record.runtimeSession,
@@ -1623,6 +1997,21 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
       api: record.api,
       function_ptr: record.functionPtr,
       kernel_symbol: record.kernelSymbol,
+      generation: record.generation,
+      epoch: record.epoch,
+      dispatch_timestamp: record.dispatchTimestamp,
+      grid_dimensions: record.gridDimensions,
+      block_dimensions: record.blockDimensions,
+      args_ptr: record.argsPtr,
+      args_count: record.argsCount,
+      stream_id: record.streamId,
+      shared_memory_bytes: record.sharedMemoryBytes,
+      dispatcher_registration_id: record.dispatcherRegistrationId,
+      dispatch_table_hash: record.dispatchTableHash,
+      dispatch_table_entry_id: record.dispatchTableEntryId,
+      result: record.result,
+      dispatch: record.dispatch,
+      evidence_ref: nativeLaunchEvidenceRef('native_launch_observed', record),
     })),
     native_launch_observer_enabled: nativeLaunchObserverEnabled,
     native_launch_observer_saw_no_launch: nativeLaunchObserverSawNoLaunch,
@@ -1702,6 +2091,10 @@ export function originalHostPathProofFromRuntimeEvidence(lines, observation = {}
     nativeArrayAllocationFailureBeforeLaunch: evidence.native_array_allocation_failure_before_launch,
     nativeLaunchObserverReadyEvidenceRefs: evidence.native_launch_observer_ready_evidence_refs,
     nativeFunctionResolutionEvidenceRefs: evidence.native_function_resolution_evidence_refs,
+    nativeLaunchAttemptEvidenceRefs: evidence.native_launch_attempt_evidence_refs,
+    nativeLaunchEvidenceRefs: evidence.native_launch_evidence_refs,
+    nativeLaunchAttemptRecords: evidence.native_launch_attempt_records,
+    nativeLaunchRecords: evidence.native_launch_records,
     nativeTextureObjectEvidenceRefs: evidence.native_texture_object_evidence_refs,
     nativeArrayAllocationEvidenceRefs: evidence.native_array_allocation_evidence_refs,
     nativeArrayAllocationRecords: evidence.native_array_allocation_records,
@@ -1722,17 +2115,69 @@ function artifactTransportRecord(line) {
   const fields = parseRuntimeKeyValues(line);
   const degradedState = fields.degraded_state ?? fields.degradedState ?? null;
   const degradedReason = fields.degraded_reason ?? fields.degradedReason ?? null;
+  const artifactHash =
+    fields.artifact_hash
+    ?? fields.artifactHash
+    ?? fields.artifact_content_hash
+    ?? fields.artifactContentHash
+    ?? fields.artifact_sha256
+    ?? fields.artifactSha256
+    ?? fields.content_hash
+    ?? fields.contentHash
+    ?? fields.loaded_artifact_hash
+    ?? fields.loadedArtifactHash
+    ?? fields.sha256
+    ?? null;
+  const artifactBytes = integerValue(
+    fields.artifact_bytes
+    ?? fields.artifactBytes
+    ?? fields.artifact_byte_length
+    ?? fields.artifactByteLength
+    ?? fields.byte_length
+    ?? fields.byteLength
+    ?? fields.content_length
+    ?? fields.contentLength,
+  );
+  const selectedLoaderTransport =
+    fields.selected_loader_transport
+    ?? fields.selectedLoaderTransport
+    ?? fields.loader_transport
+    ?? fields.loaderTransport
+    ?? fields.transport
+    ?? null;
+  const reloadRequestTransport =
+    fields.reload_request_transport
+    ?? fields.reloadRequestTransport
+    ?? fields.request_transport
+    ?? fields.requestTransport
+    ?? fields.source_transport
+    ?? fields.sourceTransport
+    ?? selectedLoaderTransport
+    ?? null;
+  const ramBlobId =
+    fields.ram_blob_id
+    ?? fields.ramBlobId
+    ?? fields.artifact_id
+    ?? fields.artifactId
+    ?? null;
   return {
     line,
-    runtimeSession: fields.runtime_session ?? null,
-    generation: integerValue(fields.generation),
-    artifactHash: fields.artifact_hash ?? null,
-    artifactBytes: integerValue(fields.artifact_bytes),
-    reloadRequestTransport: fields.reload_request_transport ?? fields.reloadRequestTransport ?? null,
-    selectedLoaderTransport: fields.selected_loader_transport ?? fields.selectedLoaderTransport ?? null,
+    runtimeSession:
+      fields.runtime_session
+      ?? fields.runtimeSession
+      ?? fields.runtime_session_id
+      ?? fields.runtimeSessionId
+      ?? fields.session_id
+      ?? fields.sessionId
+      ?? null,
+    generation: integerValue(fields.generation ?? fields.active_generation ?? fields.activeGeneration),
+    artifactHash,
+    artifactBytes,
+    reloadRequestTransport,
+    selectedLoaderTransport,
     loaderApi: fields.loader_api ?? fields.loaderApi ?? null,
     ramReference: boolValue(fields.ram_reference ?? fields.ramArtifactReferenceProvided),
-    ramBlobId: fields.ram_blob_id ?? fields.ramBlobId ?? null,
+    ramBlobId,
     ramTransportProven: boolValue(fields.ram_transport_proven ?? fields.ramTransportProven),
     degradedState: degradedState === 'none' ? null : degradedState,
     degradedReason: degradedReason === 'none' ? null : degradedReason,
@@ -1742,21 +2187,35 @@ function artifactTransportRecord(line) {
 
 export function runtimeArtifactTransportEvidence(lines, observation = {}) {
   const expectedSessions = expectedRuntimeSessionIds(observation);
-  const rawRecords = (Array.isArray(lines) ? lines : [])
+  const candidateRecords = (Array.isArray(lines) ? lines : [])
     .filter((line) => runtimeBoundaryEventLine(line, /\bartifact_transport\b/i))
-    .map(artifactTransportRecord)
-    .filter((record) =>
-      typeof record.runtimeSession === 'string'
-      && record.runtimeSession.trim()
-      && typeof record.selectedLoaderTransport === 'string'
-      && record.selectedLoaderTransport.trim()
-      && typeof record.reloadRequestTransport === 'string'
-      && record.reloadRequestTransport.trim()
-      && typeof record.artifactHash === 'string'
-      && /^sha256:[0-9a-f]{64}$/i.test(record.artifactHash)
-      && Number.isFinite(record.artifactBytes)
-      && record.artifactBytes >= 0
-    );
+    .map(artifactTransportRecord);
+  const artifactTransportRecordRejectionReasons = (record) => compactStringList([
+    typeof record.runtimeSession === 'string' && record.runtimeSession.trim()
+      ? null
+      : 'runtime_session_missing',
+    typeof record.selectedLoaderTransport === 'string' && record.selectedLoaderTransport.trim()
+      ? null
+      : 'selected_loader_transport_missing',
+    typeof record.reloadRequestTransport === 'string' && record.reloadRequestTransport.trim()
+      ? null
+      : 'reload_request_transport_missing',
+    typeof record.artifactHash === 'string' && /^sha256:[0-9a-f]{64}$/i.test(record.artifactHash)
+      ? null
+      : 'artifact_hash_missing_or_invalid',
+    Number.isFinite(record.artifactBytes) && record.artifactBytes >= 0
+      ? null
+      : 'artifact_bytes_missing_or_invalid',
+  ]);
+  const rawRecords = candidateRecords.filter((record) =>
+    artifactTransportRecordRejectionReasons(record).length === 0
+  );
+  const rejectedRecords = candidateRecords
+    .filter((record) => artifactTransportRecordRejectionReasons(record).length > 0)
+    .map((record) => ({
+      reasons: artifactTransportRecordRejectionReasons(record),
+      line: record.line,
+    }));
   const records = rawRecords.filter((record) =>
     expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession)
   );
@@ -1771,6 +2230,14 @@ export function runtimeArtifactTransportEvidence(lines, observation = {}) {
   const ramArtifactReferenceProvided = records.some((record) => record.ramReference === true);
   const ramBlobIds = compactStringList(records.map((record) => record.ramBlobId));
   const artifactHashes = compactStringList(records.map((record) => record.artifactHash));
+  const artifactIds = contentAddressedArtifactIds([
+    ...ramBlobIds,
+    ...artifactHashes,
+  ]);
+  const latestArtifactIds = latest
+    ? contentAddressedArtifactIds([latest.ramBlobId, latest.artifactHash])
+    : [];
+  const latestArtifactId = latestArtifactIds[0] ?? null;
   const ramBlobIdentityForRecord = (record) => {
     if (record.ramReference !== true) return false;
     const artifactDigest = sha256Digest(record.artifactHash);
@@ -1803,6 +2270,10 @@ export function runtimeArtifactTransportEvidence(lines, observation = {}) {
 
   return {
     total_count: rawRecords.length,
+    candidate_count: candidateRecords.length,
+    rejected_count: rejectedRecords.length,
+    rejected_reasons: compactStringList(rejectedRecords.flatMap((record) => record.reasons)),
+    rejected_records: rejectedRecords.slice(-10),
     matched_count: records.length,
     latest,
     process_id: processIds.length === 1 ? processIds[0] : null,
@@ -1815,7 +2286,23 @@ export function runtimeArtifactTransportEvidence(lines, observation = {}) {
     ram_artifact_reference_provided: ramArtifactReferenceProvided,
     ram_blob_identity_proven: ramBlobIdentityProven,
     ram_blob_ids: ramBlobIds,
+    ramBlobIds,
+    ram_blob_id: latest?.ramBlobId ?? null,
+    ramBlobId: latest?.ramBlobId ?? null,
     artifact_hashes: artifactHashes,
+    artifactHashes,
+    artifact_hash: latest?.artifactHash ?? null,
+    artifactHash: latest?.artifactHash ?? null,
+    artifact_content_hashes: artifactHashes,
+    artifactContentHashes: artifactHashes,
+    artifact_id: latestArtifactId,
+    artifactId: latestArtifactId,
+    artifact_ids: artifactIds,
+    artifactIds,
+    selected_artifact_id: latestArtifactId,
+    selectedArtifactId: latestArtifactId,
+    selected_artifact_ids: artifactIds,
+    selectedArtifactIds: artifactIds,
     ram_transport_proven: effectiveRamTransportProven,
     loader_transports: loaderTransports,
     reload_request_transports: reloadRequestTransports,
@@ -1831,20 +2318,32 @@ export function runtimeArtifactTransportEvidence(lines, observation = {}) {
 }
 
 export function runtimeOutputOracleEvidence(lines, observation = {}) {
-  const records = (Array.isArray(lines) ? lines : [])
+  const candidateRecords = (Array.isArray(lines) ? lines : [])
     .filter((line) => runtimeBoundaryEventLine(line, /\boutput_oracle\b/i))
-    .map(outputOracleRecord)
-    .filter((record) =>
-      typeof record.oracleId === 'string'
-      && record.oracleId.trim()
-      && typeof record.kind === 'string'
-      && record.kind.trim()
-      && record.expected !== null
-      && record.actual !== null
-      && record.passed !== null
-      && typeof record.runtimeSession === 'string'
-      && record.runtimeSession.trim()
-    );
+    .map(outputOracleRecord);
+  const outputOracleRecordRejectionReasons = (record) => compactStringList([
+    typeof record.oracleId === 'string' && record.oracleId.trim()
+      ? null
+      : 'oracle_id_missing',
+    typeof record.kind === 'string' && record.kind.trim()
+      ? null
+      : 'oracle_kind_missing',
+    record.expected !== null ? null : 'expected_missing',
+    record.actual !== null ? null : 'actual_missing',
+    record.passed !== null ? null : 'passed_missing',
+    typeof record.runtimeSession === 'string' && record.runtimeSession.trim()
+      ? null
+      : 'runtime_session_missing',
+  ]);
+  const records = candidateRecords.filter((record) =>
+    outputOracleRecordRejectionReasons(record).length === 0
+  );
+  const rejectedRecords = candidateRecords
+    .filter((record) => outputOracleRecordRejectionReasons(record).length > 0)
+    .map((record) => ({
+      reasons: outputOracleRecordRejectionReasons(record),
+      line: record.line,
+    }));
   const expectedContract = normalizeOracleContract(observation.expectedOracle ?? observation.outputOracleContract);
   const expectedSessions = expectedRuntimeSessionIds(observation);
   const matchingRecords = records.filter((record) =>
@@ -1859,6 +2358,8 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
   const evidenceRefs = latest ? [`worker-log:output_oracle:${latest.oracleId}`] : [];
   const expectedActualMatch = latest !== null && Object.is(latest.expected, latest.actual);
   const oracleKindAccepted = latest !== null && gpuHmrOutputOracleKindAccepted(latest.kind);
+  const latestAfterDispatchId = latest?.afterDispatchId ?? latest?.dispatchId ?? null;
+  const latestDispatchId = latest?.dispatchId ?? latest?.afterDispatchId ?? null;
   const valueCompatibility = latest !== null
     ? gpuHmrOracleValuesCompatible(latest.expected, latest.actual, latest.tolerance)
     : {
@@ -1870,6 +2371,10 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
 
   return {
     total_count: records.length,
+    candidate_count: candidateRecords.length,
+    rejected_count: rejectedRecords.length,
+    rejected_reasons: compactStringList(rejectedRecords.flatMap((record) => record.reasons)),
+    rejected_records: rejectedRecords.slice(-10),
     matched_count: matchingRecords.length,
     passed_count: passedRecords.length,
     failed_count: matchingRecords.length - passedRecords.length,
@@ -1894,7 +2399,9 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
     output_oracle: latest
       ? {
           oracleId: latest.oracleId,
+          oracle_id: latest.oracleId,
           requiredOracleId: latest.requiredOracleId,
+          required_oracle_id: latest.requiredOracleId,
           kind: latest.kind,
           producer: latest.producer,
           expected: latest.expected,
@@ -1902,29 +2409,110 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
           passed: latest.passed,
           tolerance: latest.tolerance,
           runtimeSession: latest.runtimeSession,
+          runtime_session: latest.runtimeSession,
           processId: processIdFromRuntimeSession(latest.runtimeSession),
+          process_id: processIdFromRuntimeSession(latest.runtimeSession),
           outputTargetId: latest.outputTargetId,
+          output_target_id: latest.outputTargetId,
+          target_id: latest.outputTargetId,
           readbackTimestamp: latest.readbackTimestamp,
+          readback_timestamp: latest.readbackTimestamp,
+          timestamp_after_dispatch: latest.readbackTimestamp,
           artifactId: latest.artifactId,
-          afterDispatchId: latest.afterDispatchId ?? latest.dispatchId,
-          after_dispatch_id: latest.afterDispatchId ?? latest.dispatchId,
-          dispatchId: latest.dispatchId ?? latest.afterDispatchId,
-          dispatch_id: latest.dispatchId ?? latest.afterDispatchId,
+          artifact_id: latest.artifactId,
+          afterDispatchId: latestAfterDispatchId,
+          after_dispatch_id: latestAfterDispatchId,
+          dispatchId: latestDispatchId,
+          dispatch_id: latestDispatchId,
           visualEvidenceRef: latest.visualEvidenceRef,
+          visual_evidence_ref: latest.visualEvidenceRef,
+          beforeImage: latest.beforeImage,
+          before_image: latest.beforeImage,
+          beforeImageCasManifest: latest.beforeImageCasManifest,
+          before_image_cas_manifest: latest.beforeImageCasManifest,
+          afterImage: latest.afterImage,
+          after_image: latest.afterImage,
+          afterImageCasManifest: latest.afterImageCasManifest,
+          after_image_cas_manifest: latest.afterImageCasManifest,
+          diffImage: latest.diffImage,
+          diff_image: latest.diffImage,
+          diffImageCasManifest: latest.diffImageCasManifest,
+          diff_image_cas_manifest: latest.diffImageCasManifest,
+          beforeImageHash: latest.beforeImageHash,
+          before_image_hash: latest.beforeImageHash,
+          afterImageHash: latest.afterImageHash,
+          after_image_hash: latest.afterImageHash,
+          diffImageHash: latest.diffImageHash,
+          diff_image_hash: latest.diffImageHash,
+          cameraStateHash: latest.cameraStateHash,
+          camera_state_hash: latest.cameraStateHash,
+          swapchainSize: latest.swapchainSize,
+          swapchain_size: latest.swapchainSize,
+          captureBackend: latest.captureBackend,
+          capture_backend: latest.captureBackend,
+          frameNumber: latest.frameNumber,
+          frame_number: latest.frameNumber,
           probeMode: latest.probeMode,
+          probe_mode: latest.probeMode,
           probeConfigHash: latest.probeConfigHash,
+          probe_config_hash: latest.probeConfigHash,
           readbackBytes: latest.readbackBytes,
+          readback_bytes: latest.readbackBytes,
           readbackSampleStride: latest.readbackSampleStride,
+          readback_sample_stride: latest.readbackSampleStride,
           readbackSampleSha256: latest.readbackSampleSha256,
+          readback_sample_sha256: latest.readbackSampleSha256,
           readbackSampleHex: latest.readbackSampleHex,
+          readback_sample_hex: latest.readbackSampleHex,
+          rawReadbackBin: latest.rawReadbackBin,
+          raw_readback_bin: latest.rawReadbackBin,
+          rawReadbackCasManifest: latest.rawReadbackCasManifest,
+          raw_readback_cas_manifest: latest.rawReadbackCasManifest,
+          readbackSchemaJson: latest.readbackSchemaJson,
+          readback_schema_json: latest.readbackSchemaJson,
+          readbackSchemaCasManifest: latest.readbackSchemaCasManifest,
+          readback_schema_cas_manifest: latest.readbackSchemaCasManifest,
+          renderedCardPng: latest.renderedCardPng,
+          rendered_card_png: latest.renderedCardPng,
+          renderedCardCasManifest: latest.renderedCardCasManifest,
+          rendered_card_cas_manifest: latest.renderedCardCasManifest,
+          rawReadbackHash: latest.rawReadbackHash,
+          raw_readback_hash: latest.rawReadbackHash,
+          rawReadbackSource: latest.rawReadbackSource,
+          raw_readback_source: latest.rawReadbackSource,
+          expectedOutputVerified: latest.expectedOutputVerified,
+          expected_output_verified: latest.expectedOutputVerified,
+          checksumBefore: latest.checksumBefore,
+          checksum_before: latest.checksumBefore,
+          checksumAfter: latest.checksumAfter,
+          checksum_after: latest.checksumAfter,
+          deterministicSliceOffset: latest.deterministicSliceOffset,
+          deterministic_slice_offset: latest.deterministicSliceOffset,
+          deterministicSliceLength: latest.deterministicSliceLength,
+          deterministic_slice_length: latest.deterministicSliceLength,
+          deterministicSliceHash: latest.deterministicSliceHash,
+          deterministic_slice_hash: latest.deterministicSliceHash,
           probeEvidenceRefs: compactStringList([
             latest.probeEvidenceRef,
             ...evidenceRefs,
           ]),
+          probe_evidence_refs: compactStringList([
+            latest.probeEvidenceRef,
+            ...evidenceRefs,
+          ]),
           kindAccepted: oracleKindAccepted,
+          kind_accepted: oracleKindAccepted,
           evidenceRefs,
+          evidence_refs: evidenceRefs,
         }
       : null,
+    output_target_id: latest?.outputTargetId ?? null,
+    target_id: latest?.outputTargetId ?? null,
+    artifact_id: latest?.artifactId ?? null,
+    after_dispatch_id: latestAfterDispatchId,
+    dispatch_id: latestDispatchId,
+    timestamp_after_dispatch: latest?.readbackTimestamp ?? null,
+    readback_timestamp: latest?.readbackTimestamp ?? null,
     evidence_refs: evidenceRefs,
     lines: records.map((record) => record.line).slice(-20),
   };

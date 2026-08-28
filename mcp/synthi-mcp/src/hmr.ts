@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import type { RTCDataChannel } from "werift";
 import {
   classifyGpuHmrProofMessage,
@@ -6,6 +6,9 @@ import {
   type GpuHmrProofMatchOpts,
   type GpuHmrProofTelemetry,
 } from "./gpu_proof.js";
+import type {
+  GpuParentRuntimeProofControlVerificationMaterial,
+} from "./gpu_parent_runtime_proof_admission.js";
 
 /**
  * HMR normalizer. Parses the four wire families emitted by the worker on the
@@ -59,13 +62,35 @@ export interface HmrTerminalEvent {
 
 export type WireMessage = Record<string, unknown>;
 
+export interface HmrPreclassificationDecision {
+  readonly include: boolean;
+  readonly parentControlVerificationMaterial?:
+    GpuParentRuntimeProofControlVerificationMaterial;
+}
+
+export type HmrPreclassificationResult =
+  | boolean
+  | HmrPreclassificationDecision;
+
+export interface HmrNormalizerOptions {
+  /**
+   * Runs after wire parsing and structured-chunk reassembly, but before any
+   * terminal/proof classification or public listener notification. Returning
+   * false suppresses the message. Exceptions also fail closed.
+   */
+  readonly beforeClassify?: (
+    message: WireMessage,
+    observedAt: number,
+  ) => HmrPreclassificationResult;
+}
+
 interface StructuredJsonChunk {
   chunkId: string;
   sha256: string;
   byteLength: number;
   index: number;
   total: number;
-  data: string;
+  data: Buffer;
 }
 
 interface StructuredJsonChunkBuffer {
@@ -73,18 +98,177 @@ interface StructuredJsonChunkBuffer {
   byteLength: number;
   total: number;
   chunks: Map<number, Buffer>;
+  receivedBytes: number;
   createdAt: number;
   lastSeenAt: number;
 }
 
 const STRUCTURED_JSON_CHUNK_TYPE = "structured-json-chunk";
+const STRUCTURED_JSON_CHUNK_SCHEMA = "synthi.build_log.structured_json_chunk.v1";
+const STRUCTURED_JSON_CHUNK_ENCODING = "base64:utf8";
 const STRUCTURED_JSON_CHUNK_BUFFER_LIMIT = 32;
 const STRUCTURED_JSON_CHUNK_TTL_MS = 120_000;
+const STRUCTURED_JSON_CHUNK_ID_MAX_CHARS = 160;
+const STRUCTURED_JSON_CHUNK_MAX_BYTES = 16 * 1024 * 1024;
+const STRUCTURED_JSON_CHUNK_MAX_PART_BYTES = 64 * 1024;
+const STRUCTURED_JSON_CHUNK_MAX_PARTS = 4096;
 
 export interface HmrClassification {
   status: HmrTerminalStatus;
   source: HmrTerminalSource;
   detail: Record<string, unknown>;
+  matchModuleRef: string | null;
+  matchPreviewRef: string | null;
+}
+
+export interface PublicHmrEventProjection {
+  status: HmrTerminalStatus | "intermediate";
+  source: HmrTerminalSource | "wire_message";
+  diagnostic: Record<string, unknown>;
+}
+
+export type GpuProofTrustInvalidationReason =
+  | "runtime_evidence_transport_failed"
+  | "runtime_evidence_transport_disposed"
+  | "hmr_normalizer_disposed";
+
+export interface GpuProofTrustInvalidation {
+  readonly schemaVersion: "synthi.gpu_hmr.proof_trust_invalidation.v1";
+  readonly proofAuthority: "proof_trust_invalidation_only_not_gpu_hmr_acceptance";
+  readonly reasonClass: GpuProofTrustInvalidationReason;
+  readonly invalidatedAt: number;
+  readonly acceptedForGpuHmr: false;
+  readonly gpuHmrSuccess: false;
+  readonly canSatisfyRuntimeProof: false;
+}
+
+const PUBLIC_TERMINAL_DIAGNOSTIC_SCHEMA = "synthi.hmr.public_terminal_diagnostic.v1";
+const PUBLIC_TERMINAL_DIAGNOSTIC_AUTHORITY = "terminal_diagnostic_only_not_gpu_hmr_acceptance";
+const terminalDiagnosticReferenceKey = randomBytes(32);
+
+function firstStringField(
+  value: Record<string, unknown>,
+  keys: readonly string[]
+): string | null {
+  for (const key of keys) {
+    const candidate = value[key];
+    if (typeof candidate === "string" && candidate.length > 0) return candidate;
+  }
+  return null;
+}
+
+function firstBooleanField(
+  value: Record<string, unknown>,
+  keys: readonly string[]
+): boolean | null {
+  for (const key of keys) {
+    const candidate = value[key];
+    if (typeof candidate === "boolean") return candidate;
+  }
+  return null;
+}
+
+function firstNonNegativeNumberField(
+  value: Record<string, unknown>,
+  keys: readonly string[]
+): number | null {
+  for (const key of keys) {
+    const candidate = value[key];
+    if (typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function terminalDiagnosticReference(kind: "module" | "preview" | "reason", value: string): string {
+  const digest = createHmac("sha256", terminalDiagnosticReferenceKey)
+    .update(kind)
+    .update("\0")
+    .update(value)
+    .digest("hex");
+  return `hmr-terminal-${kind}-ref:sha256:${digest}`;
+}
+
+function publicTerminalDiagnostic(
+  status: HmrTerminalStatus | "intermediate",
+  source: HmrTerminalSource | "wire_message",
+  rawDetail: Record<string, unknown>
+): Record<string, unknown> {
+  const module = terminalModule(rawDetail);
+  const previewId = terminalPreviewId(rawDetail);
+  const reason = firstStringField(rawDetail, [
+    "reason_code",
+    "reasonCode",
+    "reason",
+    "message",
+    "error",
+  ]);
+  const generation = firstNonNegativeNumberField(rawDetail, ["generation"]);
+  const totalReloadMs = firstNonNegativeNumberField(rawDetail, [
+    "total_reload_ms",
+    "totalReloadMs",
+  ]);
+  const errorCount = firstNonNegativeNumberField(rawDetail, ["error_count", "errorCount"]);
+  const diagnostics = Array.isArray(rawDetail.diagnostics) ? rawDetail.diagnostics.length : null;
+  const statePreserved = firstBooleanField(rawDetail, ["state_preserved", "statePreserved"]);
+  const cpuHmrUsed = firstBooleanField(rawDetail, ["cpu_hmr_used", "cpuHmrUsed"]);
+  const fullRebuildUsed = firstBooleanField(rawDetail, [
+    "full_rebuild_used",
+    "fullRebuildUsed",
+  ]);
+  const processRestarted = firstBooleanField(rawDetail, [
+    "process_restarted",
+    "processRestarted",
+  ]);
+
+  return {
+    schemaVersion: PUBLIC_TERMINAL_DIAGNOSTIC_SCHEMA,
+    proofAuthority: PUBLIC_TERMINAL_DIAGNOSTIC_AUTHORITY,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    status,
+    source,
+    reasonClass: status === "intermediate"
+      ? "nonterminal_transition"
+      : source === "compile_diagnostics"
+        ? "compile_diagnostic"
+        : status === "rejected" || status === "discarded"
+          ? "producer_rejection"
+          : status === "full-reload-required"
+            ? "full_reload_required"
+            : "terminal_transition",
+    reasonPresent: reason !== null,
+    ...(module !== null ? { moduleRef: terminalDiagnosticReference("module", module) } : {}),
+    ...(previewId !== null
+      ? { previewRef: terminalDiagnosticReference("preview", previewId) }
+      : {}),
+    ...(reason !== null ? { reasonRef: terminalDiagnosticReference("reason", reason) } : {}),
+    ...(generation !== null ? { generation } : {}),
+    ...(totalReloadMs !== null ? { totalReloadMs } : {}),
+    ...(errorCount !== null ? { errorCount } : {}),
+    ...(diagnostics !== null ? { diagnosticCount: diagnostics } : {}),
+    ...(statePreserved !== null ? { statePreserved } : {}),
+    ...(cpuHmrUsed !== null ? { cpuHmrUsed } : {}),
+    ...(fullRebuildUsed !== null ? { fullRebuildUsed } : {}),
+    ...(processRestarted !== null ? { processRestarted } : {}),
+  };
+}
+
+function terminalClassification(
+  status: HmrTerminalStatus,
+  source: HmrTerminalSource,
+  rawDetail: Record<string, unknown>
+): HmrClassification {
+  const module = terminalModule(rawDetail);
+  const previewId = terminalPreviewId(rawDetail);
+  return {
+    status,
+    source,
+    detail: publicTerminalDiagnostic(status, source, rawDetail),
+    matchModuleRef: module === null ? null : terminalDiagnosticReference("module", module),
+    matchPreviewRef: previewId === null ? null : terminalDiagnosticReference("preview", previewId),
+  };
 }
 
 function objectOrNull(value: unknown): Record<string, unknown> | null {
@@ -173,11 +357,11 @@ export function classifyHmrMessage(msg: WireMessage): HmrClassification | null {
     const data = (msg.data as Record<string, unknown> | undefined) ?? {};
     switch (msg.event) {
       case "Promoted":
-        return { status: "applied", source: "candidate_notification", detail: data };
+        return terminalClassification("applied", "candidate_notification", data);
       case "RolledBack":
-        return { status: "rejected", source: "candidate_notification", detail: data };
+        return terminalClassification("rejected", "candidate_notification", data);
       case "Discarded":
-        return { status: "discarded", source: "candidate_notification", detail: data };
+        return terminalClassification("discarded", "candidate_notification", data);
       default:
         // Enqueued / Loading / HealthCheckStarted / HealthCheckCompleted /
         // PromotionDecision → non-terminal
@@ -188,7 +372,7 @@ export function classifyHmrMessage(msg: WireMessage): HmrClassification | null {
   // Family 3: {type:"hmr-status", status:"rejected"|"reload-planned", ...}
   if (msg.type === "hmr-status" && typeof msg.status === "string") {
     if (msg.status === "rejected") {
-      return { status: "rejected", source: "rollback_notification", detail: msg };
+      return terminalClassification("rejected", "rollback_notification", msg);
     }
     // "reload-planned" and any future non-terminal planner statuses
     return null;
@@ -198,7 +382,7 @@ export function classifyHmrMessage(msg: WireMessage): HmrClassification | null {
   if (msg.type === "compile-diagnostics") {
     const errorCount = msg.error_count;
     if (typeof errorCount === "number" && errorCount > 0) {
-      return { status: "compile-error", source: "compile_diagnostics", detail: msg };
+      return terminalClassification("compile-error", "compile_diagnostics", msg);
     }
     return null;
   }
@@ -208,13 +392,13 @@ export function classifyHmrMessage(msg: WireMessage): HmrClassification | null {
     switch (msg.status) {
       case "applied":
       case "state-migrated":
-        return { status: "applied", source: "hmr_status", detail: msg };
+        return terminalClassification("applied", "hmr_status", msg);
       case "rejected":
-        return { status: "rejected", source: "hmr_status", detail: msg };
+        return terminalClassification("rejected", "hmr_status", msg);
       case "compile-error":
-        return { status: "compile-error", source: "hmr_status", detail: msg };
+        return terminalClassification("compile-error", "hmr_status", msg);
       case "full-reload-required":
-        return { status: "full-reload-required", source: "hmr_status", detail: msg };
+        return terminalClassification("full-reload-required", "hmr_status", msg);
       default:
         // "done" (compile complete, NOT HMR applied),
         // "host-kv-preserved"/"host-kv-reset-schema-mismatch",
@@ -226,7 +410,24 @@ export function classifyHmrMessage(msg: WireMessage): HmrClassification | null {
   return null;
 }
 
+export function projectPublicHmrEvent(msg: WireMessage): PublicHmrEventProjection {
+  const classification = classifyHmrMessage(msg);
+  if (classification !== null) {
+    return {
+      status: classification.status,
+      source: classification.source,
+      diagnostic: classification.detail,
+    };
+  }
+  return {
+    status: "intermediate",
+    source: "wire_message",
+    diagnostic: publicTerminalDiagnostic("intermediate", "wire_message", msg),
+  };
+}
+
 type MessageHandler = (msg: WireMessage) => void;
+type GpuProofTrustInvalidationHandler = (event: GpuProofTrustInvalidation) => void;
 
 export function terminalModule(detail: Record<string, unknown>): string | null {
   if (typeof detail.module === "string") return detail.module;
@@ -256,12 +457,19 @@ function terminalMatches(
   expectedPreviewId?: string
 ): boolean {
   if (expectedModule) {
-    const actualModule = terminalModule(cls.detail);
-    if ((cls.status === "applied" || actualModule !== null) && actualModule !== expectedModule) {
+    const actualModuleRef = cls.matchModuleRef;
+    const expectedModuleRef = terminalDiagnosticReference("module", expectedModule);
+    if (
+      (cls.status === "applied" || actualModuleRef !== null)
+      && actualModuleRef !== expectedModuleRef
+    ) {
       return false;
     }
   }
-  if (expectedPreviewId && terminalPreviewId(cls.detail) !== expectedPreviewId) {
+  if (
+    expectedPreviewId
+    && cls.matchPreviewRef !== terminalDiagnosticReference("preview", expectedPreviewId)
+  ) {
     return false;
   }
   return true;
@@ -271,6 +479,8 @@ interface RetainedHmrTerminalEvent {
   status: HmrTerminalStatus;
   source: HmrTerminalSource;
   detail: Record<string, unknown>;
+  matchModuleRef: string | null;
+  matchPreviewRef: string | null;
   observedAt: number;
   sequence: number;
 }
@@ -280,20 +490,32 @@ interface WaitForTerminalOpts {
   module?: string;
   sinceTs?: number;
   previewId?: string;
+  signal?: AbortSignal;
 }
 
 export class HmrNormalizer {
   private readonly listeners = new Set<MessageHandler>();
+  private readonly proofListeners = new Set<{
+    opts: GpuHmrProofMatchOpts;
+    cb: (proof: GpuHmrProofTelemetry) => void;
+  }>();
+  private readonly proofTrustInvalidationListeners =
+    new Set<GpuProofTrustInvalidationHandler>();
+  private readonly beforeClassify: HmrNormalizerOptions["beforeClassify"];
   private readonly unbind: () => void;
   private latestProof: GpuHmrProofTelemetry | null = null;
+  private proofTrustInvalidation: GpuProofTrustInvalidation | null = null;
   private readonly structuredJsonChunks = new Map<string, StructuredJsonChunkBuffer>();
+  private structuredJsonChunkExpiryTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly proofHistory: GpuHmrProofTelemetry[] = [];
   private readonly terminalHistory: RetainedHmrTerminalEvent[] = [];
   private terminalSequence = 0;
+  private disposed = false;
   private static readonly TERMINAL_HISTORY_LIMIT = 128;
   private static readonly PROOF_HISTORY_LIMIT = 128;
 
-  constructor(dc: RTCDataChannel) {
+  constructor(dc: RTCDataChannel, options: HmrNormalizerOptions = {}) {
+    this.beforeClassify = options.beforeClassify;
     const dcListener = (ev: Event): void => {
       const data = (ev as unknown as { data: unknown }).data;
       let text: string | null = null;
@@ -316,10 +538,48 @@ export class HmrNormalizer {
     this.unbind = (): void => dc.removeEventListener("message", dcListener);
   }
 
-  private rememberMessage(parsed: WireMessage, observedAt: number): void {
+  retryPreclassifiedMessage(
+    message: WireMessage,
+    observedAt: number,
+  ): void {
+    if (
+      this.disposed
+      || !Number.isFinite(observedAt)
+      || observedAt < 0
+    ) {
+      return;
+    }
+    this.rememberMessage(message, observedAt);
+  }
+
+  private rememberMessage(
+    parsed: WireMessage,
+    observedAt: number,
+  ): void {
+    let parentControlVerificationMaterial:
+      GpuParentRuntimeProofControlVerificationMaterial | undefined;
+    if (this.beforeClassify !== undefined) {
+      try {
+        const decision = this.beforeClassify(parsed, observedAt);
+        if (typeof decision === "boolean") {
+          if (!decision) return;
+        } else {
+          if (!decision.include) return;
+          parentControlVerificationMaterial =
+            decision.parentControlVerificationMaterial;
+        }
+      } catch {
+        return;
+      }
+    }
+    const proof = classifyGpuHmrProofMessage(
+      parsed,
+      observedAt,
+      parentControlVerificationMaterial ?? null,
+    );
+    if (proof !== null && this.proofTrustInvalidation !== null) return;
     const cls = classifyHmrMessage(parsed);
     if (cls) this.rememberTerminal(cls, observedAt);
-    const proof = classifyGpuHmrProofMessage(parsed, observedAt);
     if (proof) this.rememberGpuProof(proof);
     for (const listener of this.listeners) listener(parsed);
   }
@@ -327,13 +587,26 @@ export class HmrNormalizer {
   private expandStructuredJsonChunk(parsed: WireMessage, observedAt: number): WireMessage[] {
     const chunk = this.parseStructuredJsonChunk(parsed);
     if (chunk === null) return [parsed];
+    this.pruneStructuredJsonChunks(observedAt);
+    if (chunk === "invalid") {
+      this.scheduleStructuredJsonChunkExpiry();
+      return [];
+    }
 
     const existing = this.structuredJsonChunks.get(chunk.chunkId);
+    if (existing === undefined) {
+      while (this.structuredJsonChunks.size >= STRUCTURED_JSON_CHUNK_BUFFER_LIMIT) {
+        const oldest = this.oldestStructuredJsonChunkId();
+        if (oldest === null) break;
+        this.discardStructuredJsonChunkBuffer(oldest);
+      }
+    }
     const buffer = existing ?? {
       sha256: chunk.sha256,
       byteLength: chunk.byteLength,
       total: chunk.total,
       chunks: new Map<number, Buffer>(),
+      receivedBytes: 0,
       createdAt: observedAt,
       lastSeenAt: observedAt,
     };
@@ -342,39 +615,80 @@ export class HmrNormalizer {
       || buffer.byteLength !== chunk.byteLength
       || buffer.total !== chunk.total
     ) {
-      this.structuredJsonChunks.delete(chunk.chunkId);
+      chunk.data.fill(0);
+      this.discardStructuredJsonChunkBuffer(chunk.chunkId);
+      this.scheduleStructuredJsonChunkExpiry();
       return [];
     }
 
-    buffer.chunks.set(chunk.index, Buffer.from(chunk.data, "base64"));
+    const duplicate = buffer.chunks.get(chunk.index);
+    if (duplicate !== undefined) {
+      const matches = duplicate.equals(chunk.data);
+      chunk.data.fill(0);
+      if (!matches) this.discardStructuredJsonChunkBuffer(chunk.chunkId);
+      this.scheduleStructuredJsonChunkExpiry();
+      return [];
+    }
+    if (buffer.receivedBytes + chunk.data.byteLength > buffer.byteLength) {
+      chunk.data.fill(0);
+      this.discardStructuredJsonChunkBuffer(chunk.chunkId);
+      this.scheduleStructuredJsonChunkExpiry();
+      return [];
+    }
+
+    buffer.chunks.set(chunk.index, chunk.data);
+    buffer.receivedBytes += chunk.data.byteLength;
     buffer.lastSeenAt = observedAt;
     this.structuredJsonChunks.set(chunk.chunkId, buffer);
-    this.pruneStructuredJsonChunks(observedAt);
-    if (buffer.chunks.size < buffer.total) return [];
+    if (buffer.chunks.size < buffer.total) {
+      this.scheduleStructuredJsonChunkExpiry();
+      return [];
+    }
+    if (buffer.receivedBytes !== buffer.byteLength) {
+      this.discardStructuredJsonChunkBuffer(chunk.chunkId);
+      this.scheduleStructuredJsonChunkExpiry();
+      return [];
+    }
 
     const parts: Buffer[] = [];
     for (let index = 0; index < buffer.total; index += 1) {
       const part = buffer.chunks.get(index);
-      if (part === undefined) return [];
+      if (part === undefined) {
+        this.discardStructuredJsonChunkBuffer(chunk.chunkId);
+        this.scheduleStructuredJsonChunkExpiry();
+        return [];
+      }
       parts.push(part);
     }
     this.structuredJsonChunks.delete(chunk.chunkId);
-    const body = Buffer.concat(parts);
-    const actualHash = `sha256:${createHash("sha256").update(body).digest("hex")}`;
-    if (body.byteLength !== buffer.byteLength || actualHash !== buffer.sha256) return [];
-    return parseWireMessages(body.toString("utf8"));
+    this.scheduleStructuredJsonChunkExpiry();
+    const body = Buffer.concat(parts, buffer.byteLength);
+    try {
+      const actualHash = `sha256:${createHash("sha256").update(body).digest("hex")}`;
+      if (body.byteLength !== buffer.byteLength || actualHash !== buffer.sha256) return [];
+      return parseWireMessages(body.toString("utf8"));
+    } finally {
+      body.fill(0);
+      for (const part of parts) part.fill(0);
+    }
   }
 
-  private parseStructuredJsonChunk(parsed: WireMessage): StructuredJsonChunk | null {
+  private parseStructuredJsonChunk(parsed: WireMessage): StructuredJsonChunk | "invalid" | null {
     if (parsed.type !== STRUCTURED_JSON_CHUNK_TYPE) return null;
-    const chunkId = typeof parsed.chunkId === "string" && parsed.chunkId.trim()
-      ? parsed.chunkId.trim()
+    const chunkId = typeof parsed.chunkId === "string"
+      && parsed.chunkId.length > 0
+      && parsed.chunkId.length <= STRUCTURED_JSON_CHUNK_ID_MAX_CHARS
+      && /^[a-z0-9._:-]+$/i.test(parsed.chunkId)
+      ? parsed.chunkId
       : null;
+    const schemaVersion = parsed.schemaVersion === STRUCTURED_JSON_CHUNK_SCHEMA;
+    const encoding = parsed.encoding === STRUCTURED_JSON_CHUNK_ENCODING;
     const sha256 = typeof parsed.sha256 === "string" && /^sha256:[a-f0-9]{64}$/i.test(parsed.sha256)
       ? parsed.sha256.toLowerCase()
       : null;
     const byteLength = typeof parsed.byteLength === "number" && Number.isInteger(parsed.byteLength)
       && parsed.byteLength > 0
+      && parsed.byteLength <= STRUCTURED_JSON_CHUNK_MAX_BYTES
       ? parsed.byteLength
       : null;
     const index = typeof parsed.index === "number" && Number.isInteger(parsed.index)
@@ -383,36 +697,106 @@ export class HmrNormalizer {
       : null;
     const total = typeof parsed.total === "number" && Number.isInteger(parsed.total)
       && parsed.total > 0
-      && parsed.total <= 4096
+      && parsed.total <= STRUCTURED_JSON_CHUNK_MAX_PARTS
       ? parsed.total
       : null;
-    const data = typeof parsed.data === "string" && parsed.data.trim() ? parsed.data : null;
+    const data = typeof parsed.data === "string"
+      ? this.decodeStructuredJsonChunkData(parsed.data)
+      : null;
     if (
       chunkId === null
+      || !schemaVersion
+      || !encoding
       || sha256 === null
       || byteLength === null
       || index === null
       || total === null
       || data === null
       || index >= total
+      || data.byteLength > byteLength
     ) {
-      return null;
+      data?.fill(0);
+      return "invalid";
     }
     return { chunkId, sha256, byteLength, index, total, data };
   }
 
+  private decodeStructuredJsonChunkData(data: string): Buffer | null {
+    if (
+      data.length === 0
+      || data.length > Math.ceil(STRUCTURED_JSON_CHUNK_MAX_PART_BYTES / 3) * 4
+      || data.length % 4 !== 0
+      || !/^(?:[a-z0-9+/]{4})*(?:[a-z0-9+/]{2}==|[a-z0-9+/]{3}=)?$/i.test(data)
+    ) {
+      return null;
+    }
+    const decoded = Buffer.from(data, "base64");
+    if (
+      decoded.byteLength === 0
+      || decoded.byteLength > STRUCTURED_JSON_CHUNK_MAX_PART_BYTES
+      || decoded.toString("base64") !== data
+    ) {
+      decoded.fill(0);
+      return null;
+    }
+    return decoded;
+  }
+
   private pruneStructuredJsonChunks(now: number): void {
     for (const [chunkId, buffer] of this.structuredJsonChunks) {
-      if (now - buffer.lastSeenAt > STRUCTURED_JSON_CHUNK_TTL_MS) {
-        this.structuredJsonChunks.delete(chunkId);
+      if (
+        now - buffer.lastSeenAt >= STRUCTURED_JSON_CHUNK_TTL_MS
+        || now - buffer.createdAt >= STRUCTURED_JSON_CHUNK_TTL_MS
+      ) {
+        this.discardStructuredJsonChunkBuffer(chunkId);
       }
     }
     while (this.structuredJsonChunks.size > STRUCTURED_JSON_CHUNK_BUFFER_LIMIT) {
-      const oldest = [...this.structuredJsonChunks.entries()]
-        .sort((a, b) => a[1].createdAt - b[1].createdAt)[0]?.[0];
-      if (oldest === undefined) break;
-      this.structuredJsonChunks.delete(oldest);
+      const oldest = this.oldestStructuredJsonChunkId();
+      if (oldest === null) break;
+      this.discardStructuredJsonChunkBuffer(oldest);
     }
+  }
+
+  private oldestStructuredJsonChunkId(): string | null {
+    let oldest: { chunkId: string; createdAt: number } | null = null;
+    for (const [chunkId, buffer] of this.structuredJsonChunks) {
+      if (oldest === null || buffer.createdAt < oldest.createdAt) {
+        oldest = { chunkId, createdAt: buffer.createdAt };
+      }
+    }
+    return oldest?.chunkId ?? null;
+  }
+
+  private discardStructuredJsonChunkBuffer(chunkId: string): void {
+    const buffer = this.structuredJsonChunks.get(chunkId);
+    if (buffer === undefined) return;
+    this.structuredJsonChunks.delete(chunkId);
+    for (const part of buffer.chunks.values()) part.fill(0);
+    buffer.chunks.clear();
+    buffer.receivedBytes = 0;
+  }
+
+  private scheduleStructuredJsonChunkExpiry(): void {
+    if (this.structuredJsonChunkExpiryTimer !== null) {
+      clearTimeout(this.structuredJsonChunkExpiryTimer);
+      this.structuredJsonChunkExpiryTimer = null;
+    }
+    let expiresAt: number | null = null;
+    for (const buffer of this.structuredJsonChunks.values()) {
+      const candidate = Math.min(
+        buffer.createdAt + STRUCTURED_JSON_CHUNK_TTL_MS,
+        buffer.lastSeenAt + STRUCTURED_JSON_CHUNK_TTL_MS
+      );
+      if (expiresAt === null || candidate < expiresAt) expiresAt = candidate;
+    }
+    if (expiresAt === null) return;
+    this.structuredJsonChunkExpiryTimer = setTimeout(() => {
+      this.structuredJsonChunkExpiryTimer = null;
+      this.pruneStructuredJsonChunks(Date.now());
+      this.scheduleStructuredJsonChunkExpiry();
+    }, Math.max(1, expiresAt - Date.now()));
+    this.structuredJsonChunkExpiryTimer.unref?.();
   }
 
   onMessage(cb: MessageHandler): () => void {
@@ -420,6 +804,56 @@ export class HmrNormalizer {
     return (): void => {
       this.listeners.delete(cb);
     };
+  }
+
+  onGpuProof(
+    opts: GpuHmrProofMatchOpts,
+    cb: (proof: GpuHmrProofTelemetry) => void
+  ): () => void {
+    const listener = { opts: { ...opts }, cb };
+    this.proofListeners.add(listener);
+    return (): void => {
+      this.proofListeners.delete(listener);
+    };
+  }
+
+  onGpuProofTrustInvalidated(cb: GpuProofTrustInvalidationHandler): () => void {
+    const invalidation = this.proofTrustInvalidation;
+    if (invalidation !== null) {
+      cb(invalidation);
+      return (): void => undefined;
+    }
+    this.proofTrustInvalidationListeners.add(cb);
+    return (): void => {
+      this.proofTrustInvalidationListeners.delete(cb);
+    };
+  }
+
+  invalidateGpuProofTrust(
+    reasonClass: GpuProofTrustInvalidationReason,
+  ): GpuProofTrustInvalidation {
+    if (this.proofTrustInvalidation !== null) return this.proofTrustInvalidation;
+    const invalidation: GpuProofTrustInvalidation = Object.freeze({
+      schemaVersion: "synthi.gpu_hmr.proof_trust_invalidation.v1",
+      proofAuthority: "proof_trust_invalidation_only_not_gpu_hmr_acceptance",
+      reasonClass,
+      invalidatedAt: Date.now(),
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+    });
+    this.proofTrustInvalidation = invalidation;
+    this.latestProof = null;
+    this.proofHistory.length = 0;
+    for (const listener of this.proofTrustInvalidationListeners) {
+      try {
+        listener(invalidation);
+      } catch {
+        // Trust revocation must complete even if a consumer callback fails.
+      }
+    }
+    this.proofTrustInvalidationListeners.clear();
+    return invalidation;
   }
 
   latestGpuProof(opts: GpuHmrProofMatchOpts = {}): GpuHmrProofTelemetry | null {
@@ -430,11 +864,27 @@ export class HmrNormalizer {
     return null;
   }
 
+  isRetainedGpuProof(value: unknown): value is GpuHmrProofTelemetry {
+    if (
+      this.disposed
+      || this.proofTrustInvalidation !== null
+      || value === null
+      || typeof value !== "object"
+    ) {
+      return false;
+    }
+    return this.proofHistory.includes(value as GpuHmrProofTelemetry);
+  }
+
   private rememberGpuProof(proof: GpuHmrProofTelemetry): void {
+    if (this.proofTrustInvalidation !== null) return;
     this.latestProof = proof;
     this.proofHistory.push(proof);
     while (this.proofHistory.length > HmrNormalizer.PROOF_HISTORY_LIMIT) {
       this.proofHistory.shift();
+    }
+    for (const listener of this.proofListeners) {
+      if (gpuHmrProofMatches(proof, listener.opts)) listener.cb(proof);
     }
   }
 
@@ -444,6 +894,8 @@ export class HmrNormalizer {
       status: cls.status,
       source: cls.source,
       detail: cls.detail,
+      matchModuleRef: cls.matchModuleRef,
+      matchPreviewRef: cls.matchPreviewRef,
       observedAt,
       sequence: this.terminalSequence,
     });
@@ -481,6 +933,13 @@ export class HmrNormalizer {
       ? opts.sinceTs
       : undefined;
     const start = Date.now();
+    if (opts.signal?.aborted) {
+      return {
+        status: "timeout",
+        source: "timeout",
+        elapsedMs: 0,
+      };
+    }
     if (sinceTs !== undefined) {
       const retained = this.latestRetainedTerminal({
         sinceTs,
@@ -502,15 +961,21 @@ export class HmrNormalizer {
 
     return new Promise<HmrTerminalEvent>((resolve) => {
       let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const finish = (event: HmrTerminalEvent): void => {
+        if (settled) return;
+        settled = true;
+        if (timer !== null) clearTimeout(timer);
+        unsub();
+        opts.signal?.removeEventListener("abort", onAbort);
+        resolve(event);
+      };
       const unsub = this.onMessage((msg) => {
         if (settled) return;
         const cls = classifyHmrMessage(msg);
         if (!cls) return;
         if (!terminalMatches(cls, expectedModule, expectedPreviewId)) return;
-        settled = true;
-        clearTimeout(timer);
-        unsub();
-        resolve({
+        finish({
           status: cls.status,
           source: cls.source,
           elapsedMs: Date.now() - start,
@@ -518,12 +983,20 @@ export class HmrNormalizer {
           observedAt: Date.now(),
         });
       });
-
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        unsub();
-        resolve({
+      const onAbort = (): void => {
+        finish({
+          status: "timeout",
+          source: "timeout",
+          elapsedMs: Date.now() - start,
+        });
+      };
+      opts.signal?.addEventListener("abort", onAbort, { once: true });
+      if (opts.signal?.aborted) {
+        onAbort();
+        return;
+      }
+      timer = setTimeout(() => {
+        finish({
           status: "timeout",
           source: "timeout",
           elapsedMs: Date.now() - start,
@@ -533,7 +1006,19 @@ export class HmrNormalizer {
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.invalidateGpuProofTrust("hmr_normalizer_disposed");
     this.listeners.clear();
+    this.proofListeners.clear();
+    this.proofTrustInvalidationListeners.clear();
+    if (this.structuredJsonChunkExpiryTimer !== null) {
+      clearTimeout(this.structuredJsonChunkExpiryTimer);
+      this.structuredJsonChunkExpiryTimer = null;
+    }
+    for (const chunkId of [...this.structuredJsonChunks.keys()]) {
+      this.discardStructuredJsonChunkBuffer(chunkId);
+    }
     this.unbind();
   }
 }

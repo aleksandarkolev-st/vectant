@@ -17,6 +17,7 @@ pub struct RollbackNotification {
     pub status: &'static str,
     pub preview_id: String,
     pub generation: u64,
+    pub artifact_set_identity: String,
     pub reason: String,
     pub reason_code: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -40,8 +41,9 @@ impl RollbackNotification {
         Some(Self {
             msg_type: "hmr-status",
             status: "rejected",
-            preview_id: candidate.id.preview_id.clone(),
-            generation: candidate.id.generation,
+            preview_id: candidate.id().preview_id().to_string(),
+            generation: candidate.id().generation(),
+            artifact_set_identity: candidate.id().artifact_set_identity().to_string(),
             reason: reason.clone(),
             reason_code,
             user_message: Some(format!("Reload rolled back: {}", reason)),
@@ -67,33 +69,25 @@ fn classify_rollback_reason(reason: &str) -> String {
     }
 }
 
-#[cfg(all(test, feature = "legacy_hmr_tests"))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
-    use crate::hmr::build_manifest::{BuildManifest, BuildSlot, HealthcheckStrategy};
+    use crate::hmr::build_manifest::{BuildManifest, BuildSlot};
     use crate::hmr::planner_decision::{ReloadDecision, StateStrategy};
 
+    const ARTIFACT_HASH: &str =
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
     fn test_manifest() -> BuildManifest {
-        BuildManifest {
-            preview_id: "p1".into(),
-            language: "rust".into(),
-            adapter_family: AdapterFamily::DynamicLibrary,
-            capability_tier: CapabilityTier::Tier2,
-            slot: BuildSlot::Primary,
-            artifact_path: "/tmp/t.so".into(),
-            artifact_hash: "h".into(),
-            abi_version: "1.0".into(),
-            state_schema_hash: None,
-            snapshot_modes: vec![],
-            capabilities: vec![],
-            exported_symbols: vec![],
-            dependencies: vec![],
-            healthcheck_strategy: HealthcheckStrategy::SymbolProbe,
-            rollout_flags: Default::default(),
-            build_time_ms: 0,
-            extension: Default::default(),
-        }
+        BuildManifest::new(
+            "preview",
+            "open-vocabulary-label",
+            "observed-mechanism",
+            0,
+            BuildSlot::Custom("opaque-transaction".into()),
+            "/build/output.bin",
+            ARTIFACT_HASH,
+        )
     }
 
     #[test]
@@ -102,12 +96,15 @@ mod tests {
             test_manifest(),
             1,
             ReloadDecision::WarmReload,
-            StateStrategy::PreservePointer,
-        );
+            StateStrategy::Preserve,
+        )
+        .unwrap();
+        let expected_identity = c.id().artifact_set_identity().to_string();
         c.rollback("ABI incompatible: missing symbol");
         let notif = RollbackNotification::from_candidate(&c).unwrap();
         assert_eq!(notif.status, "rejected");
         assert_eq!(notif.reason_code, "abi_incompatible");
+        assert_eq!(notif.artifact_set_identity, expected_identity);
     }
 
     #[test]
@@ -116,8 +113,9 @@ mod tests {
             test_manifest(),
             1,
             ReloadDecision::WarmReload,
-            StateStrategy::PreservePointer,
-        );
+            StateStrategy::Preserve,
+        )
+        .unwrap();
         c.promote();
         assert!(RollbackNotification::from_candidate(&c).is_none());
     }

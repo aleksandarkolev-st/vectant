@@ -34,6 +34,7 @@ mod tests {
     fn reload_request(artifact: &str) -> AdapterReloadRequest {
         AdapterReloadRequest {
             reload_id: "r-1".into(),
+            source_edit_id: None,
             module_id: "mod_a".into(),
             changed_files: vec!["src/main.c".into()],
             build_manifest: test_manifest(artifact),
@@ -89,6 +90,7 @@ mod tests {
 
         let req = AdapterReloadRequest {
             reload_id: "r-2".into(),
+            source_edit_id: None,
             module_id: "app".into(),
             changed_files: vec!["Main.java".into()],
             build_manifest: test_manifest("app.jar"),
@@ -117,6 +119,7 @@ mod tests {
 
         let req = AdapterReloadRequest {
             reload_id: "r-3".into(),
+            source_edit_id: None,
             module_id: "app".into(),
             changed_files: vec!["main.go".into()],
             build_manifest: test_manifest("/tmp/app_v2"),

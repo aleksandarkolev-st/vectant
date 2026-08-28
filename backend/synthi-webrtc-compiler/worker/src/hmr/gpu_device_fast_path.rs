@@ -555,18 +555,6 @@ pub fn mapped_generated_device_path(sidecar: &Value, user_path: &str) -> Option<
         .and_then(|m| m.get("generatedPath"))
         .and_then(Value::as_str)
         .map(normalize_path)
-        .or_else(|| {
-            sidecar
-                .pointer("/deviceMappingReport/generatedDevicePath")
-                .and_then(Value::as_str)
-                .map(normalize_path)
-        })
-        .or_else(|| {
-            sidecar
-                .pointer("/generatedRoles/device/path")
-                .and_then(Value::as_str)
-                .map(normalize_path)
-        })
 }
 
 pub fn device_source_hash(source: &str) -> String {
@@ -3825,6 +3813,27 @@ extern "C" __global__ void trace(float* x) {
             Some(".synthi/generated/gpu/device.hip")
         );
         assert_eq!(device_source_hash("abc"), sha256_hex("abc"));
+    }
+
+    #[test]
+    fn mapped_generated_device_path_requires_source_mapping() {
+        let mut meta = sidecar();
+        meta["deviceMappings"] = Value::Array(Vec::new());
+        meta["deviceMappingReport"] = json!({
+            "generatedDevicePath": ".synthi/generated/gpu/device.hip"
+        });
+        meta["generatedRoles"] = json!({
+            "device": {
+                "path": ".synthi/generated/gpu/device.hip",
+                "internal": true
+            }
+        });
+
+        assert_eq!(
+            mapped_generated_device_path(&meta, "src/gpu/flow.hip"),
+            None,
+            "global generated device paths must not stand in for per-source mapping evidence"
+        );
     }
 
     #[test]

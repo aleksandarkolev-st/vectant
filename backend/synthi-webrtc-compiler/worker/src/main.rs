@@ -953,6 +953,13 @@ async fn main() -> Result<()> {
     debug_log!("Worker starting...");
     debug_log!("Operating System: {}", std::env::consts::OS);
 
+    match hmr::runtime_evidence_transport::initialize_runtime_evidence_transport_signer() {
+        Ok(()) => debug_log!("[Worker] GPU runtime evidence transport signer initialized"),
+        Err(error) => eprintln!(
+            "[Worker] GPU runtime evidence transport unavailable; support evidence disabled: {error}"
+        ),
+    }
+
     // Prevent broken X11 connections (e.g. Xvfb tear-down during a reset
     // mid-build) from exit(1)-ing the worker. Must run before any X-using
     // code (GStreamer ximagesrc, x11rb input emulation) so the default
@@ -2213,6 +2220,69 @@ async fn wire_peer_channels(
     audio_fanout: Arc<worker::webrtc::TrackFanout>,
 ) -> Result<()> {
     let pc = pc.clone();
+    let evidence_transport_label =
+        hmr::runtime_evidence_transport::RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL;
+    let evidence_transport_dc = pc
+        .create_data_channel(
+            evidence_transport_label,
+            Some(RTCDataChannelInit::default()),
+        )
+        .await?;
+    let evidence_transport_dc_for_open = evidence_transport_dc.clone();
+    let evidence_transport_pc_for_open = pc.clone();
+    let peer_registry_for_evidence_open = peer_registry.clone();
+    let peer_id_for_evidence_open = peer_id.clone();
+    evidence_transport_dc.on_open(Box::new(move || {
+        let dc = evidence_transport_dc_for_open.clone();
+        let pc = evidence_transport_pc_for_open.clone();
+        let registry = peer_registry_for_evidence_open.clone();
+        let peer_id = peer_id_for_evidence_open.clone();
+        async move {
+            if !registry.attach_session_data_channel(
+                &peer_id,
+                &pc,
+                evidence_transport_label,
+                dc.clone(),
+            ) {
+                eprintln!(
+                    "[Worker] Runtime evidence transport channel rejected for stale peer {peer_id}"
+                );
+                return;
+            }
+
+            let payload =
+                hmr::runtime_evidence_transport::global_runtime_evidence_transport_signer()
+                .and_then(|signer| {
+                    serde_json::to_string(signer.verification_key()).map_err(|error| {
+                        format!(
+                            "runtime_evidence_transport_verification_key_serialize_failed:{error}"
+                        )
+                    })
+                });
+            match payload {
+                Ok(payload) => {
+                    if let Err(error) = dc_send_text_with_backpressure(
+                        &dc,
+                        payload,
+                        evidence_transport_label,
+                    )
+                    .await
+                    {
+                        eprintln!(
+                            "[Worker] GPU runtime evidence transport key announcement failed: {error}"
+                        );
+                    }
+                }
+                Err(error) => {
+                    eprintln!(
+                        "[Worker] GPU runtime evidence transport key announcement unavailable: {error}"
+                    );
+                }
+            }
+        }
+        .boxed()
+    }));
+
     let build_log_dc = pc
         .create_data_channel("build-log", Some(RTCDataChannelInit::default()))
         .await?;
@@ -2568,6 +2638,8 @@ async fn wire_peer_channels(
                                         let sdls = sdl_store.clone();
                                         let rs = runner_store.clone();
                                         let pc_clone = pc_for_compile.clone();
+                                        let peer_registry_for_compile = peer_registry_for_msg.clone();
+                                        let peer_id_for_compile = peer_id_for_msg.clone();
                                         let wp = workspace_path_for_compile.clone();
                                         let cc = compile_cache.clone();
                                         let bc = boundary_checker.clone();
@@ -2592,7 +2664,29 @@ async fn wire_peer_channels(
                                         let log_clone = log.clone();
                                         let task_session = session_id.clone();
                                         let handle = tokio::spawn(async move {
-                                            if let Err(e) = handle_compile(req, log_clone, ts, sdls, rs, pc_clone, wp.to_path_buf(), cc, bc, ic, ho, sl, ma, rc, ipc, video_fanout_for_compile, audio_fanout_for_compile).await {
+                                            if let Err(e) = handle_compile(
+                                                req,
+                                                log_clone,
+                                                ts,
+                                                sdls,
+                                                rs,
+                                                pc_clone,
+                                                peer_registry_for_compile,
+                                                peer_id_for_compile,
+                                                wp.to_path_buf(),
+                                                cc,
+                                                bc,
+                                                ic,
+                                                ho,
+                                                sl,
+                                                ma,
+                                                rc,
+                                                ipc,
+                                                video_fanout_for_compile,
+                                                audio_fanout_for_compile,
+                                            )
+                                            .await
+                                            {
                                                 eprintln!("[Main] Compile task failed: {:?}", e);
                                             }
                                             let mut guard = task_store.lock().await;
@@ -4607,6 +4701,8 @@ async fn handle_compile(
     sdl_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
     runner_store: Arc<Mutex<Option<RunnerState>>>,
     pc: Arc<RTCPeerConnection>,
+    peer_registry: Arc<PeerRegistry>,
+    peer_id: String,
     workspace_path: std::path::PathBuf,
     compile_cache: Arc<Mutex<HashMap<String, (u64, String)>>>,
     boundary_checker: Arc<Mutex<BoundaryChecker>>,
@@ -4626,6 +4722,8 @@ async fn handle_compile(
         sdl_input_store,
         runner_store,
         pc,
+        peer_registry,
+        peer_id,
         workspace_path,
         compile_cache,
         boundary_checker,

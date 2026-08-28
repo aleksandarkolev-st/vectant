@@ -76,6 +76,33 @@ class AiProvider(ABC):
     def _get_client(self) -> object:
         pass
 
+    async def preflight(
+        self,
+        *,
+        model: Optional[str] = None,
+        api_key: Optional[str] = None,
+        mode: Optional[str] = None,
+        request_mode: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Return diagnostic-only provider readiness evidence.
+
+        The default is intentionally non-authoritative. It only says that this
+        provider has no cheap preflight hook; GPU-HMR acceptance must still come
+        from runtime proof ledgers after generation, compile, load, dispatch,
+        and output-oracle closure.
+        """
+        return {
+            "ok": True,
+            "provider": self.name,
+            "requested_model": model,
+            "mode": mode,
+            "request_mode": _request_mode_name(mode, request_mode),
+            "proof_authority": "provider_preflight_diagnostic_only",
+            "accepted_for_gpu_hmr": False,
+            "gpu_hmr_success": False,
+            "can_satisfy_runtime_proof": False,
+        }
+
     @abstractmethod
     async def ask_llm(
         self,

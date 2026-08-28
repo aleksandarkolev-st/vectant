@@ -28,6 +28,7 @@ __pycache__/
 docker-compose.gpu-*.generated.yml
 mcp/synthi-mcp/.gpu-hmr-test-logs/
 mcp/synthi-mcp/.gpu-hmr-test-artifacts/
+mcp/synthi-mcp/.gpu-hmr-shared-cas/
 /tmp/
 synthi/tmp/
 .vectant/

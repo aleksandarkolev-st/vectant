@@ -1,9 +1,53 @@
+use crate::hmr::gpu_proof::GpuHmrProofEvidenceRef;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const FISSION_ISLAND_SCHEMA_VERSION: &str = "synthi.gpu.fission_island.v1";
 pub const FISSION_VERIFIER_SCHEMA_VERSION: &str = "synthi.gpu.fission_verifier.v1";
+pub const FISSION_VERIFIER_EVIDENCE_SCHEMA_VERSION: &str =
+    "synthi.gpu.fission_verifier_evidence.v2";
+const FISSION_PHASE_SOURCE_EVIDENCE_SCHEMA_VERSION: &str =
+    "synthi.gpu.fission_phase_source_evidence.v1";
+pub(crate) const FISSION_RUN_BINDING_SCHEMA_VERSION: &str = "synthi.gpu.fission_run_binding.v1";
+const FISSION_VERIFIER_EVIDENCE_AUTHORITY: &str =
+    "trusted_source_binding_support_only_not_gpu_hmr_or_runtime_authority";
+const FISSION_PHASE_SOURCE_EVIDENCE_AUTHORITY: &str =
+    "support_only_not_gpu_hmr_runtime_or_dispatch_authority";
+const FISSION_PHASE_SOURCE_EVIDENCE_KIND: &str = "fission-phase-source";
+const FISSION_SOURCE_MAPPING_EVIDENCE_KIND: &str = "fission-source-mapping";
+const FISSION_SOURCE_MAPPING_EVIDENCE_SCHEMA_VERSION: &str =
+    "synthi.gpu.fission_source_mapping_evidence.v1";
+const FISSION_INCLUDE_CLOSURE_EVIDENCE_KIND: &str = "fission-include-closure";
+const FISSION_INCLUDE_CLOSURE_EVIDENCE_SCHEMA_VERSION: &str =
+    "synthi.gpu.fission_include_closure_evidence.v1";
+const FISSION_DEPENDENCY_CLOSURE_EVIDENCE_KIND: &str = "fission-dependency-closure";
+const FISSION_DEPENDENCY_CLOSURE_EVIDENCE_SCHEMA_VERSION: &str =
+    "synthi.gpu.fission_dependency_closure_evidence.v1";
+const FISSION_SYMBOL_OWNERSHIP_EVIDENCE_KIND: &str = "device-symbol-set";
+const FISSION_SYMBOL_OWNERSHIP_EVIDENCE_SCHEMA_VERSION: &str = "synthi.gpu.hmr.symbol_set.v1";
+const FISSION_ABI_MEMBRANE_EVIDENCE_KIND: &str = "device-abi-metadata";
+const FISSION_ABI_MEMBRANE_EVIDENCE_SCHEMA_VERSION: &str = "synthi.gpu.hmr.abi_metadata.v1";
+const FISSION_COMPILE_RECIPE_EVIDENCE_KIND: &str = "fission-compile-recipe";
+const FISSION_COMPILE_RECIPE_EVIDENCE_SCHEMA_VERSION: &str =
+    "synthi.gpu.fission_compile_recipe_evidence.v1";
+const FISSION_COMPILER_EVIDENCE_KIND: &str = "device-compiler-output";
+const FISSION_COMPILER_EVIDENCE_SCHEMA_VERSION: &str = "synthi.gpu.hmr.compiler_evidence.v1";
+const FISSION_LOADER_CAPABILITY_EVIDENCE_KIND: &str = "device-artifact-transport";
+const FISSION_LOADER_CAPABILITY_EVIDENCE_SCHEMA_VERSION: &str =
+    "synthi.gpu.hmr.artifact_transport.v1";
+const FISSION_OUTPUT_ORACLE_CONTRACT_EVIDENCE_KIND: &str = "fission-output-oracle-contract";
+const FISSION_OUTPUT_ORACLE_CONTRACT_EVIDENCE_SCHEMA_VERSION: &str =
+    "synthi.gpu.fission_output_oracle_contract_evidence.v1";
+const FISSION_OUTPUT_ORACLE_OBSERVATION_EVIDENCE_KIND: &str = "fission-output-oracle-observation";
+const FISSION_OUTPUT_ORACLE_OBSERVATION_EVIDENCE_SCHEMA_VERSION: &str =
+    "synthi.gpu.fission_output_oracle_observation_evidence.v1";
+const FISSION_SYMBOL_OWNERSHIP_EVIDENCE_ID_DESCRIPTOR: &str = "device-symbols";
+const FISSION_COMPILER_EVIDENCE_ID_DESCRIPTOR: &str = "device-compiler";
+const INTERNAL_VALIDATED_EVIDENCE_RECORDS_FIELD: &str =
+    "__synthiTrustedValidatedFissionEvidenceRecords";
+const INTERNAL_INVALID_EVIDENCE_RECORD_COUNT_FIELD: &str =
+    "__synthiTrustedInvalidFissionEvidenceRecordCount";
 const ORIGINAL_HOST_ATTACHMENT_CONTRACT_SCHEMA_VERSION: &str =
     "synthi.gpu.original_host_attachment_contract.v1";
 
@@ -155,34 +199,28 @@ const LOADER_TRANSPORT_LIST_FIELDS: &[&str] = &[
 struct VerificationEvidenceCategory {
     name: &'static str,
     fields: &'static [&'static str],
-    fallback_tokens: &'static [&'static str],
 }
 
 const REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES: &[VerificationEvidenceCategory] = &[
     VerificationEvidenceCategory {
         name: "source_mapping",
         fields: &["sourceMappingEvidenceIds", "sourceMapEvidenceIds"],
-        fallback_tokens: &["source_mapping", "source_map"],
     },
     VerificationEvidenceCategory {
         name: "include_closure",
         fields: &["includeClosureEvidenceIds"],
-        fallback_tokens: &["include_closure"],
     },
     VerificationEvidenceCategory {
         name: "symbol_ownership",
         fields: &["symbolOwnershipEvidenceIds"],
-        fallback_tokens: &["symbol_ownership", "symbol_owner"],
     },
     VerificationEvidenceCategory {
         name: "dependency_closure",
         fields: &["dependencyClosureEvidenceIds"],
-        fallback_tokens: &["dependency_closure"],
     },
     VerificationEvidenceCategory {
         name: "abi_membrane",
         fields: &["abiMembraneEvidenceIds", "abiEvidenceIds"],
-        fallback_tokens: &["abi_membrane", "abi_layout"],
     },
     VerificationEvidenceCategory {
         name: "compile_recipe",
@@ -191,21 +229,161 @@ const REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES: &[VerificationEvidenceCategory]
             "compileCommandEvidenceIds",
             "compileEvidenceIds",
         ],
-        fallback_tokens: &["compile_recipe", "compile_command", "compile_invocation"],
     },
     VerificationEvidenceCategory {
         name: "loader_capability",
         fields: &["loaderCapabilityEvidenceIds", "loaderEvidenceIds"],
-        fallback_tokens: &["loader_capability", "loader_requirement", "module_load"],
     },
     VerificationEvidenceCategory {
         name: "output_oracle",
         fields: &["outputOracleEvidenceIds", "oracleEvidenceIds"],
-        fallback_tokens: &["output_oracle", "oracle_contract", "oracle_requirement"],
     },
 ];
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FissionEvidenceProducerContext<'a> {
+    pub(crate) producer_subsystem: &'a str,
+    pub(crate) timestamp: &'a str,
+    pub(crate) session_id: &'a str,
+    pub(crate) source_edit_id: &'a str,
+    pub(crate) selected_artifact_id: &'a str,
+    pub(crate) file_path: Option<&'a str>,
+}
+
+/// Produce current-run, support-only phase evidence at a trusted Rust boundary.
+/// The returned records must be retained and supplied to
+/// `verify_fission_candidates_with_evidence` in the same run.
+pub(crate) fn produce_fission_phase_source_evidence(
+    candidate: &mut Value,
+    trusted_upstream_evidence: &[GpuHmrProofEvidenceRef],
+    context: FissionEvidenceProducerContext<'_>,
+) -> Result<Vec<GpuHmrProofEvidenceRef>, &'static str> {
+    if !candidate.is_object() {
+        return Err("fission evidence candidate must be an object");
+    }
+    if !canonical_nonempty_string(context.producer_subsystem) {
+        return Err("fission evidence producer subsystem must be non-empty");
+    }
+    if !canonical_nonempty_string(context.timestamp) {
+        return Err("fission evidence timestamp must be non-empty");
+    }
+    if !canonical_nonempty_string(context.session_id) {
+        return Err("fission evidence session id must be non-empty");
+    }
+    if !canonical_nonempty_string(context.source_edit_id) {
+        return Err("fission evidence source edit id must be non-empty");
+    }
+    if !canonical_nonempty_string(context.selected_artifact_id) {
+        return Err("fission evidence selected artifact id must be non-empty");
+    }
+    if candidate.get("sourceEditId").and_then(Value::as_str) != Some(context.source_edit_id)
+        || candidate.get("selectedArtifactId").and_then(Value::as_str)
+            != Some(context.selected_artifact_id)
+    {
+        return Err("fission evidence candidate does not match current run context");
+    }
+    if context
+        .file_path
+        .is_some_and(|value| !canonical_nonempty_string(value))
+    {
+        return Err("fission evidence file path must be non-empty when present");
+    }
+
+    let mut produced = Vec::new();
+    for category in REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES {
+        let upstream_evidence_ids = declared_category_source_evidence_ids(candidate, category.name)
+            .map_err(|_| "fission category evidence declaration must contain unique canonical ids")?
+            .into_iter()
+            .collect::<Vec<_>>();
+        if upstream_evidence_ids.is_empty() {
+            continue;
+        }
+        let record = phase_source_evidence_record(
+            candidate,
+            category.name,
+            upstream_evidence_ids,
+            trusted_upstream_evidence,
+            context,
+        )
+        .ok_or("fission phase evidence could not join current-run upstream evidence")?;
+        produced.push((category, record));
+    }
+
+    if let Some(object) = candidate.as_object_mut() {
+        for (category, record) in &produced {
+            for field in category.fields {
+                object.remove(*field);
+            }
+            object.insert(category.fields[0].to_string(), json!([record.evidence_id]));
+        }
+    }
+
+    let verifier_records = produced
+        .iter()
+        .filter_map(|(category, source_record)| {
+            content_bound_fission_evidence_record(
+                candidate,
+                category.name,
+                source_record,
+                trusted_upstream_evidence,
+                context,
+            )
+        })
+        .collect::<Vec<_>>();
+    let verifier_evidence_ids = verifier_records
+        .iter()
+        .filter_map(|record| record.get("evidenceId").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if let Some(object) = candidate.as_object_mut() {
+        object.insert(
+            "verifierEvidenceRecords".to_string(),
+            Value::Array(verifier_records),
+        );
+        object.insert(
+            "verifierEvidenceIds".to_string(),
+            json!(verifier_evidence_ids),
+        );
+    }
+
+    Ok(produced.into_iter().map(|(_, record)| record).collect())
+}
+
+pub(crate) fn current_run_fission_category_evidence_valid(
+    candidate: &Value,
+    category: &str,
+    evidence_id: &str,
+    trusted_evidence: &[GpuHmrProofEvidenceRef],
+    context: FissionEvidenceProducerContext<'_>,
+) -> bool {
+    exactly_one_trusted_evidence_record(trusted_evidence, evidence_id).is_some_and(|record| {
+        current_run_upstream_record_valid_for_category(
+            candidate,
+            category,
+            record,
+            trusted_evidence,
+            context,
+        )
+    })
+}
+
 pub fn verify_fission_candidates(value: &Value) -> Value {
+    verify_fission_candidates_internal(value, &[], None)
+}
+
+pub(crate) fn verify_fission_candidates_with_evidence(
+    value: &Value,
+    trusted_evidence: &[GpuHmrProofEvidenceRef],
+    context: FissionEvidenceProducerContext<'_>,
+) -> Value {
+    verify_fission_candidates_internal(value, trusted_evidence, Some(context))
+}
+
+fn verify_fission_candidates_internal(
+    value: &Value,
+    trusted_evidence: &[GpuHmrProofEvidenceRef],
+    context: Option<FissionEvidenceProducerContext<'_>>,
+) -> Value {
     let candidates = collect_candidates(value);
     if candidates.is_empty() {
         return json!({
@@ -227,7 +405,7 @@ pub fn verify_fission_candidates(value: &Value) -> Value {
     let mut reports = Vec::new();
 
     for candidate in candidates {
-        let report = verify_fission_candidate(&candidate);
+        let report = verify_fission_candidate_with_evidence(&candidate, trusted_evidence, context);
         if report.get("status").and_then(Value::as_str) == Some("pass") {
             accepted_count += 1;
         } else {
@@ -280,6 +458,20 @@ pub fn verify_fission_candidates(value: &Value) -> Value {
 }
 
 pub fn verify_fission_candidate(candidate: &Value) -> Value {
+    verify_fission_candidate_with_evidence(candidate, &[], None)
+}
+
+fn verify_fission_candidate_with_evidence(
+    candidate: &Value,
+    trusted_evidence: &[GpuHmrProofEvidenceRef],
+    context: Option<FissionEvidenceProducerContext<'_>>,
+) -> Value {
+    let prepared_candidate =
+        candidate_with_validated_evidence(candidate, trusted_evidence, context);
+    verify_prepared_fission_candidate(&prepared_candidate)
+}
+
+fn verify_prepared_fission_candidate(candidate: &Value) -> Value {
     let mut reason_codes = Vec::new();
 
     if !candidate.is_object() {
@@ -329,6 +521,9 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
     if !deterministic_verifier_evidence_present(candidate) {
         reason_codes.push("fission.deterministic_verifier_evidence_missing".to_string());
     }
+    if invalid_content_bound_fission_evidence_record_count(candidate) > 0 {
+        reason_codes.push("fission.verifier_evidence_record_invalid".to_string());
+    }
 
     for category in missing_verification_evidence_categories(candidate) {
         reason_codes.push(format!("fission.{category}_evidence_missing"));
@@ -361,6 +556,9 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
 
     if !oracle_requirement_present(candidate) {
         reason_codes.push("fission.output_oracle_missing".to_string());
+    }
+    if !output_oracle_resolved_aliases_unambiguous(candidate) {
+        reason_codes.push("fission.output_oracle_alias_conflict".to_string());
     }
     if output_oracle_proposal_present(candidate) && !output_oracle_proposal_valid(candidate) {
         reason_codes.push("fission.output_oracle_invalid".to_string());
@@ -426,6 +624,7 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
     } else {
         "reject"
     };
+    let reported_candidate = candidate_without_internal_evidence_fields(candidate);
 
     json!({
         "schemaVersion": FISSION_ISLAND_SCHEMA_VERSION,
@@ -438,6 +637,8 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         "reasonCodes": reason_codes,
         "deterministicVerifierEvidenceIds": deterministic_verifier_evidence_ids(candidate),
         "nonAuthoritativeEvidenceIds": non_authoritative_evidence_ids(candidate),
+        "contentBoundVerifierEvidenceRecords": valid_content_bound_fission_evidence_records(candidate),
+        "invalidContentBoundVerifierEvidenceRecordCount": invalid_content_bound_fission_evidence_record_count(candidate),
         "verificationEvidenceCoverage": verification_evidence_coverage(candidate),
         "normalizedSourcePaths": normalized_source_paths(candidate),
         "unmappedSourceSpanPaths": unmapped_source_span_paths(candidate),
@@ -471,8 +672,8 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         "epochRetirementRequired": epoch_retirement_required(candidate),
         "epochRetirementEvidenceIds": epoch_retirement_evidence_ids(candidate),
         "selectionScore": fission_selection_score(candidate),
-        "verifierEvidenceId": verifier_evidence_id(candidate, status),
-        "candidate": candidate,
+        "verifierEvidenceId": verifier_evidence_id(&reported_candidate, status),
+        "candidate": reported_candidate,
     })
 }
 
@@ -482,6 +683,15 @@ fn collect_candidates(value: &Value) -> Vec<Value> {
         Value::Object(_) => vec![value.clone()],
         _ => Vec::new(),
     }
+}
+
+fn candidate_without_internal_evidence_fields(candidate: &Value) -> Value {
+    let mut candidate = candidate.clone();
+    if let Some(object) = candidate.as_object_mut() {
+        object.remove(INTERNAL_VALIDATED_EVIDENCE_RECORDS_FIELD);
+        object.remove(INTERNAL_INVALID_EVIDENCE_RECORD_COUNT_FIELD);
+    }
+    candidate
 }
 
 fn non_empty_string(value: Option<&Value>) -> bool {
@@ -899,9 +1109,13 @@ fn selected_artifact_content_addressed_and_hashed(candidate: &Value) -> bool {
 }
 
 fn generated_topology_binding_object(candidate: &Value) -> Option<&Value> {
-    ["generatedTopologyBinding", "generatedDeviceTopologyBinding", "selectedArtifactTopology"]
-        .iter()
-        .find_map(|field| candidate.get(*field).filter(|value| value.is_object()))
+    [
+        "generatedTopologyBinding",
+        "generatedDeviceTopologyBinding",
+        "selectedArtifactTopology",
+    ]
+    .iter()
+    .find_map(|field| candidate.get(*field).filter(|value| value.is_object()))
 }
 
 fn generated_topology_binding_object_valid(candidate: &Value) -> bool {
@@ -942,21 +1156,22 @@ fn topology_binding_source_valid(object: &serde_json::Map<String, Value>) -> boo
         })
 }
 
-fn topology_binding_materialized_partial_artifact(
-    object: &serde_json::Map<String, Value>,
-) -> bool {
+fn topology_binding_materialized_partial_artifact(object: &serde_json::Map<String, Value>) -> bool {
     bool_true(object.get("materializedPartialArtifact"))
         || bool_true(object.get("separatelyMaterializedPartialArtifact"))
         || bool_true(object.get("contentAddressedPartialArtifact"))
 }
 
-fn topology_binding_generated_role_path(
-    object: &serde_json::Map<String, Value>,
-) -> Option<String> {
-    ["generatedRolePath", "generatedPath", "deviceTranslationUnitPath", "path"]
-        .iter()
-        .find_map(|field| object.get(*field).and_then(Value::as_str))
-        .and_then(normalized_project_path)
+fn topology_binding_generated_role_path(object: &serde_json::Map<String, Value>) -> Option<String> {
+    [
+        "generatedRolePath",
+        "generatedPath",
+        "deviceTranslationUnitPath",
+        "path",
+    ]
+    .iter()
+    .find_map(|field| object.get(*field).and_then(Value::as_str))
+    .and_then(normalized_project_path)
 }
 
 fn topology_binding_artifact_identity_matches_candidate(
@@ -981,8 +1196,7 @@ fn topology_binding_artifact_identity_matches_candidate(
         .collect();
     binding_ids.iter().any(|id| candidate_ids.contains(id))
         && binding_hashes.iter().any(|hash| {
-            canonical_sha256_digest(hash)
-                .is_some_and(|digest| candidate_hashes.contains(&digest))
+            canonical_sha256_digest(hash).is_some_and(|digest| candidate_hashes.contains(&digest))
         })
 }
 
@@ -1148,6 +1362,19 @@ fn output_oracle_resolved_contract_present(candidate: &Value) -> bool {
     output_oracle_resolved_contract_object(candidate).is_some()
 }
 
+fn output_oracle_resolved_aliases_unambiguous(candidate: &Value) -> bool {
+    [
+        "outputOracleContract",
+        "resolvedOutputOracleContract",
+        "output_oracle_contract",
+        "resolved_output_oracle_contract",
+    ]
+    .iter()
+    .filter(|field| candidate.get(**field).is_some())
+    .count()
+        <= 1
+}
+
 fn output_oracle_resolved_contract_object(
     candidate: &Value,
 ) -> Option<&serde_json::Map<String, Value>> {
@@ -1159,15 +1386,16 @@ fn output_oracle_resolved_contract_object(
         .and_then(Value::as_object)
 }
 
-fn output_oracle_resolved_contract_kind(
-    object: &serde_json::Map<String, Value>,
-) -> Option<String> {
+fn output_oracle_resolved_contract_kind(object: &serde_json::Map<String, Value>) -> Option<String> {
     let kind = object.get("kind").and_then(Value::as_str)?;
     let normalized = normalized_scope_text(kind);
     (!normalized.is_empty()).then_some(normalized)
 }
 
 fn output_oracle_resolved_contract_valid(candidate: &Value) -> bool {
+    if !output_oracle_resolved_aliases_unambiguous(candidate) {
+        return false;
+    }
     let Some(object) = output_oracle_resolved_contract_object(candidate) else {
         return false;
     };
@@ -1647,17 +1875,1098 @@ fn deterministic_verifier_evidence_present(candidate: &Value) -> bool {
     !deterministic_verifier_evidence_ids(candidate).is_empty()
 }
 
+fn canonical_source_evidence_id(value: &str) -> bool {
+    let normalized = value.trim();
+    let Some(rest) = normalized.strip_prefix("evidence:") else {
+        return false;
+    };
+    let Some((descriptor, digest)) = rest.rsplit_once(':') else {
+        return false;
+    };
+    let descriptor_tokens = descriptor
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    !descriptor_tokens.is_empty()
+        && !descriptor_tokens
+            .iter()
+            .any(|token| matches!(token.as_str(), "ai" | "llm" | "model" | "proposal"))
+        && digest.len() == 64
+        && digest
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase())
+}
+
+fn evidence_subject_field(candidate: &Value, field: &str) -> Value {
+    candidate.get(field).cloned().unwrap_or(Value::Null)
+}
+
+fn proof_authority_field(key: &str) -> bool {
+    matches!(
+        key,
+        "acceptedForGpuHmr"
+            | "accepted_for_gpu_hmr"
+            | "gpuHmrSuccess"
+            | "gpu_hmr_success"
+            | "canSatisfyGpuHmr"
+            | "can_satisfy_gpu_hmr"
+            | "canSatisfyRuntimeProof"
+            | "can_satisfy_runtime_proof"
+            | "canSatisfyDispatchProof"
+            | "can_satisfy_dispatch_proof"
+            | "gpuHmrAuthority"
+            | "gpu_hmr_authority"
+            | "runtimeAuthority"
+            | "runtime_authority"
+            | "dispatchAuthority"
+            | "dispatch_authority"
+            | "proofAuthority"
+            | "proof_authority"
+    )
+}
+
+fn strip_proof_authority_fields(value: &Value) -> Value {
+    match value {
+        Value::Array(items) => {
+            Value::Array(items.iter().map(strip_proof_authority_fields).collect())
+        }
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .filter(|(key, _)| !proof_authority_field(key))
+                .map(|(key, value)| (key.clone(), strip_proof_authority_fields(value)))
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
+
+pub(crate) fn fission_output_oracle_evidence_subject(candidate: &Value) -> Value {
+    canonical_json_value(&json!({
+        "requiredOracleId": evidence_subject_field(candidate, "requiredOracleId"),
+        "requiredOutputOracleId": evidence_subject_field(candidate, "requiredOutputOracleId"),
+        "outputOracleRequirement": strip_proof_authority_fields(&evidence_subject_field(candidate, "outputOracleRequirement")),
+        "outputOracleContract": strip_proof_authority_fields(&evidence_subject_field(candidate, "outputOracleContract")),
+        "resolvedOutputOracleContract": strip_proof_authority_fields(&evidence_subject_field(candidate, "resolvedOutputOracleContract")),
+        "output_oracle_contract": strip_proof_authority_fields(&evidence_subject_field(candidate, "output_oracle_contract")),
+        "resolved_output_oracle_contract": strip_proof_authority_fields(&evidence_subject_field(candidate, "resolved_output_oracle_contract")),
+        "outputOracleProposal": strip_proof_authority_fields(&evidence_subject_field(candidate, "outputOracleProposal")),
+    }))
+}
+
+fn verification_evidence_subject(candidate: &Value, category: &str) -> Option<Value> {
+    match category {
+        "source_mapping" => Some(json!({
+            "sourceEditId": evidence_subject_field(candidate, "sourceEditId"),
+            "sourcePaths": evidence_subject_field(candidate, "sourcePaths"),
+            "sourceSpans": evidence_subject_field(candidate, "sourceSpans"),
+            "generatedRolePath": evidence_subject_field(candidate, "generatedRolePath"),
+        })),
+        "include_closure" => Some(json!({
+            "sourcePaths": evidence_subject_field(candidate, "sourcePaths"),
+            "includeClosure": evidence_subject_field(candidate, "includeClosure"),
+            "dependencyClosureHash": evidence_subject_field(candidate, "dependencyClosureHash"),
+        })),
+        "symbol_ownership" => Some(json!({
+            "targetSymbols": evidence_subject_field(candidate, "targetSymbols"),
+            "exportedSymbolsExpected": evidence_subject_field(candidate, "exportedSymbolsExpected"),
+            "symbolIdentityMappings": evidence_subject_field(candidate, "symbolIdentityMappings"),
+        })),
+        "dependency_closure" => Some(json!({
+            "sourcePaths": evidence_subject_field(candidate, "sourcePaths"),
+            "includeClosure": evidence_subject_field(candidate, "includeClosure"),
+            "dependencyClosureHash": evidence_subject_field(candidate, "dependencyClosureHash"),
+        })),
+        "abi_membrane" => Some(json!({
+            "abiMembraneId": evidence_subject_field(candidate, "abiMembraneId"),
+        })),
+        "compile_recipe" => Some(json!({
+            "compileRecipeHash": evidence_subject_field(candidate, "compileRecipeHash"),
+            "compileCommandHash": evidence_subject_field(candidate, "compileCommandHash"),
+        })),
+        "loader_capability" => Some(json!({
+            "selectedArtifactId": evidence_subject_field(candidate, "selectedArtifactId"),
+            "artifactHash": evidence_subject_field(candidate, "artifactHash"),
+            "loaderCapabilityRequirement": evidence_subject_field(candidate, "loaderCapabilityRequirement"),
+        })),
+        "output_oracle" => Some(fission_output_oracle_evidence_subject(candidate)),
+        _ => None,
+    }
+}
+
+fn category_source_evidence_ids(candidate: &Value, category: &str) -> BTreeSet<String> {
+    REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES
+        .iter()
+        .find(|definition| definition.name == category)
+        .into_iter()
+        .flat_map(|definition| definition.fields.iter())
+        .flat_map(|field| evidence_id_list(candidate.get(*field)))
+        .filter(|id| canonical_source_evidence_id(id))
+        .collect()
+}
+
+fn declared_category_source_evidence_ids(
+    candidate: &Value,
+    category: &str,
+) -> Result<BTreeSet<String>, ()> {
+    let Some(definition) = REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES
+        .iter()
+        .find(|definition| definition.name == category)
+    else {
+        return Err(());
+    };
+    let mut ids = BTreeSet::new();
+    for field in definition.fields {
+        let Some(value) = candidate.get(*field) else {
+            continue;
+        };
+        let values = match value {
+            Value::String(value) => vec![value.as_str()],
+            Value::Array(values) => values
+                .iter()
+                .map(Value::as_str)
+                .collect::<Option<Vec<_>>>()
+                .ok_or(())?,
+            _ => return Err(()),
+        };
+        for evidence_id in values {
+            if evidence_id != evidence_id.trim()
+                || !canonical_source_evidence_id(evidence_id)
+                || !ids.insert(evidence_id.to_string())
+            {
+                return Err(());
+            }
+        }
+    }
+    Ok(ids)
+}
+
+fn canonical_json_value(value: &Value) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(items.iter().map(canonical_json_value).collect()),
+        Value::Object(object) => {
+            let mut canonical = serde_json::Map::new();
+            let mut keys = object.keys().collect::<Vec<_>>();
+            keys.sort();
+            for key in keys {
+                if let Some(value) = object.get(key) {
+                    canonical.insert(key.clone(), canonical_json_value(value));
+                }
+            }
+            Value::Object(canonical)
+        }
+        _ => value.clone(),
+    }
+}
+
+fn sha256_json_value(value: &Value) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(serde_json::to_vec(&canonical_json_value(value)).unwrap_or_default());
+    format!("sha256:{}", hex::encode(hasher.finalize()))
+}
+
+pub(crate) fn canonical_fission_json_hash(value: &Value) -> String {
+    sha256_json_value(value)
+        .strip_prefix("sha256:")
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn sha256_exact_json_value(value: &Value) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(serde_json::to_vec(value).unwrap_or_default());
+    format!("sha256:{}", hex::encode(hasher.finalize()))
+}
+
+fn canonical_sha256_content_hash(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
+fn canonical_nonempty_string(value: &str) -> bool {
+    !value.is_empty() && value == value.trim()
+}
+
+fn metadata_claims_proof_authority(value: &Value) -> bool {
+    match value {
+        Value::Array(items) => items.iter().any(metadata_claims_proof_authority),
+        Value::Object(object) => object.iter().any(|(key, value)| {
+            (proof_authority_field(key) && value.as_bool() == Some(true))
+                || metadata_claims_proof_authority(value)
+        }),
+        _ => false,
+    }
+}
+
+fn evidence_record_content_identity_valid(record: &GpuHmrProofEvidenceRef) -> bool {
+    let Some(metadata) = record.metadata.as_ref() else {
+        return false;
+    };
+    let expected_content_hash = sha256_json_value(metadata);
+    let Some(expected_digest) = expected_content_hash.strip_prefix("sha256:") else {
+        return false;
+    };
+    record.content_hash == expected_content_hash
+        && record
+            .evidence_id
+            .rsplit_once(':')
+            .is_some_and(|(_, digest)| digest == expected_digest)
+}
+
+fn evidence_id_descriptor_valid(record: &GpuHmrProofEvidenceRef, expected: &str) -> bool {
+    record
+        .evidence_id
+        .strip_prefix("evidence:")
+        .and_then(|value| value.rsplit_once(':'))
+        .is_some_and(|(descriptor, _)| descriptor == expected)
+}
+
+fn current_run_upstream_record_base_valid(
+    record: &GpuHmrProofEvidenceRef,
+    context: FissionEvidenceProducerContext<'_>,
+) -> bool {
+    canonical_source_evidence_id(&record.evidence_id)
+        && canonical_sha256_content_hash(&record.content_hash)
+        && evidence_record_content_identity_valid(record)
+        && !record.kind.trim().is_empty()
+        && record.kind == record.kind.trim()
+        && !record.producer_subsystem.trim().is_empty()
+        && record.producer_subsystem == record.producer_subsystem.trim()
+        && canonical_nonempty_string(&record.summary)
+        && record.timestamp == context.timestamp
+        && record.session_id.as_deref() == Some(context.session_id)
+        && record
+            .file_path
+            .as_deref()
+            .is_none_or(|value| !value.trim().is_empty() && value == value.trim())
+        && record.artifact_uri.as_deref() == Some(context.selected_artifact_id)
+        && upstream_run_binding_valid(record.metadata.as_ref(), context)
+        && !record
+            .metadata
+            .as_ref()
+            .is_some_and(metadata_claims_proof_authority)
+}
+
+fn evidence_schema_valid(metadata: &Value, expected: &str) -> bool {
+    metadata.get("schemaVersion").and_then(Value::as_str) == Some(expected)
+}
+
+fn evidence_field_matches_candidate(
+    metadata: &Value,
+    metadata_field: &str,
+    candidate: &Value,
+    candidate_field: &str,
+) -> bool {
+    metadata.get(metadata_field).unwrap_or(&Value::Null)
+        == candidate.get(candidate_field).unwrap_or(&Value::Null)
+}
+
+fn evidence_hash_field_matches_candidate(
+    metadata: &Value,
+    metadata_field: &str,
+    candidate: &Value,
+    candidate_field: &str,
+) -> bool {
+    let Some(metadata_hash) = metadata.get(metadata_field).and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(candidate_hash) = candidate.get(candidate_field).and_then(Value::as_str) else {
+        return false;
+    };
+    canonical_sha256_digest(metadata_hash) == canonical_sha256_digest(candidate_hash)
+}
+
+fn evidence_hash_pointer_matches_candidate(
+    metadata: &Value,
+    metadata_pointer: &str,
+    candidate: &Value,
+    candidate_field: &str,
+) -> bool {
+    let Some(metadata_hash) = metadata.pointer(metadata_pointer).and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(candidate_hash) = candidate.get(candidate_field).and_then(Value::as_str) else {
+        return false;
+    };
+    canonical_sha256_digest(metadata_hash) == canonical_sha256_digest(candidate_hash)
+}
+
+fn current_run_compiler_evidence_valid(
+    candidate: &Value,
+    compiler_evidence_id: &str,
+    trusted_evidence: &[GpuHmrProofEvidenceRef],
+    context: FissionEvidenceProducerContext<'_>,
+) -> bool {
+    exactly_one_trusted_evidence_record(trusted_evidence, compiler_evidence_id).is_some_and(
+        |record| {
+            current_run_upstream_record_base_valid(record, context)
+                && record.kind == FISSION_COMPILER_EVIDENCE_KIND
+                && evidence_id_descriptor_valid(record, FISSION_COMPILER_EVIDENCE_ID_DESCRIPTOR)
+                && record.metadata.as_ref().is_some_and(|metadata| {
+                    evidence_schema_valid(metadata, FISSION_COMPILER_EVIDENCE_SCHEMA_VERSION)
+                        && evidence_hash_pointer_matches_candidate(
+                            metadata,
+                            "/compileProvenance/compileCommandHash",
+                            candidate,
+                            "compileCommandHash",
+                        )
+                        && evidence_hash_pointer_matches_candidate(
+                            metadata,
+                            "/compileProvenance/dependencyHash",
+                            candidate,
+                            "dependencyClosureHash",
+                        )
+                })
+        },
+    )
+}
+
+fn source_mapping_evidence_valid(candidate: &Value, record: &GpuHmrProofEvidenceRef) -> bool {
+    let Some(metadata) = record.metadata.as_ref() else {
+        return false;
+    };
+    record.kind == FISSION_SOURCE_MAPPING_EVIDENCE_KIND
+        && evidence_id_descriptor_valid(record, FISSION_SOURCE_MAPPING_EVIDENCE_KIND)
+        && evidence_schema_valid(metadata, FISSION_SOURCE_MAPPING_EVIDENCE_SCHEMA_VERSION)
+        && evidence_field_matches_candidate(metadata, "sourceEditId", candidate, "sourceEditId")
+        && evidence_field_matches_candidate(
+            metadata,
+            "selectedArtifactId",
+            candidate,
+            "selectedArtifactId",
+        )
+        && evidence_field_matches_candidate(metadata, "sourcePaths", candidate, "sourcePaths")
+        && evidence_field_matches_candidate(metadata, "sourceSpans", candidate, "sourceSpans")
+        && evidence_field_matches_candidate(
+            metadata,
+            "generatedRolePath",
+            candidate,
+            "generatedRolePath",
+        )
+}
+
+fn closure_evidence_valid(
+    candidate: &Value,
+    record: &GpuHmrProofEvidenceRef,
+    expected_kind: &str,
+    expected_schema: &str,
+    trusted_evidence: &[GpuHmrProofEvidenceRef],
+    context: FissionEvidenceProducerContext<'_>,
+) -> bool {
+    let Some(metadata) = record.metadata.as_ref() else {
+        return false;
+    };
+    let Some(compiler_evidence_id) = metadata.get("compilerEvidenceId").and_then(Value::as_str)
+    else {
+        return false;
+    };
+    record.kind == expected_kind
+        && evidence_id_descriptor_valid(record, expected_kind)
+        && evidence_schema_valid(metadata, expected_schema)
+        && evidence_field_matches_candidate(
+            metadata,
+            "selectedArtifactId",
+            candidate,
+            "selectedArtifactId",
+        )
+        && evidence_field_matches_candidate(metadata, "sourcePaths", candidate, "sourcePaths")
+        && evidence_field_matches_candidate(metadata, "includeClosure", candidate, "includeClosure")
+        && evidence_hash_field_matches_candidate(
+            metadata,
+            "dependencyClosureHash",
+            candidate,
+            "dependencyClosureHash",
+        )
+        && current_run_compiler_evidence_valid(
+            candidate,
+            compiler_evidence_id,
+            trusted_evidence,
+            context,
+        )
+}
+
+fn symbol_identity_mappings_bound_to_record(
+    candidate: &Value,
+    record: &GpuHmrProofEvidenceRef,
+) -> bool {
+    let targets = string_set(candidate.get("targetSymbols"));
+    let exports = string_set(candidate.get("exportedSymbolsExpected"));
+    let mappings = candidate
+        .get("symbolIdentityMappings")
+        .or_else(|| candidate.get("symbolIdentityMap"));
+    match mappings {
+        None => true,
+        Some(Value::Array(mappings)) => mappings.iter().all(|mapping| {
+            let Some(mapping) = mapping.as_object() else {
+                return false;
+            };
+            let Some(target) = first_mapping_string(
+                mapping,
+                &["targetSymbol", "sourceSymbol", "logicalSymbol", "symbol"],
+            ) else {
+                return false;
+            };
+            let Some(exported) = first_mapping_string(
+                mapping,
+                &[
+                    "exportedSymbol",
+                    "runtimeSymbol",
+                    "artifactSymbol",
+                    "mangledSymbol",
+                ],
+            ) else {
+                return false;
+            };
+            let evidence_ids = first_mapping_evidence_ids(
+                mapping,
+                &[
+                    "evidenceIds",
+                    "verifierEvidenceIds",
+                    "symbolOwnershipEvidenceIds",
+                    "identityEvidenceIds",
+                ],
+            );
+            targets.contains(&target)
+                && exports.contains(&exported)
+                && evidence_ids.iter().any(|id| id == &record.evidence_id)
+        }),
+        Some(_) => false,
+    }
+}
+
+fn symbol_ownership_evidence_valid(candidate: &Value, record: &GpuHmrProofEvidenceRef) -> bool {
+    let Some(metadata) = record.metadata.as_ref() else {
+        return false;
+    };
+    record.kind == FISSION_SYMBOL_OWNERSHIP_EVIDENCE_KIND
+        && evidence_id_descriptor_valid(record, FISSION_SYMBOL_OWNERSHIP_EVIDENCE_ID_DESCRIPTOR)
+        && evidence_schema_valid(metadata, FISSION_SYMBOL_OWNERSHIP_EVIDENCE_SCHEMA_VERSION)
+        && evidence_field_matches_candidate(metadata, "targetSymbols", candidate, "targetSymbols")
+        && evidence_field_matches_candidate(
+            metadata,
+            "artifactExportedSymbols",
+            candidate,
+            "exportedSymbolsExpected",
+        )
+        && metadata.get("symbolBound").and_then(Value::as_bool) == Some(true)
+        && symbol_identity_mappings_bound_to_record(candidate, record)
+        && string_list(candidate.get("safeExportSupersetEvidenceIds"))
+            .into_iter()
+            .all(|id| id == record.evidence_id)
+}
+
+fn abi_membrane_evidence_valid(candidate: &Value, record: &GpuHmrProofEvidenceRef) -> bool {
+    let Some(metadata) = record.metadata.as_ref() else {
+        return false;
+    };
+    let expected_membrane_id = format!("abi-membrane:{}", record.evidence_id);
+    record.kind == FISSION_ABI_MEMBRANE_EVIDENCE_KIND
+        && evidence_id_descriptor_valid(record, FISSION_ABI_MEMBRANE_EVIDENCE_KIND)
+        && evidence_schema_valid(metadata, FISSION_ABI_MEMBRANE_EVIDENCE_SCHEMA_VERSION)
+        && evidence_field_matches_candidate(metadata, "targetSymbols", candidate, "targetSymbols")
+        && evidence_field_matches_candidate(
+            metadata,
+            "artifactExportedSymbols",
+            candidate,
+            "exportedSymbolsExpected",
+        )
+        && candidate.get("abiMembraneId").and_then(Value::as_str)
+            == Some(expected_membrane_id.as_str())
+        && metadata
+            .get("layoutSizeAlignmentVerified")
+            .and_then(Value::as_bool)
+            == Some(true)
+        && non_empty_array(metadata.get("acceptedExtractorEvidenceRefs"))
+        && non_empty_array(metadata.get("acceptedExtractorSources"))
+        && non_empty_array(metadata.get("extractorProvenance"))
+        && [
+            "kernelSignatures",
+            "clangAstKernelSignatures",
+            "parameterAbiRecords",
+        ]
+        .iter()
+        .any(|field| non_empty_array(metadata.get(*field)))
+        && metadata
+            .get("kernelAbiFingerprintHash")
+            .and_then(Value::as_str)
+            .and_then(canonical_sha256_digest)
+            .is_some()
+        && metadata
+            .get("constantGlobalLayoutHash")
+            .and_then(Value::as_str)
+            .and_then(canonical_sha256_digest)
+            .is_some()
+}
+
+fn compile_recipe_evidence_valid(
+    candidate: &Value,
+    record: &GpuHmrProofEvidenceRef,
+    trusted_evidence: &[GpuHmrProofEvidenceRef],
+    context: FissionEvidenceProducerContext<'_>,
+) -> bool {
+    let Some(metadata) = record.metadata.as_ref() else {
+        return false;
+    };
+    let Some(compiler_evidence_id) = metadata.get("compilerEvidenceId").and_then(Value::as_str)
+    else {
+        return false;
+    };
+    record.kind == FISSION_COMPILE_RECIPE_EVIDENCE_KIND
+        && evidence_id_descriptor_valid(record, FISSION_COMPILE_RECIPE_EVIDENCE_KIND)
+        && evidence_schema_valid(metadata, FISSION_COMPILE_RECIPE_EVIDENCE_SCHEMA_VERSION)
+        && evidence_field_matches_candidate(
+            metadata,
+            "selectedArtifactId",
+            candidate,
+            "selectedArtifactId",
+        )
+        && evidence_hash_field_matches_candidate(
+            metadata,
+            "compileRecipeHash",
+            candidate,
+            "compileRecipeHash",
+        )
+        && evidence_hash_field_matches_candidate(
+            metadata,
+            "compileCommandHash",
+            candidate,
+            "compileCommandHash",
+        )
+        && evidence_hash_field_matches_candidate(
+            metadata,
+            "dependencyClosureHash",
+            candidate,
+            "dependencyClosureHash",
+        )
+        && current_run_compiler_evidence_valid(
+            candidate,
+            compiler_evidence_id,
+            trusted_evidence,
+            context,
+        )
+}
+
+fn loader_capability_evidence_valid(candidate: &Value, record: &GpuHmrProofEvidenceRef) -> bool {
+    let Some(metadata) = record.metadata.as_ref() else {
+        return false;
+    };
+    let required_tokens = loader_capability_tokens(candidate.get("loaderCapabilityRequirement"))
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let observed_tokens = loader_capability_tokens(Some(metadata))
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    record.kind == FISSION_LOADER_CAPABILITY_EVIDENCE_KIND
+        && evidence_id_descriptor_valid(record, FISSION_LOADER_CAPABILITY_EVIDENCE_KIND)
+        && evidence_schema_valid(metadata, FISSION_LOADER_CAPABILITY_EVIDENCE_SCHEMA_VERSION)
+        && evidence_field_matches_candidate(
+            metadata,
+            "selectedArtifactId",
+            candidate,
+            "selectedArtifactId",
+        )
+        && evidence_hash_field_matches_candidate(
+            metadata,
+            "artifactContentHash",
+            candidate,
+            "artifactHash",
+        )
+        && !required_tokens.is_empty()
+        && required_tokens.is_subset(&observed_tokens)
+}
+
+fn output_oracle_evidence_valid(candidate: &Value, record: &GpuHmrProofEvidenceRef) -> bool {
+    let Some(metadata) = record.metadata.as_ref() else {
+        return false;
+    };
+    let Some(expected_subject) = verification_evidence_subject(candidate, "output_oracle") else {
+        return false;
+    };
+    let contract_evidence = record.kind == FISSION_OUTPUT_ORACLE_CONTRACT_EVIDENCE_KIND
+        && evidence_id_descriptor_valid(record, FISSION_OUTPUT_ORACLE_CONTRACT_EVIDENCE_KIND)
+        && evidence_schema_valid(
+            metadata,
+            FISSION_OUTPUT_ORACLE_CONTRACT_EVIDENCE_SCHEMA_VERSION,
+        )
+        && metadata
+            .get("contractMaterialized")
+            .and_then(Value::as_bool)
+            == Some(true)
+        && metadata.get("proposalOnly").and_then(Value::as_bool) == Some(false);
+    let observation_evidence = record.kind == FISSION_OUTPUT_ORACLE_OBSERVATION_EVIDENCE_KIND
+        && evidence_id_descriptor_valid(record, FISSION_OUTPUT_ORACLE_OBSERVATION_EVIDENCE_KIND)
+        && evidence_schema_valid(
+            metadata,
+            FISSION_OUTPUT_ORACLE_OBSERVATION_EVIDENCE_SCHEMA_VERSION,
+        )
+        && metadata.get("observationAccepted").and_then(Value::as_bool) == Some(true)
+        && metadata
+            .get("dispatchId")
+            .and_then(Value::as_str)
+            .is_some_and(canonical_nonempty_string);
+    (contract_evidence || observation_evidence)
+        && evidence_field_matches_candidate(metadata, "sourceEditId", candidate, "sourceEditId")
+        && evidence_field_matches_candidate(
+            metadata,
+            "selectedArtifactId",
+            candidate,
+            "selectedArtifactId",
+        )
+        && metadata.get("oracleSubject") == Some(&canonical_json_value(&expected_subject))
+}
+
+fn current_run_upstream_record_valid_for_category(
+    candidate: &Value,
+    category: &str,
+    record: &GpuHmrProofEvidenceRef,
+    trusted_evidence: &[GpuHmrProofEvidenceRef],
+    context: FissionEvidenceProducerContext<'_>,
+) -> bool {
+    if !current_run_upstream_record_base_valid(record, context) {
+        return false;
+    }
+    match category {
+        "source_mapping" => source_mapping_evidence_valid(candidate, record),
+        "include_closure" => closure_evidence_valid(
+            candidate,
+            record,
+            FISSION_INCLUDE_CLOSURE_EVIDENCE_KIND,
+            FISSION_INCLUDE_CLOSURE_EVIDENCE_SCHEMA_VERSION,
+            trusted_evidence,
+            context,
+        ),
+        "symbol_ownership" => symbol_ownership_evidence_valid(candidate, record),
+        "dependency_closure" => closure_evidence_valid(
+            candidate,
+            record,
+            FISSION_DEPENDENCY_CLOSURE_EVIDENCE_KIND,
+            FISSION_DEPENDENCY_CLOSURE_EVIDENCE_SCHEMA_VERSION,
+            trusted_evidence,
+            context,
+        ),
+        "abi_membrane" => abi_membrane_evidence_valid(candidate, record),
+        "compile_recipe" => {
+            compile_recipe_evidence_valid(candidate, record, trusted_evidence, context)
+        }
+        "loader_capability" => loader_capability_evidence_valid(candidate, record),
+        "output_oracle" => output_oracle_evidence_valid(candidate, record),
+        _ => false,
+    }
+}
+
+fn upstream_run_binding_valid(
+    metadata: Option<&Value>,
+    context: FissionEvidenceProducerContext<'_>,
+) -> bool {
+    metadata.and_then(|metadata| metadata.get("runBinding"))
+        == Some(&json!({
+            "schemaVersion": FISSION_RUN_BINDING_SCHEMA_VERSION,
+            "timestamp": context.timestamp,
+            "sessionId": context.session_id,
+            "sourceEditId": context.source_edit_id,
+            "selectedArtifactId": context.selected_artifact_id,
+        }))
+}
+
+fn current_run_upstream_evidence_bindings(
+    candidate: &Value,
+    category: &str,
+    upstream_evidence_ids: &[String],
+    trusted_evidence: &[GpuHmrProofEvidenceRef],
+    context: FissionEvidenceProducerContext<'_>,
+) -> Option<Vec<Value>> {
+    let mut bindings = Vec::with_capacity(upstream_evidence_ids.len());
+    for evidence_id in upstream_evidence_ids {
+        let record = exactly_one_trusted_evidence_record(trusted_evidence, evidence_id)?;
+        if !current_run_upstream_record_valid_for_category(
+            candidate,
+            category,
+            record,
+            trusted_evidence,
+            context,
+        ) {
+            return None;
+        }
+        let projection = trusted_source_record_projection(record);
+        bindings.push(json!({
+            "evidenceId": evidence_id,
+            "recordHash": sha256_exact_json_value(&projection),
+            "recordProjection": projection,
+        }));
+    }
+    Some(bindings)
+}
+
+fn phase_source_evidence_metadata(
+    candidate: &Value,
+    category: &str,
+    upstream_evidence_ids: &[String],
+    upstream_evidence_bindings: &[Value],
+    context: FissionEvidenceProducerContext<'_>,
+) -> Option<Value> {
+    let subject = canonical_json_value(&verification_evidence_subject(candidate, category)?);
+    Some(json!({
+        "schemaVersion": FISSION_PHASE_SOURCE_EVIDENCE_SCHEMA_VERSION,
+        "category": category,
+        "subject": subject,
+        "upstreamEvidenceIds": upstream_evidence_ids,
+        "upstreamEvidenceBindings": upstream_evidence_bindings,
+        "runContext": {
+            "producerSubsystem": context.producer_subsystem,
+            "timestamp": context.timestamp,
+            "sessionId": context.session_id,
+            "sourceEditId": context.source_edit_id,
+            "selectedArtifactId": context.selected_artifact_id,
+            "filePath": context.file_path,
+        },
+        "authority": FISSION_PHASE_SOURCE_EVIDENCE_AUTHORITY,
+        "supportOnly": true,
+        "acceptedForGpuHmr": false,
+        "gpuHmrSuccess": false,
+        "canSatisfyGpuHmr": false,
+        "canSatisfyRuntimeProof": false,
+        "canSatisfyDispatchProof": false,
+        "gpuHmrAuthority": false,
+        "runtimeAuthority": false,
+        "dispatchAuthority": false,
+    }))
+}
+
+fn phase_source_evidence_summary(category: &str) -> String {
+    format!("support-only fission phase-source evidence for {category}")
+}
+
+fn phase_source_evidence_record(
+    candidate: &Value,
+    category: &str,
+    upstream_evidence_ids: Vec<String>,
+    trusted_evidence: &[GpuHmrProofEvidenceRef],
+    context: FissionEvidenceProducerContext<'_>,
+) -> Option<GpuHmrProofEvidenceRef> {
+    let upstream_evidence_bindings = current_run_upstream_evidence_bindings(
+        candidate,
+        category,
+        &upstream_evidence_ids,
+        trusted_evidence,
+        context,
+    )?;
+    let metadata = phase_source_evidence_metadata(
+        candidate,
+        category,
+        &upstream_evidence_ids,
+        &upstream_evidence_bindings,
+        context,
+    )?;
+    let content_hash = sha256_exact_json_value(&metadata);
+    let digest = content_hash.strip_prefix("sha256:")?;
+    Some(GpuHmrProofEvidenceRef {
+        evidence_id: format!("evidence:fission-phase-source:{category}:{digest}"),
+        kind: FISSION_PHASE_SOURCE_EVIDENCE_KIND.to_string(),
+        content_hash,
+        producer_subsystem: context.producer_subsystem.trim().to_string(),
+        timestamp: context.timestamp.trim().to_string(),
+        session_id: Some(context.session_id.trim().to_string()),
+        file_path: context.file_path.map(|value| value.trim().to_string()),
+        artifact_uri: Some(context.selected_artifact_id.trim().to_string()),
+        summary: phase_source_evidence_summary(category),
+        metadata: Some(metadata),
+    })
+}
+
+fn phase_source_upstream_evidence_ids(metadata: &Value) -> Option<Vec<String>> {
+    let ids = metadata
+        .get("upstreamEvidenceIds")?
+        .as_array()?
+        .iter()
+        .map(|value| value.as_str().map(str::to_string))
+        .collect::<Option<Vec<_>>>()?;
+    if ids.is_empty()
+        || ids
+            .iter()
+            .any(|id| id != id.trim() || !canonical_source_evidence_id(id))
+    {
+        return None;
+    }
+    let canonical = ids.iter().cloned().collect::<BTreeSet<_>>();
+    (canonical.len() == ids.len() && canonical.into_iter().eq(ids.iter().cloned())).then_some(ids)
+}
+
+fn phase_source_evidence_record_valid_for_candidate(
+    candidate: &Value,
+    category: &str,
+    record: &GpuHmrProofEvidenceRef,
+    trusted_evidence: &[GpuHmrProofEvidenceRef],
+    context: FissionEvidenceProducerContext<'_>,
+) -> bool {
+    if record.kind != FISSION_PHASE_SOURCE_EVIDENCE_KIND
+        || record.producer_subsystem != context.producer_subsystem
+        || record.timestamp != context.timestamp
+        || record.session_id.as_deref() != Some(context.session_id)
+        || record.file_path.as_deref() != context.file_path
+        || record.artifact_uri.as_deref() != Some(context.selected_artifact_id)
+        || candidate.get("sourceEditId").and_then(Value::as_str) != Some(context.source_edit_id)
+        || candidate.get("selectedArtifactId").and_then(Value::as_str)
+            != Some(context.selected_artifact_id)
+        || record.summary != phase_source_evidence_summary(category)
+    {
+        return false;
+    }
+
+    let Some(metadata) = record.metadata.as_ref() else {
+        return false;
+    };
+    let Some(upstream_evidence_ids) = phase_source_upstream_evidence_ids(metadata) else {
+        return false;
+    };
+    let Some(upstream_evidence_bindings) = current_run_upstream_evidence_bindings(
+        candidate,
+        category,
+        &upstream_evidence_ids,
+        trusted_evidence,
+        context,
+    ) else {
+        return false;
+    };
+    let Some(expected_metadata) = phase_source_evidence_metadata(
+        candidate,
+        category,
+        &upstream_evidence_ids,
+        &upstream_evidence_bindings,
+        context,
+    ) else {
+        return false;
+    };
+    if metadata != &expected_metadata {
+        return false;
+    }
+
+    let expected_content_hash = sha256_exact_json_value(metadata);
+    if record.content_hash != expected_content_hash {
+        return false;
+    }
+    let Some(digest) = expected_content_hash.strip_prefix("sha256:") else {
+        return false;
+    };
+    record.evidence_id == format!("evidence:fission-phase-source:{category}:{digest}")
+}
+
+fn trusted_source_record_projection(record: &GpuHmrProofEvidenceRef) -> Value {
+    canonical_json_value(&json!({
+        "evidenceId": record.evidence_id,
+        "kind": record.kind,
+        "contentHash": record.content_hash,
+        "producerSubsystem": record.producer_subsystem,
+        "timestamp": record.timestamp,
+        "sessionId": record.session_id,
+        "filePath": record.file_path,
+        "artifactUri": record.artifact_uri,
+        "summary": record.summary,
+        "metadata": record.metadata,
+    }))
+}
+
+fn content_bound_fission_evidence_record(
+    candidate: &Value,
+    category: &str,
+    source_record: &GpuHmrProofEvidenceRef,
+    trusted_evidence: &[GpuHmrProofEvidenceRef],
+    context: FissionEvidenceProducerContext<'_>,
+) -> Option<Value> {
+    if !canonical_source_evidence_id(&source_record.evidence_id)
+        || !category_source_evidence_ids(candidate, category).contains(&source_record.evidence_id)
+        || !phase_source_evidence_record_valid_for_candidate(
+            candidate,
+            category,
+            source_record,
+            trusted_evidence,
+            context,
+        )
+    {
+        return None;
+    }
+    let subject = canonical_json_value(&verification_evidence_subject(candidate, category)?);
+    let subject_hash = sha256_json_value(&subject);
+    let source_record_projection = trusted_source_record_projection(source_record);
+    let source_record_hash = sha256_exact_json_value(&source_record_projection);
+    let binding_hash = sha256_json_value(&json!({
+        "subject": subject,
+        "trustedSourceRecordProjection": source_record_projection,
+    }));
+    let identity_material = json!({
+        "schemaVersion": FISSION_VERIFIER_EVIDENCE_SCHEMA_VERSION,
+        "authority": FISSION_VERIFIER_EVIDENCE_AUTHORITY,
+        "category": category,
+        "sourceEvidenceId": source_record.evidence_id,
+        "subjectHash": subject_hash,
+        "bindingHash": binding_hash,
+        "subject": subject,
+        "trustedSourceRecordHash": source_record_hash,
+        "trustedSourceRecordProjection": source_record_projection,
+        "supportOnly": true,
+        "acceptedForGpuHmr": false,
+        "gpuHmrSuccess": false,
+        "canSatisfyGpuHmr": false,
+        "canSatisfyRuntimeProof": false,
+        "canSatisfyDispatchProof": false,
+    });
+    let evidence_hash = sha256_json_value(&identity_material)
+        .strip_prefix("sha256:")
+        .unwrap_or_default()
+        .to_string();
+    Some(json!({
+        "schemaVersion": FISSION_VERIFIER_EVIDENCE_SCHEMA_VERSION,
+        "evidenceId": format!("fission-evidence:{category}:sha256:{evidence_hash}"),
+        "authority": FISSION_VERIFIER_EVIDENCE_AUTHORITY,
+        "category": category,
+        "sourceEvidenceId": source_record.evidence_id,
+        "subjectHash": subject_hash,
+        "bindingHash": binding_hash,
+        "subject": subject,
+        "trustedSourceRecordHash": source_record_hash,
+        "trustedSourceRecordProjection": source_record_projection,
+        "supportOnly": true,
+        "acceptedForGpuHmr": false,
+        "gpuHmrSuccess": false,
+        "canSatisfyGpuHmr": false,
+        "canSatisfyRuntimeProof": false,
+        "canSatisfyDispatchProof": false,
+    }))
+}
+
+fn exactly_one_trusted_evidence_record<'a>(
+    trusted_evidence: &'a [GpuHmrProofEvidenceRef],
+    evidence_id: &str,
+) -> Option<&'a GpuHmrProofEvidenceRef> {
+    let mut matches = trusted_evidence
+        .iter()
+        .filter(|record| record.evidence_id == evidence_id);
+    let record = matches.next()?;
+    matches.next().is_none().then_some(record)
+}
+
+fn candidate_with_validated_evidence(
+    candidate: &Value,
+    trusted_evidence: &[GpuHmrProofEvidenceRef],
+    context: Option<FissionEvidenceProducerContext<'_>>,
+) -> Value {
+    let declared_records = candidate
+        .get("verifierEvidenceRecords")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut evidence_id_counts = BTreeMap::new();
+    let mut binding_counts = BTreeMap::new();
+    for record in &declared_records {
+        if let Some(evidence_id) = record.get("evidenceId").and_then(Value::as_str) {
+            *evidence_id_counts
+                .entry(evidence_id.to_string())
+                .or_insert(0usize) += 1;
+        }
+        if let (Some(category), Some(source_evidence_id)) = (
+            record.get("category").and_then(Value::as_str),
+            record.get("sourceEvidenceId").and_then(Value::as_str),
+        ) {
+            *binding_counts
+                .entry((category.to_string(), source_evidence_id.to_string()))
+                .or_insert(0usize) += 1;
+        }
+    }
+
+    let mut valid_records = Vec::new();
+    if let Some(context) = context {
+        for record in &declared_records {
+            let Some(evidence_id) = record.get("evidenceId").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(category) = record.get("category").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(source_evidence_id) = record.get("sourceEvidenceId").and_then(Value::as_str)
+            else {
+                continue;
+            };
+            if evidence_id_counts.get(evidence_id) != Some(&1)
+                || binding_counts.get(&(category.to_string(), source_evidence_id.to_string()))
+                    != Some(&1)
+            {
+                continue;
+            }
+            let Some(source_record) =
+                exactly_one_trusted_evidence_record(trusted_evidence, source_evidence_id)
+            else {
+                continue;
+            };
+            let Some(expected) = content_bound_fission_evidence_record(
+                candidate,
+                category,
+                source_record,
+                trusted_evidence,
+                context,
+            ) else {
+                continue;
+            };
+            if record == &expected {
+                valid_records.push(expected);
+            }
+        }
+    }
+    let invalid_count = declared_records.len().saturating_sub(valid_records.len());
+
+    let mut prepared = candidate.clone();
+    if let Some(object) = prepared.as_object_mut() {
+        object.insert(
+            INTERNAL_VALIDATED_EVIDENCE_RECORDS_FIELD.to_string(),
+            Value::Array(valid_records),
+        );
+        object.insert(
+            INTERNAL_INVALID_EVIDENCE_RECORD_COUNT_FIELD.to_string(),
+            json!(invalid_count),
+        );
+    }
+    prepared
+}
+
+fn valid_content_bound_fission_evidence_records(candidate: &Value) -> Vec<Value> {
+    candidate
+        .get(INTERNAL_VALIDATED_EVIDENCE_RECORDS_FIELD)
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn invalid_content_bound_fission_evidence_record_count(candidate: &Value) -> usize {
+    candidate
+        .get(INTERNAL_INVALID_EVIDENCE_RECORD_COUNT_FIELD)
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(0)
+}
+
+fn content_bound_evidence_ids_for_category(candidate: &Value, category: &str) -> Vec<String> {
+    valid_content_bound_fission_evidence_records(candidate)
+        .into_iter()
+        .filter(|record| record.get("category").and_then(Value::as_str) == Some(category))
+        .filter_map(|record| {
+            record
+                .get("evidenceId")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 fn missing_verification_evidence_categories(candidate: &Value) -> Vec<&'static str> {
     REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES
         .iter()
         .filter_map(|category| {
-            if deterministic_evidence_ids_for_category(
-                candidate,
-                category.fields,
-                category.fallback_tokens,
-            )
-            .is_empty()
-            {
+            if content_bound_evidence_ids_for_category(candidate, category.name).is_empty() {
                 Some(category.name)
             } else {
                 None
@@ -1670,11 +2979,7 @@ fn verification_evidence_coverage(candidate: &Value) -> Value {
     let mut categories = Vec::new();
     let mut missing = Vec::new();
     for category in REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES {
-        let evidence_ids = deterministic_evidence_ids_for_category(
-            candidate,
-            category.fields,
-            category.fallback_tokens,
-        );
+        let evidence_ids = content_bound_evidence_ids_for_category(candidate, category.name);
         if evidence_ids.is_empty() {
             missing.push(category.name);
         }
@@ -1741,16 +3046,26 @@ fn evidence_id_matches_any_token(value: &str, tokens: &[&str]) -> bool {
 }
 
 fn deterministic_verifier_evidence_ids(candidate: &Value) -> Vec<String> {
-    string_list(candidate.get("verifierEvidenceIds"))
+    valid_content_bound_fission_evidence_records(candidate)
         .into_iter()
-        .filter(|id| is_deterministic_verifier_evidence_id(id))
+        .filter_map(|record| {
+            record
+                .get("evidenceId")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect()
 }
 
 fn non_authoritative_evidence_ids(candidate: &Value) -> Vec<String> {
+    let accepted = deterministic_verifier_evidence_ids(candidate)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
     string_list(candidate.get("verifierEvidenceIds"))
         .into_iter()
-        .filter(|id| !is_deterministic_verifier_evidence_id(id))
+        .filter(|id| !accepted.contains(id))
         .collect()
 }
 
@@ -2498,9 +3813,358 @@ fn verifier_evidence_id(candidate: &Value, status: &str) -> String {
 mod tests {
     use super::*;
 
+    const TEST_TRUSTED_EVIDENCE_FIELD: &str = "__testTrustedFissionEvidence";
+
+    fn test_producer_context() -> FissionEvidenceProducerContext<'static> {
+        FissionEvidenceProducerContext {
+            producer_subsystem: "worker.gpu_fission_test_producer",
+            timestamp: "2026-07-16T12:00:00Z",
+            session_id: "session:gpu-fission-test",
+            source_edit_id: "edit:1",
+            selected_artifact_id:
+                "artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            file_path: None,
+        }
+    }
+
+    fn test_run_binding() -> Value {
+        json!({
+            "schemaVersion": FISSION_RUN_BINDING_SCHEMA_VERSION,
+            "timestamp": test_producer_context().timestamp,
+            "sessionId": test_producer_context().session_id,
+            "sourceEditId": test_producer_context().source_edit_id,
+            "selectedArtifactId": test_producer_context().selected_artifact_id,
+        })
+    }
+
+    fn test_bound_upstream_record(
+        descriptor: &str,
+        kind: &str,
+        mut metadata: Value,
+    ) -> GpuHmrProofEvidenceRef {
+        metadata
+            .as_object_mut()
+            .expect("test upstream metadata must be an object")
+            .insert("runBinding".to_string(), test_run_binding());
+        let content_hash = sha256_json_value(&metadata);
+        let digest = content_hash.strip_prefix("sha256:").unwrap();
+        GpuHmrProofEvidenceRef {
+            evidence_id: format!("evidence:{descriptor}:{digest}"),
+            kind: kind.to_string(),
+            content_hash,
+            producer_subsystem: "worker.gpu_fission_test_upstream".to_string(),
+            timestamp: test_producer_context().timestamp.to_string(),
+            session_id: Some(test_producer_context().session_id.to_string()),
+            file_path: None,
+            artifact_uri: Some(test_producer_context().selected_artifact_id.to_string()),
+            summary: format!("typed current-run {kind} observation"),
+            metadata: Some(metadata),
+        }
+    }
+
+    fn test_category_upstream_evidence(candidate: &mut Value) -> Vec<GpuHmrProofEvidenceRef> {
+        let compiler_record = test_bound_upstream_record(
+            FISSION_COMPILER_EVIDENCE_ID_DESCRIPTOR,
+            FISSION_COMPILER_EVIDENCE_KIND,
+            json!({
+                "schemaVersion": FISSION_COMPILER_EVIDENCE_SCHEMA_VERSION,
+                "compileProvenance": {
+                    "compileCommandHash": candidate.get("compileCommandHash"),
+                    "dependencyHash": candidate.get("dependencyClosureHash"),
+                },
+                "stderrBytes": 0,
+                "stderrHash": format!("sha256:{}", hex::encode(Sha256::digest(b""))),
+            }),
+        );
+        let compiler_evidence_id = compiler_record.evidence_id.clone();
+
+        let source_mapping = test_bound_upstream_record(
+            FISSION_SOURCE_MAPPING_EVIDENCE_KIND,
+            FISSION_SOURCE_MAPPING_EVIDENCE_KIND,
+            json!({
+                "schemaVersion": FISSION_SOURCE_MAPPING_EVIDENCE_SCHEMA_VERSION,
+                "sourceEditId": candidate.get("sourceEditId"),
+                "selectedArtifactId": candidate.get("selectedArtifactId"),
+                "sourcePaths": candidate.get("sourcePaths"),
+                "sourceSpans": candidate.get("sourceSpans"),
+                "generatedRolePath": candidate.get("generatedRolePath"),
+            }),
+        );
+        let include_closure = test_bound_upstream_record(
+            FISSION_INCLUDE_CLOSURE_EVIDENCE_KIND,
+            FISSION_INCLUDE_CLOSURE_EVIDENCE_KIND,
+            json!({
+                "schemaVersion": FISSION_INCLUDE_CLOSURE_EVIDENCE_SCHEMA_VERSION,
+                "selectedArtifactId": candidate.get("selectedArtifactId"),
+                "sourcePaths": candidate.get("sourcePaths"),
+                "includeClosure": candidate.get("includeClosure"),
+                "dependencyClosureHash": candidate.get("dependencyClosureHash"),
+                "compilerEvidenceId": &compiler_evidence_id,
+            }),
+        );
+        let symbol_ownership = test_bound_upstream_record(
+            FISSION_SYMBOL_OWNERSHIP_EVIDENCE_ID_DESCRIPTOR,
+            FISSION_SYMBOL_OWNERSHIP_EVIDENCE_KIND,
+            json!({
+                "schemaVersion": FISSION_SYMBOL_OWNERSHIP_EVIDENCE_SCHEMA_VERSION,
+                "targetSymbols": candidate.get("targetSymbols"),
+                "artifactExportedSymbols": candidate.get("exportedSymbolsExpected"),
+                "symbolBound": true,
+            }),
+        );
+        for field in ["symbolIdentityMappings", "symbolIdentityMap"] {
+            if let Some(mappings) = candidate.get_mut(field).and_then(Value::as_array_mut) {
+                for mapping in mappings.iter_mut().filter_map(Value::as_object_mut) {
+                    mapping.insert(
+                        "evidenceIds".to_string(),
+                        json!([symbol_ownership.evidence_id.clone()]),
+                    );
+                }
+                break;
+            }
+        }
+        if candidate.get("safeExportSupersetReason").is_some() {
+            candidate["safeExportSupersetEvidenceIds"] =
+                json!([symbol_ownership.evidence_id.clone()]);
+        } else if let Some(object) = candidate.as_object_mut() {
+            object.remove("safeExportSupersetEvidenceIds");
+        }
+        let dependency_closure = test_bound_upstream_record(
+            FISSION_DEPENDENCY_CLOSURE_EVIDENCE_KIND,
+            FISSION_DEPENDENCY_CLOSURE_EVIDENCE_KIND,
+            json!({
+                "schemaVersion": FISSION_DEPENDENCY_CLOSURE_EVIDENCE_SCHEMA_VERSION,
+                "selectedArtifactId": candidate.get("selectedArtifactId"),
+                "sourcePaths": candidate.get("sourcePaths"),
+                "includeClosure": candidate.get("includeClosure"),
+                "dependencyClosureHash": candidate.get("dependencyClosureHash"),
+                "compilerEvidenceId": &compiler_evidence_id,
+            }),
+        );
+        let abi_membrane = test_bound_upstream_record(
+            FISSION_ABI_MEMBRANE_EVIDENCE_KIND,
+            FISSION_ABI_MEMBRANE_EVIDENCE_KIND,
+            json!({
+                "schemaVersion": FISSION_ABI_MEMBRANE_EVIDENCE_SCHEMA_VERSION,
+                "targetSymbols": candidate.get("targetSymbols"),
+                "artifactExportedSymbols": candidate.get("exportedSymbolsExpected"),
+                "kernelSignatures": [{"name": "step", "parameters": []}],
+                "kernelAbiFingerprintHash": format!("sha256:{}", "4".repeat(64)),
+                "constantGlobalLayoutHash": format!("sha256:{}", "5".repeat(64)),
+                "layoutSizeAlignmentVerified": true,
+                "acceptedExtractorEvidenceRefs": ["evidence:test-abi-extractor"],
+                "acceptedExtractorSources": ["test_structured_abi_extractor"],
+                "extractorProvenance": [{
+                    "extractorKind": "structured_test_extractor",
+                    "acceptedByRuntimeCorrectnessPlan": true
+                }],
+            }),
+        );
+        candidate["abiMembraneId"] = json!(format!("abi-membrane:{}", abi_membrane.evidence_id));
+        let compile_recipe = test_bound_upstream_record(
+            FISSION_COMPILE_RECIPE_EVIDENCE_KIND,
+            FISSION_COMPILE_RECIPE_EVIDENCE_KIND,
+            json!({
+                "schemaVersion": FISSION_COMPILE_RECIPE_EVIDENCE_SCHEMA_VERSION,
+                "selectedArtifactId": candidate.get("selectedArtifactId"),
+                "compileRecipeHash": candidate.get("compileRecipeHash"),
+                "compileCommandHash": candidate.get("compileCommandHash"),
+                "dependencyClosureHash": candidate.get("dependencyClosureHash"),
+                "compilerEvidenceId": &compiler_evidence_id,
+            }),
+        );
+        let required_loader_tokens =
+            loader_capability_tokens(candidate.get("loaderCapabilityRequirement"));
+        let loader_capability = test_bound_upstream_record(
+            FISSION_LOADER_CAPABILITY_EVIDENCE_KIND,
+            FISSION_LOADER_CAPABILITY_EVIDENCE_KIND,
+            json!({
+                "schemaVersion": FISSION_LOADER_CAPABILITY_EVIDENCE_SCHEMA_VERSION,
+                "selectedArtifactId": candidate.get("selectedArtifactId"),
+                "artifactContentHash": candidate.get("artifactHash"),
+                "acceptedTransports": required_loader_tokens,
+            }),
+        );
+        let output_oracle = test_bound_upstream_record(
+            FISSION_OUTPUT_ORACLE_CONTRACT_EVIDENCE_KIND,
+            FISSION_OUTPUT_ORACLE_CONTRACT_EVIDENCE_KIND,
+            json!({
+                "schemaVersion": FISSION_OUTPUT_ORACLE_CONTRACT_EVIDENCE_SCHEMA_VERSION,
+                "sourceEditId": candidate.get("sourceEditId"),
+                "selectedArtifactId": candidate.get("selectedArtifactId"),
+                "oracleSubject": verification_evidence_subject(candidate, "output_oracle"),
+                "contractMaterialized": true,
+                "proposalOnly": false,
+            }),
+        );
+
+        let category_records = [
+            ("source_mapping", source_mapping),
+            ("include_closure", include_closure),
+            ("symbol_ownership", symbol_ownership),
+            ("dependency_closure", dependency_closure),
+            ("abi_membrane", abi_membrane),
+            ("compile_recipe", compile_recipe),
+            ("loader_capability", loader_capability),
+            ("output_oracle", output_oracle),
+        ];
+        let object = candidate.as_object_mut().unwrap();
+        for (category_name, record) in &category_records {
+            let category = REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES
+                .iter()
+                .find(|category| category.name == *category_name)
+                .unwrap();
+            for field in category.fields {
+                object.remove(*field);
+            }
+            object.insert(category.fields[0].to_string(), json!([record.evidence_id]));
+        }
+        object.insert(
+            "verifierEvidenceIds".to_string(),
+            json!(category_records
+                .iter()
+                .map(|(_, record)| record.evidence_id.clone())
+                .collect::<Vec<_>>()),
+        );
+
+        std::iter::once(compiler_record)
+            .chain(category_records.into_iter().map(|(_, record)| record))
+            .collect()
+    }
+
+    fn refresh_content_bound_evidence(candidate: &mut Value) {
+        let _ = candidate
+            .as_object_mut()
+            .expect("test fission candidate must be an object")
+            .remove(TEST_TRUSTED_EVIDENCE_FIELD)
+            .unwrap_or(Value::Null);
+        let mut upstream_evidence = test_category_upstream_evidence(candidate);
+        for category in REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES {
+            let ids = category_source_evidence_ids(candidate, category.name)
+                .into_iter()
+                .collect::<Vec<_>>();
+            assert!(
+                current_run_upstream_evidence_bindings(
+                    candidate,
+                    category.name,
+                    &ids,
+                    &upstream_evidence,
+                    test_producer_context(),
+                )
+                .is_some(),
+                "typed test upstream record invalid for {}",
+                category.name,
+            );
+        }
+        let trusted_phase_evidence = produce_fission_phase_source_evidence(
+            candidate,
+            &upstream_evidence,
+            test_producer_context(),
+        )
+        .expect("trusted test producer must materialize evidence");
+        assert_eq!(
+            trusted_phase_evidence.len(),
+            REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES.len()
+        );
+        upstream_evidence.extend(trusted_phase_evidence);
+        candidate.as_object_mut().unwrap().insert(
+            TEST_TRUSTED_EVIDENCE_FIELD.to_string(),
+            serde_json::to_value(upstream_evidence).unwrap(),
+        );
+    }
+
+    fn test_input_and_trusted_evidence(value: &Value) -> (Value, Vec<GpuHmrProofEvidenceRef>) {
+        fn extract(value: &mut Value, trusted_evidence: &mut Vec<GpuHmrProofEvidenceRef>) {
+            match value {
+                Value::Array(items) => {
+                    for item in items {
+                        extract(item, trusted_evidence);
+                    }
+                }
+                Value::Object(object) => {
+                    if let Some(records) = object.remove(TEST_TRUSTED_EVIDENCE_FIELD) {
+                        trusted_evidence.extend(
+                            serde_json::from_value::<Vec<GpuHmrProofEvidenceRef>>(records)
+                                .expect("test trusted evidence must deserialize"),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut input = value.clone();
+        let mut trusted_evidence = Vec::new();
+        extract(&mut input, &mut trusted_evidence);
+        let trusted_evidence = trusted_evidence
+            .into_iter()
+            .map(|record| (record.evidence_id.clone(), record))
+            .collect::<BTreeMap<_, _>>()
+            .into_values()
+            .collect();
+        (input, trusted_evidence)
+    }
+
+    fn verify_fission_candidates(value: &Value) -> Value {
+        let (input, trusted_evidence) = test_input_and_trusted_evidence(value);
+        super::verify_fission_candidates_with_evidence(
+            &input,
+            &trusted_evidence,
+            test_producer_context(),
+        )
+    }
+
+    fn verify_with_test_evidence(
+        candidate: &Value,
+        trusted_evidence: &[GpuHmrProofEvidenceRef],
+    ) -> Value {
+        super::verify_fission_candidates_with_evidence(
+            candidate,
+            trusted_evidence,
+            test_producer_context(),
+        )
+    }
+
+    fn verify_fission_candidate(candidate: &Value) -> Value {
+        verify_fission_candidates(candidate)
+            .get("candidates")
+            .and_then(Value::as_array)
+            .and_then(|reports| reports.first())
+            .cloned()
+            .expect("test candidate verification must produce one report")
+    }
+
+    fn restore_category_upstream_evidence_ids(
+        candidate: &mut Value,
+        trusted_evidence: &[GpuHmrProofEvidenceRef],
+    ) {
+        for category in REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES {
+            let upstream_ids = category_source_evidence_ids(candidate, category.name)
+                .iter()
+                .filter_map(|phase_id| {
+                    trusted_evidence
+                        .iter()
+                        .find(|record| record.evidence_id == *phase_id)
+                        .and_then(|record| record.metadata.as_ref())
+                        .and_then(phase_source_upstream_evidence_ids)
+                })
+                .flatten()
+                .collect::<BTreeSet<_>>();
+            let object = candidate.as_object_mut().unwrap();
+            for field in category.fields {
+                object.remove(*field);
+            }
+            object.insert(
+                category.fields[0].to_string(),
+                json!(upstream_ids.into_iter().collect::<Vec<_>>()),
+            );
+        }
+    }
+
     fn valid_candidate() -> Value {
         let artifact_digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        json!({
+        let source_evidence_id = format!("evidence:test-observation:{}", "b".repeat(64));
+        let mut candidate = json!({
             "islandId": "island:sha256:1",
             "sourceEditId": "edit:1",
             "selectedArtifactId": format!("artifact:sha256:{artifact_digest}"),
@@ -2522,7 +4186,7 @@ mod tests {
                 "sourcePaths": ["src/device.kernel"],
                 "targetSymbols": ["step"]
             },
-            "generatedTopologyEvidenceIds": ["evidence:generated-topology"],
+            "generatedTopologyEvidenceIds": [source_evidence_id.clone()],
             "targetSymbols": ["step"],
             "exportedSymbolsExpected": ["step", "helper"],
             "artifactKind": "device_partial",
@@ -2543,23 +4207,25 @@ mod tests {
                 "sessionIdSource": "runtime-session",
                 "artifactIdSource": "selected-artifact"
             },
-            "sourceMappingEvidenceIds": ["evidence:source-map"],
-            "includeClosureEvidenceIds": ["evidence:include-closure"],
-            "symbolOwnershipEvidenceIds": ["evidence:symbol-ownership"],
-            "dependencyClosureEvidenceIds": ["evidence:dependency-closure"],
-            "abiMembraneEvidenceIds": ["evidence:abi-membrane"],
-            "compileRecipeEvidenceIds": ["evidence:compile-recipe"],
-            "loaderCapabilityEvidenceIds": ["evidence:loader-capability"],
-            "outputOracleEvidenceIds": ["evidence:output-oracle"],
-            "verifierEvidenceIds": ["evidence:source-map"],
+            "sourceMappingEvidenceIds": [source_evidence_id.clone()],
+            "includeClosureEvidenceIds": [source_evidence_id.clone()],
+            "symbolOwnershipEvidenceIds": [source_evidence_id.clone()],
+            "dependencyClosureEvidenceIds": [source_evidence_id.clone()],
+            "abiMembraneEvidenceIds": [source_evidence_id.clone()],
+            "compileRecipeEvidenceIds": [source_evidence_id.clone()],
+            "loaderCapabilityEvidenceIds": [source_evidence_id.clone()],
+            "outputOracleEvidenceIds": [source_evidence_id.clone()],
+            "verifierEvidenceIds": [source_evidence_id.clone()],
             "narrowerCandidateRejections": [
                 {
                     "scopeRank": 0,
                     "reasonCode": "fission.edit_crosses_body_boundary",
-                    "verifierEvidenceIds": ["evidence:source-map"]
+                    "verifierEvidenceIds": [source_evidence_id]
                 }
             ],
-        })
+        });
+        refresh_content_bound_evidence(&mut candidate);
+        candidate
     }
 
     fn valid_attachment_contract() -> Value {
@@ -2623,6 +4289,472 @@ mod tests {
     }
 
     #[test]
+    fn public_aggregate_rejects_externally_supplied_self_consistent_evidence() {
+        let (candidate, _) = test_input_and_trusted_evidence(&valid_candidate());
+
+        let report = super::verify_fission_candidates(&json!([candidate]));
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["acceptedCount"], 0);
+        assert_eq!(
+            report["candidates"][0]["verificationEvidenceCoverage"]["missingCategories"],
+            json!([
+                "source_mapping",
+                "include_closure",
+                "symbol_ownership",
+                "dependency_closure",
+                "abi_membrane",
+                "compile_recipe",
+                "loader_capability",
+                "output_oracle"
+            ])
+        );
+        assert_eq!(
+            report["candidates"][0]["invalidContentBoundVerifierEvidenceRecordCount"],
+            REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES.len()
+        );
+    }
+
+    #[test]
+    fn trusted_aggregate_accepts_valid_current_run_registry() {
+        let (candidate, trusted_evidence) = test_input_and_trusted_evidence(&valid_candidate());
+
+        let report = verify_with_test_evidence(&candidate, &trusted_evidence);
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(report["acceptedCount"], 1);
+        assert_eq!(
+            report["candidates"][0]["verificationEvidenceCoverage"]["missingCategories"],
+            json!([])
+        );
+    }
+
+    #[test]
+    fn producer_rejects_partially_malformed_category_evidence() {
+        let (mut candidate, trusted_evidence) = test_input_and_trusted_evidence(&valid_candidate());
+        let evidence_id = candidate["sourceMappingEvidenceIds"][0]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let padded_evidence_id = format!(" {evidence_id}");
+        candidate["sourceMappingEvidenceIds"] = json!([evidence_id, padded_evidence_id]);
+
+        let result = produce_fission_phase_source_evidence(
+            &mut candidate,
+            &trusted_evidence,
+            test_producer_context(),
+        );
+
+        assert_eq!(
+            result,
+            Err("fission category evidence declaration must contain unique canonical ids")
+        );
+    }
+
+    #[test]
+    fn producer_rejects_every_ordered_cross_category_record_reuse() {
+        let (mut base_candidate, trusted_evidence) =
+            test_input_and_trusted_evidence(&valid_candidate());
+        restore_category_upstream_evidence_ids(&mut base_candidate, &trusted_evidence);
+
+        for source_category in REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES {
+            let source_evidence_id =
+                category_source_evidence_ids(&base_candidate, source_category.name)
+                    .into_iter()
+                    .next()
+                    .unwrap();
+            for destination_category in REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES {
+                if source_category.name == destination_category.name {
+                    continue;
+                }
+                let mut candidate = base_candidate.clone();
+                let object = candidate.as_object_mut().unwrap();
+                for field in destination_category.fields {
+                    object.remove(*field);
+                }
+                object.insert(
+                    destination_category.fields[0].to_string(),
+                    json!([source_evidence_id.clone()]),
+                );
+
+                let result = produce_fission_phase_source_evidence(
+                    &mut candidate,
+                    &trusted_evidence,
+                    test_producer_context(),
+                );
+
+                assert_eq!(
+                    result,
+                    Err("fission phase evidence could not join current-run upstream evidence"),
+                    "{} evidence must not satisfy {}",
+                    source_category.name,
+                    destination_category.name,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn producer_rejects_content_hash_that_does_not_match_evidence_id_or_metadata() {
+        let (mut candidate, mut trusted_evidence) =
+            test_input_and_trusted_evidence(&valid_candidate());
+        restore_category_upstream_evidence_ids(&mut candidate, &trusted_evidence);
+        let source_mapping_evidence_id = candidate["sourceMappingEvidenceIds"][0]
+            .as_str()
+            .unwrap()
+            .to_string();
+        trusted_evidence
+            .iter_mut()
+            .find(|record| record.evidence_id == source_mapping_evidence_id)
+            .unwrap()
+            .content_hash = format!("sha256:{}", "d".repeat(64));
+
+        let result = produce_fission_phase_source_evidence(
+            &mut candidate,
+            &trusted_evidence,
+            test_producer_context(),
+        );
+
+        assert_eq!(
+            result,
+            Err("fission phase evidence could not join current-run upstream evidence")
+        );
+    }
+
+    #[test]
+    fn producer_rejects_content_consistent_record_with_wrong_id_descriptor() {
+        let (mut candidate, mut trusted_evidence) =
+            test_input_and_trusted_evidence(&valid_candidate());
+        restore_category_upstream_evidence_ids(&mut candidate, &trusted_evidence);
+        let original_evidence_id = candidate["sourceMappingEvidenceIds"][0]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let record = trusted_evidence
+            .iter_mut()
+            .find(|record| record.evidence_id == original_evidence_id)
+            .unwrap();
+        let digest = record.content_hash.strip_prefix("sha256:").unwrap();
+        record.evidence_id = format!("evidence:unrelated-category:{digest}");
+        candidate["sourceMappingEvidenceIds"] = json!([record.evidence_id.clone()]);
+
+        let result = produce_fission_phase_source_evidence(
+            &mut candidate,
+            &trusted_evidence,
+            test_producer_context(),
+        );
+
+        assert_eq!(
+            result,
+            Err("fission phase evidence could not join current-run upstream evidence")
+        );
+    }
+
+    #[test]
+    fn producer_rejects_content_consistent_oracle_record_for_another_contract() {
+        let (mut candidate, mut trusted_evidence) =
+            test_input_and_trusted_evidence(&valid_candidate());
+        restore_category_upstream_evidence_ids(&mut candidate, &trusted_evidence);
+        let original_evidence_id = candidate["outputOracleEvidenceIds"][0]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let record = trusted_evidence
+            .iter_mut()
+            .find(|record| record.evidence_id == original_evidence_id)
+            .unwrap();
+        record.metadata.as_mut().unwrap()["oracleSubject"]["requiredOracleId"] =
+            json!("oracle:different-contract");
+        let content_hash = sha256_json_value(record.metadata.as_ref().unwrap());
+        let digest = content_hash.strip_prefix("sha256:").unwrap();
+        record.evidence_id = format!("evidence:test-fission-output-oracle-contract:{digest}");
+        record.content_hash = content_hash;
+        candidate["outputOracleEvidenceIds"] = json!([record.evidence_id]);
+
+        let result = produce_fission_phase_source_evidence(
+            &mut candidate,
+            &trusted_evidence,
+            test_producer_context(),
+        );
+
+        assert_eq!(
+            result,
+            Err("fission phase evidence could not join current-run upstream evidence")
+        );
+    }
+
+    #[test]
+    fn trusted_aggregate_rejects_registry_replayed_into_another_session() {
+        let (candidate, trusted_evidence) = test_input_and_trusted_evidence(&valid_candidate());
+        let context = FissionEvidenceProducerContext {
+            session_id: "session:replayed-run",
+            ..test_producer_context()
+        };
+
+        let report =
+            super::verify_fission_candidates_with_evidence(&candidate, &trusted_evidence, context);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(
+            report["candidates"][0]["verificationEvidenceCoverage"]["missingCategories"],
+            json!([
+                "source_mapping",
+                "include_closure",
+                "symbol_ownership",
+                "dependency_closure",
+                "abi_membrane",
+                "compile_recipe",
+                "loader_capability",
+                "output_oracle"
+            ])
+        );
+    }
+
+    #[test]
+    fn trusted_aggregate_rejects_registry_replayed_for_another_artifact() {
+        let (candidate, trusted_evidence) = test_input_and_trusted_evidence(&valid_candidate());
+        let context = FissionEvidenceProducerContext {
+            selected_artifact_id:
+                "artifact:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            ..test_producer_context()
+        };
+
+        let report =
+            super::verify_fission_candidates_with_evidence(&candidate, &trusted_evidence, context);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["acceptedCount"], 0);
+    }
+
+    #[test]
+    fn trusted_aggregate_rejects_registry_replayed_for_another_edit() {
+        let (mut candidate, trusted_evidence) = test_input_and_trusted_evidence(&valid_candidate());
+        candidate["sourceEditId"] = json!("edit:replayed");
+        let context = FissionEvidenceProducerContext {
+            source_edit_id: "edit:replayed",
+            ..test_producer_context()
+        };
+
+        let report =
+            super::verify_fission_candidates_with_evidence(&candidate, &trusted_evidence, context);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["acceptedCount"], 0);
+    }
+
+    #[test]
+    fn producer_rejects_cross_edit_upstream_evidence_rewrap() {
+        let (mut candidate, trusted_evidence) = test_input_and_trusted_evidence(&valid_candidate());
+        restore_category_upstream_evidence_ids(&mut candidate, &trusted_evidence);
+        candidate["sourceEditId"] = json!("edit:replayed");
+        let context = FissionEvidenceProducerContext {
+            source_edit_id: "edit:replayed",
+            ..test_producer_context()
+        };
+
+        let result =
+            produce_fission_phase_source_evidence(&mut candidate, &trusted_evidence, context);
+
+        assert_eq!(
+            result,
+            Err("fission phase evidence could not join current-run upstream evidence")
+        );
+    }
+
+    #[test]
+    fn trusted_aggregate_rejects_upstream_record_from_another_timestamp() {
+        let (candidate, mut trusted_evidence) = test_input_and_trusted_evidence(&valid_candidate());
+        let upstream_evidence_id = candidate["verifierEvidenceRecords"][0]
+            ["trustedSourceRecordProjection"]["metadata"]["upstreamEvidenceIds"][0]
+            .as_str()
+            .unwrap()
+            .to_string();
+        trusted_evidence
+            .iter_mut()
+            .find(|record| record.evidence_id == upstream_evidence_id)
+            .unwrap()
+            .timestamp = "2026-07-16T12:00:01Z".to_string();
+
+        let report = verify_with_test_evidence(&candidate, &trusted_evidence);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["acceptedCount"], 0);
+    }
+
+    #[test]
+    fn trusted_aggregate_rejects_artifact_unbound_upstream_record() {
+        let (candidate, mut trusted_evidence) = test_input_and_trusted_evidence(&valid_candidate());
+        let upstream_evidence_id = candidate["verifierEvidenceRecords"][0]
+            ["trustedSourceRecordProjection"]["metadata"]["upstreamEvidenceIds"][0]
+            .as_str()
+            .unwrap()
+            .to_string();
+        trusted_evidence
+            .iter_mut()
+            .find(|record| record.evidence_id == upstream_evidence_id)
+            .unwrap()
+            .artifact_uri = None;
+
+        let report = verify_with_test_evidence(&candidate, &trusted_evidence);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["acceptedCount"], 0);
+    }
+
+    #[test]
+    fn trusted_aggregate_rejects_missing_registry_record() {
+        let (candidate, mut trusted_evidence) = test_input_and_trusted_evidence(&valid_candidate());
+        let source_evidence_id = candidate["verifierEvidenceRecords"][0]["sourceEvidenceId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        trusted_evidence.retain(|record| record.evidence_id != source_evidence_id);
+
+        let report = verify_with_test_evidence(&candidate, &trusted_evidence);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(
+            report["candidates"][0]["verificationEvidenceCoverage"]["missingCategories"],
+            json!(["source_mapping"])
+        );
+        assert_eq!(
+            report["candidates"][0]["invalidContentBoundVerifierEvidenceRecordCount"],
+            1
+        );
+    }
+
+    #[test]
+    fn trusted_aggregate_rejects_duplicate_registry_id() {
+        let (candidate, mut trusted_evidence) = test_input_and_trusted_evidence(&valid_candidate());
+        let source_evidence_id = candidate["verifierEvidenceRecords"][0]["sourceEvidenceId"]
+            .as_str()
+            .unwrap();
+        let duplicate = trusted_evidence
+            .iter()
+            .find(|record| record.evidence_id == source_evidence_id)
+            .unwrap()
+            .clone();
+        trusted_evidence.push(duplicate);
+
+        let report = verify_with_test_evidence(&candidate, &trusted_evidence);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(
+            report["candidates"][0]["verificationEvidenceCoverage"]["missingCategories"],
+            json!(["source_mapping"])
+        );
+    }
+
+    #[test]
+    fn trusted_aggregate_rejects_mutated_registry_record() {
+        let (candidate, mut trusted_evidence) = test_input_and_trusted_evidence(&valid_candidate());
+        let source_evidence_id = candidate["verifierEvidenceRecords"][0]["sourceEvidenceId"]
+            .as_str()
+            .unwrap();
+        trusted_evidence
+            .iter_mut()
+            .find(|record| record.evidence_id == source_evidence_id)
+            .unwrap()
+            .summary
+            .push_str(" mutated");
+
+        let report = verify_with_test_evidence(&candidate, &trusted_evidence);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(
+            report["candidates"][0]["verificationEvidenceCoverage"]["missingCategories"],
+            json!(["source_mapping"])
+        );
+    }
+
+    #[test]
+    fn trusted_aggregate_rejects_wrong_category_and_authority_claim() {
+        let (candidate, mut trusted_evidence) = test_input_and_trusted_evidence(&valid_candidate());
+        let source_evidence_id = candidate["verifierEvidenceRecords"][0]["sourceEvidenceId"]
+            .as_str()
+            .unwrap();
+        let record = trusted_evidence
+            .iter_mut()
+            .find(|record| record.evidence_id == source_evidence_id)
+            .unwrap();
+        record.metadata.as_mut().unwrap()["category"] = json!("compile_recipe");
+        record.metadata.as_mut().unwrap()["acceptedForGpuHmr"] = json!(true);
+
+        let report = verify_with_test_evidence(&candidate, &trusted_evidence);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(
+            report["candidates"][0]["verificationEvidenceCoverage"]["missingCategories"],
+            json!(["source_mapping"])
+        );
+    }
+
+    #[test]
+    fn trusted_aggregate_rejects_ambiguous_duplicate_verifier_records() {
+        let (mut candidate, trusted_evidence) = test_input_and_trusted_evidence(&valid_candidate());
+        let duplicate = candidate["verifierEvidenceRecords"][0].clone();
+        candidate["verifierEvidenceRecords"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+
+        let report = verify_with_test_evidence(&candidate, &trusted_evidence);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(
+            report["candidates"][0]["verificationEvidenceCoverage"]["missingCategories"],
+            json!(["source_mapping"])
+        );
+        assert_eq!(
+            report["candidates"][0]["invalidContentBoundVerifierEvidenceRecordCount"],
+            2
+        );
+    }
+
+    #[test]
+    fn phase_source_records_alone_cannot_satisfy_verifier_acceptance() {
+        let (mut candidate, trusted_evidence) = test_input_and_trusted_evidence(&valid_candidate());
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("verifierEvidenceRecords");
+        candidate["verifierEvidenceIds"] = json!(trusted_evidence
+            .iter()
+            .map(|record| record.evidence_id.clone())
+            .collect::<Vec<_>>());
+
+        let report = verify_with_test_evidence(&candidate, &trusted_evidence);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(
+            report["candidates"][0]["verificationEvidenceCoverage"]["missingCategories"],
+            json!([
+                "source_mapping",
+                "include_closure",
+                "symbol_ownership",
+                "dependency_closure",
+                "abi_membrane",
+                "compile_recipe",
+                "loader_capability",
+                "output_oracle"
+            ])
+        );
+    }
+
+    #[test]
+    fn renaming_unbound_project_fixture_and_label_fields_preserves_verdict() {
+        let (mut candidate, trusted_evidence) = test_input_and_trusted_evidence(&valid_candidate());
+        candidate["project"] = json!("renamed-project");
+        candidate["fixture"] = json!("renamed-fixture");
+        candidate["label"] = json!("renamed-label");
+
+        let report = verify_with_test_evidence(&candidate, &trusted_evidence);
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(report["acceptedCount"], 1);
+    }
+
+    #[test]
     fn accepts_target_symbol_exported_through_evidenced_identity_mapping() {
         let mut candidate = valid_candidate();
         candidate["targetSymbols"] = json!(["step"]);
@@ -2638,6 +4770,7 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("safeExportSupersetReason");
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -2728,7 +4861,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_phase_evidence_from_tagged_verifier_ids() {
+    fn rejects_phase_evidence_from_tagged_free_form_ids() {
         let mut candidate = valid_candidate();
         for field in [
             "sourceMappingEvidenceIds",
@@ -2755,11 +4888,66 @@ mod tests {
 
         let report = verify_fission_candidate(&candidate);
 
-        assert_eq!(report["status"], "pass");
+        assert_eq!(report["status"], "reject");
         assert_eq!(
             report["verificationEvidenceCoverage"]["missingCategories"],
-            json!([])
+            json!([
+                "source_mapping",
+                "include_closure",
+                "symbol_ownership",
+                "dependency_closure",
+                "abi_membrane",
+                "compile_recipe",
+                "loader_capability",
+                "output_oracle"
+            ])
         );
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.deterministic_verifier_evidence_missing"));
+    }
+
+    #[test]
+    fn rejects_content_bound_phase_evidence_after_subject_mutation() {
+        let mut candidate = valid_candidate();
+        candidate["compileCommandHash"] =
+            json!("sha256:4444444444444444444444444444444444444444444444444444444444444444");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["invalidContentBoundVerifierEvidenceRecordCount"], 3);
+        assert_eq!(
+            report["verificationEvidenceCoverage"]["missingCategories"],
+            json!(["include_closure", "dependency_closure", "compile_recipe"])
+        );
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.verifier_evidence_record_invalid"));
+    }
+
+    #[test]
+    fn rejects_content_bound_phase_evidence_with_forged_category_binding() {
+        let mut candidate = valid_candidate();
+        candidate["verifierEvidenceRecords"][0]["category"] = json!("compile_recipe");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["invalidContentBoundVerifierEvidenceRecordCount"], 1);
+        assert_eq!(
+            report["verificationEvidenceCoverage"]["missingCategories"],
+            json!(["source_mapping"])
+        );
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.verifier_evidence_record_invalid"));
     }
 
     #[test]
@@ -2849,6 +5037,7 @@ mod tests {
             "selectedArtifactId": format!("artifact:sha256:{digest}"),
             "contentHash": format!("sha256:{digest}")
         });
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -3022,14 +5211,51 @@ mod tests {
         let report = verify_fission_candidate(&candidate);
 
         assert_eq!(report["status"], "reject");
-        assert_eq!(report["outputOracleContract"]["requiredOracleId"], "oracle:sentinel");
+        assert_eq!(
+            report["outputOracleContract"]["requiredOracleId"],
+            "oracle:sentinel"
+        );
         assert_eq!(report["outputOracleContract"]["proposalPresent"], false);
-        assert_eq!(report["outputOracleContract"]["resolvedContractPresent"], false);
+        assert_eq!(
+            report["outputOracleContract"]["resolvedContractPresent"],
+            false
+        );
         assert!(report["reasonCodes"]
             .as_array()
             .unwrap()
             .iter()
             .any(|code| code == "fission.output_oracle_missing"));
+    }
+
+    #[test]
+    fn rejects_multiple_resolved_output_oracle_aliases_even_when_equal() {
+        let mut candidate = valid_candidate();
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("outputOracleProposal");
+        let contract = json!({
+            "kind": "buffer_checksum",
+            "oracleId": "oracle:sentinel",
+            "expectedHash": format!("sha256:{}", "6".repeat(64)),
+            "producer": "deterministic_probe",
+            "outputTargetId": "buffer:sentinel",
+            "readbackPlan": {"syncPoint": "after-dispatch"},
+            "runtimeSessionIdSource": "runtime-session",
+            "artifactIdSource": "selected-artifact"
+        });
+        candidate["outputOracleContract"] = contract.clone();
+        candidate["resolved_output_oracle_contract"] = contract;
+        refresh_content_bound_evidence(&mut candidate);
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.output_oracle_alias_conflict"));
     }
 
     #[test]
@@ -3056,6 +5282,7 @@ mod tests {
                 "producer": "validation-capture"
             }
         });
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -3102,6 +5329,7 @@ mod tests {
             "sessionIdSource": "runtime-session",
             "artifactIdSource": "selected-artifact"
         });
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -3147,6 +5375,7 @@ mod tests {
             },
             "artifact_id": "artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         });
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -3185,6 +5414,7 @@ mod tests {
             "artifactId": "artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "visual_ref": "validation-screenshot:fresh-frame"
         });
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -3866,6 +6096,7 @@ mod tests {
         candidate["sourcePaths"] = json!(["src/device.kernel"]);
         candidate["sourceSpans"] =
             json!([{"path": ".\\src\\device.kernel", "startLine": 10, "endLine": 12}]);
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -3914,6 +6145,7 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("narrowerCandidateRejections");
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -3967,6 +6199,7 @@ mod tests {
             "include/math.h",
             {"path": ".\\include\\device.h"}
         ]);
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -4023,6 +6256,7 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("narrowerCandidateRejections");
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -4138,6 +6372,7 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("narrowerCandidateRejections");
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -4156,6 +6391,7 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("safeExportSupersetReason");
+        refresh_content_bound_evidence(&mut candidate);
 
         let report = verify_fission_candidate(&candidate);
 
@@ -4166,6 +6402,10 @@ mod tests {
     #[test]
     fn rejects_ai_only_verifier_evidence_ids() {
         let mut candidate = valid_candidate();
+        candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("verifierEvidenceRecords");
         candidate["verifierEvidenceIds"] = json!(["ai:fission:proposal", "llm:reasoning"]);
         candidate["aiProposalId"] = json!("ai:fission:proposal");
 
@@ -4217,10 +6457,16 @@ mod tests {
             report["aiProposalDeterministicPromotionEvidenceIds"],
             json!(["evidence:fission-promotion"])
         );
+        let deterministic_ids = report["deterministicVerifierEvidenceIds"]
+            .as_array()
+            .unwrap();
         assert_eq!(
-            report["deterministicVerifierEvidenceIds"],
-            json!(["evidence:source-map"])
+            deterministic_ids.len(),
+            REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES.len()
         );
+        assert!(deterministic_ids.iter().all(|id| id
+            .as_str()
+            .is_some_and(|id| id.starts_with("fission-evidence:"))));
     }
 
     #[test]
@@ -4273,6 +6519,7 @@ mod tests {
                 "verifierEvidenceIds": ["evidence:symbol-ownership"]
             }
         ]);
+        refresh_content_bound_evidence(&mut wide);
 
         let mut narrow = valid_candidate();
         narrow["islandId"] = json!("island:narrow");
@@ -4281,6 +6528,7 @@ mod tests {
         narrow["sourceSpans"] = json!([{"path": "src/a.device", "startLine": 20, "endLine": 24}]);
         narrow["targetSymbols"] = json!(["shade"]);
         narrow["exportedSymbolsExpected"] = json!(["shade"]);
+        refresh_content_bound_evidence(&mut narrow);
 
         let report = verify_fission_candidates(&json!([wide, narrow]));
 

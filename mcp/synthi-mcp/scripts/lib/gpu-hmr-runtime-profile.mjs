@@ -80,12 +80,215 @@ function optionalStringMap(value, field) {
   return out;
 }
 
+function optionalObject(value, field) {
+  if (value === undefined || value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`runtime profile ${field} must be an object`);
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
+function optionalObjectList(value, field) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`runtime profile ${field} must be an array of objects`);
+  }
+  return value.map((item, index) => {
+    const normalized = optionalObject(item, `${field}[${index}]`);
+    if (!normalized) {
+      throw new Error(`runtime profile ${field}[${index}] must be an object`);
+    }
+    return normalized;
+  });
+}
+
 function optionalBoolean(value, field) {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'boolean') {
     throw new Error(`runtime profile ${field} must be a boolean`);
   }
   return value;
+}
+
+function optionalEnum(value, field, accepted) {
+  const normalized = optionalString(value, field);
+  if (normalized === null) return null;
+  const lower = normalized.toLowerCase();
+  if (!accepted.includes(lower)) {
+    throw new Error(`runtime profile ${field} must be one of ${accepted.join(', ')}`);
+  }
+  return lower;
+}
+
+function normalizeRunMode(value) {
+  if (value === undefined || value === null) {
+    return {
+      metricScope: null,
+      cacheState: null,
+      editKind: null,
+      differentEdit: null,
+    };
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('runtime profile runMode must be an object');
+  }
+  return {
+    metricScope: optionalEnum(value.metricScope ?? value.metric_scope, 'runMode.metricScope', [
+      'cold',
+      'warm',
+      'hot_delta_1',
+      'hot_delta_2',
+    ]),
+    cacheState: optionalEnum(value.cacheState ?? value.cache_state, 'runMode.cacheState', [
+      'clean',
+      'compiler_cache_warm',
+      'pipeline_cache_warm',
+    ]),
+    editKind: optionalString(value.editKind ?? value.edit_kind, 'runMode.editKind'),
+    differentEdit: optionalBoolean(value.differentEdit ?? value.different_edit, 'runMode.differentEdit'),
+  };
+}
+
+function normalizeNegativeEdit(value, sourceFile) {
+  if (value === undefined || value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('runtime profile negativeEdit must be an object');
+  }
+  const source = value.source && typeof value.source === 'object' && !Array.isArray(value.source)
+    ? value.source
+    : {};
+  const before = nonEmptyString(value.before ?? source.before, 'negativeEdit.before');
+  const after = nonEmptyString(value.after ?? source.after, 'negativeEdit.after');
+  if (before === after) {
+    throw new Error('runtime profile negativeEdit.before and negativeEdit.after must differ');
+  }
+  const reasons = optionalStringList(value.reasons ?? value.unsupportedReasons, 'negativeEdit.reasons');
+  if (reasons.length === 0) {
+    throw new Error('runtime profile negativeEdit.reasons must contain at least one reason');
+  }
+  return {
+    source: {
+      file: optionalString(source.file ?? source.path ?? value.sourceFile, 'negativeEdit.source.file')
+        ?.replace(/\\/g, '/')
+        ?? sourceFile,
+      before,
+      after,
+    },
+    reasons,
+    unsupportedReasons: reasons,
+    abiCompatibilityClass: optionalEnum(
+      value.abiCompatibilityClass ?? value.abi_compatibility_class,
+      'negativeEdit.abiCompatibilityClass',
+      ['layout_changed', 'unknown', 'incompatible'],
+    ) ?? 'layout_changed',
+  };
+}
+
+function normalizeRuntimeSourceTree(value) {
+  if (value === undefined || value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('runtime profile runtime.sourceTree must be an object');
+  }
+  const sourceKind = optionalEnum(
+    value.sourceKind ?? value.source_kind ?? value.kind,
+    'runtime.sourceTree.sourceKind',
+    ['git', 'local_git', 'archive', 'workspace'],
+  ) ?? 'git';
+  return {
+    sourceKind,
+    source_kind: sourceKind,
+    repoUrl: optionalString(value.repoUrl ?? value.repo_url ?? value.url, 'runtime.sourceTree.repoUrl'),
+    repo_url: optionalString(value.repoUrl ?? value.repo_url ?? value.url, 'runtime.sourceTree.repoUrl'),
+    repoName: optionalString(value.repoName ?? value.repo_name ?? value.name, 'runtime.sourceTree.repoName'),
+    repo_name: optionalString(value.repoName ?? value.repo_name ?? value.name, 'runtime.sourceTree.repoName'),
+    commit: optionalString(
+      value.commit ?? value.immutableCommit ?? value.immutable_commit,
+      'runtime.sourceTree.commit',
+    ),
+    hostPath: optionalString(value.hostPath ?? value.host_path ?? value.path, 'runtime.sourceTree.hostPath')
+      ?.replace(/\\/g, '/') ?? null,
+    host_path: optionalString(value.hostPath ?? value.host_path ?? value.path, 'runtime.sourceTree.hostPath')
+      ?.replace(/\\/g, '/') ?? null,
+    workerPath: optionalString(
+      value.workerPath ?? value.worker_path,
+      'runtime.sourceTree.workerPath',
+    )?.replace(/\\/g, '/') ?? null,
+    worker_path: optionalString(
+      value.workerPath ?? value.worker_path,
+      'runtime.sourceTree.workerPath',
+    )?.replace(/\\/g, '/') ?? null,
+    manifestHash: optionalString(
+      value.manifestHash ?? value.manifest_hash,
+      'runtime.sourceTree.manifestHash',
+    ),
+    manifest_hash: optionalString(
+      value.manifestHash ?? value.manifest_hash,
+      'runtime.sourceTree.manifestHash',
+    ),
+    proofAuthority: optionalString(
+      value.proofAuthority ?? value.proof_authority,
+      'runtime.sourceTree.proofAuthority',
+    ) ?? 'runtime_source_tree_prerequisite_only_not_gpu_hmr_success',
+    proof_authority: optionalString(
+      value.proofAuthority ?? value.proof_authority,
+      'runtime.sourceTree.proofAuthority',
+    ) ?? 'runtime_source_tree_prerequisite_only_not_gpu_hmr_success',
+  };
+}
+
+function normalizeRequiredAssets(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error('runtime profile runtime.requiredAssets must be an array');
+  }
+  return value.map((item, index) => {
+    if (typeof item === 'string') {
+      const file = nonEmptyString(item, `runtime.requiredAssets[${index}]`).replace(/\\/g, '/');
+      return {
+        file,
+        path: file,
+        role: 'runtime_input',
+        required: true,
+      };
+    }
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error(`runtime profile runtime.requiredAssets[${index}] must be a string or object`);
+    }
+    const file = nonEmptyString(
+      item.file ?? item.path ?? item.relativePath ?? item.relative_path,
+      `runtime.requiredAssets[${index}].path`,
+    ).replace(/\\/g, '/');
+    return {
+      file,
+      path: file,
+      role: optionalString(item.role, `runtime.requiredAssets[${index}].role`) ?? 'runtime_input',
+      mediaType: optionalString(
+        item.mediaType ?? item.media_type,
+        `runtime.requiredAssets[${index}].mediaType`,
+      ),
+      media_type: optionalString(
+        item.mediaType ?? item.media_type,
+        `runtime.requiredAssets[${index}].mediaType`,
+      ),
+      contentHash: optionalString(
+        item.contentHash ?? item.content_hash ?? item.sha256,
+        `runtime.requiredAssets[${index}].contentHash`,
+      ),
+      content_hash: optionalString(
+        item.contentHash ?? item.content_hash ?? item.sha256,
+        `runtime.requiredAssets[${index}].contentHash`,
+      ),
+      casManifest: optionalString(
+        item.casManifest ?? item.cas_manifest,
+        `runtime.requiredAssets[${index}].casManifest`,
+      ),
+      cas_manifest: optionalString(
+        item.casManifest ?? item.cas_manifest,
+        `runtime.requiredAssets[${index}].casManifest`,
+      ),
+      required: item.required === false ? false : true,
+    };
+  });
 }
 
 function normalizeDeterministicVisualMode(value) {
@@ -167,6 +370,25 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
   const visual = raw.visualProof && typeof raw.visualProof === 'object' ? raw.visualProof : {};
   const build = raw.build && typeof raw.build === 'object' ? raw.build : {};
 
+  const adapterAuthorityKeys = [
+    'acceptedForGpuHmr',
+    'accepted_for_gpu_hmr',
+    'gpuHmrSuccess',
+    'gpu_hmr_success',
+    'canSatisfyRuntimeProof',
+    'can_satisfy_runtime_proof',
+    'canSatisfyDispatchProof',
+    'can_satisfy_dispatch_proof',
+  ];
+  for (const key of adapterAuthorityKeys) {
+    if (Object.hasOwn(adapter, key) && typeof adapter[key] !== 'boolean') {
+      throw new Error(`runtime profile adapter.${key} must be boolean when declared`);
+    }
+  }
+  if (adapterAuthorityKeys.some((key) => adapter[key] === true)) {
+    throw new Error('runtime profile adapter must not claim GPU HMR authority');
+  }
+
   const id = nonEmptyString(pick(raw.id, opts.defaultId, 'custom-runtime-profile'), 'id');
   const adapterFamily = nonEmptyString(
     pick(adapter.family, raw.adapterFamily, opts.defaultAdapterFamily, 'hiprt-path-tracer'),
@@ -176,6 +398,17 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
     pick(adapter.proofRunner, raw.proofRunner, opts.defaultProofRunner, 'hiprt-warm-visual'),
     'adapter.proofRunner',
   ).toLowerCase();
+  const runnerKind = optionalString(adapter.runnerKind, 'adapter.runnerKind')?.toLowerCase() ?? null;
+  const runtimeBoundaryAdapterProfile =
+    proofRunner === 'runtime-boundary-proof-adapter'
+    || runnerKind === 'runtime-boundary-proof-adapter';
+  const visualProofDeclared = Object.keys(visual).length > 0 || [
+    raw.claim,
+    raw.width,
+    raw.height,
+    raw.minChangedPixelRatio,
+    raw.minMeanAbsDelta8bit,
+  ].some((value) => value !== undefined && value !== null);
   const targetName = nonEmptyString(
     pick(runtime.targetName, raw.targetName, opts.defaultTargetName),
     'runtime.targetName',
@@ -184,24 +417,46 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
     pick(source.file, source.path, raw.sourceRel, raw.sourceFile),
     'source.file',
   ).replace(/\\/g, '/');
-  const before = nonEmptyString(pick(source.before, raw.before), 'source.before');
-  const after = nonEmptyString(pick(source.after, raw.after), 'source.after');
-  if (before === after) {
+  const before = runtimeBoundaryAdapterProfile
+    ? optionalString(pick(source.before, raw.before), 'source.before')
+    : nonEmptyString(pick(source.before, raw.before), 'source.before');
+  const after = runtimeBoundaryAdapterProfile
+    ? optionalString(pick(source.after, raw.after), 'source.after')
+    : nonEmptyString(pick(source.after, raw.after), 'source.after');
+  if ((before === null) !== (after === null)) {
+    throw new Error('runtime profile source.before and source.after must both be present or both be absent');
+  }
+  if (before !== null && before === after) {
     throw new Error('runtime profile source.before and source.after must differ');
   }
 
-  const requiredKernels = stringList(
-    pick(runtime.requiredKernels, raw.requiredKernels, opts.defaultRequiredKernels),
-    'runtime.requiredKernels',
-  );
-  const reloadKernelName = nonEmptyString(
-    pick(reload.kernelName, reload.kernel, raw.reloadKernelName),
-    'runtime.reload.kernelName',
-  );
-  const reloadKernelSymbol = nonEmptyString(
-    pick(reload.kernelSymbol, reload.symbol, raw.reloadKernelSymbol),
-    'runtime.reload.kernelSymbol',
-  );
+  const requiredKernels = runtimeBoundaryAdapterProfile
+    ? optionalStringList(
+      pick(runtime.requiredKernels, raw.requiredKernels, opts.defaultRequiredKernels),
+      'runtime.requiredKernels',
+    )
+    : stringList(
+      pick(runtime.requiredKernels, raw.requiredKernels, opts.defaultRequiredKernels),
+      'runtime.requiredKernels',
+    );
+  const reloadKernelName = runtimeBoundaryAdapterProfile
+    ? optionalString(
+      pick(reload.kernelName, reload.kernel, raw.reloadKernelName),
+      'runtime.reload.kernelName',
+    )
+    : nonEmptyString(
+      pick(reload.kernelName, reload.kernel, raw.reloadKernelName),
+      'runtime.reload.kernelName',
+    );
+  const reloadKernelSymbol = runtimeBoundaryAdapterProfile
+    ? optionalString(
+      pick(reload.kernelSymbol, reload.symbol, raw.reloadKernelSymbol),
+      'runtime.reload.kernelSymbol',
+    )
+    : nonEmptyString(
+      pick(reload.kernelSymbol, reload.symbol, raw.reloadKernelSymbol),
+      'runtime.reload.kernelSymbol',
+    );
 
   const normalized = {
     schemaVersion: raw.schemaVersion ?? GPU_HMR_RUNTIME_PROFILE_SCHEMA_VERSION,
@@ -209,7 +464,7 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
     adapter: {
       family: adapterFamily,
       proofRunner,
-      runnerKind: optionalString(adapter.runnerKind, 'adapter.runnerKind')?.toLowerCase(),
+      runnerKind,
       runnerPath: optionalString(adapter.runnerPath ?? adapter.runner, 'adapter.runnerPath')?.replace(/\\/g, '/'),
       runnerArgs: Array.isArray(adapter.runnerArgs)
         ? adapter.runnerArgs.map((item, index) => nonEmptyString(item, `adapter.runnerArgs[${index}]`))
@@ -217,10 +472,31 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
       capabilities: Array.isArray(adapter.capabilities)
         ? adapter.capabilities.map((item, index) => nonEmptyString(item, `adapter.capabilities[${index}]`))
         : [],
+      runtimeBoundaryEvents: optionalObjectList(
+        adapter.runtimeBoundaryEvents ?? adapter.runtime_boundary_events,
+        'adapter.runtimeBoundaryEvents',
+      ),
+      runtimeBoundaryEventManifestPath: optionalString(
+        adapter.runtimeBoundaryEventManifestPath
+          ?? adapter.runtime_boundary_event_manifest_path
+          ?? adapter.eventManifestPath
+          ?? adapter.event_manifest_path,
+        'adapter.runtimeBoundaryEventManifestPath',
+      )?.replace(/\\/g, '/') ?? null,
+      runtimeBoundaryAppHook: optionalObject(
+        adapter.runtimeBoundaryAppHook ?? adapter.runtime_boundary_app_hook,
+        'adapter.runtimeBoundaryAppHook',
+      ),
     },
     runtime: {
       targetName,
       workerRepoPath: optionalString(runtime.workerRepoPath ?? raw.workerRepoPath, 'runtime.workerRepoPath'),
+      sourceTree: normalizeRuntimeSourceTree(
+        runtime.sourceTree ?? runtime.source_tree ?? raw.sourceTree ?? raw.source_tree,
+      ),
+      source_tree: normalizeRuntimeSourceTree(
+        runtime.sourceTree ?? runtime.source_tree ?? raw.sourceTree ?? raw.source_tree,
+      ),
       mode: optionalString(runtime.mode ?? raw.mode, 'runtime.mode'),
       env: optionalStringMap(runtime.env, 'runtime.env'),
       requiredKernels,
@@ -235,6 +511,8 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
         ? runtime.requiredFiles.map((item, index) =>
           nonEmptyString(item, `runtime.requiredFiles[${index}]`).replace(/\\/g, '/'))
         : [],
+      requiredAssets: normalizeRequiredAssets(runtime.requiredAssets ?? runtime.required_assets),
+      required_assets: normalizeRequiredAssets(runtime.requiredAssets ?? runtime.required_assets),
       backend: {
         orochiApi: optionalString(
           backend.orochiApi ?? runtime.orochiApi ?? raw.orochiApi,
@@ -247,7 +525,7 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
       before,
       after,
     },
-    visualProof: {
+    visualProof: runtimeBoundaryAdapterProfile && !visualProofDeclared ? null : {
       claim: nonEmptyString(
         pick(visual.claim, raw.claim, 'A runtime source delta materially changes the visual output.'),
         'visualProof.claim',
@@ -272,6 +550,8 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
     deterministicVisualMode: normalizeDeterministicVisualMode(
       raw.deterministicVisualMode ?? visual.deterministicVisualMode,
     ),
+    runMode: normalizeRunMode(raw.runMode ?? runtime.runMode ?? visual.runMode),
+    negativeEdit: normalizeNegativeEdit(raw.negativeEdit ?? runtime.negativeEdit, sourceFile),
     proof: {
       requireStrictProvenance: raw.proof && typeof raw.proof === 'object'
         ? raw.proof.requireStrictProvenance !== false
@@ -291,6 +571,12 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
 
 export function runtimeProfileToLegacyHiprtWarmProfile(profile) {
   const normalized = normalizeRuntimeProofProfile(profile);
+  if (
+    normalized.adapter.proofRunner === 'runtime-boundary-proof-adapter'
+    || normalized.adapter.runnerKind === 'runtime-boundary-proof-adapter'
+  ) {
+    throw new Error('runtime-boundary proof adapter profiles cannot be converted to HIPRT warm profiles');
+  }
   return {
     id: normalized.id,
     targetName: normalized.runtime.targetName,
@@ -304,6 +590,8 @@ export function runtimeProfileToLegacyHiprtWarmProfile(profile) {
     runtimeArgs: normalized.runtime.args,
     runtimeEnv: normalized.runtime.env,
     requiredFiles: normalized.runtime.requiredFiles,
+    requiredAssets: normalized.runtime.requiredAssets,
+    sourceTree: normalized.runtime.sourceTree,
     orochiApi: normalized.runtime.backend.orochiApi ?? undefined,
     claim: normalized.visualProof.claim,
     width: normalized.visualProof.width,
@@ -314,11 +602,19 @@ export function runtimeProfileToLegacyHiprtWarmProfile(profile) {
     cmakeArgs: normalized.build.cmakeArgs,
     buildEnv: normalized.build.env,
     deterministicVisualMode: normalized.deterministicVisualMode,
+    runMode: normalized.runMode,
+    negativeEdit: normalized.negativeEdit,
   };
 }
 
 export function runtimeProfileToHiprtWarmEnv(profile) {
   const normalized = normalizeRuntimeProofProfile(profile);
+  if (
+    normalized.adapter.proofRunner === 'runtime-boundary-proof-adapter'
+    || normalized.adapter.runnerKind === 'runtime-boundary-proof-adapter'
+  ) {
+    throw new Error('runtime-boundary proof adapter profiles cannot be converted to HIPRT warm environment variables');
+  }
   const env = {
     SYNTHI_HIPRT_WARM_PROFILE_ID: normalized.id,
     SYNTHI_HIPRT_WARM_TARGET: normalized.runtime.targetName,
@@ -345,10 +641,27 @@ export function runtimeProfileToHiprtWarmEnv(profile) {
   if (normalized.runtime.requiredFiles.length > 0) {
     env.SYNTHI_HIPRT_WARM_REQUIRED_FILES_JSON = JSON.stringify(normalized.runtime.requiredFiles);
   }
+  if (normalized.runtime.requiredAssets.length > 0) {
+    env.SYNTHI_HIPRT_WARM_REQUIRED_ASSETS_JSON = JSON.stringify(normalized.runtime.requiredAssets);
+    env.SYNTHI_GPU_HMR_RUNTIME_REQUIRED_ASSETS_JSON = env.SYNTHI_HIPRT_WARM_REQUIRED_ASSETS_JSON;
+  }
+  if (normalized.runtime.sourceTree) {
+    env.SYNTHI_HIPRT_WARM_SOURCE_TREE_JSON = JSON.stringify(normalized.runtime.sourceTree);
+    env.SYNTHI_GPU_HMR_RUNTIME_SOURCE_TREE_JSON = env.SYNTHI_HIPRT_WARM_SOURCE_TREE_JSON;
+  }
   if (normalized.build.cmakeArgs.length > 0) env.SYNTHI_HIPRT_WARM_CMAKE_ARGS_JSON = JSON.stringify(normalized.build.cmakeArgs);
   if (Object.keys(normalized.build.env).length > 0) env.SYNTHI_HIPRT_WARM_BUILD_ENV_JSON = JSON.stringify(normalized.build.env);
   if (normalized.deterministicVisualMode) {
     env.SYNTHI_HIPRT_WARM_DETERMINISTIC_VISUAL_MODE_JSON = JSON.stringify(normalized.deterministicVisualMode);
+  }
+  if (normalized.runMode.metricScope) env.SYNTHI_HIPRT_WARM_METRIC_SCOPE = normalized.runMode.metricScope;
+  if (normalized.runMode.cacheState) env.SYNTHI_HIPRT_WARM_CACHE_STATE = normalized.runMode.cacheState;
+  if (normalized.runMode.editKind) env.SYNTHI_HIPRT_WARM_EDIT_KIND = normalized.runMode.editKind;
+  if (normalized.runMode.differentEdit !== null) {
+    env.SYNTHI_HIPRT_WARM_DIFFERENT_EDIT = normalized.runMode.differentEdit ? '1' : '0';
+  }
+  if (normalized.negativeEdit) {
+    env.SYNTHI_HIPRT_WARM_NEGATIVE_EDIT_JSON = JSON.stringify(normalized.negativeEdit);
   }
   return env;
 }

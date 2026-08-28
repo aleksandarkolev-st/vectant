@@ -6,8 +6,24 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 pub const GPU_HMR_PROOF_SCHEMA_VERSION: &str = "synthi.gpu.hmr.proof.v1";
-pub const GPU_HMR_ACCEPTANCE_LEDGER_SCHEMA_VERSION: &str =
-    "synthi.gpu_hmr.acceptance_ledger.v1";
+pub const GPU_HMR_ACCEPTANCE_LEDGER_SCHEMA_VERSION: &str = "synthi.gpu_hmr.acceptance_ledger.v1";
+pub const GPU_HMR_HARDWARE_UUID_PREFIX: &str = "gpu-hardware-uuid:";
+
+pub fn normalized_gpu_hardware_uuid(value: &str) -> Option<&str> {
+    if value != value.trim() {
+        return None;
+    }
+    let uuid = value.strip_prefix(GPU_HMR_HARDWARE_UUID_PREFIX)?;
+    if uuid.len() != 32
+        || !uuid
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || uuid.bytes().all(|byte| byte == b'0')
+    {
+        return None;
+    }
+    Some(uuid)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GpuHmrProofState {
@@ -256,6 +272,7 @@ pub struct GpuHmrAcceptanceLedgerInput {
     pub process_restarted: Option<bool>,
     pub firewall_route: Option<String>,
     pub firewall_evidence_source: Option<String>,
+    pub firewall_receipt_id: Option<String>,
     pub firewall_process_id_before: Option<u32>,
     pub firewall_process_id_after: Option<u32>,
     pub process_id: Option<String>,
@@ -274,7 +291,10 @@ pub struct GpuHmrAcceptanceLedger {
     pub artifact_id_after: String,
     #[serde(rename = "loaderArtifactId", skip_serializing_if = "Option::is_none")]
     pub loader_artifact_id: Option<String>,
-    #[serde(rename = "epochPublishArtifactId", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "epochPublishArtifactId",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub epoch_publish_artifact_id: Option<String>,
     #[serde(rename = "dispatchArtifactId", skip_serializing_if = "Option::is_none")]
     pub dispatch_artifact_id: Option<String>,
@@ -300,8 +320,13 @@ pub struct GpuHmrAcceptanceLedger {
     pub process_restart_absence_evidence_present: bool,
     #[serde(rename = "firewallRoute", skip_serializing_if = "Option::is_none")]
     pub firewall_route: Option<String>,
-    #[serde(rename = "firewallEvidenceSource", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "firewallEvidenceSource",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub firewall_evidence_source: Option<String>,
+    #[serde(rename = "firewallReceiptId", skip_serializing_if = "Option::is_none")]
+    pub firewall_receipt_id: Option<String>,
     #[serde(
         rename = "firewallProcessIdBefore",
         skip_serializing_if = "Option::is_none"
@@ -326,6 +351,10 @@ pub struct GpuHmrAcceptanceLedger {
 
 impl GpuHmrAcceptanceLedger {
     pub fn new(input: GpuHmrAcceptanceLedgerInput) -> Self {
+        Self::from_input_at(input, now_rfc3339())
+    }
+
+    fn from_input_at(input: GpuHmrAcceptanceLedgerInput, created_at: String) -> Self {
         let mut failed = Vec::new();
         if input.hot_reload {
             match input.cpu_hmr_used {
@@ -343,11 +372,7 @@ impl GpuHmrAcceptanceLedger {
                 Some(false) => {}
                 None => failed.push("process_restart_absence_evidence_missing".to_string()),
             }
-            let firewall_route = input
-                .firewall_route
-                .as_deref()
-                .unwrap_or_default()
-                .trim();
+            let firewall_route = input.firewall_route.as_deref().unwrap_or_default().trim();
             if firewall_route.is_empty() {
                 failed.push("firewall_route_missing".to_string());
             } else if firewall_route
@@ -364,6 +389,15 @@ impl GpuHmrAcceptanceLedger {
             {
                 failed.push("firewall_evidence_source_missing".to_string());
             }
+            if input
+                .firewall_receipt_id
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                failed.push("firewall_receipt_id_missing".to_string());
+            }
             match (
                 input.firewall_process_id_before,
                 input.firewall_process_id_after,
@@ -378,7 +412,8 @@ impl GpuHmrAcceptanceLedger {
             if input.loader_artifact_id.as_deref() != Some(input.artifact_id_after.as_str()) {
                 failed.push("loader_artifact_mismatch".to_string());
             }
-            if input.epoch_publish_artifact_id.as_deref() != Some(input.artifact_id_after.as_str()) {
+            if input.epoch_publish_artifact_id.as_deref() != Some(input.artifact_id_after.as_str())
+            {
                 failed.push("epoch_publish_artifact_mismatch".to_string());
             }
             if input.dispatch_artifact_id.as_deref() != Some(input.artifact_id_after.as_str()) {
@@ -396,21 +431,24 @@ impl GpuHmrAcceptanceLedger {
             if !input.retirement_proven {
                 failed.push("epoch_retirement_unproven".to_string());
             }
-            if input.process_id.as_deref().unwrap_or_default().trim().is_empty() {
-                failed.push("process_identity_missing".to_string());
-            }
             if input
-                .device_identity
+                .process_id
                 .as_deref()
                 .unwrap_or_default()
                 .trim()
                 .is_empty()
             {
-                failed.push("device_identity_missing".to_string());
+                failed.push("process_identity_missing".to_string());
+            }
+            match input.device_identity.as_deref() {
+                None | Some("") => failed.push("device_identity_missing".to_string()),
+                Some(value) if normalized_gpu_hardware_uuid(value).is_none() => {
+                    failed.push("device_identity_not_runtime_hardware_uuid".to_string())
+                }
+                Some(_) => {}
             }
         }
         let gpu_hmr_success = input.hot_reload && failed.is_empty();
-        let created_at = now_rfc3339();
         let material = json!({
             "schemaVersion": GPU_HMR_ACCEPTANCE_LEDGER_SCHEMA_VERSION,
             "hotReload": input.hot_reload,
@@ -430,6 +468,7 @@ impl GpuHmrAcceptanceLedger {
             "processRestartAbsenceEvidencePresent": input.process_restarted.is_some(),
             "firewallRoute": input.firewall_route,
             "firewallEvidenceSource": input.firewall_evidence_source,
+            "firewallReceiptId": input.firewall_receipt_id,
             "firewallProcessIdBefore": input.firewall_process_id_before,
             "firewallProcessIdAfter": input.firewall_process_id_after,
             "processId": input.process_id,
@@ -464,13 +503,15 @@ impl GpuHmrAcceptanceLedger {
                 .as_bool()
                 .unwrap_or(false),
             process_restarted: material["processRestarted"].as_bool().unwrap_or(false),
-            process_restart_absence_evidence_present: material["processRestartAbsenceEvidencePresent"]
+            process_restart_absence_evidence_present: material
+                ["processRestartAbsenceEvidencePresent"]
                 .as_bool()
                 .unwrap_or(false),
             firewall_route: material["firewallRoute"].as_str().map(str::to_string),
             firewall_evidence_source: material["firewallEvidenceSource"]
                 .as_str()
                 .map(str::to_string),
+            firewall_receipt_id: material["firewallReceiptId"].as_str().map(str::to_string),
             firewall_process_id_before: material["firewallProcessIdBefore"]
                 .as_u64()
                 .and_then(|value| u32::try_from(value).ok()),
@@ -487,6 +528,49 @@ impl GpuHmrAcceptanceLedger {
                 .unwrap_or_default()
                 .to_string(),
         }
+    }
+
+    /// Recomputes every invariant and the content-addressed ledger identity.
+    /// Serialized success fields are never accepted as authority by themselves.
+    pub fn validate_contract(&self) -> bool {
+        if chrono::DateTime::parse_from_rfc3339(&self.created_at).is_err() {
+            return false;
+        }
+        let recomputed = Self::from_input_at(
+            GpuHmrAcceptanceLedgerInput {
+                hot_reload: self.hot_reload,
+                artifact_id_after: self.artifact_id_after.clone(),
+                loader_artifact_id: self.loader_artifact_id.clone(),
+                epoch_publish_artifact_id: self.epoch_publish_artifact_id.clone(),
+                dispatch_artifact_id: self.dispatch_artifact_id.clone(),
+                output_artifact_id: self.output_artifact_id.clone(),
+                output_oracle_passed: self.output_oracle_passed,
+                output_after_dispatch: self.output_after_dispatch,
+                retirement_proven: self.retirement_proven,
+                cpu_hmr_used: self
+                    .cpu_hmr_absence_evidence_present
+                    .then_some(self.cpu_hmr_used),
+                full_rebuild_used: self
+                    .full_rebuild_absence_evidence_present
+                    .then_some(self.full_rebuild_used),
+                process_restarted: self
+                    .process_restart_absence_evidence_present
+                    .then_some(self.process_restarted),
+                firewall_route: self.firewall_route.clone(),
+                firewall_evidence_source: self.firewall_evidence_source.clone(),
+                firewall_receipt_id: self.firewall_receipt_id.clone(),
+                firewall_process_id_before: self.firewall_process_id_before,
+                firewall_process_id_after: self.firewall_process_id_after,
+                process_id: self.process_id.clone(),
+                device_identity: self.device_identity.clone(),
+            },
+            self.created_at.clone(),
+        );
+        recomputed == *self
+    }
+
+    pub fn is_verified_success(&self) -> bool {
+        self.gpu_hmr_success && self.validate_contract()
     }
 
     pub fn to_log_line(&self) -> String {
@@ -511,6 +595,7 @@ impl GpuHmrAcceptanceLedger {
             "processRestartAbsenceEvidencePresent": self.process_restart_absence_evidence_present,
             "firewallRoute": self.firewall_route,
             "firewallEvidenceSource": self.firewall_evidence_source,
+            "firewallReceiptId": self.firewall_receipt_id,
             "firewallProcessIdBefore": self.firewall_process_id_before,
             "firewallProcessIdAfter": self.firewall_process_id_after,
             "processId": self.process_id,
@@ -524,6 +609,27 @@ impl GpuHmrAcceptanceLedger {
 }
 
 impl GpuHmrProofArtifact {
+    fn identity_material(&self) -> Value {
+        json!({
+            "schemaVersion": self.schema_version,
+            "workspaceSlug": self.workspace_slug,
+            "runtimeSessionId": self.runtime_session_id,
+            "sourceEditId": self.source_edit_id,
+            "selectedArtifactId": self.selected_artifact_id,
+            "resultState": self.result_state,
+            "degradedState": self.degraded_state,
+            "degradedReason": self.degraded_reason,
+            "stageResults": self.stage_results,
+            "evidenceRefs": self.evidence_refs,
+            "visualEvidenceRefs": self.visual_evidence_refs,
+            "createdAt": self.created_at,
+        })
+    }
+
+    fn expected_proof_id(&self) -> String {
+        format!("gpu-proof:{}", stable_json_hash(&self.identity_material()))
+    }
+
     pub fn new(input: GpuHmrProofArtifactInput) -> Self {
         let created_at = input.created_at.unwrap_or_else(now_rfc3339);
         let proof_material = json!({
@@ -600,6 +706,13 @@ impl GpuHmrProofArtifact {
             || self.created_at.trim().is_empty()
         {
             anyhow::bail!("GPU HMR proof artifact is missing required identity fields");
+        }
+        let expected_proof_id = self.expected_proof_id();
+        if self.proof_id != expected_proof_id {
+            anyhow::bail!(
+                "GPU HMR proof artifact proofId does not match its content: expected {}",
+                expected_proof_id
+            );
         }
         for stage in &self.stage_results {
             if stage.stage_id.trim().is_empty()
@@ -853,10 +966,11 @@ mod tests {
                     .to_string(),
             ),
             firewall_evidence_source: Some("gpu_proof_test:accepted_ledger_input".to_string()),
+            firewall_receipt_id: Some(format!("reload-firewall-receipt:sha256:{}", "a".repeat(64))),
             firewall_process_id_before: Some(42),
             firewall_process_id_after: Some(42),
             process_id: Some("pid:1".to_string()),
-            device_identity: Some("device:test".to_string()),
+            device_identity: Some("gpu-hardware-uuid:00112233445566778899aabbccddeeff".to_string()),
         }
     }
 
@@ -864,6 +978,8 @@ mod tests {
     fn acceptance_ledger_accepts_full_hot_reload_event_chain() {
         let ledger = GpuHmrAcceptanceLedger::new(accepted_ledger_input());
         assert!(ledger.gpu_hmr_success);
+        assert!(ledger.validate_contract());
+        assert!(ledger.is_verified_success());
         assert!(ledger.failed_invariants.is_empty());
         let value: serde_json::Value = serde_json::from_str(&ledger.to_log_line()).unwrap();
         assert_eq!(value["type"], "gpu_hmr_acceptance_ledger");
@@ -878,6 +994,26 @@ mod tests {
     }
 
     #[test]
+    fn acceptance_ledger_rejects_serialized_success_flag_forgery() {
+        let ledger = GpuHmrAcceptanceLedger::new(accepted_ledger_input());
+        let mut forged: GpuHmrAcceptanceLedger =
+            serde_json::from_value(serde_json::to_value(&ledger).unwrap()).unwrap();
+        forged.output_oracle_passed = false;
+        assert!(!forged.validate_contract());
+        assert!(!forged.is_verified_success());
+
+        let mut refused_input = accepted_ledger_input();
+        refused_input.output_oracle_passed = false;
+        let mut forged_refusal = GpuHmrAcceptanceLedger::new(refused_input);
+        assert!(forged_refusal.validate_contract());
+        assert!(!forged_refusal.gpu_hmr_success);
+        forged_refusal.gpu_hmr_success = true;
+        forged_refusal.failed_invariants.clear();
+        assert!(!forged_refusal.validate_contract());
+        assert!(!forged_refusal.is_verified_success());
+    }
+
+    #[test]
     fn acceptance_ledger_rejects_missing_firewall_evidence() {
         let mut input = accepted_ledger_input();
         input.cpu_hmr_used = None;
@@ -885,9 +1021,11 @@ mod tests {
         input.process_restarted = None;
         input.firewall_route = None;
         input.firewall_evidence_source = None;
+        input.firewall_receipt_id = None;
         input.firewall_process_id_before = None;
         input.firewall_process_id_after = None;
         let ledger = GpuHmrAcceptanceLedger::new(input);
+        assert!(ledger.validate_contract());
         assert!(!ledger.gpu_hmr_success);
         assert!(ledger
             .failed_invariants
@@ -904,6 +1042,9 @@ mod tests {
         assert!(ledger
             .failed_invariants
             .contains(&"firewall_evidence_source_missing".to_string()));
+        assert!(ledger
+            .failed_invariants
+            .contains(&"firewall_receipt_id_missing".to_string()));
         assert!(ledger
             .failed_invariants
             .contains(&"firewall_process_boundary_missing".to_string()));
@@ -929,6 +1070,26 @@ mod tests {
         assert!(ledger
             .failed_invariants
             .contains(&"process_restarted".to_string()));
+    }
+
+    #[test]
+    fn acceptance_ledger_rejects_synthetic_or_zero_device_identity() {
+        for device_identity in [
+            "rocm:libamdhip64.so",
+            "rocm:gfx1201",
+            "gpu-hardware-uuid:00000000000000000000000000000000",
+            "gpu-hardware-uuid:00112233445566778899AABBCCDDEEFF",
+            "gpu-hardware-uuid:00112233",
+            " gpu-hardware-uuid:00112233445566778899aabbccddeeff",
+        ] {
+            let mut input = accepted_ledger_input();
+            input.device_identity = Some(device_identity.to_string());
+            let ledger = GpuHmrAcceptanceLedger::new(input);
+            assert!(!ledger.gpu_hmr_success, "accepted {device_identity}");
+            assert!(ledger
+                .failed_invariants
+                .contains(&"device_identity_not_runtime_hardware_uuid".to_string()));
+        }
     }
 
     #[test]
@@ -994,6 +1155,24 @@ mod tests {
         let latest = read_latest_proof_artifact(temp.path()).await.unwrap();
         assert_eq!(exact, artifact);
         assert_eq!(latest, artifact);
+    }
+
+    #[tokio::test]
+    async fn proof_artifact_reader_rejects_content_replayed_under_stale_proof_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact = sample_artifact("2026-05-26T00:00:00Z".to_string());
+        let written = write_proof_artifact(temp.path(), &artifact).await.unwrap();
+        let mut tampered = serde_json::to_value(&artifact).unwrap();
+        tampered["resultState"] = serde_json::json!("gpu-hmr-full-runtime-proven");
+        tokio::fs::write(&written.path, serde_json::to_vec_pretty(&tampered).unwrap())
+            .await
+            .unwrap();
+
+        let error = read_proof_artifact(&written.path).await.unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("proofId does not match its content"));
     }
 
     fn sample_artifact(created_at: String) -> GpuHmrProofArtifact {

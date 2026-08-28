@@ -72,6 +72,8 @@ function defaultGpuDeltaModel() {
     ?? 'gemini-3.1-flash-lite';
 }
 
+const scaleRequireFullRuntimeProofEnv = process.env.SYNTHI_SCALE_REQUIRE_FULL_RUNTIME_PROOF;
+
 const CFG = {
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   collabUrl: process.env.COLLAB_URL ?? 'http://localhost:1234',
@@ -102,7 +104,9 @@ const CFG = {
   mcpAttachTimeoutMs: Number(process.env.MCP_ATTACH_TIMEOUT_MS ?? 30000),
   firstCompileTimeoutMs: Number(process.env.SYNTHI_SCALE_FIRST_TIMEOUT_MS ?? 240000),
   hotSwapTimeoutMs: Number(process.env.SYNTHI_SCALE_HMR_TIMEOUT_MS ?? 30000),
-  requireGpuFullRuntimeProof: process.env.SYNTHI_SCALE_REQUIRE_FULL_RUNTIME_PROOF !== '0',
+  requireGpuFullRuntimeProof: scaleRequireFullRuntimeProofEnv !== '0',
+  runtimeProofDowngradeRequested: scaleRequireFullRuntimeProofEnv === '0',
+  runtimeProofDowngradeEnvValue: scaleRequireFullRuntimeProofEnv ?? null,
   hmrRequiredGpuProofState: (process.env.SYNTHI_SCALE_REQUIRED_GPU_PROOF_STATE ?? '').trim(),
   hmrDeltaMode: normalizeHmrDeltaMode(process.env.SYNTHI_SCALE_HMR_DELTA_MODE ?? 'ai_user_delta'),
   validationProfile: (process.env.SYNTHI_SCALE_VALIDATION_PROFILE ?? 'full').toLowerCase().replace(/[-\s]+/g, '_'),
@@ -296,6 +300,7 @@ const report = {
   cmake_target_mode: CFG.cmakeTargetMode,
   hmr_delta_mode: CFG.hmrDeltaMode,
   validation_profile: CFG.validationProfile,
+  strict_runtime_proof_policy: null,
   source_file_mix: {},
   template_evidence_mode: CFG.templateEvidenceMode,
   workspace_file_count: 0,
@@ -331,6 +336,34 @@ function record(name, status, detail = '') {
 function fail(message) {
   record('fatal', 'fail', message);
   throw new Error(message);
+}
+
+function scaleStrictRuntimeProofPolicy() {
+  const blockingGaps = [];
+  if (CFG.runtimeProofDowngradeRequested) {
+    blockingGaps.push('scale_full_runtime_proof_disable_env_forbidden');
+  }
+  return {
+    schemaVersion: 'synthi.gpu_hmr.scale_strict_runtime_proof_policy.v1',
+    schema_version: 'synthi.gpu_hmr.scale_strict_runtime_proof_policy.v1',
+    proofAuthority: 'scale_strict_runtime_proof_policy_gate_not_gpu_hmr_success',
+    proof_authority: 'scale_strict_runtime_proof_policy_gate_not_gpu_hmr_success',
+    accepted: blockingGaps.length === 0,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    requireGpuFullRuntimeProof: CFG.requireGpuFullRuntimeProof,
+    require_gpu_full_runtime_proof: CFG.requireGpuFullRuntimeProof,
+    runtimeProofDowngradeRequested: CFG.runtimeProofDowngradeRequested,
+    runtime_proof_downgrade_requested: CFG.runtimeProofDowngradeRequested,
+    runtimeProofDowngradeEnvValue: CFG.runtimeProofDowngradeEnvValue,
+    runtime_proof_downgrade_env_value: CFG.runtimeProofDowngradeEnvValue,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+  };
 }
 
 async function httpJson(method, url, body, headers = {}) {
@@ -1794,7 +1827,11 @@ constexpr int kValue = ${i};
   return {
     files,
     relevantFiles: files.filter((f) => f.relevant),
+    expectedExecutableTargetName: codemodelTargets[0]?.name ?? null,
+    expected_executable_target_name: codemodelTargets[0]?.name ?? null,
     primaryPath: 'src/app/main.cpp',
+    publicGpuApiHeaderPath: 'src/gpu/particle_api.hpp',
+    public_gpu_api_header_path: 'src/gpu/particle_api.hpp',
     devicePath: `src/gpu/particle_kernels.${deviceExt}`,
     templateHeaderPath: useTemplateFixture ? 'src/gpu/particle_template_math.hpp' : null,
   };
@@ -2342,6 +2379,13 @@ function cleanRel(value) {
   return String(value || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/^\.\//, '');
 }
 
+function relListIncludes(values, expectedRelPath) {
+  const expected = cleanRel(expectedRelPath);
+  return Boolean(expected) && Array.isArray(values) && values.some((value) =>
+    cleanRel(value) === expected
+  );
+}
+
 function manifestRolePaths(manifest, vendor) {
   const moduleFiles = manifest?.module_files && typeof manifest.module_files === 'object'
     ? manifest.module_files
@@ -2521,15 +2565,30 @@ function validateProdRunReportContract(split, project, vendor, arch) {
       `targets=${cmakeFileApi.targetCount} method=${targetResolution.method}`,
     );
   }
-  if (targetResolution.selectedTarget?.name !== 'particle_field') {
-    throw new Error(`unexpected selected CMake target: ${targetResolution.selectedTarget?.name ?? 'missing'}`);
+  const expectedTargetName =
+    project.expectedExecutableTargetName
+    ?? project.expected_executable_target_name
+    ?? project.targetName
+    ?? project.target_name
+    ?? null;
+  if (!expectedTargetName) {
+    throw new Error('project descriptor missing expected executable target name');
   }
-  if (!targetResolution.selectedTarget?.sourceFiles?.includes(project.primaryPath)) {
+  if (targetResolution.selectedTarget?.name !== expectedTargetName) {
+    throw new Error(
+      `selected CMake target does not match project descriptor: `
+      + `${targetResolution.selectedTarget?.name ?? 'missing'} !== ${expectedTargetName}`,
+    );
+  }
+  if (!relListIncludes(targetResolution.selectedTarget?.sourceFiles, project.primaryPath)) {
     throw new Error(`selected CMake target does not include ${project.primaryPath}`);
   }
   const selectedTarget = reportDoc.selectedTarget || {};
-  if (selectedTarget.targetName !== 'particle_field') {
-    throw new Error(`run report selectedTarget not promoted from CMake File API: ${JSON.stringify(selectedTarget).slice(0, 300)}`);
+  if (selectedTarget.targetName !== expectedTargetName) {
+    throw new Error(
+      `run report selectedTarget does not match project descriptor target: `
+      + `${JSON.stringify(selectedTarget).slice(0, 300)}`,
+    );
   }
   const headerGraph = reportDoc.affectedHeaderGraph;
   if (!headerGraph || headerGraph.schemaVersion !== 'synthi.gpu.device_include_graph.v1') {
@@ -2538,12 +2597,22 @@ function validateProdRunReportContract(split, project, vendor, arch) {
   if (headerGraph.status !== 'bounded') {
     throw new Error(`device include graph is not bounded: ${JSON.stringify(headerGraph).slice(0, 500)}`);
   }
-  if (!headerGraph.reachableHeaders?.includes('src/gpu/particle_api.hpp')) {
-    throw new Error(`device include graph missing reachable particle_api.hpp: ${JSON.stringify(headerGraph).slice(0, 500)}`);
+  const publicGpuApiHeaderPath =
+    project.publicGpuApiHeaderPath
+    ?? project.public_gpu_api_header_path
+    ?? null;
+  if (!publicGpuApiHeaderPath) {
+    throw new Error('project descriptor missing public GPU API header path');
+  }
+  if (!relListIncludes(headerGraph.reachableHeaders, publicGpuApiHeaderPath)) {
+    throw new Error(
+      `device include graph missing reachable public GPU API header ${publicGpuApiHeaderPath}: `
+      + `${JSON.stringify(headerGraph).slice(0, 500)}`,
+    );
   }
   if (CFG.templateEvidenceMode === 'fresh') {
-    if (!headerGraph.reachableHeaders?.includes('src/gpu/particle_template_math.hpp')) {
-      throw new Error(`device include graph missing reachable template header: ${JSON.stringify(headerGraph).slice(0, 500)}`);
+    if (project.templateHeaderPath && !relListIncludes(headerGraph.reachableHeaders, project.templateHeaderPath)) {
+      throw new Error(`device include graph missing reachable template header ${project.templateHeaderPath}: ${JSON.stringify(headerGraph).slice(0, 500)}`);
     }
     if (reportDoc.templateEvidenceStatus !== 'fresh') {
       throw new Error(`fresh template evidence was not accepted: ${reportDoc.templateEvidenceStatus ?? 'missing'}`);
@@ -2572,8 +2641,8 @@ function validateProdRunReportContract(split, project, vendor, arch) {
     const expectedReason = CFG.templateEvidenceMode === 'stale'
       ? 'template_evidence_stale'
       : 'template_evidence_missing';
-    if (!headerGraph.reachableHeaders?.includes('src/gpu/particle_template_math.hpp')) {
-      throw new Error(`device include graph missing reachable template header: ${JSON.stringify(headerGraph).slice(0, 500)}`);
+    if (project.templateHeaderPath && !relListIncludes(headerGraph.reachableHeaders, project.templateHeaderPath)) {
+      throw new Error(`device include graph missing reachable template header ${project.templateHeaderPath}: ${JSON.stringify(headerGraph).slice(0, 500)}`);
     }
     if (reportDoc.templateEvidenceStatus !== expectedStatus) {
       throw new Error(`unexpected templateEvidenceStatus: ${reportDoc.templateEvidenceStatus ?? 'missing'} !== ${expectedStatus}`);
@@ -3340,6 +3409,15 @@ async function run() {
   if (!SUPPORTED_VALIDATION_PROFILES.has(CFG.validationProfile)) {
     fail(`unsupported SYNTHI_SCALE_VALIDATION_PROFILE=${CFG.validationProfile}; expected ${[...SUPPORTED_VALIDATION_PROFILES].join(', ')}`);
   }
+  report.strict_runtime_proof_policy = scaleStrictRuntimeProofPolicy();
+  record(
+    'scale strict runtime proof policy',
+    report.strict_runtime_proof_policy.accepted ? 'pass' : 'fail',
+    JSON.stringify(report.strict_runtime_proof_policy),
+  );
+  if (!report.strict_runtime_proof_policy.accepted) {
+    fail('scale validation requires strict full-runtime GPU proof; SYNTHI_SCALE_REQUIRE_FULL_RUNTIME_PROOF=0 is refusal-only');
+  }
   await resolveDockerContainers();
   report.repo_commit = await execText('git', ['rev-parse', 'HEAD'], 10000, true);
   const vendor = await detectVendor();
@@ -4027,6 +4105,7 @@ async function run() {
 
 function runSelfCheck() {
   const modelEnv = mcpModelEnv();
+  const strictRuntimeProofPolicy = scaleStrictRuntimeProofPolicy();
   const failures = [];
   if (!CFG.gpuSplitModel) failures.push('gpu_split_model_missing');
   if (!CFG.gpuDeltaModel) failures.push('gpu_delta_model_missing');
@@ -4042,10 +4121,14 @@ function runSelfCheck() {
   if (report.model_roles.gpu_split !== CFG.gpuSplitModel || report.model_roles.gpu_delta !== CFG.gpuDeltaModel) {
     failures.push('report_model_roles_mismatch');
   }
+  if (!strictRuntimeProofPolicy.accepted) {
+    failures.push(...strictRuntimeProofPolicy.blockingGaps);
+  }
   const result = {
     ok: failures.length === 0,
     modelRoles: report.model_roles,
     mcpModelEnv: modelEnv,
+    strictRuntimeProofPolicy,
     failures,
   };
   console.log(JSON.stringify(result, null, 2));

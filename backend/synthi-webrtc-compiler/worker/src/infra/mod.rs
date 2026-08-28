@@ -1,3 +1,4 @@
+pub mod compute_expected_output_semantics;
 pub mod constants;
 pub mod crash_recovery;
 pub mod dep_installer;

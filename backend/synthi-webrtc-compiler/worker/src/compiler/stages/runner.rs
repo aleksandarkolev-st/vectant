@@ -4,27 +4,98 @@ use base64::{engine::general_purpose, Engine as _};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
+use rand::rngs::OsRng;
+use rand::RngCore;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::rtp::packet::Packet;
 use webrtc_util::Unmarshal;
 
 use crate::compiler::builder::ModuleHashes;
 use crate::compiler::context::CompileContext;
+use crate::hmr::adapter_trait::{
+    decode_reload_capsule_metadata_token, reload_compute_expected_output_semantics_binding_valid,
+    reload_output_oracle_contract_content_hash,
+    reload_output_oracle_proof_context_valid_for_reload, ReloadOutputOracleProfileCommitment,
+};
+use crate::hmr::runtime_evidence_transport::{
+    global_runtime_evidence_transport_signer, ObservedRuntimeEvidenceDelivery,
+    ObservedRuntimeEvidenceEnvelope, RuntimeEvidenceTransportReceiptInput,
+    RuntimeEvidenceTransportSigner, RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL,
+};
+use crate::infra::compute_expected_output_semantics::ComputeExpectedOutputContractV2;
 use crate::infra::constants::GUI_TOOLS;
-use crate::infra::messages::CompileRequest;
+use crate::infra::messages::{gpu_proof_transport_request_nonce_valid, CompileRequest};
+use crate::runtime::gpu_runtime_proof::{
+    canonical_gpu_runtime_proof_json_bytes, canonical_gpu_runtime_proof_json_sha256,
+    verify_strict_gpu_runtime_proof, StrictGpuRuntimeProofExpectation, VerifiedGpuRuntimeProof,
+};
+use crate::runtime::module_map_attestation::{
+    create_parent_sealed_module_artifact, verify_parent_observed_module_mapping,
+    ParentModuleMapAttestationV1, ParentSealedModuleArtifact, LINUX_SEALED_MEMFD_MAPPING_MECHANISM,
+};
+use crate::runtime::native_runner_codec::{
+    BoundedUtf8RecordReader, NativeRunnerOutputEvent, NativeRunnerOutputLifecycle,
+    NativeRunnerOutputStream, NativeRunnerResourceFault, NativeRunnerResourceFaultKind,
+    NATIVE_RUNNER_GENERAL_CHANNEL_CAPACITY, NATIVE_RUNNER_GENERAL_CHANNEL_MAX_RETAINED_BYTES,
+    NATIVE_RUNNER_OUTPUT_RECORD_MAX_BYTES, NATIVE_RUNNER_PROTOCOL_CHANNEL_CAPACITY,
+    NATIVE_RUNNER_PROTOCOL_CHANNEL_MAX_RETAINED_BYTES, RUNNER_STDOUT_MODE_ENV,
+    RUNNER_STDOUT_TEXT_MODE_V1,
+};
+use crate::runtime::runner_protocol::{
+    decode_runner_command_token, encode_runner_module_load_token,
+    parse_runner_capability_observation, parse_runner_module_load_result,
+    parse_runner_protocol_ack, parse_runner_runtime_control_ack, GpuArtifactLoadV1Result,
+    GpuReloadV2Expectation, GpuReloadV2Result, GpuReloadV4Payload, RunnerCapabilityObservationV1,
+    RunnerModuleLoadResultV1, RunnerModuleLoadStatus, RunnerProtocolAck,
+    GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY, GPU_ARTIFACT_LOAD_V1_RESULT_SCHEMA_VERSION,
+    GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY, GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY,
+    GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
+    GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY, GPU_RELOAD_V4_RESULT_SCHEMA_VERSION,
+    RUNNER_CAPABILITY_OBSERVATION_PREFIX, RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
+    RUNNER_MODULE_LOAD_RESULT_PREFIX, RUNNER_PROTOCOL_ACK_PREFIX, RUNNER_PROTOCOL_CURRENT_VERSION,
+    RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION, RUNNER_RUNTIME_CONTROL_ACK_PREFIX,
+    RUNNER_RUNTIME_CONTROL_SESSION_ENV,
+};
 use crate::runtime::runner_state::RunnerState; // Aliasing if needed, or check definition
 use crate::webrtc::PER_DC_SEND_TIMEOUT;
 
 const STRUCTURED_LOG_CHUNK_BYTES: usize = 4096;
 const STRUCTURED_LOG_CHUNK_SCHEMA_VERSION: &str = "synthi.build_log.structured_json_chunk.v1";
+const PARENT_VERIFIED_GPU_RUNTIME_PROOF_SCHEMA_VERSION: &str =
+    "synthi.gpu_hmr.parent_verified_runtime_proof.v3";
+const PARENT_VERIFIED_GPU_RUNTIME_PROOF_AUTHORITY: &str =
+    "parent_recomputed_runtime_proof_binding_only_not_gpu_hmr_acceptance";
+const PARENT_VERIFIED_GPU_RUNTIME_PROOF_SUBJECT_SCHEMA_VERSION: &str =
+    "synthi.gpu_hmr.parent_verified_runtime_proof_subject.v3";
+const PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_TYPE: &str =
+    "gpu_hmr_parent_runtime_proof_control_binding";
+const PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_SCHEMA_VERSION: &str =
+    "synthi.gpu_hmr.parent_runtime_proof_control_binding.v4";
+const PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_AUTHORITY: &str =
+    "parent_signed_compile_correlated_runtime_proof_binding_only_not_gpu_hmr_acceptance";
+const PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_SUBJECT_SCHEMA_VERSION: &str =
+    "synthi.gpu_hmr.parent_runtime_proof_control_binding_subject.v4";
+const PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_ID_PREFIX: &str =
+    "gpu-parent-runtime-proof-control-binding:";
+
+fn generate_runner_runtime_control_session_id() -> Result<String> {
+    let mut random_bytes = [0_u8; 16];
+    OsRng
+        .try_fill_bytes(&mut random_bytes)
+        .map_err(|error| anyhow::anyhow!("generating runner runtime-control session: {error}"))?;
+    Ok(format!(
+        "runner-control-session:{}",
+        hex::encode(random_bytes)
+    ))
+}
 
 fn extract_structured_runner_message(line: &str) -> Option<&str> {
     let trimmed = line.trim();
@@ -37,8 +108,219 @@ fn extract_structured_runner_message(line: &str) -> Option<&str> {
 }
 
 fn should_forward_runner_stderr_line_to_log_dc(line: &str) -> bool {
+    !runner_line_contains_protected_gpu_evidence(line)
+}
+
+fn normalized_evidence_token(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn json_claims_parent_structured_log_transport(
+    fields: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    fields.iter().any(|(key, value)| {
+        let Some(value) = value.as_str() else {
+            return false;
+        };
+        match normalized_evidence_token(key).as_str() {
+            "type" => {
+                normalized_evidence_token(value)
+                    == normalized_evidence_token("structured-json-chunk")
+            }
+            "schemaversion" => {
+                normalized_evidence_token(value)
+                    == normalized_evidence_token(STRUCTURED_LOG_CHUNK_SCHEMA_VERSION)
+            }
+            _ => false,
+        }
+    })
+}
+
+fn json_contains_protected_gpu_evidence(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Array(values) => values.iter().any(json_contains_protected_gpu_evidence),
+        serde_json::Value::Object(fields) => {
+            if json_claims_parent_structured_log_transport(fields) {
+                return true;
+            }
+            let module_is_device =
+                fields.get("module").and_then(serde_json::Value::as_str) == Some("device");
+            if module_is_device && fields.contains_key("status") {
+                return true;
+            }
+
+            fields.iter().any(|(key, field_value)| {
+                let key = normalized_evidence_token(key);
+                let authority_key = matches!(
+                    key.as_str(),
+                    "acceptedforgpuhmr"
+                        | "gpuhmrsuccess"
+                        | "fullruntimeproofaccepted"
+                        | "fullruntimeproven"
+                        | "runtimeproofartifact"
+                        | "runtimeproofmaterial"
+                        | "proofledger"
+                        | "acceptancecontract"
+                ) || key.starts_with("cansatisfy")
+                    || key.ends_with("authority");
+                authority_key || json_contains_protected_gpu_evidence(field_value)
+            })
+        }
+        serde_json::Value::String(value) => {
+            let value = normalized_evidence_token(value);
+            (value.contains("gpu") && value.contains("hmr") && value.contains("proof"))
+                || value.contains("gpuhmrfullruntimeproven")
+                || value.starts_with("synthigpuhmr")
+                || value == "synthirunnergpureloadresultv3"
+                || value == "synthirunnergpureloadresultv4"
+                || value == "synthirunnergpuartifactloadresultv1"
+        }
+        _ => false,
+    }
+}
+
+fn runner_line_contains_protected_gpu_evidence(line: &str) -> bool {
     let trimmed = line.trim_start();
-    !trimmed.starts_with("[gpu-runtime-boundary]")
+    if trimmed.starts_with(RUNNER_PROTOCOL_ACK_PREFIX)
+        || trimmed.starts_with(RUNNER_RUNTIME_CONTROL_ACK_PREFIX)
+        || trimmed.starts_with("Stdin received:")
+        || trimmed.starts_with("[Runner] Processing command:")
+    {
+        return true;
+    }
+
+    let normalized_line = normalized_evidence_token(line);
+    if normalized_line.contains("gpuruntimeboundary")
+        || [
+            "acceptedforgpuhmr",
+            "gpuhmrsuccess",
+            "fullruntimeproofaccepted",
+            "fullruntimeproven",
+            "gpuhmrfullruntimeproven",
+            "synthirunnergpureloadresultv3",
+            "synthirunnergpureloadresultv4",
+            "synthirunnercapability",
+            "synthirunnermoduleload",
+            "runtimeproofmaterial",
+            "synthirunnergpuartifactloadresultv1",
+        ]
+        .iter()
+        .any(|marker| normalized_line.contains(marker))
+    {
+        return true;
+    }
+
+    let hmr_status_line = line.contains("[Runner] [HMR-STATUS] ");
+    let Some(payload) = extract_structured_runner_message(line) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
+        return hmr_status_line;
+    };
+    if json_contains_protected_gpu_evidence(&value) {
+        return true;
+    }
+    hmr_status_line
+        && !matches!(
+            value.get("module").and_then(serde_json::Value::as_str),
+            Some("core" | "gui" | "host")
+        )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunnerOutputRoute {
+    General,
+    ProtectedProtocol,
+    ProtectedEvidence,
+}
+
+fn is_legacy_gpu_terminal_candidate(value: &serde_json::Value) -> bool {
+    value.get("module").and_then(serde_json::Value::as_str) == Some("device")
+        && matches!(
+            value.get("status").and_then(serde_json::Value::as_str),
+            Some("applied" | "rejected" | "compile_error" | "compile-error" | "crash-fatal")
+        )
+}
+
+fn runner_line_is_private_protocol(line: &str) -> bool {
+    let line = line.trim_start();
+    if parse_runner_protocol_ack(line).is_some() {
+        return true;
+    }
+    if parse_runner_runtime_control_ack(line).is_some() {
+        return true;
+    }
+    if line.starts_with(RUNNER_CAPABILITY_OBSERVATION_PREFIX) {
+        return parse_runner_capability_observation(line).is_some();
+    }
+    if line.starts_with(RUNNER_MODULE_LOAD_RESULT_PREFIX) {
+        return parse_runner_module_load_result(line).is_some();
+    }
+    let Some(payload) = extract_structured_runner_message(line) else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(payload).is_ok_and(|value| {
+        matches!(
+            value
+                .get("schemaVersion")
+                .and_then(serde_json::Value::as_str),
+            Some(GPU_ARTIFACT_LOAD_V1_RESULT_SCHEMA_VERSION | GPU_RELOAD_V4_RESULT_SCHEMA_VERSION)
+        ) || is_legacy_gpu_terminal_candidate(&value)
+    })
+}
+
+fn route_runner_output_line(
+    line: &str,
+    general_tx: &tokio::sync::broadcast::Sender<String>,
+    protocol_tx: &tokio::sync::broadcast::Sender<String>,
+) -> RunnerOutputRoute {
+    if runner_line_is_private_protocol(line) {
+        let _ = protocol_tx.send(line.to_string());
+        RunnerOutputRoute::ProtectedProtocol
+    } else if runner_line_contains_protected_gpu_evidence(line) {
+        RunnerOutputRoute::ProtectedEvidence
+    } else {
+        let _ = general_tx.send(line.to_string());
+        RunnerOutputRoute::General
+    }
+}
+
+fn runner_command_log_summary(command: &str) -> String {
+    format!(
+        "bytes={} sha256=sha256:{}",
+        command.len(),
+        sha256_hex_local(command.as_bytes())
+    )
+}
+
+fn protected_runner_line_log_summary(line: &str) -> String {
+    let trimmed = line.trim_start();
+    let kind = if trimmed.starts_with(RUNNER_PROTOCOL_ACK_PREFIX) {
+        "protocol_ack"
+    } else if trimmed.starts_with(RUNNER_RUNTIME_CONTROL_ACK_PREFIX) {
+        "runtime_control_ack"
+    } else if trimmed.starts_with(RUNNER_MODULE_LOAD_RESULT_PREFIX) {
+        "module_load_result"
+    } else if trimmed.starts_with("Stdin received:")
+        || trimmed.starts_with("[Runner] Processing command:")
+    {
+        "command_echo"
+    } else if normalized_evidence_token(line).contains("gpuruntimeboundary") {
+        "runtime_evidence"
+    } else if extract_structured_runner_message(line).is_some() {
+        "structured_terminal"
+    } else {
+        "protected_evidence"
+    };
+    format!(
+        "kind={kind} bytes={} sha256=sha256:{}",
+        line.len(),
+        sha256_hex_local(line.as_bytes())
+    )
 }
 
 fn sha256_hex_local(bytes: &[u8]) -> String {
@@ -109,6 +391,51 @@ async fn send_structured_log_dc_text_bounded(
         all_sent &= send_log_dc_text_bounded(dc, chunk, label).await;
     }
     all_sent
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionNativeRunnerResourceFault<'a> {
+    session_id: Option<&'a str>,
+    #[serde(flatten)]
+    diagnostic: NativeRunnerResourceFault,
+}
+
+async fn emit_native_runner_resource_fault(
+    dc: &Arc<RTCDataChannel>,
+    session_id: Option<&str>,
+    stream: NativeRunnerOutputStream,
+    fault: NativeRunnerResourceFaultKind,
+) {
+    debug_log!(
+        "[Runner Output] resource fault stream={} fault={} record_limit_bytes={}",
+        stream.as_str(),
+        fault.as_str(),
+        NATIVE_RUNNER_OUTPUT_RECORD_MAX_BYTES
+    );
+    let envelope = SessionNativeRunnerResourceFault {
+        session_id,
+        diagnostic: NativeRunnerResourceFault::new(
+            stream,
+            fault,
+            NATIVE_RUNNER_OUTPUT_RECORD_MAX_BYTES,
+        ),
+    };
+    let _ = send_log_dc_text_bounded(
+        dc,
+        serde_json::to_string(&envelope).unwrap_or_default(),
+        "runner-resource-fault",
+    )
+    .await;
+}
+
+fn mark_native_runner_output_fault(
+    lifecycle: &Arc<NativeRunnerOutputLifecycle>,
+    fault_notification: &watch::Sender<bool>,
+) {
+    if lifecycle.record_fault() {
+        fault_notification.send_replace(true);
+    }
 }
 
 /// Emit a lifecycle-progress message on the build-log DC so the MCP +
@@ -212,7 +539,564 @@ async fn clear_stale_x11_processes(display_num: u32) {
     }
 }
 
-fn runner_load_command(name: &str, path: &str) -> Result<String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RunnerLoadCommand {
+    wire: String,
+    gpu_terminal: Option<RunnerGpuTerminalExpectation>,
+    module_terminal: Option<RunnerModuleLoadExpectation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RunnerModuleLoadExpectation {
+    request_id: String,
+    module_id: String,
+    artifact_content_hash: String,
+    loader_epoch: u64,
+    artifact_staging_mechanism: String,
+    runner_pid: u32,
+    runner_control_session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RunnerTerminalBarrierExpectation {
+    request_id: String,
+    capability: String,
+    runner_pid: u32,
+    runner_control_session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GpuArtifactLoadExpectation {
+    request_id: String,
+    source_edit_id: String,
+    artifact_content_hash: String,
+    runner_pid: u32,
+    runner_runtime_session_id: String,
+    command_envelope_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RunnerGpuTerminalExpectation {
+    ColdLoad(GpuArtifactLoadExpectation),
+    HotReload(StrictGpuTerminalExpectation),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StrictGpuTerminalExpectation {
+    identity: GpuReloadV2Expectation,
+    runner_pid: u32,
+    runner_runtime_session_id: String,
+    runner_challenge: String,
+    command_envelope_sha256: String,
+    compute_expected_output_contract_hash: Option<String>,
+    compute_expected_output_semantics_hash: Option<String>,
+    compute_expected_output_contract_v2: Option<ComputeExpectedOutputContractV2>,
+    compile_transport_nonce: Option<String>,
+    prepublication_output_oracle_commitment: Option<ReloadOutputOracleProfileCommitment>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct CorrelatedColdGpuLoadReceipt {
+    request_id: String,
+    source_edit_id: String,
+    artifact_content_hash: String,
+    runner_pid: u32,
+    runner_runtime_session_id: String,
+    command_envelope_sha256: String,
+}
+
+impl CorrelatedColdGpuLoadReceipt {
+    pub(crate) fn runner_pid(&self) -> u32 {
+        self.runner_pid
+    }
+
+    pub(crate) fn runner_runtime_session_id(&self) -> &str {
+        &self.runner_runtime_session_id
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct VerifiedHotGpuReloadReceipt {
+    request_id: String,
+    source_edit_id: String,
+    artifact_content_hash: String,
+    full_runtime_proof_id: String,
+    proof_ledger_id: String,
+    proof_json_sha256: String,
+    runner_pid: u32,
+    runner_runtime_session_id: String,
+    runner_challenge: String,
+    command_envelope_sha256: String,
+    compute_expected_output_contract_hash: Option<String>,
+    compute_expected_output_semantics_hash: Option<String>,
+    compute_expected_output_compile_transport_nonce: Option<String>,
+    prepublication_output_oracle_commitment: Option<ReloadOutputOracleProfileCommitment>,
+    proof: serde_json::Value,
+}
+
+#[derive(Debug)]
+struct SignedRuntimeEvidencePublication {
+    build_log_message: String,
+    delivery: ObservedRuntimeEvidenceDelivery,
+}
+
+impl VerifiedHotGpuReloadReceipt {
+    pub(crate) fn runner_pid(&self) -> u32 {
+        self.runner_pid
+    }
+
+    pub(crate) fn runner_runtime_session_id(&self) -> &str {
+        &self.runner_runtime_session_id
+    }
+
+    fn prepublication_output_oracle_commitment_json(&self) -> serde_json::Value {
+        self.prepublication_output_oracle_commitment
+            .as_ref()
+            .map(|commitment| {
+                serde_json::json!({
+                    "schemaVersion": commitment.schema_version,
+                    "candidateArtifactSha256": commitment.candidate_artifact_sha256,
+                    "fissionOutputOracleContractSha256": commitment
+                        .fission_output_oracle_contract_sha256,
+                    "profileBytesSha256": commitment.profile_bytes_sha256,
+                    "editId": commitment.edit_id,
+                })
+            })
+            .unwrap_or(serde_json::Value::Null)
+    }
+
+    fn parent_control_binding_message_with_signer(
+        &self,
+        compile_session_id: &str,
+        compile_request_nonce: &str,
+        signer: &RuntimeEvidenceTransportSigner,
+    ) -> Result<SignedRuntimeEvidencePublication> {
+        if compile_session_id.is_empty() {
+            anyhow::bail!(
+                "parent GPU runtime-proof control binding requires a compile session identity"
+            );
+        }
+        if !gpu_proof_transport_request_nonce_valid(compile_request_nonce) {
+            anyhow::bail!("parent GPU runtime-proof control binding nonce is invalid");
+        }
+        if self
+            .compute_expected_output_compile_transport_nonce
+            .as_deref()
+            .is_some_and(|verified_nonce| verified_nonce != compile_request_nonce)
+        {
+            anyhow::bail!(
+                "parent GPU runtime-proof control binding nonce does not match the verified expected-output contract"
+            );
+        }
+
+        let canonical_proof_sha256 = canonical_gpu_runtime_proof_json_sha256(&self.proof);
+        let parent_pid = std::process::id();
+        let prepublication_output_oracle_commitment =
+            self.prepublication_output_oracle_commitment_json();
+        let mut binding = serde_json::json!({
+            "schemaVersion": PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_SCHEMA_VERSION,
+            "type": PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_TYPE,
+            "proofAuthority": PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_AUTHORITY,
+            "acceptedForGpuHmr": false,
+            "gpuHmrSuccess": false,
+            "canSatisfyRuntimeProof": false,
+            "compileSessionId": compile_session_id,
+            "compileRequestNonce": compile_request_nonce,
+            "requestId": self.request_id,
+            "sourceEditId": self.source_edit_id,
+            "artifactContentHash": self.artifact_content_hash,
+            "fullRuntimeProofId": self.full_runtime_proof_id,
+            "proofLedgerId": self.proof_ledger_id,
+            "protectedProofJsonSha256": self.proof_json_sha256,
+            "canonicalProofSha256": canonical_proof_sha256,
+            "runnerPid": self.runner_pid,
+            "runnerRuntimeSessionId": self.runner_runtime_session_id,
+            "runnerChallenge": self.runner_challenge,
+            "commandEnvelopeSha256": self.command_envelope_sha256,
+            "computeExpectedOutputContractHash": self.compute_expected_output_contract_hash,
+            "computeExpectedOutputSemanticsHash": self.compute_expected_output_semantics_hash,
+            "prepublicationOutputOracleCommitment": prepublication_output_oracle_commitment,
+            "parentPid": parent_pid,
+        });
+        let binding_bytes = canonical_gpu_runtime_proof_json_bytes(&binding);
+        let binding_sha256 = canonical_gpu_runtime_proof_json_sha256(&binding);
+        let transport_receipt = signer
+            .issue(RuntimeEvidenceTransportReceiptInput {
+                runner_process_id: self.runner_pid,
+                runtime_session_id: &self.runner_runtime_session_id,
+                runner_challenge: &self.runner_challenge,
+                transport_session_id: compile_session_id,
+                request_id: &self.request_id,
+                source_edit_id: &self.source_edit_id,
+                subject_identity_namespace:
+                    PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_SUBJECT_SCHEMA_VERSION,
+                subject_canonical_bytes: &binding_bytes,
+                artifact_content_hash: &self.artifact_content_hash,
+                observed_runtime_proof_id: &self.full_runtime_proof_id,
+                observed_proof_ledger_id: &self.proof_ledger_id,
+                observed_payload: &binding_bytes,
+            })
+            .map_err(anyhow::Error::msg)
+            .context("signing parent GPU runtime-proof control binding")?;
+        let transport_envelope =
+            ObservedRuntimeEvidenceEnvelope::new(&binding_bytes, transport_receipt)
+                .map_err(anyhow::Error::msg)
+                .context("building parent GPU runtime-proof control-binding envelope")?;
+        let delivery =
+            ObservedRuntimeEvidenceDelivery::new(&binding_bytes, transport_envelope.clone())
+                .map_err(anyhow::Error::msg)
+                .context("building parent GPU runtime-proof control-binding delivery")?;
+        let binding_object = binding
+            .as_object_mut()
+            .context("parent GPU runtime-proof control binding must remain an object")?;
+        binding_object.insert(
+            "bindingCanonicalSha256".to_string(),
+            serde_json::Value::String(binding_sha256.clone()),
+        );
+        binding_object.insert(
+            "bindingId".to_string(),
+            serde_json::Value::String(format!(
+                "{PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_ID_PREFIX}{binding_sha256}"
+            )),
+        );
+        binding_object.insert(
+            "runtimeEvidenceTransportEnvelope".to_string(),
+            serde_json::to_value(transport_envelope)
+                .context("serializing parent GPU runtime-proof control-binding envelope")?,
+        );
+        let build_log_message = serde_json::to_string(&binding)
+            .context("serializing parent GPU runtime-proof control binding")?;
+        Ok(SignedRuntimeEvidencePublication {
+            build_log_message,
+            delivery,
+        })
+    }
+
+    fn into_parent_verified_proof_message_with_signer(
+        mut self,
+        compile_session_id: &str,
+        signer: &RuntimeEvidenceTransportSigner,
+    ) -> Result<SignedRuntimeEvidencePublication> {
+        if compile_session_id.is_empty() {
+            anyhow::bail!("parent-verified GPU runtime proof requires a compile session identity");
+        }
+        let proof_object = self
+            .proof
+            .as_object_mut()
+            .context("parent-verified GPU runtime proof must be a JSON object")?;
+        if proof_object.contains_key("parentVerification")
+            || proof_object.contains_key("parent_verification")
+        {
+            anyhow::bail!(
+                "protected GPU runtime proof already contains a parent-verification claim"
+            );
+        }
+
+        let canonical_proof_bytes = canonical_gpu_runtime_proof_json_bytes(&self.proof);
+        let original_proof_sha256 = canonical_gpu_runtime_proof_json_sha256(&self.proof);
+        let parent_pid = std::process::id();
+        let prepublication_output_oracle_commitment =
+            self.prepublication_output_oracle_commitment_json();
+        let subject_canonical_bytes = canonical_gpu_runtime_proof_json_bytes(&serde_json::json!([
+            PARENT_VERIFIED_GPU_RUNTIME_PROOF_SUBJECT_SCHEMA_VERSION,
+            compile_session_id,
+            &self.request_id,
+            &self.source_edit_id,
+            &self.artifact_content_hash,
+            &self.full_runtime_proof_id,
+            &self.proof_ledger_id,
+            &self.proof_json_sha256,
+            &original_proof_sha256,
+            self.runner_pid,
+            &self.runner_runtime_session_id,
+            &self.runner_challenge,
+            &self.command_envelope_sha256,
+            &self.compute_expected_output_semantics_hash,
+            &prepublication_output_oracle_commitment,
+            parent_pid,
+            true,
+        ]));
+        let transport_receipt = signer
+            .issue(RuntimeEvidenceTransportReceiptInput {
+                runner_process_id: self.runner_pid,
+                runtime_session_id: &self.runner_runtime_session_id,
+                runner_challenge: &self.runner_challenge,
+                transport_session_id: compile_session_id,
+                request_id: &self.request_id,
+                source_edit_id: &self.source_edit_id,
+                subject_identity_namespace:
+                    PARENT_VERIFIED_GPU_RUNTIME_PROOF_SUBJECT_SCHEMA_VERSION,
+                subject_canonical_bytes: &subject_canonical_bytes,
+                artifact_content_hash: &self.artifact_content_hash,
+                observed_runtime_proof_id: &self.full_runtime_proof_id,
+                observed_proof_ledger_id: &self.proof_ledger_id,
+                observed_payload: &canonical_proof_bytes,
+            })
+            .map_err(anyhow::Error::msg)
+            .context("signing parent-verified GPU runtime proof observation")?;
+        let transport_envelope =
+            ObservedRuntimeEvidenceEnvelope::new(&canonical_proof_bytes, transport_receipt)
+                .map_err(anyhow::Error::msg)
+                .context("building parent runtime-evidence transport envelope")?;
+        let delivery = ObservedRuntimeEvidenceDelivery::new(
+            &canonical_proof_bytes,
+            transport_envelope.clone(),
+        )
+        .map_err(anyhow::Error::msg)
+        .context("building parent runtime-evidence transport delivery")?;
+        let mut verification = serde_json::json!({
+            "schemaVersion": PARENT_VERIFIED_GPU_RUNTIME_PROOF_SCHEMA_VERSION,
+            "proofAuthority": PARENT_VERIFIED_GPU_RUNTIME_PROOF_AUTHORITY,
+            "acceptedForGpuHmr": false,
+            "gpuHmrSuccess": false,
+            "canSatisfyRuntimeProof": false,
+            "parentRecomputed": true,
+            "runtimeContinuationAcknowledged": true,
+            "compileSessionId": compile_session_id,
+            "requestId": self.request_id,
+            "sourceEditId": self.source_edit_id,
+            "artifactContentHash": self.artifact_content_hash,
+            "fullRuntimeProofId": self.full_runtime_proof_id,
+            "proofLedgerId": self.proof_ledger_id,
+            "protectedProofJsonSha256": self.proof_json_sha256,
+            "canonicalProofSha256": original_proof_sha256,
+            "runnerPid": self.runner_pid,
+            "runnerRuntimeSessionId": self.runner_runtime_session_id,
+            "runnerChallenge": self.runner_challenge,
+            "commandEnvelopeSha256": self.command_envelope_sha256,
+            "computeExpectedOutputSemanticsHash": self.compute_expected_output_semantics_hash,
+            "prepublicationOutputOracleCommitment": prepublication_output_oracle_commitment,
+            "parentPid": parent_pid,
+            "runtimeEvidenceTransportEnvelope": transport_envelope,
+        });
+        let verification_hash = canonical_gpu_runtime_proof_json_sha256(&verification);
+        verification["receiptId"] = serde_json::Value::String(format!(
+            "gpu-parent-runtime-proof-receipt:{verification_hash}"
+        ));
+
+        let proof_object = self
+            .proof
+            .as_object_mut()
+            .context("parent-verified GPU runtime proof must remain a JSON object")?;
+        proof_object.insert("parentVerification".to_string(), verification);
+        let build_log_message = serde_json::to_string(&self.proof)
+            .context("serializing parent-verified GPU runtime proof")?;
+        Ok(SignedRuntimeEvidencePublication {
+            build_log_message,
+            delivery,
+        })
+    }
+}
+
+async fn send_observed_runtime_evidence_delivery(
+    ctx: &CompileContext,
+    delivery: &ObservedRuntimeEvidenceDelivery,
+    label: &'static str,
+) -> bool {
+    let serialized = match delivery.serialize_for_transport() {
+        Ok(serialized) => serialized,
+        Err(error) => {
+            debug_log!(
+                "[runtime-evidence-transport] dropped {label}: serialization rejected: {error}"
+            );
+            return false;
+        }
+    };
+    let Some(dc) = ctx
+        .peer_registry
+        .session_data_channel_snapshot_for_connection(
+            &ctx.peer_id,
+            &ctx.pc,
+            RUNTIME_EVIDENCE_TRANSPORT_DATA_CHANNEL_LABEL,
+        )
+    else {
+        debug_log!("[runtime-evidence-transport] dropped {label}: channel unavailable");
+        return false;
+    };
+    send_log_dc_text_bounded(&dc, serialized, label).await
+}
+
+pub(crate) async fn publish_parent_verified_hot_gpu_proof(
+    ctx: &CompileContext,
+    compile_session_id: &str,
+    compile_request_nonce: &str,
+    receipt: VerifiedHotGpuReloadReceipt,
+) -> Result<bool> {
+    let signer = global_runtime_evidence_transport_signer()
+        .map_err(anyhow::Error::msg)
+        .context("loading parent runtime-evidence transport signer")?;
+    let control_publication = receipt.parent_control_binding_message_with_signer(
+        compile_session_id,
+        compile_request_nonce,
+        signer,
+    )?;
+    let proof_publication =
+        receipt.into_parent_verified_proof_message_with_signer(compile_session_id, signer)?;
+    let _ = send_observed_runtime_evidence_delivery(
+        ctx,
+        &control_publication.delivery,
+        "parent-gpu-runtime-proof-control-binding-delivery",
+    )
+    .await;
+    if !send_structured_log_dc_text_bounded(
+        &ctx.log_dc,
+        control_publication.build_log_message,
+        "parent-gpu-runtime-proof-control-binding",
+    )
+    .await
+    {
+        return Ok(false);
+    }
+    let _ = send_observed_runtime_evidence_delivery(
+        ctx,
+        &proof_publication.delivery,
+        "parent-verified-gpu-runtime-proof-delivery",
+    )
+    .await;
+    Ok(send_structured_log_dc_text_bounded(
+        &ctx.log_dc,
+        proof_publication.build_log_message,
+        "parent-verified-gpu-runtime-proof",
+    )
+    .await)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum CorrelatedGpuTerminalReceipt {
+    ColdLoad(CorrelatedColdGpuLoadReceipt),
+    VerifiedHotReload(VerifiedHotGpuReloadReceipt),
+}
+
+impl CorrelatedGpuTerminalReceipt {
+    fn runner_identity(&self) -> (u32, &str) {
+        match self {
+            Self::ColdLoad(receipt) => (receipt.runner_pid, &receipt.runner_runtime_session_id),
+            Self::VerifiedHotReload(receipt) => {
+                (receipt.runner_pid, &receipt.runner_runtime_session_id)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct RunnerExecutionOutcome {
+    gpu_terminal_receipts: Vec<CorrelatedGpuTerminalReceipt>,
+}
+
+impl RunnerExecutionOutcome {
+    pub fn into_single_gpu_terminal(mut self) -> Result<Option<CorrelatedGpuTerminalReceipt>> {
+        match self.gpu_terminal_receipts.len() {
+            0 => Ok(None),
+            1 => Ok(self.gpu_terminal_receipts.pop()),
+            count => anyhow::bail!(
+                "runner returned {count} GPU terminal receipts for a single continuation"
+            ),
+        }
+    }
+
+    #[cfg(test)]
+    fn gpu_terminal_receipts(&self) -> &[CorrelatedGpuTerminalReceipt] {
+        &self.gpu_terminal_receipts
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RunnerCommandProofContext<'a> {
+    runner_pid: u32,
+    runner_runtime_session_id: &'a str,
+    runner_challenge: &'a str,
+    compute_expected_output_contract_hash: Option<&'a str>,
+    compute_expected_output_semantics_hash: Option<&'a str>,
+    compile_transport_nonce: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RunnerModuleLoadProofContext<'a> {
+    runner_pid: u32,
+    runner_control_session_id: &'a str,
+    observed_boundaries: &'a HashMap<String, RunnerModuleLoadResultV1>,
+}
+
+fn prepublication_output_oracle_binding_from_capsule(
+    capsule_token: Option<&str>,
+    proof_runtime_session_id: Option<&str>,
+    artifact_content_hash: &str,
+    source_edit_id: &str,
+    compute_expected_output_semantics_hash: Option<&str>,
+    compile_transport_nonce: Option<&str>,
+) -> Result<(
+    Option<ReloadOutputOracleProfileCommitment>,
+    Option<ComputeExpectedOutputContractV2>,
+)> {
+    let Some(capsule_token) = capsule_token else {
+        if compute_expected_output_semantics_hash.is_some() {
+            anyhow::bail!("prepublication expected-output semantics require a proof capsule");
+        }
+        return Ok((None, None));
+    };
+    let metadata = decode_reload_capsule_metadata_token(capsule_token)
+        .context("strict GPU reload carried an invalid capsule metadata token")?;
+    if !reload_compute_expected_output_semantics_binding_valid(
+        &metadata,
+        compute_expected_output_semantics_hash,
+    ) {
+        anyhow::bail!(
+            "prepublication output-oracle capsule does not match the independently transported expected-output semantics"
+        );
+    }
+    let expected_output_contract_v2 = metadata.compute_expected_output_contract_v2.clone();
+    if let Some(contract) = expected_output_contract_v2.as_ref() {
+        let compile_transport_nonce = compile_transport_nonce.context(
+            "prepublication expected-output contract requires an independent compile transport nonce",
+        )?;
+        if !gpu_proof_transport_request_nonce_valid(compile_transport_nonce)
+            || contract.binding().compile_transport_nonce != compile_transport_nonce
+        {
+            anyhow::bail!(
+                "prepublication expected-output contract does not match the independently transported compile nonce"
+            );
+        }
+    }
+    let Some(commitment) = metadata.output_oracle_profile_commitment.clone() else {
+        if expected_output_contract_v2.is_some() {
+            anyhow::bail!(
+                "prepublication expected-output contract requires an output-oracle commitment"
+            );
+        }
+        return Ok((None, None));
+    };
+    let proof_runtime_session_id = proof_runtime_session_id.context(
+        "prepublication output-oracle commitment requires an independent proof runtime session",
+    )?;
+    if !reload_output_oracle_proof_context_valid_for_reload(
+        &metadata,
+        proof_runtime_session_id,
+        artifact_content_hash,
+        source_edit_id,
+    ) {
+        anyhow::bail!(
+            "prepublication output-oracle commitment does not match the independently transported reload identity"
+        );
+    }
+    Ok((Some(commitment), expected_output_contract_v2))
+}
+
+fn runner_load_command(
+    name: &str,
+    path: &str,
+    strict_hot_reload: bool,
+    proof_context: Option<RunnerCommandProofContext<'_>>,
+) -> Result<RunnerLoadCommand> {
+    runner_load_command_with_module_observation(name, path, strict_hot_reload, proof_context, None)
+}
+
+fn runner_load_command_with_module_observation(
+    name: &str,
+    path: &str,
+    strict_hot_reload: bool,
+    proof_context: Option<RunnerCommandProofContext<'_>>,
+    module_proof_context: Option<RunnerModuleLoadProofContext<'_>>,
+) -> Result<RunnerLoadCommand> {
     let gpu_marker = name
         .strip_prefix("__gpu_device_partial:")
         .map(|rest| ("load_device_partial", rest))
@@ -221,7 +1105,7 @@ fn runner_load_command(name: &str, path: &str) -> Result<String> {
                 .map(|rest| ("load_device", rest))
         });
     if let Some((command, rest)) = gpu_marker {
-        let mut fields = rest.splitn(4, ':');
+        let mut fields = rest.splitn(7, ':');
         let vendor = fields
             .next()
             .filter(|s| matches!(*s, "cuda" | "rocm"))
@@ -234,27 +1118,912 @@ fn runner_load_command(name: &str, path: &str) -> Result<String> {
         let kernels = fields.next().filter(|s| !s.is_empty()).unwrap_or("-");
         let abi = fields.next().filter(|s| !s.is_empty());
         let capsule = fields.next().filter(|s| !s.is_empty());
-        if let Some(capsule) = capsule {
-            Ok(format!(
-                "{} {} {} {} {} {}\n",
-                command,
+        let source_edit_id = fields.next().filter(|s| !s.is_empty());
+        let artifact_content_hash = fields.next().filter(|s| !s.is_empty());
+        let proof_runtime_session_id = fields
+            .next()
+            .filter(|value| !value.is_empty() && *value != "-");
+        if strict_hot_reload && source_edit_id.is_none() {
+            anyhow::bail!("hot GPU reload requires an independent canonical source edit identity");
+        }
+        if strict_hot_reload && artifact_content_hash.is_none() {
+            anyhow::bail!("hot GPU reload requires an expected artifact content hash");
+        }
+        let artifact_content_hash = artifact_content_hash
+            .map(|encoded| {
+                decode_runner_command_token(encoded)
+                    .context("decoding expected GPU artifact content hash")
+            })
+            .transpose()?;
+        if artifact_content_hash.is_some() && source_edit_id.is_none() {
+            anyhow::bail!(
+                "content-bound GPU artifact load requires an independent canonical source edit identity"
+            );
+        }
+        if strict_hot_reload || artifact_content_hash.is_some() {
+            let proof_context = proof_context.context(
+                "content-bound GPU artifact load requires a runner-issued protocol challenge",
+            )?;
+            let source_edit_id = source_edit_id
+                .map(|encoded| {
+                    decode_runner_command_token(encoded)
+                        .context("decoding independent GPU source edit identity")
+                })
+                .transpose()?
+                .context("content-bound GPU artifact load source edit identity missing")?;
+            let artifact_content_hash = artifact_content_hash
+                .clone()
+                .context("content-bound GPU artifact load hash missing")?;
+            let request_id = format!("gpu-reload:request:{}", uuid::Uuid::new_v4().simple());
+            let validated_identity = GpuReloadV2Expectation::new(
+                request_id.clone(),
+                source_edit_id.clone(),
+                artifact_content_hash.clone(),
+            )
+            .map_err(anyhow::Error::msg)?;
+            if strict_hot_reload && capsule.is_none_or(|value| value == "-") {
+                anyhow::bail!(
+                    "hot GPU reload requires a typed proof capsule before runner mutation"
+                );
+            }
+            let proof_runtime_session_id = proof_runtime_session_id
+                .map(|encoded| {
+                    decode_runner_command_token(encoded)
+                        .context("decoding independent GPU proof runtime session identity")
+                })
+                .transpose()?;
+            if capsule.is_some_and(|value| value != "-") && proof_runtime_session_id.is_none() {
+                anyhow::bail!(
+                    "GPU proof capsule requires an independently transported runtime session identity"
+                );
+            }
+            let decoded_kernels = if kernels == "-" {
+                Vec::new()
+            } else {
+                kernels
+                    .split(',')
+                    .map(|kernel| {
+                        decode_runner_command_token(kernel)
+                            .with_context(|| format!("decoding GPU kernel token {kernel:?}"))
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            };
+            let payload = GpuReloadV4Payload::new(
+                request_id.clone(),
+                if strict_hot_reload {
+                    "hot_reload"
+                } else {
+                    "cold_load"
+                },
+                if command == "load_device_partial" {
+                    "partial"
+                } else {
+                    "full"
+                },
                 vendor,
                 path,
-                kernels,
-                abi.unwrap_or("-"),
-                capsule
-            ))
+                artifact_content_hash,
+                decoded_kernels,
+                abi.filter(|value| *value != "-").map(str::to_string),
+                capsule.filter(|value| *value != "-").map(str::to_string),
+                source_edit_id.clone(),
+                proof_runtime_session_id,
+                proof_context
+                    .compute_expected_output_semantics_hash
+                    .map(str::to_string),
+                proof_context.runner_runtime_session_id.to_string(),
+                proof_context.runner_challenge.to_string(),
+            )
+            .map_err(anyhow::Error::msg)?;
+            let encoded = payload.encode().map_err(anyhow::Error::msg)?;
+            let gpu_terminal = if strict_hot_reload {
+                let (prepublication_output_oracle_commitment, compute_expected_output_contract_v2) =
+                    prepublication_output_oracle_binding_from_capsule(
+                        payload.capsule_token.as_deref(),
+                        payload.proof_runtime_session_id.as_deref(),
+                        &payload.artifact_content_hash,
+                        &payload.source_edit_id,
+                        payload.compute_expected_output_semantics_hash.as_deref(),
+                        proof_context.compile_transport_nonce,
+                    )?;
+                RunnerGpuTerminalExpectation::HotReload(StrictGpuTerminalExpectation {
+                    identity: validated_identity,
+                    runner_pid: proof_context.runner_pid,
+                    runner_runtime_session_id: payload.runner_runtime_session_id.clone(),
+                    runner_challenge: payload.runner_challenge.clone(),
+                    command_envelope_sha256: payload.envelope_sha256.clone(),
+                    compute_expected_output_contract_hash: proof_context
+                        .compute_expected_output_contract_hash
+                        .map(str::to_string),
+                    compute_expected_output_semantics_hash: proof_context
+                        .compute_expected_output_semantics_hash
+                        .map(str::to_string),
+                    compute_expected_output_contract_v2,
+                    compile_transport_nonce: proof_context
+                        .compile_transport_nonce
+                        .map(str::to_string),
+                    prepublication_output_oracle_commitment,
+                })
+            } else {
+                RunnerGpuTerminalExpectation::ColdLoad(GpuArtifactLoadExpectation {
+                    request_id: request_id.clone(),
+                    source_edit_id,
+                    artifact_content_hash: payload.artifact_content_hash.clone(),
+                    runner_pid: proof_context.runner_pid,
+                    runner_runtime_session_id: payload.runner_runtime_session_id.clone(),
+                    command_envelope_sha256: payload.envelope_sha256.clone(),
+                })
+            };
+            Ok(RunnerLoadCommand {
+                wire: format!(
+                    "{} {} {}\n",
+                    if strict_hot_reload {
+                        "gpu_reload_v4"
+                    } else {
+                        "gpu_load_v4"
+                    },
+                    request_id,
+                    encoded
+                ),
+                gpu_terminal: Some(gpu_terminal),
+                module_terminal: None,
+            })
+        } else if let Some(capsule) = capsule {
+            Ok(RunnerLoadCommand {
+                wire: format!(
+                    "{} {} {} {} {} {}\n",
+                    command,
+                    vendor,
+                    path,
+                    kernels,
+                    abi.unwrap_or("-"),
+                    capsule
+                ),
+                gpu_terminal: None,
+                module_terminal: None,
+            })
         } else if let Some(abi) = abi {
-            Ok(format!(
-                "{} {} {} {} {}\n",
-                command, vendor, path, kernels, abi
-            ))
+            Ok(RunnerLoadCommand {
+                wire: format!("{} {} {} {} {}\n", command, vendor, path, kernels, abi),
+                gpu_terminal: None,
+                module_terminal: None,
+            })
         } else {
-            Ok(format!("{} {} {} {}\n", command, vendor, path, kernels))
+            Ok(RunnerLoadCommand {
+                wire: format!("{} {} {} {}\n", command, vendor, path, kernels),
+                gpu_terminal: None,
+                module_terminal: None,
+            })
         }
+    } else if let Some(context) = module_proof_context {
+        let artifact_bytes = std::fs::read(path)
+            .with_context(|| format!("reading module artifact for content-bound load: {path}"))?;
+        let artifact_content_hash = format!("sha256:{}", sha256_hex_local(&artifact_bytes));
+        let loader_epoch = if let Some(previous) = context.observed_boundaries.get(name) {
+            if previous.validate().is_err()
+                || previous.module_id != name
+                || previous.runner_pid != context.runner_pid
+                || previous.runner_control_session_id != context.runner_control_session_id
+            {
+                anyhow::bail!(
+                    "previous module-load boundary does not match the live runner incarnation"
+                );
+            }
+            previous
+                .loader_epoch
+                .context("previous module-load boundary omitted its loader epoch")?
+                .checked_add(1)
+                .context("module loader epoch overflow")?
+        } else {
+            1
+        };
+        let request_id = format!(
+            "runner-module-load:request:{}",
+            uuid::Uuid::new_v4().simple()
+        );
+        let module_terminal = RunnerModuleLoadExpectation {
+            request_id: request_id.clone(),
+            module_id: name.to_string(),
+            artifact_content_hash: artifact_content_hash.clone(),
+            loader_epoch,
+            artifact_staging_mechanism: LINUX_SEALED_MEMFD_MAPPING_MECHANISM.to_string(),
+            runner_pid: context.runner_pid,
+            runner_control_session_id: context.runner_control_session_id.to_string(),
+        };
+        Ok(RunnerLoadCommand {
+            wire: format!(
+                "load_v2 {} {} {} {} {}\n",
+                request_id,
+                encode_runner_module_load_token(name),
+                encode_runner_module_load_token(path),
+                artifact_content_hash,
+                loader_epoch,
+            ),
+            gpu_terminal: None,
+            module_terminal: Some(module_terminal),
+        })
     } else {
-        Ok(format!("load {} {}\n", name, path))
+        Ok(RunnerLoadCommand {
+            wire: format!("load {} {}\n", name, path),
+            gpu_terminal: None,
+            module_terminal: None,
+        })
     }
+}
+
+#[cfg(test)]
+fn runner_command_requires_strict_gpu_protocol(command: &RunnerLoadCommand) -> bool {
+    command.gpu_terminal.is_some()
+}
+
+fn module_requires_strict_gpu_protocol(name: &str, strict_hot_reload: bool) -> bool {
+    let marker = name
+        .strip_prefix("__gpu_device_partial:")
+        .or_else(|| name.strip_prefix("__gpu_device:"));
+    let Some(marker) = marker else {
+        return false;
+    };
+    if strict_hot_reload {
+        return true;
+    }
+    marker
+        .splitn(7, ':')
+        .nth(5)
+        .is_some_and(|value| !value.is_empty() && value != "-")
+}
+
+fn strict_gpu_protocol_required_for_batch(
+    modules_to_load: &[(String, String)],
+    strict_hot_reload: bool,
+) -> Result<bool> {
+    let strict_command_count = modules_to_load
+        .iter()
+        .filter(|(name, _)| module_requires_strict_gpu_protocol(name, strict_hot_reload))
+        .count();
+    if strict_command_count > 1 {
+        anyhow::bail!(
+            "runner protocol v5 permits one challenge-bound GPU command per batch; received {strict_command_count}"
+        );
+    }
+    Ok(strict_command_count == 1)
+}
+
+fn runner_has_hot_device_epoch(
+    existing_runner_can_hmr: bool,
+    loaded_device_abi: Option<&str>,
+) -> bool {
+    existing_runner_can_hmr && loaded_device_abi.is_some_and(|abi| !abi.is_empty())
+}
+
+fn runner_has_observed_capability(state: &RunnerState, capability: &str) -> bool {
+    let Some(runner_pid) = state.process.as_ref().and_then(|child| child.id()) else {
+        return false;
+    };
+    let Some(control_session_id) = state.runner_runtime_control_session_id.as_deref() else {
+        return false;
+    };
+    state
+        .observed_runner_capabilities
+        .get(capability)
+        .is_some_and(|observation| {
+            observation.observes_process_capability(capability, runner_pid, control_session_id)
+        })
+}
+
+fn runner_has_independently_attested_module_loads(state: &RunnerState) -> bool {
+    let Some(runner_pid) = state.process.as_ref().and_then(|child| child.id()) else {
+        return false;
+    };
+    !state.observed_module_load_boundaries.is_empty()
+        && state
+            .observed_module_load_boundaries
+            .iter()
+            .all(|(module_id, receipt)| {
+                let Some(loader_epoch) = receipt.loader_epoch else {
+                    return false;
+                };
+                let Some(attestation) = state.module_map_attestations.get(module_id) else {
+                    return false;
+                };
+                let Some(artifact) = state.sealed_module_artifacts.get(module_id) else {
+                    return false;
+                };
+                attestation.matches_loaded_boundary(
+                    &receipt.request_id,
+                    module_id,
+                    &receipt.artifact_content_hash,
+                    loader_epoch,
+                    runner_pid,
+                ) && artifact.content_hash == attestation.artifact_content_hash
+                    && artifact.byte_length == attestation.artifact_byte_length
+                    && artifact.device == attestation.artifact_device
+                    && artifact.inode == attestation.artifact_inode
+            })
+}
+
+fn refresh_runner_module_map_attestations(state: &mut RunnerState) -> bool {
+    let Some(runner_pid) = state.process.as_ref().and_then(|child| child.id()) else {
+        state.module_map_attestations.clear();
+        state.is_hmr_capable = false;
+        return false;
+    };
+    if state.observed_module_load_boundaries.is_empty() {
+        state.module_map_attestations.clear();
+        state.is_hmr_capable = false;
+        return false;
+    }
+
+    let refreshed = state
+        .observed_module_load_boundaries
+        .iter()
+        .map(|(module_id, receipt)| {
+            receipt.validate().map_err(anyhow::Error::msg)?;
+            let loader_epoch = receipt
+                .loader_epoch
+                .context("retained module-load receipt omitted its loader epoch")?;
+            let artifact = state
+                .sealed_module_artifacts
+                .get(module_id)
+                .context("retained module-load receipt has no parent-owned sealed artifact")?;
+            verify_parent_observed_module_mapping(
+                runner_pid,
+                &receipt.request_id,
+                module_id,
+                &receipt.artifact_content_hash,
+                loader_epoch,
+                artifact,
+            )
+            .map(|attestation| (module_id.clone(), attestation))
+            .map_err(anyhow::Error::new)
+        })
+        .collect::<Result<HashMap<_, _>>>();
+
+    match refreshed {
+        Ok(attestations) => {
+            state.module_map_attestations = attestations;
+            runner_has_independently_attested_module_loads(state)
+        }
+        Err(error) => {
+            debug_log!("[Main] Live module-map re-attestation refused runner reuse: {error:#}");
+            state.module_map_attestations.clear();
+            state.is_hmr_capable = false;
+            false
+        }
+    }
+}
+
+fn runner_protocol_handshake_timeout() -> Duration {
+    const DEFAULT_TIMEOUT_MS: u64 = 2_000;
+    const MAX_TIMEOUT_MS: u64 = 30_000;
+    let timeout_ms = std::env::var("SYNTHI_RUNNER_PROTOCOL_HANDSHAKE_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_TIMEOUT_MS)
+        .min(MAX_TIMEOUT_MS);
+    Duration::from_millis(timeout_ms)
+}
+
+async fn wait_for_strict_gpu_protocol_ack(
+    receiver: &mut tokio::sync::broadcast::Receiver<String>,
+    nonce: &str,
+    expected_pid: u32,
+) -> Result<RunnerProtocolAck> {
+    let deadline = tokio::time::Instant::now() + runner_protocol_handshake_timeout();
+    loop {
+        let line = tokio::time::timeout_at(deadline, receiver.recv())
+            .await
+            .context("strict GPU runner protocol acknowledgement timed out")?
+            .context("strict GPU runner protocol output channel closed")?;
+        let Some(ack) = parse_runner_protocol_ack(&line) else {
+            continue;
+        };
+        if ack.nonce != nonce {
+            continue;
+        }
+        if !ack.supports_strict_gpu_reload(nonce, expected_pid) {
+            anyhow::bail!(
+                "strict GPU runner protocol acknowledgement failed version, PID, or capability validation"
+            );
+        }
+        return Ok(ack);
+    }
+}
+
+async fn wait_for_runner_capability_observation(
+    receiver: &mut tokio::sync::broadcast::Receiver<String>,
+    request_id: &str,
+    capability: &str,
+    expected_pid: u32,
+    expected_control_session_id: &str,
+) -> Result<Option<RunnerCapabilityObservationV1>> {
+    let deadline = tokio::time::Instant::now() + runner_protocol_handshake_timeout();
+    loop {
+        let line = match tokio::time::timeout_at(deadline, receiver.recv()).await {
+            Err(_) => return Ok(None),
+            Ok(Ok(line)) => line,
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped))) => {
+                anyhow::bail!("runner capability observation channel lagged by {skipped} records");
+            }
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                anyhow::bail!("runner capability observation channel closed");
+            }
+        };
+        let line = line.trim_start();
+        if !line.starts_with(RUNNER_CAPABILITY_OBSERVATION_PREFIX) {
+            continue;
+        }
+        let observation = parse_runner_capability_observation(line)
+            .context("runner emitted a malformed capability observation")?;
+        if observation.request_id != request_id {
+            continue;
+        }
+        if !observation.matches_expected(
+            request_id,
+            capability,
+            expected_pid,
+            expected_control_session_id,
+        ) {
+            anyhow::bail!(
+                "runner capability observation failed request, capability, PID, or control-session validation"
+            );
+        }
+        return Ok(Some(observation));
+    }
+}
+
+fn strict_gpu_reload_terminal_timeout() -> Duration {
+    const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+    const MAX_TIMEOUT_MS: u64 = 300_000;
+    let timeout_ms = std::env::var("SYNTHI_RUNNER_GPU_RELOAD_TERMINAL_TIMEOUT_MS")
+        .ok()
+        .or_else(|| std::env::var("SYNTHI_GPU_HMR_DEVICE_RELOAD_ACK_TIMEOUT_MS").ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_TIMEOUT_MS)
+        .min(MAX_TIMEOUT_MS);
+    Duration::from_millis(timeout_ms)
+}
+
+async fn wait_for_module_load_terminals(
+    receiver: &mut tokio::sync::broadcast::Receiver<String>,
+    expectations: &[RunnerModuleLoadExpectation],
+) -> Result<Vec<RunnerModuleLoadResultV1>> {
+    wait_for_module_load_terminals_until(receiver, expectations, None).await
+}
+
+fn runner_terminal_barrier_observed(
+    line: &str,
+    barrier: &RunnerTerminalBarrierExpectation,
+) -> Result<bool> {
+    let line = line.trim_start();
+    if !line.starts_with(RUNNER_CAPABILITY_OBSERVATION_PREFIX) {
+        return Ok(false);
+    }
+    let observation = parse_runner_capability_observation(line)
+        .context("runner emitted a malformed terminal-barrier observation")?;
+    if observation.request_id != barrier.request_id {
+        return Ok(false);
+    }
+    if !observation.matches_expected(
+        &barrier.request_id,
+        &barrier.capability,
+        barrier.runner_pid,
+        &barrier.runner_control_session_id,
+    ) {
+        anyhow::bail!(
+            "runner terminal-barrier observation failed request, capability, PID, or control-session validation"
+        );
+    }
+    Ok(true)
+}
+
+async fn wait_for_module_load_terminals_until(
+    receiver: &mut tokio::sync::broadcast::Receiver<String>,
+    expectations: &[RunnerModuleLoadExpectation],
+    barrier: Option<&RunnerTerminalBarrierExpectation>,
+) -> Result<Vec<RunnerModuleLoadResultV1>> {
+    if expectations.is_empty() && barrier.is_none() {
+        return Ok(Vec::new());
+    }
+
+    let mut pending = HashMap::new();
+    let mut pending_modules = HashSet::new();
+    for expectation in expectations {
+        if pending
+            .insert(expectation.request_id.clone(), expectation.clone())
+            .is_some()
+        {
+            anyhow::bail!("runner module-load request IDs are not unique");
+        }
+        if !pending_modules.insert(expectation.module_id.clone()) {
+            anyhow::bail!("runner module-load module IDs are not unique within a batch");
+        }
+    }
+
+    let mut receipts = Vec::with_capacity(expectations.len());
+    let mut completed_requests = HashSet::new();
+    let deadline = tokio::time::Instant::now() + strict_gpu_reload_terminal_timeout();
+    let mut barrier_pending = barrier.is_some();
+    while !pending.is_empty() || barrier_pending {
+        let line = tokio::time::timeout_at(deadline, receiver.recv())
+            .await
+            .with_context(|| {
+                format!(
+                    "runner module-load result timed out with pending requests: {}",
+                    pending.keys().cloned().collect::<Vec<_>>().join(",")
+                )
+            })?
+            .context("runner module-load result channel closed")?;
+        if let Some(barrier) = barrier {
+            if runner_terminal_barrier_observed(&line, barrier)? {
+                if !pending.is_empty() {
+                    anyhow::bail!(
+                        "runner terminal barrier arrived before all module-load terminals"
+                    );
+                }
+                barrier_pending = false;
+                continue;
+            }
+        }
+        let line = line.trim_start();
+        if line.starts_with(RUNNER_MODULE_LOAD_RESULT_PREFIX)
+            && parse_runner_module_load_result(line).is_none()
+        {
+            anyhow::bail!("runner emitted a malformed module-load result");
+        }
+        let Some(result) = parse_runner_module_load_result(line) else {
+            continue;
+        };
+        let Some(expectation) = pending.get(&result.request_id) else {
+            if completed_requests.contains(&result.request_id) {
+                anyhow::bail!(
+                    "runner emitted a duplicate module-load result for request {}",
+                    result.request_id
+                );
+            }
+            continue;
+        };
+        let correlation_matches = result.module_id == expectation.module_id
+            && result.artifact_content_hash == expectation.artifact_content_hash
+            && result.runner_pid == expectation.runner_pid
+            && result.runner_control_session_id == expectation.runner_control_session_id;
+        if !correlation_matches {
+            anyhow::bail!(
+                "runner module-load result identity, process, control session, or artifact hash mismatch for request {}",
+                result.request_id
+            );
+        }
+        if result.status == RunnerModuleLoadStatus::Rejected {
+            anyhow::bail!(
+                "runner rejected content-bound module-load request {}: {}",
+                result.request_id,
+                result.reason.as_deref().unwrap_or("reason missing")
+            );
+        }
+        let applied_identity_matches = result.loaded_artifact_content_hash.as_deref()
+            == Some(expectation.artifact_content_hash.as_str())
+            && result.loader_epoch == Some(expectation.loader_epoch);
+        if !applied_identity_matches {
+            anyhow::bail!(
+                "runner module-load applied result omitted the expected loaded hash or epoch for request {}",
+                result.request_id
+            );
+        }
+        if !result.matches_expected(
+            &expectation.request_id,
+            &expectation.module_id,
+            &expectation.artifact_content_hash,
+            expectation.runner_pid,
+            &expectation.runner_control_session_id,
+            expectation.loader_epoch,
+            &expectation.artifact_staging_mechanism,
+        ) {
+            anyhow::bail!(
+                "runner module-load result did not satisfy the expected applied receipt for request {}",
+                result.request_id
+            );
+        }
+        pending.remove(&result.request_id);
+        completed_requests.insert(result.request_id.clone());
+        receipts.push(result);
+    }
+    Ok(receipts)
+}
+
+async fn wait_for_gpu_command_terminals(
+    receiver: &mut tokio::sync::broadcast::Receiver<String>,
+    expectations: &[RunnerGpuTerminalExpectation],
+) -> Result<Vec<CorrelatedGpuTerminalReceipt>> {
+    wait_for_gpu_command_terminals_until(receiver, expectations, None).await
+}
+
+async fn wait_for_gpu_command_terminals_until(
+    receiver: &mut tokio::sync::broadcast::Receiver<String>,
+    expectations: &[RunnerGpuTerminalExpectation],
+    barrier: Option<&RunnerTerminalBarrierExpectation>,
+) -> Result<Vec<CorrelatedGpuTerminalReceipt>> {
+    if expectations.is_empty() && barrier.is_none() {
+        return Ok(Vec::new());
+    }
+    let mut pending_cold = HashMap::new();
+    let mut pending_hot = HashMap::new();
+    let mut receipts = Vec::with_capacity(expectations.len());
+    let mut completed_requests = HashSet::new();
+    for expectation in expectations {
+        let duplicate = match expectation {
+            RunnerGpuTerminalExpectation::ColdLoad(expectation) => pending_cold
+                .insert(expectation.request_id.clone(), expectation.clone())
+                .is_some(),
+            RunnerGpuTerminalExpectation::HotReload(expectation) => pending_hot
+                .insert(expectation.identity.request_id.clone(), expectation.clone())
+                .is_some(),
+        };
+        if duplicate {
+            anyhow::bail!("GPU runner command request IDs are not unique");
+        }
+    }
+    if pending_cold
+        .keys()
+        .any(|request_id| pending_hot.contains_key(request_id))
+    {
+        anyhow::bail!("cold-load and hot-reload request IDs overlap");
+    }
+
+    let deadline = tokio::time::Instant::now() + strict_gpu_reload_terminal_timeout();
+    let mut barrier_pending = barrier.is_some();
+    while !pending_cold.is_empty() || !pending_hot.is_empty() || barrier_pending {
+        let line = tokio::time::timeout_at(deadline, receiver.recv())
+            .await
+            .with_context(|| {
+                let mut pending = pending_cold.keys().cloned().collect::<Vec<_>>();
+                pending.extend(pending_hot.keys().cloned());
+                format!(
+                    "GPU runner terminal result timed out with pending requests: {}",
+                    pending.join(",")
+                )
+            })?
+            .context("GPU runner terminal output channel closed")?;
+        if let Some(barrier) = barrier {
+            if runner_terminal_barrier_observed(&line, barrier)? {
+                if !pending_cold.is_empty() || !pending_hot.is_empty() {
+                    anyhow::bail!(
+                        "runner terminal barrier arrived before all GPU command terminals"
+                    );
+                }
+                barrier_pending = false;
+                continue;
+            }
+        }
+        let Some(payload) = extract_structured_runner_message(&line) else {
+            continue;
+        };
+        if let Ok(result) = GpuArtifactLoadV1Result::from_json(payload) {
+            let Some(expectation) = pending_cold.get(&result.request_id) else {
+                if completed_requests.contains(&result.request_id) {
+                    anyhow::bail!(
+                        "GPU runner emitted a duplicate cold-load terminal for request {}",
+                        result.request_id
+                    );
+                }
+                continue;
+            };
+            if !result.matches(
+                &result.request_id,
+                &expectation.source_edit_id,
+                &expectation.artifact_content_hash,
+            ) {
+                anyhow::bail!(
+                    "cold GPU artifact load terminal identity or hash mismatch for request {}",
+                    result.request_id
+                );
+            }
+            if result.status == "rejected" {
+                anyhow::bail!(
+                    "cold GPU artifact load rejected request {}: {}",
+                    result.request_id,
+                    result.reason.as_deref().unwrap_or("reason missing")
+                );
+            }
+            receipts.push(CorrelatedGpuTerminalReceipt::ColdLoad(
+                CorrelatedColdGpuLoadReceipt {
+                    request_id: result.request_id.clone(),
+                    source_edit_id: result.source_edit_id.clone(),
+                    artifact_content_hash: result.artifact_content_hash.clone(),
+                    runner_pid: expectation.runner_pid,
+                    runner_runtime_session_id: expectation.runner_runtime_session_id.clone(),
+                    command_envelope_sha256: expectation.command_envelope_sha256.clone(),
+                },
+            ));
+            pending_cold.remove(&result.request_id);
+            completed_requests.insert(result.request_id.clone());
+            continue;
+        }
+        if let Ok(result) = GpuReloadV2Result::from_json(payload) {
+            let Some(expectation) = pending_hot.get(&result.request_id) else {
+                if completed_requests.contains(&result.request_id) {
+                    anyhow::bail!(
+                        "GPU runner emitted a duplicate hot-reload terminal for request {}",
+                        result.request_id
+                    );
+                }
+                continue;
+            };
+            if !result.matches_expectation(&expectation.identity) {
+                anyhow::bail!(
+                    "strict GPU runner terminal identity or artifact hash mismatch for request {}",
+                    result.request_id
+                );
+            }
+            if result.status == "rejected" {
+                anyhow::bail!(
+                    "strict GPU runner reload rejected request {}: {}",
+                    result.request_id,
+                    result.reason.as_deref().unwrap_or("reason missing")
+                );
+            }
+            let (verified_proof, proof_json_sha256, proof) =
+                verify_applied_gpu_terminal_proof(&result, expectation)?;
+            receipts.push(CorrelatedGpuTerminalReceipt::VerifiedHotReload(
+                VerifiedHotGpuReloadReceipt {
+                    request_id: result.request_id.clone(),
+                    source_edit_id: result.source_edit_id.clone(),
+                    artifact_content_hash: result.artifact_content_hash.clone(),
+                    full_runtime_proof_id: verified_proof.proof_id,
+                    proof_ledger_id: verified_proof.ledger_proof_id,
+                    proof_json_sha256,
+                    runner_pid: expectation.runner_pid,
+                    runner_runtime_session_id: expectation.runner_runtime_session_id.clone(),
+                    runner_challenge: expectation.runner_challenge.clone(),
+                    command_envelope_sha256: expectation.command_envelope_sha256.clone(),
+                    compute_expected_output_contract_hash: verified_proof
+                        .compute_expected_output_contract_hash,
+                    compute_expected_output_semantics_hash: verified_proof
+                        .compute_expected_output_semantics_hash,
+                    compute_expected_output_compile_transport_nonce: verified_proof
+                        .compute_expected_output_compile_transport_nonce,
+                    prepublication_output_oracle_commitment: expectation
+                        .prepublication_output_oracle_commitment
+                        .clone(),
+                    proof,
+                },
+            ));
+            pending_hot.remove(&result.request_id);
+            completed_requests.insert(result.request_id.clone());
+            continue;
+        }
+
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
+            continue;
+        };
+        if is_legacy_gpu_terminal_candidate(&value) {
+            anyhow::bail!(
+                "GPU runner emitted an unbound legacy terminal result instead of a correlated envelope"
+            );
+        }
+    }
+    Ok(receipts)
+}
+
+async fn wait_for_runner_command_terminals(
+    mut module_receiver: tokio::sync::broadcast::Receiver<String>,
+    mut gpu_receiver: tokio::sync::broadcast::Receiver<String>,
+    module_expectations: Vec<RunnerModuleLoadExpectation>,
+    gpu_expectations: Vec<RunnerGpuTerminalExpectation>,
+    barrier: Option<RunnerTerminalBarrierExpectation>,
+) -> Result<(
+    Vec<RunnerModuleLoadResultV1>,
+    Vec<CorrelatedGpuTerminalReceipt>,
+)> {
+    tokio::try_join!(
+        wait_for_module_load_terminals_until(
+            &mut module_receiver,
+            &module_expectations,
+            barrier.as_ref(),
+        ),
+        wait_for_gpu_command_terminals_until(
+            &mut gpu_receiver,
+            &gpu_expectations,
+            barrier.as_ref(),
+        ),
+    )
+}
+
+fn verify_applied_gpu_terminal_proof(
+    result: &GpuReloadV2Result,
+    expectation: &StrictGpuTerminalExpectation,
+) -> Result<(VerifiedGpuRuntimeProof, String, serde_json::Value)> {
+    let full_runtime_proof_id = result
+        .full_runtime_proof_id
+        .as_deref()
+        .context("applied strict GPU terminal omitted its runtime proof identity")?;
+    let material = result
+        .runtime_proof_material
+        .as_ref()
+        .context("applied strict GPU terminal omitted its runtime proof material")?;
+    if !material.matches_runner_context(
+        expectation.runner_pid,
+        &expectation.runner_runtime_session_id,
+        &expectation.runner_challenge,
+    ) {
+        anyhow::bail!("strict GPU terminal proof material runner context mismatch");
+    }
+    let proof = material
+        .decode_for(
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            full_runtime_proof_id,
+            &expectation.command_envelope_sha256,
+        )
+        .map_err(anyhow::Error::msg)
+        .context("validating strict GPU terminal proof material")?;
+    if let Some(commitment) = &expectation.prepublication_output_oracle_commitment {
+        let output_oracle_contract = proof
+            .pointer(
+                "/runtimeProofArtifact/acceptanceContract/fission_report/output_oracle_contract",
+            )
+            .context(
+                "strict GPU runtime proof omitted its prepublication output-oracle contract",
+            )?;
+        let observed_contract_sha256 = reload_output_oracle_contract_content_hash(
+            output_oracle_contract,
+        )
+        .context("strict GPU runtime proof output-oracle contract is not content addressable")?;
+        if observed_contract_sha256 != commitment.fission_output_oracle_contract_sha256 {
+            anyhow::bail!(
+                "strict GPU runtime proof output-oracle contract does not match the prepublication capsule commitment"
+            );
+        }
+        let oracle_artifacts = proof
+            .pointer("/runtimeProofArtifact/proofLedger/records/0/oracle_artifacts")
+            .context("strict GPU runtime proof omitted committed output-oracle artifacts")?;
+        if oracle_artifacts
+            .get("profile_bytes_sha256")
+            .and_then(serde_json::Value::as_str)
+            != Some(commitment.profile_bytes_sha256.as_str())
+        {
+            anyhow::bail!(
+                "strict GPU runtime proof output-oracle profile bytes do not match the prepublication capsule commitment"
+            );
+        }
+        if oracle_artifacts
+            .get("fission_output_oracle_contract_sha256")
+            .and_then(serde_json::Value::as_str)
+            != Some(commitment.fission_output_oracle_contract_sha256.as_str())
+        {
+            anyhow::bail!(
+                "strict GPU runtime proof output receipt contract does not match the prepublication capsule commitment"
+            );
+        }
+    }
+    let expected_process_id = expectation.runner_pid.to_string();
+    let verified = verify_strict_gpu_runtime_proof(
+        &proof,
+        &StrictGpuRuntimeProofExpectation {
+            request_id: &expectation.identity.request_id,
+            source_edit_id: &expectation.identity.source_edit_id,
+            artifact_content_hash: &expectation.identity.artifact_content_hash,
+            process_id: &expected_process_id,
+            runtime_session_id: &expectation.runner_runtime_session_id,
+            compute_expected_output_contract_hash: expectation
+                .compute_expected_output_contract_hash
+                .as_deref(),
+            compute_expected_output_semantics_hash: expectation
+                .compute_expected_output_semantics_hash
+                .as_deref(),
+            compute_expected_output_contract_v2: expectation
+                .compute_expected_output_contract_v2
+                .as_ref(),
+            compile_transport_nonce: expectation.compile_transport_nonce.as_deref(),
+            enforce_compute_expected_output_contract_hash: true,
+        },
+    )
+    .context("parent rejected strict GPU runtime proof semantics")?;
+    if verified.proof_id != full_runtime_proof_id {
+        anyhow::bail!("strict GPU terminal proof identity disagrees with parent recomputation");
+    }
+    Ok((verified, material.proof_json_sha256.clone(), proof))
 }
 
 fn full_device_abi_from_marker(name: &str) -> Option<&str> {
@@ -272,12 +2041,16 @@ fn next_full_device_abi(modules_to_load: &[(String, String)]) -> Option<String> 
         .last()
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct LoadedRunnerModuleState {
     module_hashes: ModuleHashes,
     loaded_core_path: Option<String>,
     loaded_gui_path: Option<String>,
     loaded_device_abi: Option<String>,
+}
+
+fn uncommitted_runner_module_state() -> LoadedRunnerModuleState {
+    LoadedRunnerModuleState::default()
 }
 
 fn loaded_runner_module_state(
@@ -294,6 +2067,83 @@ fn loaded_runner_module_state(
             .filter(|abi| !abi.is_empty())
             .map(str::to_string),
     }
+}
+
+async fn invalidate_runner_after_command_failure(state: &mut RunnerState) {
+    if let Some(mut child) = state.process.take() {
+        let _ = child.kill().await;
+    }
+    state.stdin = None;
+    state.module_hashes = ModuleHashes::default();
+    state.loaded_core_path = None;
+    state.loaded_gui_path = None;
+    state.loaded_device_abi = None;
+    state.runner_runtime_control_session_id = None;
+    state.observed_runner_capabilities.clear();
+    state.observed_module_load_boundaries.clear();
+    state.sealed_module_artifacts.clear();
+    state.module_map_attestations.clear();
+    state.gpu_runtime_protocol_process_id = None;
+    state.gpu_runtime_protocol_session_id = None;
+    state.loaded_widget_paths.clear();
+    state.widget_hashes.clear();
+}
+
+async fn invalidate_runner_after_native_output_fault(
+    runner_store: Arc<tokio::sync::Mutex<Option<RunnerState>>>,
+    expected_pid: u32,
+    expected_runtime_control_session_id: String,
+    lifecycle: Arc<NativeRunnerOutputLifecycle>,
+    mut fault_notification: watch::Receiver<bool>,
+) {
+    loop {
+        if *fault_notification.borrow_and_update() {
+            break;
+        }
+        if fault_notification.changed().await.is_err() {
+            return;
+        }
+    }
+    if !lifecycle.process_faulted() {
+        return;
+    }
+
+    let mut guard = runner_store.lock().await;
+    let Some(state) = guard.as_mut() else {
+        return;
+    };
+    let process_matches = state.process.as_ref().and_then(|child| child.id()) == Some(expected_pid);
+    let control_session_matches = state.runner_runtime_control_session_id.as_deref()
+        == Some(expected_runtime_control_session_id.as_str());
+    if process_matches && control_session_matches {
+        invalidate_runner_after_command_failure(state).await;
+    }
+}
+
+async fn reject_faulted_native_runner(state: &mut RunnerState, stage: &str) -> Result<()> {
+    if state.native_output_lifecycle.process_faulted() {
+        invalidate_runner_after_command_failure(state).await;
+        anyhow::bail!("runner native output contract failed before {stage}; process invalidated");
+    }
+    Ok(())
+}
+
+async fn begin_native_runner_execution(state: &mut RunnerState) -> Result<()> {
+    if state.native_output_lifecycle.begin_execution() {
+        return Ok(());
+    }
+    invalidate_runner_after_command_failure(state).await;
+    anyhow::bail!("runner native output contract was not healthy at execution start");
+}
+
+async fn commit_native_runner_execution_success(state: &mut RunnerState) -> Result<()> {
+    if state.native_output_lifecycle.try_commit_execution_success() {
+        return Ok(());
+    }
+    invalidate_runner_after_command_failure(state).await;
+    anyhow::bail!(
+        "runner native output fault won the terminal transition before successful completion"
+    );
 }
 
 fn same_session_full_device_abi_changed(
@@ -475,7 +2325,7 @@ pub async fn handle_runner_execution(
     // it (frame capture via ximagesrc on DISPLAY=:99 is unchanged).
     host_runner_bin_path: Option<String>,
     reload_policy: RunnerReloadPolicy,
-) -> Result<()> {
+) -> Result<RunnerExecutionOutcome> {
     // Unified Runner Logic
     if modules_to_load.is_empty() {
         // Nothing to load — still resolve the frontend's compile() promise.
@@ -491,8 +2341,15 @@ pub async fn handle_runner_execution(
             "runner-done",
         )
         .await;
-        return Ok(());
+        return Ok(RunnerExecutionOutcome::default());
     }
+
+    let mut gpu_terminal_receipts = Vec::new();
+    let mut module_load_receipts = Vec::new();
+    let mut runner_capability_observation = None;
+    let mut pending_sealed_module_artifacts: HashMap<String, ParentSealedModuleArtifact> =
+        HashMap::new();
+    let mut module_map_attestations: Vec<ParentModuleMapAttestationV1> = Vec::new();
 
     let mut guard = ctx.runner_store.lock().await;
 
@@ -546,10 +2403,15 @@ pub async fn handle_runner_execution(
             Some(child) => matches!(child.try_wait(), Ok(None)),
             None => false,
         };
+        let native_output_healthy = !state.native_output_lifecycle.process_faulted();
         let gui_mode_same = state.is_gui == req.is_gui;
         let resolution_same = state.width == req_width && state.height == req_height;
         let session_same =
             runner_session_matches(state.session_id.as_deref(), session_id.as_deref());
+        let content_bound_module_load_observed =
+            runner_has_observed_capability(state, RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY);
+        let module_loads_independently_attested =
+            runner_alive && refresh_runner_module_map_attestations(state);
         if !reload_policy.allow_existing_runner_reload {
             pending_abi_breaking_restart_marker = full_device_abi_restart_marker(
                 state.session_id.as_deref(),
@@ -558,19 +2420,22 @@ pub async fn handle_runner_execution(
                 next_device_abi.as_deref(),
             );
         }
-        debug_log!("[Main] Existing runner: alive={}, is_gui={}, gui_mode_same={}, resolution_same={}, session_same={}, current_session={:?}, requested_session={:?}, has_on_update={}, reload_policy_allow_existing={}, reload_policy_reasons={}",
-            runner_alive, state.is_gui, gui_mode_same, resolution_same, session_same, state.session_id.as_deref(), session_id.as_deref(), has_on_update, reload_policy.allow_existing_runner_reload, reload_policy.reason_summary());
+        debug_log!("[Main] Existing runner: alive={}, native_output_healthy={}, content_bound_module_load_observed={}, module_loads_independently_attested={}, is_gui={}, gui_mode_same={}, resolution_same={}, session_same={}, current_session={:?}, requested_session={:?}, has_on_update={}, reload_policy_allow_existing={}, reload_policy_reasons={}",
+            runner_alive, native_output_healthy, content_bound_module_load_observed, module_loads_independently_attested, state.is_gui, gui_mode_same, resolution_same, session_same, state.session_id.as_deref(), session_id.as_deref(), has_on_update, reload_policy.allow_existing_runner_reload, reload_policy.reason_summary());
 
         // HMR enabled: reuse running process when alive AND GUI mode and
         // resolution/session identity match. Reusing a runner across
         // sessions can send HMR commands into the previous workspace.
-        runner_reuse_allowed(
-            &reload_policy,
-            runner_alive,
-            gui_mode_same,
-            resolution_same,
-            session_same,
-        )
+        native_output_healthy
+            && content_bound_module_load_observed
+            && module_loads_independently_attested
+            && runner_reuse_allowed(
+                &reload_policy,
+                runner_alive,
+                gui_mode_same,
+                resolution_same,
+                session_same,
+            )
     } else {
         false
     };
@@ -1104,6 +2969,7 @@ pub async fn handle_runner_execution(
         )
         .await;
 
+        let runner_runtime_control_session_id = generate_runner_runtime_control_session_id()?;
         let mut cmd = Command::new(&runner_path);
         cmd.env("DISPLAY", &wsl_display_str)
             .env(
@@ -1116,6 +2982,11 @@ pub async fn handle_runner_execution(
             // the worker's own Xvfb on :99 and uses binary IPC instead of the text
             // protocol the worker sends.
             .env("SYNTHI_UNSAFE_INPROCESS", "1")
+            .env(
+                RUNNER_RUNTIME_CONTROL_SESSION_ENV,
+                &runner_runtime_control_session_id,
+            )
+            .env(RUNNER_STDOUT_MODE_ENV, RUNNER_STDOUT_TEXT_MODE_V1)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1220,21 +3091,43 @@ pub async fn handle_runner_execution(
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
         let stdin = Arc::new(tokio::sync::Mutex::new(child.stdin.take().unwrap()));
+        let native_output_lifecycle = Arc::new(NativeRunnerOutputLifecycle::new());
+        let (native_output_fault_notification, native_output_fault_receiver) =
+            watch::channel(false);
+        let spawned_runner_pid = child.id();
 
-        let (log_tx, _) = tokio::sync::broadcast::channel::<String>(100);
+        let (log_tx, _) =
+            tokio::sync::broadcast::channel::<String>(NATIVE_RUNNER_GENERAL_CHANNEL_CAPACITY);
         let log_tx_clone = log_tx.clone();
+        let (protocol_tx, _) =
+            tokio::sync::broadcast::channel::<String>(NATIVE_RUNNER_PROTOCOL_CHANNEL_CAPACITY);
+        debug_assert!(NATIVE_RUNNER_GENERAL_CHANNEL_MAX_RETAINED_BYTES <= 128 * 1024 * 1024);
+        debug_assert!(NATIVE_RUNNER_PROTOCOL_CHANNEL_MAX_RETAINED_BYTES <= 64 * 1024 * 1024);
+        let protocol_tx_stdout = protocol_tx.clone();
+        let protocol_tx_stderr = protocol_tx.clone();
 
         // Forward stdout/stderr to log_dc
         let ctx_clone = ctx.clone();
         let session_id_clone = session_id.clone();
+        let stdout_lifecycle = native_output_lifecycle.clone();
+        let stdout_fault_notification = native_output_fault_notification.clone();
 
         // Stdout Reader
         tokio::spawn(async move {
-            let mut reader = BufReader::new(stdout).lines();
-            while let Ok(line) = reader.next_line().await {
-                match line {
-                    Some(l) => {
-                        let _ = log_tx_clone.send(l.clone());
+            let mut reader =
+                BoundedUtf8RecordReader::new(stdout, NATIVE_RUNNER_OUTPUT_RECORD_MAX_BYTES);
+            loop {
+                match reader.next_event().await {
+                    Ok(Some(NativeRunnerOutputEvent::Record(l))) => {
+                        let route =
+                            route_runner_output_line(&l, &log_tx_clone, &protocol_tx_stdout);
+                        if route != RunnerOutputRoute::General {
+                            debug_log!(
+                                "[Runner Protocol] {}",
+                                protected_runner_line_log_summary(&l)
+                            );
+                            continue;
+                        }
                         // Send to frontend
                         let payload = serde_json::json!({
                            "sessionId": session_id_clone,
@@ -1248,7 +3141,34 @@ pub async fn handle_runner_execution(
                         )
                         .await;
                     }
-                    None => break,
+                    Ok(Some(NativeRunnerOutputEvent::ResourceFault(fault))) => {
+                        mark_native_runner_output_fault(
+                            &stdout_lifecycle,
+                            &stdout_fault_notification,
+                        );
+                        emit_native_runner_resource_fault(
+                            &ctx_clone.log_dc,
+                            session_id_clone.as_deref(),
+                            NativeRunnerOutputStream::Stdout,
+                            fault,
+                        )
+                        .await;
+                    }
+                    Ok(None) => break,
+                    Err(_) => {
+                        mark_native_runner_output_fault(
+                            &stdout_lifecycle,
+                            &stdout_fault_notification,
+                        );
+                        emit_native_runner_resource_fault(
+                            &ctx_clone.log_dc,
+                            session_id_clone.as_deref(),
+                            NativeRunnerOutputStream::Stdout,
+                            NativeRunnerResourceFaultKind::OutputReadFailed,
+                        )
+                        .await;
+                        break;
+                    }
                 }
             }
         });
@@ -1256,15 +3176,26 @@ pub async fn handle_runner_execution(
         let ctx_clone2 = ctx.clone();
         let session_id_clone2 = session_id.clone();
         let log_tx_clone2 = log_tx.clone();
+        let stderr_lifecycle = native_output_lifecycle.clone();
+        let stderr_fault_notification = native_output_fault_notification.clone();
 
         // Stderr Reader
         tokio::spawn(async move {
-            let mut reader = BufReader::new(stderr).lines();
-            while let Ok(line) = reader.next_line().await {
-                match line {
-                    Some(l) => {
+            let mut reader =
+                BoundedUtf8RecordReader::new(stderr, NATIVE_RUNNER_OUTPUT_RECORD_MAX_BYTES);
+            loop {
+                match reader.next_event().await {
+                    Ok(Some(NativeRunnerOutputEvent::Record(l))) => {
+                        let route =
+                            route_runner_output_line(&l, &log_tx_clone2, &protocol_tx_stderr);
+                        if route != RunnerOutputRoute::General {
+                            debug_log!(
+                                "[Runner Protocol] {}",
+                                protected_runner_line_log_summary(&l)
+                            );
+                            continue;
+                        }
                         debug_log!("[Runner Stderr] {}", l);
-                        let _ = log_tx_clone2.send(l.clone());
 
                         if let Some(structured) = extract_structured_runner_message(&l) {
                             if serde_json::from_str::<serde_json::Value>(structured).is_ok() {
@@ -1295,24 +3226,49 @@ pub async fn handle_runner_execution(
                         )
                         .await;
                     }
-                    None => break,
+                    Ok(Some(NativeRunnerOutputEvent::ResourceFault(fault))) => {
+                        mark_native_runner_output_fault(
+                            &stderr_lifecycle,
+                            &stderr_fault_notification,
+                        );
+                        emit_native_runner_resource_fault(
+                            &ctx_clone2.log_dc,
+                            session_id_clone2.as_deref(),
+                            NativeRunnerOutputStream::Stderr,
+                            fault,
+                        )
+                        .await;
+                    }
+                    Ok(None) => break,
+                    Err(_) => {
+                        mark_native_runner_output_fault(
+                            &stderr_lifecycle,
+                            &stderr_fault_notification,
+                        );
+                        emit_native_runner_resource_fault(
+                            &ctx_clone2.log_dc,
+                            session_id_clone2.as_deref(),
+                            NativeRunnerOutputStream::Stderr,
+                            NativeRunnerResourceFaultKind::OutputReadFailed,
+                        )
+                        .await;
+                        break;
+                    }
                 }
             }
         });
+        drop(native_output_fault_notification);
 
-        let loaded_module_state = loaded_runner_module_state(
-            &new_hashes,
-            &core_lib_path,
-            &gui_lib_path,
-            next_device_abi.as_deref(),
-        );
+        let uncommitted_module_state = uncommitted_runner_module_state();
         *guard = Some(RunnerState {
             process: Some(child),
             stdin: Some(stdin.clone()),
             output_tx: log_tx,
+            protocol_tx,
+            native_output_lifecycle: native_output_lifecycle.clone(),
             session_id: session_id.clone(),
             is_gui: req.is_gui,
-            is_hmr_capable: has_on_update,
+            is_hmr_capable: false,
             hmr_capability: None,
             xvfb_process,
             gst_pipeline,
@@ -1323,13 +3279,30 @@ pub async fn handle_runner_execution(
             height: req_height,
             wsl_display_str: wsl_display_str.clone(),
             gst_display_str,
-            module_hashes: loaded_module_state.module_hashes,
-            loaded_core_path: loaded_module_state.loaded_core_path,
-            loaded_gui_path: loaded_module_state.loaded_gui_path,
-            loaded_device_abi: loaded_module_state.loaded_device_abi,
+            module_hashes: uncommitted_module_state.module_hashes,
+            loaded_core_path: uncommitted_module_state.loaded_core_path,
+            loaded_gui_path: uncommitted_module_state.loaded_gui_path,
+            loaded_device_abi: uncommitted_module_state.loaded_device_abi,
+            runner_runtime_control_session_id: Some(runner_runtime_control_session_id.clone()),
+            observed_runner_capabilities: HashMap::new(),
+            observed_module_load_boundaries: HashMap::new(),
+            sealed_module_artifacts: HashMap::new(),
+            module_map_attestations: HashMap::new(),
+            gpu_runtime_protocol_process_id: None,
+            gpu_runtime_protocol_session_id: None,
             loaded_widget_paths: HashMap::new(),
             widget_hashes: HashMap::new(),
         });
+
+        if let Some(expected_pid) = spawned_runner_pid {
+            tokio::spawn(invalidate_runner_after_native_output_fault(
+                ctx.runner_store.clone(),
+                expected_pid,
+                runner_runtime_control_session_id.clone(),
+                native_output_lifecycle,
+                native_output_fault_receiver,
+            ));
+        }
 
         // Set up xdotool input channel for GUI apps (only on fresh start, not reuse)
         if req.is_gui && sdl_tx_opt.is_none() {
@@ -1431,7 +3404,17 @@ pub async fn handle_runner_execution(
         // reloads — see UNIVERSAL_SPLIT_PROMPT's HOST RUNNER GENERATION
         // section. So we send the same commands in both modes, no
         // branching needed.
+        begin_native_runner_execution(state).await?;
+        reject_faulted_native_runner(state, "module command delivery").await?;
         if let Some(stdin_arc) = &state.stdin {
+            let strict_gpu_hot_reload = runner_has_hot_device_epoch(
+                existing_runner_can_hmr,
+                state.loaded_device_abi.as_deref(),
+            );
+            let requires_strict_gpu_protocol =
+                strict_gpu_protocol_required_for_batch(&modules_to_load, strict_gpu_hot_reload)?;
+            let mut protocol_output_receiver =
+                requires_strict_gpu_protocol.then(|| state.protocol_tx.subscribe());
             // Check if process is still alive before sending anything.
             // Capture the exit status (signal vs code) so that the bail
             // message below can carry it into the frontend's
@@ -1450,6 +3433,237 @@ pub async fn handle_runner_execution(
             }
 
             if process_alive {
+                let expected_pid = state
+                    .process
+                    .as_ref()
+                    .and_then(|child| child.id())
+                    .context("runner capability observation requires a live PID")?;
+                let expected_control_session_id = state
+                    .runner_runtime_control_session_id
+                    .as_deref()
+                    .context("runner capability observation requires a control session")?
+                    .to_string();
+                let capability_request_id = format!(
+                    "runner-capability:request:{}",
+                    uuid::Uuid::new_v4().simple()
+                );
+                let capability_command = format!(
+                    "observe_capability_v1 {} {}\n",
+                    capability_request_id, RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY
+                );
+                let mut capability_receiver = state.protocol_tx.subscribe();
+                let observed_capability = async {
+                    {
+                        let mut stdin = stdin_arc.lock().await;
+                        debug_log!(
+                            "[Main] Sending runner capability observation {}",
+                            runner_command_log_summary(capability_command.trim_end())
+                        );
+                        stdin
+                            .write_all(capability_command.as_bytes())
+                            .await
+                            .context("writing runner capability observation request")?;
+                        stdin
+                            .flush()
+                            .await
+                            .context("flushing runner capability observation request")?;
+                    }
+                    wait_for_runner_capability_observation(
+                        &mut capability_receiver,
+                        &capability_request_id,
+                        RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
+                        expected_pid,
+                        &expected_control_session_id,
+                    )
+                    .await
+                }
+                .await;
+                let observed_capability = match observed_capability {
+                    Ok(Some(observation)) => Some(observation),
+                    Ok(None) if existing_runner_can_hmr => {
+                        invalidate_runner_after_command_failure(state).await;
+                        anyhow::bail!(
+                            "warm runner did not re-observe its content-bound module-load capability"
+                        );
+                    }
+                    Ok(None) => None,
+                    Err(error) => {
+                        invalidate_runner_after_command_failure(state).await;
+                        return Err(error.context(
+                            "runner capability observation failed before loaded module state publication",
+                        ));
+                    }
+                };
+                runner_capability_observation = observed_capability.clone();
+
+                let strict_protocol_ack = if requires_strict_gpu_protocol {
+                    let handshake_result = async {
+                        let expected_pid = state
+                            .process
+                            .as_ref()
+                            .and_then(|child| child.id())
+                            .context("strict GPU runner process has no PID")?;
+                        let nonce = uuid::Uuid::new_v4().simple().to_string();
+                        let handshake = format!(
+                            "handshake_v5 {} {} {} {} {} {} {} {}\n",
+                            nonce,
+                            RUNNER_PROTOCOL_CURRENT_VERSION,
+                            RUNNER_PROTOCOL_MIN_SUPPORTED_VERSION,
+                            GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY,
+                            GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY,
+                            GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
+                            GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
+                            GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY,
+                        );
+                        {
+                            let mut stdin = stdin_arc.lock().await;
+                            debug_log!(
+                                "[Main] Sending strict GPU handshake {}",
+                                runner_command_log_summary(handshake.trim_end())
+                            );
+                            stdin
+                                .write_all(handshake.as_bytes())
+                                .await
+                                .context("writing strict GPU runner protocol handshake")?;
+                            stdin
+                                .flush()
+                                .await
+                                .context("flushing strict GPU runner protocol handshake")?;
+                        }
+                        wait_for_strict_gpu_protocol_ack(
+                            protocol_output_receiver
+                                .as_mut()
+                                .expect("strict output receiver"),
+                            &nonce,
+                            expected_pid,
+                        )
+                        .await
+                    }
+                    .await;
+                    match handshake_result {
+                        Ok(ack) => Some(ack),
+                        Err(error) => {
+                            invalidate_runner_after_command_failure(state).await;
+                            return Err(error.context(
+                                "strict GPU runner handshake failed before loaded module state publication",
+                            ));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let proof_context =
+                    strict_protocol_ack
+                        .as_ref()
+                        .map(|ack| RunnerCommandProofContext {
+                            runner_pid: ack.runner_pid,
+                            runner_runtime_session_id: &ack.runner_runtime_session_id,
+                            runner_challenge: &ack.runner_challenge,
+                            compute_expected_output_contract_hash: req
+                                .compute_expected_output_contract_hash
+                                .as_deref(),
+                            compute_expected_output_semantics_hash: req
+                                .compute_expected_output_semantics
+                                .as_ref()
+                                .map(|semantics| semantics.semantics_hash()),
+                            compile_transport_nonce: req.gpu_proof_transport_nonce.as_deref(),
+                        });
+                let module_proof_context =
+                    observed_capability
+                        .as_ref()
+                        .map(|_| RunnerModuleLoadProofContext {
+                            runner_pid: expected_pid,
+                            runner_control_session_id: expected_control_session_id.as_str(),
+                            observed_boundaries: &state.observed_module_load_boundaries,
+                        });
+                let mut load_commands = Vec::with_capacity(modules_to_load.len());
+                for (name, path) in &modules_to_load {
+                    let candidate = runner_load_command_with_module_observation(
+                        name,
+                        path,
+                        strict_gpu_hot_reload,
+                        proof_context,
+                        module_proof_context,
+                    )?;
+                    let command = if let Some(expectation) = candidate.module_terminal.as_ref() {
+                        let artifact = create_parent_sealed_module_artifact(
+                            std::path::Path::new(path),
+                            &expectation.artifact_content_hash,
+                        )
+                        .with_context(|| {
+                            format!(
+                                "creating immutable parent-owned module object for opaque module {}",
+                                name
+                            )
+                        })?;
+                        let peer_path = artifact.peer_path();
+                        let command = runner_load_command_with_module_observation(
+                            name,
+                            &peer_path.to_string_lossy(),
+                            strict_gpu_hot_reload,
+                            proof_context,
+                            module_proof_context,
+                        )?;
+                        if command
+                            .module_terminal
+                            .as_ref()
+                            .is_none_or(|sealed_expectation| {
+                                sealed_expectation.artifact_content_hash
+                                    != expectation.artifact_content_hash
+                                    || sealed_expectation.loader_epoch != expectation.loader_epoch
+                            })
+                        {
+                            anyhow::bail!(
+                                "sealed module object changed the content-bound load expectation"
+                            );
+                        }
+                        if pending_sealed_module_artifacts
+                            .insert(name.clone(), artifact)
+                            .is_some()
+                        {
+                            anyhow::bail!("module-load batch contains duplicate opaque module IDs");
+                        }
+                        command
+                    } else {
+                        candidate
+                    };
+                    load_commands.push(command);
+                }
+                let module_terminal_expectations = load_commands
+                    .iter()
+                    .filter_map(|command| command.module_terminal.clone())
+                    .collect::<Vec<_>>();
+                let gpu_terminal_expectations = load_commands
+                    .iter()
+                    .filter_map(|command| command.gpu_terminal.clone())
+                    .collect::<Vec<_>>();
+                let terminal_barrier =
+                    observed_capability
+                        .as_ref()
+                        .map(|_| RunnerTerminalBarrierExpectation {
+                            request_id: format!(
+                                "runner-capability:request:{}",
+                                uuid::Uuid::new_v4().simple()
+                            ),
+                            capability: RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY.to_string(),
+                            runner_pid: expected_pid,
+                            runner_control_session_id: expected_control_session_id.clone(),
+                        });
+                let mut terminal_collector = if module_terminal_expectations.is_empty()
+                    && gpu_terminal_expectations.is_empty()
+                    && terminal_barrier.is_none()
+                {
+                    None
+                } else {
+                    Some(tokio::spawn(wait_for_runner_command_terminals(
+                        state.protocol_tx.subscribe(),
+                        state.protocol_tx.subscribe(),
+                        module_terminal_expectations,
+                        gpu_terminal_expectations,
+                        terminal_barrier.clone(),
+                    )))
+                };
+
                 let mut stdin = stdin_arc.lock().await;
                 let mut send_failed = false;
 
@@ -1464,9 +3678,12 @@ pub async fn handle_runner_execution(
                 //
                 // Protocol version 1: set_session + load + quit. That's
                 // all the runner needs to speak today.
-                {
+                if !requires_strict_gpu_protocol {
                     let handshake = "handshake 1\n";
-                    debug_log!("[Main] Sending handshake: {}", handshake.trim());
+                    debug_log!(
+                        "[Main] Sending runner handshake {}",
+                        runner_command_log_summary(handshake.trim_end())
+                    );
                     if let Err(e) = stdin.write_all(handshake.as_bytes()).await {
                         eprintln!("[Main] Failed to write handshake to runner stdin: {}", e);
                         send_failed = true;
@@ -1479,7 +3696,10 @@ pub async fn handle_runner_execution(
                 if !send_failed {
                     if let Some(ref sid) = session_id {
                         let session_cmd = format!("set_session {}\n", sid);
-                        debug_log!("[Main] Sending session to runner: {}", session_cmd.trim());
+                        debug_log!(
+                            "[Main] Sending runner session command {}",
+                            runner_command_log_summary(session_cmd.trim_end())
+                        );
                         if let Err(e) = stdin.write_all(session_cmd.as_bytes()).await {
                             eprintln!("[Main] Failed to write set_session to runner stdin: {}", e);
                             send_failed = true;
@@ -1489,13 +3709,32 @@ pub async fn handle_runner_execution(
 
                 if !send_failed {
                     // Send all load commands back-to-back (no sleep between them)
-                    for (name, path) in &modules_to_load {
-                        let cmd = runner_load_command(name, path)?;
-                        debug_log!("[Main] Sending command to runner: {}", cmd.trim());
-                        if let Err(e) = stdin.write_all(cmd.as_bytes()).await {
+                    for cmd in &load_commands {
+                        debug_log!(
+                            "[Main] Sending runner load command {}",
+                            runner_command_log_summary(cmd.wire.trim_end())
+                        );
+                        if let Err(e) = stdin.write_all(cmd.wire.as_bytes()).await {
                             eprintln!("[Main] Failed to write to runner stdin: {}", e);
                             send_failed = true;
                             break;
+                        }
+                    }
+                }
+
+                if !send_failed {
+                    if let Some(barrier) = &terminal_barrier {
+                        let barrier_command = format!(
+                            "observe_capability_v1 {} {}\n",
+                            barrier.request_id, barrier.capability
+                        );
+                        debug_log!(
+                            "[Main] Sending runner terminal barrier {}",
+                            runner_command_log_summary(barrier_command.trim_end())
+                        );
+                        if let Err(error) = stdin.write_all(barrier_command.as_bytes()).await {
+                            eprintln!("[Main] Failed to write runner terminal barrier: {}", error);
+                            send_failed = true;
                         }
                     }
                 }
@@ -1509,21 +3748,90 @@ pub async fn handle_runner_execution(
                 }
 
                 if send_failed {
-                    // Runner process likely crashed - report error to frontend
+                    drop(stdin);
+                    if let Some(collector) = terminal_collector.take() {
+                        collector.abort();
+                    }
+                    invalidate_runner_after_command_failure(state).await;
                     anyhow::bail!("Runner process stdin write failed (process may have crashed)");
                 }
 
-                if let Some(child) = state.process.as_mut() {
-                    if let Some(status) =
-                        probe_runner_exit_after_reload(child, post_reload_crash_probe_duration())
-                            .await
-                    {
-                        anyhow::bail!(
-                            "Runner process exited while applying reload commands ({})",
-                            status
-                        );
+                drop(stdin);
+                if let Some(collector) = terminal_collector.take() {
+                    match collector.await {
+                        Ok(Ok((module_receipts, gpu_receipts))) => {
+                            module_load_receipts.extend(module_receipts);
+                            gpu_terminal_receipts.extend(gpu_receipts);
+                        }
+                        Ok(Err(error)) => {
+                            invalidate_runner_after_command_failure(state).await;
+                            return Err(error.context(
+                                "runner terminal collection failed before loaded module state publication",
+                            ));
+                        }
+                        Err(error) => {
+                            invalidate_runner_after_command_failure(state).await;
+                            return Err(anyhow::Error::new(error).context(
+                                "runner terminal collector task failed before loaded module state publication",
+                            ));
+                        }
                     }
                 }
+                if module_load_receipts.len() != pending_sealed_module_artifacts.len() {
+                    invalidate_runner_after_command_failure(state).await;
+                    anyhow::bail!(
+                        "runner module-load receipts did not cover every parent-owned sealed object"
+                    );
+                }
+                for receipt in &module_load_receipts {
+                    let artifact = pending_sealed_module_artifacts
+                        .get(&receipt.module_id)
+                        .context("module-load receipt has no parent-owned sealed object")?;
+                    let loader_epoch = receipt
+                        .loader_epoch
+                        .context("module-load receipt omitted its loader epoch")?;
+                    let attestation = verify_parent_observed_module_mapping(
+                        expected_pid,
+                        &receipt.request_id,
+                        &receipt.module_id,
+                        &receipt.artifact_content_hash,
+                        loader_epoch,
+                        artifact,
+                    )
+                    .with_context(|| {
+                        format!(
+                            "independently attesting mapped bytes for opaque module {}",
+                            receipt.module_id
+                        )
+                    });
+                    match attestation {
+                        Ok(attestation) => module_map_attestations.push(attestation),
+                        Err(error) => {
+                            invalidate_runner_after_command_failure(state).await;
+                            return Err(error);
+                        }
+                    }
+                }
+                if gpu_terminal_receipts.len() > 1 {
+                    invalidate_runner_after_command_failure(state).await;
+                    anyhow::bail!(
+                        "runner returned multiple GPU terminal receipts before state publication"
+                    );
+                }
+
+                let post_command_exit = if let Some(child) = state.process.as_mut() {
+                    probe_runner_exit_after_reload(child, post_reload_crash_probe_duration()).await
+                } else {
+                    None
+                };
+                if let Some(status) = post_command_exit {
+                    invalidate_runner_after_command_failure(state).await;
+                    anyhow::bail!(
+                        "Runner process exited while applying reload commands ({})",
+                        status
+                    );
+                }
+                reject_faulted_native_runner(state, "loaded module state publication").await?;
             } else {
                 anyhow::bail!(
                     "Runner process exited before module loading could begin ({})",
@@ -1532,7 +3840,46 @@ pub async fn handle_runner_execution(
             }
         }
 
-        // Update RunnerState
+        let mut attestations_by_module = module_map_attestations
+            .into_iter()
+            .map(|attestation| (attestation.module_id.clone(), attestation))
+            .collect::<HashMap<_, _>>();
+        let publication_validation = (|| -> Result<()> {
+            if module_load_receipts.len() != pending_sealed_module_artifacts.len()
+                || module_load_receipts.len() != attestations_by_module.len()
+            {
+                anyhow::bail!("module-load evidence cardinality changed before state publication");
+            }
+            for receipt in &module_load_receipts {
+                let module_id = &receipt.module_id;
+                if !pending_sealed_module_artifacts.contains_key(module_id) {
+                    anyhow::bail!("publishing module boundary without its sealed artifact");
+                }
+                if !attestations_by_module.contains_key(module_id) {
+                    anyhow::bail!("publishing module boundary without parent mapping attestation");
+                }
+                let replace = state
+                    .observed_module_load_boundaries
+                    .get(module_id)
+                    .and_then(|previous| previous.loader_epoch)
+                    .is_none_or(|previous_epoch| {
+                        receipt
+                            .loader_epoch
+                            .is_some_and(|epoch| epoch > previous_epoch)
+                    });
+                if !replace {
+                    anyhow::bail!("module-load evidence did not advance the retained loader epoch");
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = publication_validation {
+            invalidate_runner_after_command_failure(state).await;
+            return Err(error
+                .context("runner evidence publication failed after module mapping attestation"));
+        }
+
+        // Publish only after every receipt, sealed object, and mapping attestation agrees.
         let loaded_module_state = loaded_runner_module_state(
             &new_hashes,
             &core_lib_path,
@@ -1543,6 +3890,51 @@ pub async fn handle_runner_execution(
         state.loaded_core_path = loaded_module_state.loaded_core_path;
         state.loaded_gui_path = loaded_module_state.loaded_gui_path;
         state.loaded_device_abi = loaded_module_state.loaded_device_abi;
+        if let Some(observation) = runner_capability_observation {
+            state
+                .observed_runner_capabilities
+                .insert(observation.capability.clone(), observation);
+        }
+        for receipt in module_load_receipts {
+            let module_id = receipt.module_id.clone();
+            let replace = state
+                .observed_module_load_boundaries
+                .get(&module_id)
+                .and_then(|previous| previous.loader_epoch)
+                .is_none_or(|previous_epoch| {
+                    receipt
+                        .loader_epoch
+                        .is_some_and(|epoch| epoch > previous_epoch)
+                });
+            debug_assert!(replace);
+            let artifact = pending_sealed_module_artifacts
+                .remove(&module_id)
+                .expect("validated sealed artifact publication");
+            let attestation = attestations_by_module
+                .remove(&module_id)
+                .expect("validated parent mapping attestation publication");
+            state
+                .observed_module_load_boundaries
+                .insert(module_id.clone(), receipt);
+            state
+                .sealed_module_artifacts
+                .insert(module_id.clone(), artifact);
+            state.module_map_attestations.insert(module_id, attestation);
+        }
+        debug_assert!(pending_sealed_module_artifacts.is_empty());
+        debug_assert!(attestations_by_module.is_empty());
+        state.is_hmr_capable =
+            runner_has_observed_capability(state, RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY)
+                && runner_has_independently_attested_module_loads(state);
+        if let Some(receipt) = gpu_terminal_receipts.first() {
+            let (runner_pid, runtime_session_id) = receipt.runner_identity();
+            state.gpu_runtime_protocol_process_id = Some(runner_pid);
+            state.gpu_runtime_protocol_session_id = Some(runtime_session_id.to_string());
+        }
+    }
+
+    if let Some(state) = guard.as_mut() {
+        commit_native_runner_execution_success(state).await?;
     }
 
     // Send build-status "done" so the frontend's compile() promise resolves.
@@ -1561,19 +3953,581 @@ pub async fn handle_runner_execution(
     )
     .await;
 
-    Ok(())
+    Ok(RunnerExecutionOutcome {
+        gpu_terminal_receipts,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         full_device_abi_from_marker, full_device_abi_restart_marker, loaded_runner_module_state,
-        next_full_device_abi, runner_load_command, runner_reuse_allowed, runner_session_matches,
-        same_session_full_device_abi_changed, should_forward_runner_stderr_line_to_log_dc,
-        structured_log_json_chunks, RunnerReloadPolicy, STRUCTURED_LOG_CHUNK_BYTES,
+        next_full_device_abi, protected_runner_line_log_summary, route_runner_output_line,
+        runner_command_log_summary, runner_command_requires_strict_gpu_protocol,
+        runner_has_hot_device_epoch, runner_line_contains_protected_gpu_evidence,
+        runner_load_command, runner_load_command_with_module_observation, runner_reuse_allowed,
+        runner_session_matches, same_session_full_device_abi_changed, sha256_hex_local,
+        should_forward_runner_stderr_line_to_log_dc, strict_gpu_protocol_required_for_batch,
+        structured_log_json_chunks, uncommitted_runner_module_state,
+        verify_applied_gpu_terminal_proof, wait_for_gpu_command_terminals,
+        wait_for_module_load_terminals, wait_for_module_load_terminals_until,
+        wait_for_runner_capability_observation, wait_for_runner_command_terminals,
+        wait_for_strict_gpu_protocol_ack, CorrelatedGpuTerminalReceipt, GpuArtifactLoadExpectation,
+        RunnerCommandProofContext, RunnerExecutionOutcome, RunnerGpuTerminalExpectation,
+        RunnerModuleLoadExpectation, RunnerModuleLoadProofContext, RunnerOutputRoute,
+        RunnerReloadPolicy, RunnerTerminalBarrierExpectation, StrictGpuTerminalExpectation,
+        VerifiedHotGpuReloadReceipt, LINUX_SEALED_MEMFD_MAPPING_MECHANISM,
+        PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_AUTHORITY,
+        PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_ID_PREFIX,
+        PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_SCHEMA_VERSION,
+        PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_SUBJECT_SCHEMA_VERSION,
+        PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_TYPE, PARENT_VERIFIED_GPU_RUNTIME_PROOF_AUTHORITY,
+        PARENT_VERIFIED_GPU_RUNTIME_PROOF_SCHEMA_VERSION,
+        PARENT_VERIFIED_GPU_RUNTIME_PROOF_SUBJECT_SCHEMA_VERSION, STRUCTURED_LOG_CHUNK_BYTES,
+        STRUCTURED_LOG_CHUNK_SCHEMA_VERSION,
+    };
+    use crate::compiler::builder::ModuleHashes;
+    use crate::hmr::adapter_trait::{
+        bind_reload_output_oracle_proof_context, encode_reload_capsule_metadata_token,
+        reload_output_oracle_contract_content_hash, ReloadCapsuleMetadata,
+        ReloadOutputOracleProfileCommitment,
+        RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION,
+    };
+    use crate::hmr::runtime_evidence_transport::{
+        RuntimeEvidenceTransportSigner, OBSERVED_RUNTIME_EVIDENCE_DELIVERY_AUTHORITY,
+        OBSERVED_RUNTIME_EVIDENCE_DELIVERY_SCHEMA_VERSION, OBSERVED_RUNTIME_EVIDENCE_DELIVERY_TYPE,
+    };
+    use crate::infra::compute_expected_output_semantics::{
+        ComputeExpectedOutputContractBindingV2, ComputeExpectedOutputContractV2,
+        ComputeExpectedOutputSemantics, COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+    };
+    use crate::runtime::gpu_runtime_proof::canonical_gpu_runtime_proof_json_bytes;
+    use crate::runtime::gpu_runtime_proof::{
+        canonical_gpu_runtime_proof_json_sha256, canonical_runtime_ledger_proof_id,
+        recomputed_runtime_proof_id, GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
+        GPU_HMR_FULL_RUNTIME_RESULT_STATE, GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE,
+        GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION, GPU_HMR_PROOF_SCHEMA_VERSION,
+        GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION,
+    };
+    use crate::runtime::runner_protocol::{
+        GpuArtifactLoadV1Result, GpuReloadV2Expectation, GpuReloadV2Result, GpuReloadV4Payload,
+        GpuRuntimeProofMaterialV1, RunnerCapabilityObservationV1, RunnerModuleLoadResultV1,
+        RunnerProtocolAck, RunnerRuntimeControlAck, RunnerRuntimeControlStatus,
+        GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
+        GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY, GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY,
+        GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
+        GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY, RUNNER_CAPABILITY_OBSERVATION_PREFIX,
+        RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
     };
     use base64::{engine::general_purpose, Engine as _};
-    use crate::compiler::builder::ModuleHashes;
+    use std::collections::HashMap;
+
+    fn canonical_source_edit_id() -> String {
+        format!("source-edit:sha256:{}", "a".repeat(64))
+    }
+
+    fn encoded_source_edit_id() -> String {
+        format!("source%2Dedit%3Asha256%3A{}", "a".repeat(64))
+    }
+
+    fn artifact_content_hash() -> String {
+        format!("sha256:{}", "b".repeat(64))
+    }
+
+    fn encoded_artifact_content_hash() -> String {
+        format!("sha256%3A{}", "b".repeat(64))
+    }
+
+    fn encoded_proof_runtime_session_id() -> &'static str {
+        "runtime%2Dsession%3Atest"
+    }
+
+    fn proof_context() -> RunnerCommandProofContext<'static> {
+        RunnerCommandProofContext {
+            runner_pid: std::process::id(),
+            runner_runtime_session_id: "pid123-456",
+            runner_challenge: "11111111111111111111111111111111",
+            compute_expected_output_contract_hash: None,
+            compute_expected_output_semantics_hash: None,
+            compile_transport_nonce: Some(
+                "gpu-proof-transport-request:0123456789abcdef0123456789abcdef",
+            ),
+        }
+    }
+
+    fn legacy_capsule_token() -> String {
+        encode_reload_capsule_metadata_token(&ReloadCapsuleMetadata {
+            fission_island_id: Some("generic-test-island".to_string()),
+            ..ReloadCapsuleMetadata::default()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn strict_gpu_protocol_batch_refuses_multiple_challenge_consumers() {
+        let host_module = ("core".to_string(), "/tmp/core.so".to_string());
+        let first_gpu_module = (
+            "__gpu_device:rocm:-:-:-:-:-:-".to_string(),
+            "/tmp/device-a.hsaco".to_string(),
+        );
+        let second_gpu_module = (
+            "__gpu_device_partial:rocm:-:-:-:-:-:-".to_string(),
+            "/tmp/device-b.hsaco".to_string(),
+        );
+
+        assert!(
+            !strict_gpu_protocol_required_for_batch(std::slice::from_ref(&host_module), true,)
+                .unwrap()
+        );
+        assert!(strict_gpu_protocol_required_for_batch(
+            &[host_module.clone(), first_gpu_module.clone()],
+            true,
+        )
+        .unwrap());
+
+        let error = strict_gpu_protocol_required_for_batch(
+            &[host_module, first_gpu_module, second_gpu_module],
+            true,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("one challenge-bound GPU command per batch; received 2"));
+    }
+
+    fn strict_terminal_expectation(
+        identity: GpuReloadV2Expectation,
+    ) -> StrictGpuTerminalExpectation {
+        let context = proof_context();
+        StrictGpuTerminalExpectation {
+            identity,
+            runner_pid: context.runner_pid,
+            runner_runtime_session_id: context.runner_runtime_session_id.to_string(),
+            runner_challenge: context.runner_challenge.to_string(),
+            command_envelope_sha256: format!("sha256:{}", "e".repeat(64)),
+            compute_expected_output_contract_hash: None,
+            compute_expected_output_semantics_hash: None,
+            compute_expected_output_contract_v2: None,
+            compile_transport_nonce: context.compile_transport_nonce.map(str::to_string),
+            prepublication_output_oracle_commitment: None,
+        }
+    }
+
+    fn strict_compute_expected_output_contract(
+        expectation: &StrictGpuTerminalExpectation,
+    ) -> serde_json::Value {
+        let mut contract = serde_json::json!({
+            "schemaVersion": "synthi.gpu.hmr.compute_expected_output_contract.v1",
+            "comparisonMode": "exact_bytes",
+            "dtype": "u8",
+            "shape": [32],
+            "elementCount": 32,
+            "byteOrder": "not_applicable",
+            "tolerance": 0,
+            "expectedValues": null,
+            "expectedValuesHash": null,
+            "expectedRawHash": format!("sha256:{}", "7".repeat(64)),
+            "binding": {
+                "projectId": "generic-parent-proof-verification",
+                "editId": expectation.identity.source_edit_id,
+                "artifactAfterHash": expectation.identity.artifact_content_hash,
+                "outputTargetId": "output:generic-parent-proof",
+                "oracleCodeHash": format!("sha256:{}", "5".repeat(64)),
+            },
+            "evidenceRefs": [
+                format!("source-edit-id:{}", expectation.identity.source_edit_id),
+            ],
+        });
+        let contract_hash = canonical_gpu_runtime_proof_json_sha256(&contract);
+        contract["contractHash"] = serde_json::Value::String(contract_hash);
+        contract
+    }
+
+    fn strict_compute_expected_output_contract_v2(
+        expectation: &StrictGpuTerminalExpectation,
+    ) -> ComputeExpectedOutputContractV2 {
+        strict_compute_expected_output_contract_v2_with_raw_hash(
+            expectation,
+            &format!("sha256:{}", "7".repeat(64)),
+        )
+    }
+
+    fn strict_compute_expected_output_contract_v2_with_raw_hash(
+        expectation: &StrictGpuTerminalExpectation,
+        expected_raw_hash: &str,
+    ) -> ComputeExpectedOutputContractV2 {
+        let semantic_material = serde_json::json!([
+            COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+            "exact_bytes",
+            "output:generic-parent-proof",
+            "0",
+            "32",
+            "u8",
+            ["32"],
+            "32",
+            "not_applicable",
+            "0",
+            null,
+            null,
+            expected_raw_hash,
+        ]);
+        let mut hash_material =
+            b"synthi.gpu_hmr.compute_expected_output_semantics_hash.v1\0".to_vec();
+        hash_material.extend(
+            serde_json::to_vec(&semantic_material)
+                .expect("serialize parent expected-output semantics"),
+        );
+        let semantics_hash = format!("sha256:{}", sha256_hex_local(&hash_material));
+        let semantics: ComputeExpectedOutputSemantics = serde_json::from_value(serde_json::json!({
+            "schemaVersion": COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+            "comparisonMode": "exact_bytes",
+            "outputTargetId": "output:generic-parent-proof",
+            "byteOffset": 0,
+            "byteLength": 32,
+            "dtype": "u8",
+            "shape": [32],
+            "elementCount": 32,
+            "byteOrder": "not_applicable",
+            "toleranceDecimal": "0",
+            "expectedValuesDecimal": null,
+            "expectedValuesHash": null,
+            "expectedRawHash": expected_raw_hash,
+            "semanticsHash": semantics_hash,
+        }))
+        .expect("canonical parent expected-output semantics");
+        semantics
+            .derive_contract_v2(ComputeExpectedOutputContractBindingV2 {
+                project_id: "generic-parent-proof-verification".to_string(),
+                edit_id: expectation.identity.source_edit_id.clone(),
+                artifact_after_hash: expectation.identity.artifact_content_hash.clone(),
+                output_target_id: "output:generic-parent-proof".to_string(),
+                oracle_code_hash: format!("sha256:{}", "5".repeat(64)),
+                compile_transport_nonce: expectation
+                    .compile_transport_nonce
+                    .clone()
+                    .expect("parent expected-output compile transport nonce"),
+                runtime_session_id: "runtime-session:test".to_string(),
+            })
+            .expect("derived parent expected-output contract")
+    }
+
+    fn strict_output_oracle_contract(
+        expectation: &StrictGpuTerminalExpectation,
+    ) -> serde_json::Value {
+        let mut contract = serde_json::json!({
+            "kind": "compute_readback",
+            "oracleId": "oracle:generic-parent-proof",
+            "expectedSha256": format!("sha256:{}", "7".repeat(64)),
+            "producer": "runtime-readback",
+            "outputTargetId": "output:generic-parent-proof",
+            "expectedOutputChange": true,
+        });
+        if expectation.compute_expected_output_contract_hash.is_some() {
+            contract["expected_output_contract"] =
+                strict_compute_expected_output_contract(expectation);
+        }
+        contract
+    }
+
+    fn strict_output_oracle_commitment(
+        expectation: &StrictGpuTerminalExpectation,
+    ) -> ReloadOutputOracleProfileCommitment {
+        ReloadOutputOracleProfileCommitment {
+            schema_version: RELOAD_OUTPUT_ORACLE_PROFILE_COMMITMENT_SCHEMA_VERSION.to_string(),
+            candidate_artifact_sha256: expectation.identity.artifact_content_hash.clone(),
+            fission_output_oracle_contract_sha256: reload_output_oracle_contract_content_hash(
+                &strict_output_oracle_contract(expectation),
+            )
+            .unwrap(),
+            profile_bytes_sha256: format!("sha256:{}", "8".repeat(64)),
+            edit_id: expectation.identity.source_edit_id.clone(),
+        }
+    }
+
+    fn strict_runtime_proof_fixture(
+        expectation: &StrictGpuTerminalExpectation,
+    ) -> (serde_json::Value, String) {
+        let identity = &expectation.identity;
+        let process_id = expectation.runner_pid.to_string();
+        let artifact_id = format!(
+            "artifact:sha256:{}",
+            identity.artifact_content_hash.trim_start_matches("sha256:")
+        );
+        let previous_artifact_id = format!("artifact:sha256:{}", "0".repeat(64));
+        let publication_id = format!("dispatcher-publication:sha256:{}", "8".repeat(64));
+        let registration_id = format!("dispatcher:sha256:{}", "9".repeat(64));
+        let dispatch_id = format!("dispatch:sha256:{}", "6".repeat(64));
+        let mut oracle_artifacts = expectation
+            .prepublication_output_oracle_commitment
+            .as_ref()
+            .map(|commitment| {
+                serde_json::json!({
+                    "profile_bytes_sha256": commitment.profile_bytes_sha256,
+                    "fission_output_oracle_contract_sha256": commitment
+                        .fission_output_oracle_contract_sha256,
+                })
+            })
+            .unwrap_or_else(|| serde_json::json!({}));
+        if let Some(contract) = expectation.compute_expected_output_contract_v2.as_ref() {
+            let artifacts = oracle_artifacts
+                .as_object_mut()
+                .expect("parent proof oracle artifacts object");
+            artifacts.insert(
+                "proof_runtime_session_id".to_string(),
+                serde_json::Value::String(contract.binding().runtime_session_id.clone()),
+            );
+            artifacts.insert(
+                "compute_expected_output_contract_v2".to_string(),
+                serde_json::to_value(contract).expect("serialize parent expected-output contract"),
+            );
+            artifacts.insert(
+                "compute_expected_output_contract_hash".to_string(),
+                serde_json::Value::String(contract.contract_hash().to_string()),
+            );
+            artifacts.insert(
+                "compute_expected_output_semantics_hash".to_string(),
+                serde_json::Value::String(contract.semantics().semantics_hash().to_string()),
+            );
+        }
+        let output_event = serde_json::json!({
+            "id": "output:2",
+            "passed": true,
+            "after_dispatch_id": dispatch_id,
+            "epoch": "2",
+            "artifact_id": artifact_id,
+            "artifact_hash": artifact_id,
+            "timestamp_monotonic_ns": 40,
+            "process_id": process_id,
+            "oracle_artifacts": oracle_artifacts.clone(),
+            "output_oracle": {
+                "oracle_artifacts": oracle_artifacts.clone(),
+            },
+        });
+        let mut evidence_refs = vec![
+            serde_json::json!(format!("reload:{}", identity.request_id)),
+            serde_json::json!(format!("source-edit-id:{}", identity.source_edit_id)),
+            serde_json::json!(publication_id),
+            serde_json::json!(registration_id),
+        ];
+        if let Some(contract) = expectation.compute_expected_output_contract_v2.as_ref() {
+            evidence_refs.push(serde_json::json!(format!(
+                "compute-expected-output-contract:{}",
+                contract.contract_hash()
+            )));
+            evidence_refs.push(serde_json::json!(format!(
+                "compute-expected-output-semantics:{}",
+                contract.semantics().semantics_hash()
+            )));
+        }
+        let record = serde_json::json!({
+            "schemaVersion": GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+            "proof_canonical_profile": GPU_HMR_PROOF_LEDGER_PORTABLE_CANONICAL_PROFILE,
+            "project_id": "generic-parent-proof-verification",
+            "edit_id": identity.source_edit_id,
+            "backend": "rocm",
+            "classification": {
+                "project_kind": "gpu_project",
+                "edit_kind": "gpu_artifact_edit",
+                "route": "gpu_hmr",
+            },
+            "contract_hash": format!("sha256:{}", "1".repeat(64)),
+            "artifact_before_hash": previous_artifact_id,
+            "artifact_after_hash": artifact_id,
+            "loader_event": {
+                "id": "loader:2",
+                "artifact_id": artifact_id,
+                "artifact_hash": artifact_id,
+                "timestamp_monotonic_ns": 10,
+                "process_id": process_id,
+            },
+            "epoch_publish_event": {
+                "id": "epoch:2",
+                "event": "provisional_install",
+                "publication_id": publication_id,
+                "candidate_registration_id": registration_id,
+                "epoch": "2",
+                "previous_epoch": "1",
+                "artifact_id": artifact_id,
+                "artifact_hash": artifact_id,
+                "timestamp_monotonic_ns": 20,
+                "process_id": process_id,
+            },
+            "epoch_commit_event": {
+                "id": "epoch-commit:2",
+                "event": "unrestricted_visibility_commit",
+                "publication_id": publication_id,
+                "candidate_registration_id": registration_id,
+                "epoch": "2",
+                "previous_epoch": "1",
+                "artifact_id": artifact_id,
+                "artifact_hash": artifact_id,
+                "timestamp_monotonic_ns": 45,
+                "process_id": process_id,
+            },
+            "dispatch_event": {
+                "id": dispatch_id,
+                "publication_id": publication_id,
+                "dispatcher_registration_id": registration_id,
+                "epoch": "2",
+                "artifact_id": artifact_id,
+                "artifact_hash": artifact_id,
+                "timestamp_monotonic_ns": 30,
+                "process_id": process_id,
+            },
+            "output_event": output_event,
+            "retirement_event": {
+                "id": "retirement:1",
+                "epoch": "1",
+                "artifact_id": previous_artifact_id,
+                "artifact_hash": previous_artifact_id,
+                "status": "retired_after_quiescent",
+                "retirement_proof": "stream_event_proven",
+                "timestamp_monotonic_ns": 50,
+                "process_id": process_id,
+            },
+            "process_identity": {
+                "process_id": process_id,
+                "runtime_session_id": expectation.runner_runtime_session_id,
+            },
+            "device_identity": {},
+            "oracle_artifacts": oracle_artifacts,
+            "cpu_hmr_used": false,
+            "full_rebuild_used": false,
+            "process_restarted": false,
+            "firewall_evidence": {
+                "cpu_hmr_used": false,
+                "full_rebuild_used": false,
+                "process_restarted": false,
+                "process_id_before": process_id,
+                "process_id_after": process_id,
+            },
+            "evidence_refs": evidence_refs,
+        });
+        let ledger_proof_id = canonical_runtime_ledger_proof_id(&record);
+        let proof_ledger = serde_json::json!({
+            "schemaVersion": GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+            "proofId": ledger_proof_id,
+            "gpuHmrSuccess": true,
+            "records": [record],
+        });
+        let mut acceptance_contract = serde_json::json!({
+            "contract_version": GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
+            "edit_id": identity.source_edit_id,
+            "artifact_hash_before": previous_artifact_id,
+            "artifact_hash_after": artifact_id,
+        });
+        if expectation
+            .prepublication_output_oracle_commitment
+            .is_some()
+            || expectation.compute_expected_output_contract_hash.is_some()
+        {
+            acceptance_contract["fission_report"] = serde_json::json!({
+                "output_oracle_contract": strict_output_oracle_contract(expectation),
+            });
+        }
+        let mut runtime_artifact = serde_json::json!({
+            "schemaVersion": GPU_HMR_VALIDATION_PROOF_SCHEMA_VERSION,
+            "proofId": "pending",
+            "resultState": GPU_HMR_FULL_RUNTIME_RESULT_STATE,
+            "fullRuntimeProven": true,
+            "gpuHmrSuccess": true,
+            "stageResults": [],
+            "limitations": [],
+            "proofLedger": proof_ledger,
+            "proofLedgerQuery": {
+                "schemaVersion": GPU_HMR_PROOF_LEDGER_SCHEMA_VERSION,
+                "proofId": ledger_proof_id,
+                "gpuHmrSuccess": true,
+                "failedInvariants": [],
+            },
+            "runtimeTrace": {
+                "runtimeSessionId": expectation.runner_runtime_session_id,
+                "processId": process_id,
+            },
+            "acceptanceContract": acceptance_contract,
+            "derivedAcceptanceContract": acceptance_contract,
+            "acceptanceContractEvaluation": { "accepted": true, "failedGates": [] },
+            "acceptanceContractConsistency": { "accepted": true, "failedGates": [] },
+            "derivedAcceptanceContractEvaluation": { "accepted": true, "failedGates": [] },
+            "explicitProofLedgerRecord": record,
+            "derivedProofLedgerRecord": record,
+            "proofLedgerSourceConsistency": { "accepted": true, "failures": [] },
+        });
+        let proof_id = recomputed_runtime_proof_id(&runtime_artifact, &record).unwrap();
+        runtime_artifact["proofId"] = serde_json::Value::String(proof_id.clone());
+        let proof = serde_json::json!({
+            "type": "gpu_hmr_proof",
+            "schemaVersion": GPU_HMR_PROOF_SCHEMA_VERSION,
+            "module": "device",
+            "resultState": GPU_HMR_FULL_RUNTIME_RESULT_STATE,
+            "proofId": proof_id,
+            "proofLedger": proof_ledger,
+            "runtimeProofArtifact": runtime_artifact,
+        });
+        (proof, proof_id)
+    }
+
+    fn proof_material(
+        expectation: &StrictGpuTerminalExpectation,
+        proof: &serde_json::Value,
+        proof_id: &str,
+    ) -> GpuRuntimeProofMaterialV1 {
+        GpuRuntimeProofMaterialV1::new(
+            proof,
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            proof_id,
+            &expectation.command_envelope_sha256,
+            expectation.runner_pid,
+            &expectation.runner_runtime_session_id,
+            &expectation.runner_challenge,
+        )
+        .unwrap()
+    }
+
+    fn refresh_runtime_proof_id(proof: &mut serde_json::Value) -> String {
+        let record = proof
+            .pointer("/runtimeProofArtifact/proofLedger/records/0")
+            .cloned()
+            .expect("runtime ledger record");
+        let proof_id = recomputed_runtime_proof_id(
+            proof
+                .get("runtimeProofArtifact")
+                .expect("runtime proof artifact"),
+            &record,
+        )
+        .expect("recomputed runtime proof id");
+        proof["proofId"] = serde_json::Value::String(proof_id.clone());
+        proof["runtimeProofArtifact"]["proofId"] = serde_json::Value::String(proof_id.clone());
+        proof_id
+    }
+
+    fn replace_runtime_proof_record(
+        proof: &mut serde_json::Value,
+        record: serde_json::Value,
+    ) -> String {
+        let ledger_proof_id = canonical_runtime_ledger_proof_id(&record);
+        proof["proofLedger"]["records"][0] = record.clone();
+        proof["proofLedger"]["proofId"] = serde_json::Value::String(ledger_proof_id.clone());
+        proof["runtimeProofArtifact"]["proofLedger"]["records"][0] = record.clone();
+        proof["runtimeProofArtifact"]["proofLedger"]["proofId"] =
+            serde_json::Value::String(ledger_proof_id.clone());
+        proof["runtimeProofArtifact"]["proofLedgerQuery"]["proofId"] =
+            serde_json::Value::String(ledger_proof_id);
+        proof["runtimeProofArtifact"]["explicitProofLedgerRecord"] = record.clone();
+        proof["runtimeProofArtifact"]["derivedProofLedgerRecord"] = record;
+        refresh_runtime_proof_id(proof)
+    }
+
+    fn decode_gpu_v4_command(command: &str, expected_verb: &str) -> (String, GpuReloadV4Payload) {
+        let parts = command.trim().split_whitespace().collect::<Vec<_>>();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0], expected_verb);
+        let payload = GpuReloadV4Payload::decode(parts[2]).unwrap();
+        assert_eq!(parts[1], payload.request_id);
+        (parts[1].to_string(), payload)
+    }
 
     #[test]
     fn structured_log_json_chunks_fragment_oversized_json() {
@@ -1605,9 +4559,171 @@ mod tests {
     }
 
     #[test]
+    fn content_bound_module_command_encodes_open_vocabulary_identity_and_hashes_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let artifact = directory.path().join("module with spaces.bin");
+        std::fs::write(&artifact, b"runtime module bytes").unwrap();
+        let control_session = format!("runner-control-session:{}", "c".repeat(32));
+        let observed_boundaries = HashMap::new();
+        let command = runner_load_command_with_module_observation(
+            "open vocabulary module",
+            artifact.to_str().unwrap(),
+            false,
+            None,
+            Some(RunnerModuleLoadProofContext {
+                runner_pid: 42,
+                runner_control_session_id: &control_session,
+                observed_boundaries: &observed_boundaries,
+            }),
+        )
+        .unwrap();
+        let expectation = command.module_terminal.as_ref().unwrap();
+
+        assert!(command
+            .wire
+            .starts_with("load_v2 runner-module-load:request:"));
+        assert!(!command.wire.contains("open vocabulary module"));
+        assert!(!command.wire.contains("module with spaces.bin"));
+        assert_eq!(expectation.module_id, "open vocabulary module");
+        assert_eq!(expectation.runner_pid, 42);
+        assert_eq!(expectation.runner_control_session_id, control_session);
+        assert_eq!(expectation.loader_epoch, 1);
+        assert!(command.wire.ends_with(" 1\n"));
+        assert_eq!(
+            expectation.artifact_content_hash,
+            format!("sha256:{}", sha256_hex_local(b"runtime module bytes"))
+        );
+        assert!(command.gpu_terminal.is_none());
+    }
+
+    #[tokio::test]
+    async fn module_load_terminal_wait_requires_exact_process_session_and_hash() {
+        let request_id = format!("runner-module-load:request:{}", "a".repeat(32));
+        let artifact_hash = format!("sha256:{}", "b".repeat(64));
+        let control_session = format!("runner-control-session:{}", "d".repeat(32));
+        let expectation = RunnerModuleLoadExpectation {
+            request_id: request_id.clone(),
+            module_id: "arbitrary module".into(),
+            artifact_content_hash: artifact_hash.clone(),
+            loader_epoch: 1,
+            artifact_staging_mechanism: LINUX_SEALED_MEMFD_MAPPING_MECHANISM.to_string(),
+            runner_pid: std::process::id(),
+            runner_control_session_id: control_session.clone(),
+        };
+        let result = crate::runtime::runner_protocol::RunnerModuleLoadResultV1::applied(
+            &request_id,
+            "arbitrary module",
+            &artifact_hash,
+            &control_session,
+            1,
+            LINUX_SEALED_MEMFD_MAPPING_MECHANISM,
+        )
+        .unwrap();
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(4);
+        sender.send(result.line().unwrap()).unwrap();
+
+        let receipts = wait_for_module_load_terminals(&mut receiver, &[expectation.clone()])
+            .await
+            .unwrap();
+        assert_eq!(receipts.len(), 1);
+
+        let replayed_expectation = RunnerModuleLoadExpectation {
+            runner_pid: expectation.runner_pid.saturating_add(1),
+            ..expectation.clone()
+        };
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(4);
+        sender.send(result.line().unwrap()).unwrap();
+        assert!(
+            wait_for_module_load_terminals(&mut receiver, &[replayed_expectation])
+                .await
+                .is_err()
+        );
+
+        let rejected = RunnerModuleLoadResultV1::rejected(
+            &request_id,
+            "arbitrary module",
+            &artifact_hash,
+            &control_session,
+            "loader refused observed exports",
+        )
+        .unwrap();
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(4);
+        sender.send(rejected.line().unwrap()).unwrap();
+        let error = wait_for_module_load_terminals(&mut receiver, &[expectation])
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("loader refused observed exports"));
+    }
+
+    #[tokio::test]
+    async fn module_load_terminal_wait_rejects_late_contradiction_before_fifo_barrier() {
+        let request_id = format!("runner-module-load:request:{}", "a".repeat(32));
+        let artifact_hash = format!("sha256:{}", "b".repeat(64));
+        let control_session = format!("runner-control-session:{}", "d".repeat(32));
+        let barrier_request_id = format!("runner-capability:request:{}", "e".repeat(32));
+        let expectation = RunnerModuleLoadExpectation {
+            request_id: request_id.clone(),
+            module_id: "opaque module identity".into(),
+            artifact_content_hash: artifact_hash.clone(),
+            loader_epoch: 1,
+            artifact_staging_mechanism: LINUX_SEALED_MEMFD_MAPPING_MECHANISM.to_string(),
+            runner_pid: std::process::id(),
+            runner_control_session_id: control_session.clone(),
+        };
+        let applied = RunnerModuleLoadResultV1::applied(
+            &request_id,
+            &expectation.module_id,
+            &artifact_hash,
+            &control_session,
+            1,
+            LINUX_SEALED_MEMFD_MAPPING_MECHANISM,
+        )
+        .unwrap();
+        let contradicted = RunnerModuleLoadResultV1::rejected(
+            &request_id,
+            &expectation.module_id,
+            &artifact_hash,
+            &control_session,
+            "late loader rejection",
+        )
+        .unwrap();
+        let barrier = RunnerTerminalBarrierExpectation {
+            request_id: barrier_request_id.clone(),
+            capability: RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY.to_string(),
+            runner_pid: std::process::id(),
+            runner_control_session_id: control_session.clone(),
+        };
+        let barrier_observation = RunnerCapabilityObservationV1::current(
+            &barrier_request_id,
+            RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
+            &control_session,
+        )
+        .unwrap();
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(8);
+        sender.send(applied.line().unwrap()).unwrap();
+        sender.send(contradicted.line().unwrap()).unwrap();
+        sender.send(barrier_observation.line().unwrap()).unwrap();
+
+        let error =
+            wait_for_module_load_terminals_until(&mut receiver, &[expectation], Some(&barrier))
+                .await
+                .unwrap_err();
+        assert!(error.to_string().contains("duplicate module-load result"));
+    }
+
+    #[test]
     fn gpu_device_load_command_preserves_legacy_shape_without_abi() {
         assert_eq!(
-            runner_load_command("__gpu_device:rocm:advance,init", "/tmp/device.hsaco").unwrap(),
+            runner_load_command(
+                "__gpu_device:rocm:advance,init",
+                "/tmp/device.hsaco",
+                false,
+                None,
+            )
+            .unwrap()
+            .wire,
             "load_device rocm /tmp/device.hsaco advance,init\n"
         );
     }
@@ -1615,8 +4731,14 @@ mod tests {
     #[test]
     fn gpu_device_load_command_includes_signature_abi_when_present() {
         assert_eq!(
-            runner_load_command("__gpu_device:rocm:advance,init:12345", "/tmp/device.hsaco")
-                .unwrap(),
+            runner_load_command(
+                "__gpu_device:rocm:advance,init:12345",
+                "/tmp/device.hsaco",
+                false,
+                None,
+            )
+            .unwrap()
+            .wire,
             "load_device rocm /tmp/device.hsaco advance,init 12345\n"
         );
     }
@@ -1626,11 +4748,1769 @@ mod tests {
         assert_eq!(
             runner_load_command(
                 "__gpu_device:rocm:advance,init:12345:capsulev1_abcd",
-                "/tmp/device.hsaco"
+                "/tmp/device.hsaco",
+                false,
+                None,
             )
-            .unwrap(),
+            .unwrap()
+            .wire,
             "load_device rocm /tmp/device.hsaco advance,init 12345 capsulev1_abcd\n"
         );
+    }
+
+    #[test]
+    fn gpu_device_load_command_carries_independent_source_edit_identity() {
+        let capsule = legacy_capsule_token();
+        let marker = format!(
+            "__gpu_device:rocm:advance,init:12345:{}:{}:{}:{}",
+            capsule,
+            encoded_source_edit_id(),
+            encoded_artifact_content_hash(),
+            encoded_proof_runtime_session_id(),
+        );
+        let command =
+            runner_load_command(&marker, "/tmp/device.hsaco", true, Some(proof_context())).unwrap();
+        let (_, payload) = decode_gpu_v4_command(&command.wire, "gpu_reload_v4");
+        assert_eq!(payload.mode, "full");
+        assert_eq!(payload.vendor, "rocm");
+        assert_eq!(payload.artifact_path, "/tmp/device.hsaco");
+        assert_eq!(payload.kernels, vec!["advance", "init"]);
+        assert_eq!(payload.abi_fingerprint.as_deref(), Some("12345"));
+        assert_eq!(payload.capsule_token.as_deref(), Some(capsule.as_str()));
+        assert_eq!(payload.source_edit_id, canonical_source_edit_id());
+        assert_eq!(payload.artifact_content_hash, artifact_content_hash());
+        assert!(runner_command_requires_strict_gpu_protocol(&command));
+        let Some(RunnerGpuTerminalExpectation::HotReload(expectation)) =
+            command.gpu_terminal.as_ref()
+        else {
+            panic!("expected strict GPU terminal context");
+        };
+        assert_eq!(expectation.runner_pid, std::process::id());
+        assert_eq!(
+            expectation.runner_runtime_session_id,
+            payload.runner_runtime_session_id
+        );
+        assert_eq!(expectation.runner_challenge, payload.runner_challenge);
+        assert_eq!(expectation.command_envelope_sha256, payload.envelope_sha256);
+
+        let second =
+            runner_load_command(&marker, "/tmp/device.hsaco", true, Some(proof_context())).unwrap();
+        let (_, second_payload) = decode_gpu_v4_command(&second.wire, "gpu_reload_v4");
+        assert_eq!(second_payload.source_edit_id, payload.source_edit_id);
+        assert_ne!(second_payload.request_id, payload.request_id);
+        assert_ne!(
+            second.gpu_terminal.as_ref().unwrap(),
+            command.gpu_terminal.as_ref().unwrap()
+        );
+    }
+
+    #[test]
+    fn hot_device_command_captures_predispatch_expected_output_hash() {
+        let capsule = legacy_capsule_token();
+        let marker = format!(
+            "__gpu_device:rocm:advance:12345:{}:{}:{}:{}",
+            capsule,
+            encoded_source_edit_id(),
+            encoded_artifact_content_hash(),
+            encoded_proof_runtime_session_id(),
+        );
+        let expected_hash = format!("sha256:{}", "7".repeat(64));
+        let mut context = proof_context();
+        context.compute_expected_output_contract_hash = Some(expected_hash.as_str());
+
+        let command =
+            runner_load_command(&marker, "/tmp/device.hsaco", true, Some(context)).unwrap();
+        let Some(RunnerGpuTerminalExpectation::HotReload(expectation)) =
+            command.gpu_terminal.as_ref()
+        else {
+            panic!("expected strict GPU terminal context");
+        };
+        assert_eq!(
+            expectation.compute_expected_output_contract_hash.as_deref(),
+            Some(expected_hash.as_str())
+        );
+    }
+
+    #[test]
+    fn hot_device_command_captures_prepublication_output_oracle_commitment() {
+        let identity = GpuReloadV2Expectation::new(
+            format!("gpu-reload:request:{}", "4".repeat(32)),
+            canonical_source_edit_id(),
+            artifact_content_hash(),
+        )
+        .unwrap();
+        let expectation = strict_terminal_expectation(identity);
+        let commitment = strict_output_oracle_commitment(&expectation);
+        let expected_output_contract_v2 = strict_compute_expected_output_contract_v2(&expectation);
+        let expected_semantics_hash = expected_output_contract_v2
+            .semantics()
+            .semantics_hash()
+            .to_string();
+        let proof_id = format!("gpu-proof:{}", "c".repeat(64));
+        let mut metadata = ReloadCapsuleMetadata {
+            fission_output_oracle_contract: Some(strict_output_oracle_contract(&expectation)),
+            compute_expected_output_contract_v2: Some(expected_output_contract_v2.clone()),
+            output_oracle_profile_commitment: Some(commitment.clone()),
+            proof_hash: Some(format!("sha256:{}", "c".repeat(64))),
+            ..ReloadCapsuleMetadata::default()
+        };
+        assert!(bind_reload_output_oracle_proof_context(
+            &mut metadata,
+            &proof_id,
+            "2026-07-19T00:00:00Z",
+            "runtime-session:test",
+        ));
+        let capsule = encode_reload_capsule_metadata_token(&metadata).unwrap();
+        let marker = format!(
+            "__gpu_device:rocm:advance:12345:{}:{}:{}:{}",
+            capsule,
+            encoded_source_edit_id(),
+            encoded_artifact_content_hash(),
+            encoded_proof_runtime_session_id(),
+        );
+
+        let mut context = proof_context();
+        context.compute_expected_output_semantics_hash = Some(expected_semantics_hash.as_str());
+        let command =
+            runner_load_command(&marker, "/tmp/device.hsaco", true, Some(context)).unwrap();
+        let Some(RunnerGpuTerminalExpectation::HotReload(observed)) = command.gpu_terminal else {
+            panic!("expected strict GPU terminal context");
+        };
+        assert_eq!(
+            observed.prepublication_output_oracle_commitment,
+            Some(commitment)
+        );
+        assert_eq!(
+            observed.compute_expected_output_contract_v2,
+            Some(expected_output_contract_v2)
+        );
+
+        let mut mismatched_context = proof_context();
+        mismatched_context.compute_expected_output_semantics_hash =
+            Some(expected_semantics_hash.as_str());
+        mismatched_context.compile_transport_nonce =
+            Some("gpu-proof-transport-request:fedcba9876543210fedcba9876543210");
+        let error =
+            runner_load_command(&marker, "/tmp/device.hsaco", true, Some(mismatched_context))
+                .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("does not match the independently transported compile nonce"));
+    }
+
+    #[test]
+    fn strict_hot_device_command_refuses_malformed_present_capsule() {
+        let marker = format!(
+            "__gpu_device:rocm:advance:12345:capsulev1_abcd:{}:{}:{}",
+            encoded_source_edit_id(),
+            encoded_artifact_content_hash(),
+            encoded_proof_runtime_session_id(),
+        );
+        let error = runner_load_command(&marker, "/tmp/device.hsaco", true, Some(proof_context()))
+            .unwrap_err();
+        assert!(error.to_string().contains("invalid capsule metadata token"));
+    }
+
+    #[test]
+    fn cold_device_load_does_not_claim_strict_hot_runtime_identity() {
+        let marker = format!(
+            "__gpu_device:rocm:advance:12345:capsulev1_abcd:{}:{}:{}",
+            encoded_source_edit_id(),
+            encoded_artifact_content_hash(),
+            encoded_proof_runtime_session_id(),
+        );
+        let command =
+            runner_load_command(&marker, "/tmp/device.hsaco", false, Some(proof_context()))
+                .unwrap();
+        let (_, payload) = decode_gpu_v4_command(&command.wire, "gpu_load_v4");
+        assert_eq!(payload.artifact_content_hash, artifact_content_hash());
+        assert!(matches!(
+            command.gpu_terminal,
+            Some(RunnerGpuTerminalExpectation::ColdLoad(_))
+        ));
+    }
+
+    #[test]
+    fn hot_device_load_refuses_missing_identity() {
+        let missing_identity = runner_load_command(
+            "__gpu_device:rocm:advance:12345:capsulev1_abcd",
+            "/tmp/device.hsaco",
+            true,
+            Some(proof_context()),
+        )
+        .unwrap_err();
+        assert!(missing_identity
+            .to_string()
+            .contains("requires an independent canonical source edit identity"));
+    }
+
+    #[test]
+    fn existing_host_process_is_not_a_hot_device_epoch() {
+        assert!(!runner_has_hot_device_epoch(true, None));
+        assert!(!runner_has_hot_device_epoch(true, Some("")));
+        assert!(!runner_has_hot_device_epoch(false, Some("sha256:abi")));
+        assert!(runner_has_hot_device_epoch(true, Some("sha256:abi")));
+    }
+
+    #[test]
+    fn noncanonical_source_edit_identity_cannot_form_strict_gpu_command() {
+        let marker = format!(
+            "__gpu_device:rocm:advance:12345:-:source%2Dedit%3Asha256%3Ashort:{}",
+            encoded_artifact_content_hash()
+        );
+        let error = runner_load_command(&marker, "/tmp/device.hsaco", true, Some(proof_context()))
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("source edit identity is invalid"));
+    }
+
+    #[tokio::test]
+    async fn strict_gpu_protocol_ack_requires_exact_nonce_pid_and_capability() {
+        let (sender, _) = tokio::sync::broadcast::channel(4);
+        let mut receiver = sender.subscribe();
+        sender
+            .send(
+                RunnerProtocolAck::current(
+                    "nonce-a",
+                    "pid123-456",
+                    "11111111111111111111111111111111",
+                )
+                .line()
+                .unwrap(),
+            )
+            .unwrap();
+        wait_for_strict_gpu_protocol_ack(&mut receiver, "nonce-a", std::process::id())
+            .await
+            .unwrap();
+
+        for required in [
+            GPU_RELOAD_INDEPENDENT_EDIT_IDENTITY_CAPABILITY,
+            GPU_RELOAD_ARTIFACT_CONTENT_HASH_CAPABILITY,
+            GPU_ARTIFACT_LOAD_CORRELATED_TERMINAL_CAPABILITY,
+            GPU_RELOAD_CHALLENGE_BOUND_ENVELOPE_CAPABILITY,
+            GPU_RELOAD_BOUND_PROOF_MATERIAL_CAPABILITY,
+        ] {
+            let mut invalid = RunnerProtocolAck::current(
+                "nonce-b",
+                "pid123-456",
+                "22222222222222222222222222222222",
+            );
+            invalid
+                .capabilities
+                .retain(|capability| capability != required);
+            let mut invalid_receiver = sender.subscribe();
+            sender.send(invalid.line().unwrap()).unwrap();
+            assert!(wait_for_strict_gpu_protocol_ack(
+                &mut invalid_receiver,
+                "nonce-b",
+                std::process::id()
+            )
+            .await
+            .is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn runner_capability_observation_ignores_stale_requests_and_accepts_exact_mechanics() {
+        let request_id = format!("runner-capability:request:{}", "a".repeat(32));
+        let control_session = format!("runner-control-session:{}", "b".repeat(32));
+        let (sender, _) = tokio::sync::broadcast::channel(4);
+        let mut receiver = sender.subscribe();
+        sender
+            .send(
+                RunnerCapabilityObservationV1::current(
+                    format!("runner-capability:request:{}", "c".repeat(32)),
+                    RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
+                    &control_session,
+                )
+                .unwrap()
+                .line()
+                .unwrap(),
+            )
+            .unwrap();
+        sender
+            .send(
+                RunnerCapabilityObservationV1::current(
+                    &request_id,
+                    RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
+                    &control_session,
+                )
+                .unwrap()
+                .line()
+                .unwrap(),
+            )
+            .unwrap();
+
+        let observation = wait_for_runner_capability_observation(
+            &mut receiver,
+            &request_id,
+            RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
+            std::process::id(),
+            &control_session,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            observation.capability,
+            RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY
+        );
+    }
+
+    #[tokio::test]
+    async fn runner_capability_observation_rejects_malformed_or_wrong_process_binding() {
+        let request_id = format!("runner-capability:request:{}", "d".repeat(32));
+        let control_session = format!("runner-control-session:{}", "e".repeat(32));
+        let (sender, _) = tokio::sync::broadcast::channel(4);
+        let mut malformed_receiver = sender.subscribe();
+        sender
+            .send(format!("{RUNNER_CAPABILITY_OBSERVATION_PREFIX}{{}}"))
+            .unwrap();
+        assert!(wait_for_runner_capability_observation(
+            &mut malformed_receiver,
+            &request_id,
+            RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
+            std::process::id(),
+            &control_session,
+        )
+        .await
+        .is_err());
+
+        let mut wrong_process_receiver = sender.subscribe();
+        sender
+            .send(
+                RunnerCapabilityObservationV1::current(
+                    &request_id,
+                    RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
+                    &control_session,
+                )
+                .unwrap()
+                .line()
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(wait_for_runner_capability_observation(
+            &mut wrong_process_receiver,
+            &request_id,
+            RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
+            std::process::id().saturating_add(1),
+            &control_session,
+        )
+        .await
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn strict_gpu_terminal_wait_correlates_unique_requests_and_rejects_legacy_status() {
+        let first = strict_terminal_expectation(
+            GpuReloadV2Expectation::new(
+                format!("gpu-reload:request:{}", "1".repeat(32)),
+                canonical_source_edit_id(),
+                format!("sha256:{}", "a".repeat(64)),
+            )
+            .unwrap(),
+        );
+        let second = strict_terminal_expectation(
+            GpuReloadV2Expectation::new(
+                format!("gpu-reload:request:{}", "2".repeat(32)),
+                format!("source-edit:sha256:{}", "b".repeat(64)),
+                format!("sha256:{}", "b".repeat(64)),
+            )
+            .unwrap(),
+        );
+        let (first_proof, first_proof_id) = strict_runtime_proof_fixture(&first);
+        let (second_proof, second_proof_id) = strict_runtime_proof_fixture(&second);
+        let (sender, _) = tokio::sync::broadcast::channel(8);
+        let mut receiver = sender.subscribe();
+        sender
+            .send(format!(
+                "[Runner] [HMR-STATUS] {}",
+                GpuReloadV2Result::applied(
+                    &second.identity.request_id,
+                    &second.identity.source_edit_id,
+                    &second.identity.artifact_content_hash,
+                    &second_proof_id,
+                    proof_material(&second, &second_proof, &second_proof_id),
+                )
+                .unwrap()
+                .to_json()
+                .unwrap()
+            ))
+            .unwrap();
+        sender
+            .send(format!(
+                "[Runner] [HMR-STATUS] {}",
+                GpuReloadV2Result::applied(
+                    &first.identity.request_id,
+                    &first.identity.source_edit_id,
+                    &first.identity.artifact_content_hash,
+                    &first_proof_id,
+                    proof_material(&first, &first_proof, &first_proof_id),
+                )
+                .unwrap()
+                .to_json()
+                .unwrap()
+            ))
+            .unwrap();
+        let receipts = wait_for_gpu_command_terminals(
+            &mut receiver,
+            &[
+                RunnerGpuTerminalExpectation::HotReload(first.clone()),
+                RunnerGpuTerminalExpectation::HotReload(second.clone()),
+            ],
+        )
+        .await
+        .unwrap();
+        let outcome = RunnerExecutionOutcome {
+            gpu_terminal_receipts: receipts,
+        };
+        assert_eq!(outcome.gpu_terminal_receipts().len(), 2);
+        for expected_proof_id in [&first_proof_id, &second_proof_id] {
+            assert!(outcome.gpu_terminal_receipts().iter().any(|receipt| {
+                matches!(
+                    receipt,
+                    CorrelatedGpuTerminalReceipt::VerifiedHotReload(receipt)
+                        if &receipt.full_runtime_proof_id == expected_proof_id
+                            && receipt.proof_ledger_id.starts_with("gpu-ledger-proof:sha256:")
+                            && receipt.proof_json_sha256.starts_with("sha256:")
+                            && receipt.runner_pid == std::process::id()
+                            && receipt.runner_runtime_session_id
+                                == proof_context().runner_runtime_session_id
+                            && receipt.command_envelope_sha256
+                                == first.command_envelope_sha256
+                )
+            }));
+        }
+
+        let mut receiver = sender.subscribe();
+        sender
+            .send(
+                r#"[Runner] [HMR-STATUS] {"status":"applied","module":"device","capability":"GPU sidecar HMR","state_preserved":true}"#
+                    .to_string(),
+            )
+            .unwrap();
+        assert!(wait_for_gpu_command_terminals(
+            &mut receiver,
+            &[RunnerGpuTerminalExpectation::HotReload(first)],
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("unbound legacy terminal"));
+    }
+
+    #[tokio::test]
+    async fn verified_hot_terminal_mints_single_use_resume_authorization() {
+        let expectation = strict_terminal_expectation(
+            GpuReloadV2Expectation::new(
+                format!("gpu-reload:request:{}", "5".repeat(32)),
+                canonical_source_edit_id(),
+                format!("sha256:{}", "5".repeat(64)),
+            )
+            .unwrap(),
+        );
+        let (proof, proof_id) = strict_runtime_proof_fixture(&expectation);
+        let (sender, _) = tokio::sync::broadcast::channel(2);
+        let mut receiver = sender.subscribe();
+        sender
+            .send(format!(
+                "[Runner] [HMR-STATUS] {}",
+                GpuReloadV2Result::applied(
+                    &expectation.identity.request_id,
+                    &expectation.identity.source_edit_id,
+                    &expectation.identity.artifact_content_hash,
+                    &proof_id,
+                    proof_material(&expectation, &proof, &proof_id),
+                )
+                .unwrap()
+                .to_json()
+                .unwrap()
+            ))
+            .unwrap();
+        let receipts = wait_for_gpu_command_terminals(
+            &mut receiver,
+            &[RunnerGpuTerminalExpectation::HotReload(expectation)],
+        )
+        .await
+        .unwrap();
+        let terminal = RunnerExecutionOutcome {
+            gpu_terminal_receipts: receipts,
+        }
+        .into_single_gpu_terminal()
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            terminal,
+            CorrelatedGpuTerminalReceipt::VerifiedHotReload(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn strict_gpu_terminal_wait_fails_on_source_mismatch_or_rejection() {
+        let expectation = strict_terminal_expectation(
+            GpuReloadV2Expectation::new(
+                format!("gpu-reload:request:{}", "3".repeat(32)),
+                canonical_source_edit_id(),
+                format!("sha256:{}", "c".repeat(64)),
+            )
+            .unwrap(),
+        );
+        let source_mismatch = strict_terminal_expectation(
+            GpuReloadV2Expectation::new(
+                expectation.identity.request_id.clone(),
+                format!("source-edit:sha256:{}", "d".repeat(64)),
+                expectation.identity.artifact_content_hash.clone(),
+            )
+            .unwrap(),
+        );
+        let hash_mismatch = strict_terminal_expectation(
+            GpuReloadV2Expectation::new(
+                expectation.identity.request_id.clone(),
+                expectation.identity.source_edit_id.clone(),
+                format!("sha256:{}", "f".repeat(64)),
+            )
+            .unwrap(),
+        );
+        let (source_mismatch_proof, source_mismatch_proof_id) =
+            strict_runtime_proof_fixture(&source_mismatch);
+        let (hash_mismatch_proof, hash_mismatch_proof_id) =
+            strict_runtime_proof_fixture(&hash_mismatch);
+        let (sender, _) = tokio::sync::broadcast::channel(4);
+        let mut mismatch_receiver = sender.subscribe();
+        sender
+            .send(format!(
+                "[Runner] [HMR-STATUS] {}",
+                GpuReloadV2Result::applied(
+                    &source_mismatch.identity.request_id,
+                    &source_mismatch.identity.source_edit_id,
+                    &source_mismatch.identity.artifact_content_hash,
+                    &source_mismatch_proof_id,
+                    proof_material(
+                        &source_mismatch,
+                        &source_mismatch_proof,
+                        &source_mismatch_proof_id,
+                    ),
+                )
+                .unwrap()
+                .to_json()
+                .unwrap()
+            ))
+            .unwrap();
+        assert!(wait_for_gpu_command_terminals(
+            &mut mismatch_receiver,
+            &[RunnerGpuTerminalExpectation::HotReload(expectation.clone())],
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("identity or artifact hash mismatch"));
+
+        let mut hash_mismatch_receiver = sender.subscribe();
+        sender
+            .send(format!(
+                "[Runner] [HMR-STATUS] {}",
+                GpuReloadV2Result::applied(
+                    &hash_mismatch.identity.request_id,
+                    &hash_mismatch.identity.source_edit_id,
+                    &hash_mismatch.identity.artifact_content_hash,
+                    &hash_mismatch_proof_id,
+                    proof_material(
+                        &hash_mismatch,
+                        &hash_mismatch_proof,
+                        &hash_mismatch_proof_id,
+                    ),
+                )
+                .unwrap()
+                .to_json()
+                .unwrap()
+            ))
+            .unwrap();
+        assert!(wait_for_gpu_command_terminals(
+            &mut hash_mismatch_receiver,
+            &[RunnerGpuTerminalExpectation::HotReload(expectation.clone())],
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("identity or artifact hash mismatch"));
+
+        let mut rejected_receiver = sender.subscribe();
+        sender
+            .send(format!(
+                "[Runner] [HMR-STATUS] {}",
+                GpuReloadV2Result::rejected(
+                    &expectation.identity.request_id,
+                    &expectation.identity.source_edit_id,
+                    &expectation.identity.artifact_content_hash,
+                    "runtime proof missing",
+                )
+                .unwrap()
+                .to_json()
+                .unwrap()
+            ))
+            .unwrap();
+        assert!(wait_for_gpu_command_terminals(
+            &mut rejected_receiver,
+            &[RunnerGpuTerminalExpectation::HotReload(expectation)],
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("runtime proof missing"));
+    }
+
+    #[test]
+    fn parent_binds_compute_semantics_to_predispatch_expected_output_hash() {
+        let mut expectation = strict_terminal_expectation(
+            GpuReloadV2Expectation::new(
+                format!("gpu-reload:request:{}", "a".repeat(32)),
+                canonical_source_edit_id(),
+                format!("sha256:{}", "d".repeat(64)),
+            )
+            .unwrap(),
+        );
+        let expected_contract = strict_compute_expected_output_contract(&expectation);
+        let expected_contract_hash = expected_contract["contractHash"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            expected_contract_hash,
+            "sha256:6560f7869645acbdd1957e10376df9bd7b253e661f40d16568fd80c13d9df02f"
+        );
+        expectation.compute_expected_output_contract_hash = Some(expected_contract_hash.clone());
+        let expected_output_contract_v2 = strict_compute_expected_output_contract_v2(&expectation);
+        let expected_semantics_hash = expected_output_contract_v2
+            .semantics()
+            .semantics_hash()
+            .to_string();
+        expectation.compute_expected_output_semantics_hash = Some(expected_semantics_hash.clone());
+        expectation.compute_expected_output_contract_v2 = Some(expected_output_contract_v2.clone());
+        expectation.prepublication_output_oracle_commitment =
+            Some(strict_output_oracle_commitment(&expectation));
+
+        let (proof, proof_id) = strict_runtime_proof_fixture(&expectation);
+        let terminal = GpuReloadV2Result::applied(
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            &proof_id,
+            proof_material(&expectation, &proof, &proof_id),
+        )
+        .unwrap();
+        let (verified, proof_json_sha256, verified_proof) =
+            verify_applied_gpu_terminal_proof(&terminal, &expectation).unwrap();
+        assert_eq!(
+            verified.compute_expected_output_contract_hash.as_deref(),
+            Some(expected_contract_hash.as_str())
+        );
+        assert_eq!(
+            verified.compute_expected_output_semantics_hash.as_deref(),
+            Some(expected_semantics_hash.as_str())
+        );
+        assert_eq!(
+            verified.compute_expected_output_contract_v2_hash.as_deref(),
+            Some(expected_output_contract_v2.contract_hash())
+        );
+        assert_eq!(
+            verified
+                .compute_expected_output_compile_transport_nonce
+                .as_deref(),
+            expectation.compile_transport_nonce.as_deref()
+        );
+
+        let mut nonce_mismatch = expectation.clone();
+        nonce_mismatch.compile_transport_nonce =
+            Some("gpu-proof-transport-request:fedcba9876543210fedcba9876543210".to_string());
+        assert!(
+            verify_applied_gpu_terminal_proof(&terminal, &nonce_mismatch)
+                .unwrap_err()
+                .to_string()
+                .contains("parent rejected strict GPU runtime proof semantics")
+        );
+
+        let signer = RuntimeEvidenceTransportSigner::generate(std::process::id()).unwrap();
+        let receipt = VerifiedHotGpuReloadReceipt {
+            request_id: expectation.identity.request_id.clone(),
+            source_edit_id: expectation.identity.source_edit_id.clone(),
+            artifact_content_hash: expectation.identity.artifact_content_hash.clone(),
+            full_runtime_proof_id: verified.proof_id,
+            proof_ledger_id: verified.ledger_proof_id,
+            proof_json_sha256,
+            runner_pid: expectation.runner_pid,
+            runner_runtime_session_id: expectation.runner_runtime_session_id.clone(),
+            runner_challenge: expectation.runner_challenge.clone(),
+            command_envelope_sha256: expectation.command_envelope_sha256.clone(),
+            compute_expected_output_contract_hash: verified.compute_expected_output_contract_hash,
+            compute_expected_output_semantics_hash: verified.compute_expected_output_semantics_hash,
+            compute_expected_output_compile_transport_nonce: verified
+                .compute_expected_output_compile_transport_nonce,
+            prepublication_output_oracle_commitment: None,
+            proof: verified_proof,
+        };
+        assert!(receipt
+            .parent_control_binding_message_with_signer(
+                "compile-session:test",
+                "gpu-proof-transport-request:fedcba9876543210fedcba9876543210",
+                &signer,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("does not match the verified expected-output contract"));
+        let control: serde_json::Value = serde_json::from_str(
+            &receipt
+                .parent_control_binding_message_with_signer(
+                    "compile-session:test",
+                    "gpu-proof-transport-request:0123456789abcdef0123456789abcdef",
+                    &signer,
+                )
+                .unwrap()
+                .build_log_message,
+        )
+        .unwrap();
+        assert_eq!(
+            control["computeExpectedOutputContractHash"],
+            expected_contract_hash
+        );
+        assert_eq!(
+            control["computeExpectedOutputSemanticsHash"],
+            expected_semantics_hash
+        );
+        let parent: serde_json::Value = serde_json::from_str(
+            &receipt
+                .into_parent_verified_proof_message_with_signer("compile-session:test", &signer)
+                .unwrap()
+                .build_log_message,
+        )
+        .unwrap();
+        assert_eq!(
+            parent["parentVerification"]["computeExpectedOutputSemanticsHash"],
+            expected_semantics_hash
+        );
+
+        let mut missing_contract = proof.clone();
+        missing_contract["runtimeProofArtifact"]["acceptanceContract"]["fission_report"]
+            ["output_oracle_contract"]
+            .as_object_mut()
+            .unwrap()
+            .remove("expected_output_contract");
+        missing_contract["runtimeProofArtifact"]["derivedAcceptanceContract"] =
+            missing_contract["runtimeProofArtifact"]["acceptanceContract"].clone();
+        let missing_proof_id = refresh_runtime_proof_id(&mut missing_contract);
+        let missing_terminal = GpuReloadV2Result::applied(
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            &missing_proof_id,
+            proof_material(&expectation, &missing_contract, &missing_proof_id),
+        )
+        .unwrap();
+        assert!(
+            verify_applied_gpu_terminal_proof(&missing_terminal, &expectation)
+                .unwrap_err()
+                .to_string()
+                .contains("does not match the prepublication capsule commitment")
+        );
+
+        let mut unsolicited_expectation = expectation.clone();
+        unsolicited_expectation.compute_expected_output_contract_hash = None;
+        let unsolicited_terminal = GpuReloadV2Result::applied(
+            &unsolicited_expectation.identity.request_id,
+            &unsolicited_expectation.identity.source_edit_id,
+            &unsolicited_expectation.identity.artifact_content_hash,
+            &proof_id,
+            proof_material(&unsolicited_expectation, &proof, &proof_id),
+        )
+        .unwrap();
+        assert!(
+            verify_applied_gpu_terminal_proof(&unsolicited_terminal, &unsolicited_expectation,)
+                .unwrap_err()
+                .to_string()
+                .contains("parent rejected strict GPU runtime proof semantics")
+        );
+
+        let mut posthoc_substitution = proof.clone();
+        let contract = posthoc_substitution
+            .pointer_mut(
+                "/runtimeProofArtifact/acceptanceContract/fission_report/output_oracle_contract/expected_output_contract",
+            )
+            .unwrap();
+        contract["expectedRawHash"] = serde_json::json!(format!("sha256:{}", "6".repeat(64)));
+        let mut contract_material = contract.clone();
+        contract_material
+            .as_object_mut()
+            .unwrap()
+            .remove("contractHash");
+        contract["contractHash"] =
+            serde_json::Value::String(canonical_gpu_runtime_proof_json_sha256(&contract_material));
+        posthoc_substitution["runtimeProofArtifact"]["derivedAcceptanceContract"] =
+            posthoc_substitution["runtimeProofArtifact"]["acceptanceContract"].clone();
+        let substituted_proof_id = refresh_runtime_proof_id(&mut posthoc_substitution);
+        let substituted_terminal = GpuReloadV2Result::applied(
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            &substituted_proof_id,
+            proof_material(&expectation, &posthoc_substitution, &substituted_proof_id),
+        )
+        .unwrap();
+        assert!(
+            verify_applied_gpu_terminal_proof(&substituted_terminal, &expectation)
+                .unwrap_err()
+                .to_string()
+                .contains("does not match the prepublication capsule commitment")
+        );
+    }
+
+    #[test]
+    fn parent_rejects_canonical_v2_contract_substitution_and_removal() {
+        let mut expectation = strict_terminal_expectation(
+            GpuReloadV2Expectation::new(
+                format!("gpu-reload:request:{}", "b".repeat(32)),
+                canonical_source_edit_id(),
+                format!("sha256:{}", "d".repeat(64)),
+            )
+            .unwrap(),
+        );
+        let expected_contract = strict_compute_expected_output_contract_v2(&expectation);
+        expectation.compute_expected_output_semantics_hash =
+            Some(expected_contract.semantics().semantics_hash().to_string());
+        expectation.compute_expected_output_contract_v2 = Some(expected_contract.clone());
+
+        let (proof, proof_id) = strict_runtime_proof_fixture(&expectation);
+        let terminal = GpuReloadV2Result::applied(
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            &proof_id,
+            proof_material(&expectation, &proof, &proof_id),
+        )
+        .unwrap();
+        verify_applied_gpu_terminal_proof(&terminal, &expectation).unwrap();
+
+        let substituted_contract = strict_compute_expected_output_contract_v2_with_raw_hash(
+            &expectation,
+            &format!("sha256:{}", "6".repeat(64)),
+        );
+        let mut substituted_proof = proof.clone();
+        let mut substituted_record = substituted_proof
+            .pointer("/runtimeProofArtifact/proofLedger/records/0")
+            .cloned()
+            .unwrap();
+        let mut substituted_artifacts = substituted_record["oracle_artifacts"].clone();
+        substituted_artifacts["compute_expected_output_contract_v2"] =
+            serde_json::to_value(&substituted_contract).unwrap();
+        substituted_artifacts["compute_expected_output_contract_hash"] =
+            serde_json::Value::String(substituted_contract.contract_hash().to_string());
+        substituted_artifacts["compute_expected_output_semantics_hash"] = serde_json::Value::String(
+            substituted_contract
+                .semantics()
+                .semantics_hash()
+                .to_string(),
+        );
+        substituted_record["oracle_artifacts"] = substituted_artifacts.clone();
+        substituted_record["output_event"]["oracle_artifacts"] = substituted_artifacts.clone();
+        substituted_record["output_event"]["output_oracle"]["oracle_artifacts"] =
+            substituted_artifacts;
+        let evidence_refs = substituted_record["evidence_refs"].as_array_mut().unwrap();
+        evidence_refs.retain(|value| {
+            value.as_str().is_none_or(|value| {
+                !value.starts_with("compute-expected-output-contract:")
+                    && !value.starts_with("compute-expected-output-semantics:")
+            })
+        });
+        evidence_refs.push(serde_json::json!(format!(
+            "compute-expected-output-contract:{}",
+            substituted_contract.contract_hash()
+        )));
+        evidence_refs.push(serde_json::json!(format!(
+            "compute-expected-output-semantics:{}",
+            substituted_contract.semantics().semantics_hash()
+        )));
+        let substituted_proof_id =
+            replace_runtime_proof_record(&mut substituted_proof, substituted_record);
+        let substituted_terminal = GpuReloadV2Result::applied(
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            &substituted_proof_id,
+            proof_material(&expectation, &substituted_proof, &substituted_proof_id),
+        )
+        .unwrap();
+        assert!(
+            verify_applied_gpu_terminal_proof(&substituted_terminal, &expectation)
+                .unwrap_err()
+                .to_string()
+                .contains("parent rejected strict GPU runtime proof semantics")
+        );
+
+        let mut missing_proof = proof.clone();
+        let mut missing_record = missing_proof
+            .pointer("/runtimeProofArtifact/proofLedger/records/0")
+            .cloned()
+            .unwrap();
+        let missing_artifacts = missing_record["oracle_artifacts"].as_object_mut().unwrap();
+        missing_artifacts.remove("compute_expected_output_contract_v2");
+        missing_artifacts.remove("compute_expected_output_contract_hash");
+        missing_artifacts.remove("compute_expected_output_semantics_hash");
+        let missing_artifacts = missing_record["oracle_artifacts"].clone();
+        missing_record["output_event"]["oracle_artifacts"] = missing_artifacts.clone();
+        missing_record["output_event"]["output_oracle"]["oracle_artifacts"] = missing_artifacts;
+        missing_record["evidence_refs"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|value| {
+                value.as_str().is_none_or(|value| {
+                    !value.starts_with("compute-expected-output-contract:")
+                        && !value.starts_with("compute-expected-output-semantics:")
+                })
+            });
+        let missing_proof_id = replace_runtime_proof_record(&mut missing_proof, missing_record);
+        let missing_terminal = GpuReloadV2Result::applied(
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            &missing_proof_id,
+            proof_material(&expectation, &missing_proof, &missing_proof_id),
+        )
+        .unwrap();
+        assert!(
+            verify_applied_gpu_terminal_proof(&missing_terminal, &expectation)
+                .unwrap_err()
+                .to_string()
+                .contains("parent rejected strict GPU runtime proof semantics")
+        );
+    }
+
+    #[test]
+    fn parent_rejects_canonical_legacy_and_v2_semantic_disagreement() {
+        let mut expectation = strict_terminal_expectation(
+            GpuReloadV2Expectation::new(
+                format!("gpu-reload:request:{}", "c".repeat(32)),
+                canonical_source_edit_id(),
+                format!("sha256:{}", "d".repeat(64)),
+            )
+            .unwrap(),
+        );
+        let expected_v2 = strict_compute_expected_output_contract_v2(&expectation);
+        expectation.compute_expected_output_semantics_hash =
+            Some(expected_v2.semantics().semantics_hash().to_string());
+        expectation.compute_expected_output_contract_v2 = Some(expected_v2);
+        let expected_legacy = strict_compute_expected_output_contract(&expectation);
+        expectation.compute_expected_output_contract_hash =
+            expected_legacy["contractHash"].as_str().map(str::to_string);
+
+        let (proof, _) = strict_runtime_proof_fixture(&expectation);
+        let mut disagreement = proof.clone();
+        let legacy_contract = disagreement
+            .pointer_mut(
+                "/runtimeProofArtifact/acceptanceContract/fission_report/output_oracle_contract/expected_output_contract",
+            )
+            .unwrap();
+        legacy_contract["shape"] = serde_json::json!([16, 2]);
+        let mut legacy_material = legacy_contract.clone();
+        legacy_material
+            .as_object_mut()
+            .unwrap()
+            .remove("contractHash");
+        let disagreement_hash = canonical_gpu_runtime_proof_json_sha256(&legacy_material);
+        legacy_contract["contractHash"] = serde_json::Value::String(disagreement_hash.clone());
+        disagreement["runtimeProofArtifact"]["derivedAcceptanceContract"] =
+            disagreement["runtimeProofArtifact"]["acceptanceContract"].clone();
+        let disagreement_proof_id = refresh_runtime_proof_id(&mut disagreement);
+        let mut disagreement_expectation = expectation.clone();
+        disagreement_expectation.compute_expected_output_contract_hash = Some(disagreement_hash);
+        let disagreement_terminal = GpuReloadV2Result::applied(
+            &disagreement_expectation.identity.request_id,
+            &disagreement_expectation.identity.source_edit_id,
+            &disagreement_expectation.identity.artifact_content_hash,
+            &disagreement_proof_id,
+            proof_material(
+                &disagreement_expectation,
+                &disagreement,
+                &disagreement_proof_id,
+            ),
+        )
+        .unwrap();
+        assert!(verify_applied_gpu_terminal_proof(
+            &disagreement_terminal,
+            &disagreement_expectation,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("parent rejected strict GPU runtime proof semantics"));
+    }
+
+    #[test]
+    fn parent_recomputes_runtime_proof_and_rejects_bound_context_splices() {
+        let expectation = strict_terminal_expectation(
+            GpuReloadV2Expectation::new(
+                format!("gpu-reload:request:{}", "4".repeat(32)),
+                canonical_source_edit_id(),
+                format!("sha256:{}", "d".repeat(64)),
+            )
+            .unwrap(),
+        );
+        let (proof, proof_id) = strict_runtime_proof_fixture(&expectation);
+        let valid = GpuReloadV2Result::applied(
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            &proof_id,
+            proof_material(&expectation, &proof, &proof_id),
+        )
+        .unwrap();
+        let (verified, proof_json_sha256, verified_proof) =
+            verify_applied_gpu_terminal_proof(&valid, &expectation).unwrap();
+        assert_eq!(verified.proof_id, proof_id);
+        assert!(verified
+            .ledger_proof_id
+            .starts_with("gpu-ledger-proof:sha256:"));
+        assert!(proof_json_sha256.starts_with("sha256:"));
+
+        let transport_signer = RuntimeEvidenceTransportSigner::generate(std::process::id())
+            .expect("test runtime-evidence transport signer");
+        let receipt = VerifiedHotGpuReloadReceipt {
+            request_id: expectation.identity.request_id.clone(),
+            source_edit_id: expectation.identity.source_edit_id.clone(),
+            artifact_content_hash: expectation.identity.artifact_content_hash.clone(),
+            full_runtime_proof_id: verified.proof_id.clone(),
+            proof_ledger_id: verified.ledger_proof_id.clone(),
+            proof_json_sha256: proof_json_sha256.clone(),
+            runner_pid: expectation.runner_pid,
+            runner_runtime_session_id: expectation.runner_runtime_session_id.clone(),
+            runner_challenge: expectation.runner_challenge.clone(),
+            command_envelope_sha256: expectation.command_envelope_sha256.clone(),
+            compute_expected_output_contract_hash: verified
+                .compute_expected_output_contract_hash
+                .clone(),
+            compute_expected_output_semantics_hash: verified
+                .compute_expected_output_semantics_hash
+                .clone(),
+            compute_expected_output_compile_transport_nonce: verified
+                .compute_expected_output_compile_transport_nonce
+                .clone(),
+            prepublication_output_oracle_commitment: expectation
+                .prepublication_output_oracle_commitment
+                .clone(),
+            proof: verified_proof,
+        };
+        assert!(receipt
+            .parent_control_binding_message_with_signer(
+                "compile-session:test",
+                "forged",
+                &transport_signer,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("nonce is invalid"));
+        let control_publication = receipt
+            .parent_control_binding_message_with_signer(
+                "compile-session:test",
+                "gpu-proof-transport-request:0123456789abcdef0123456789abcdef",
+                &transport_signer,
+            )
+            .unwrap();
+        let control_binding: serde_json::Value =
+            serde_json::from_str(&control_publication.build_log_message).unwrap();
+        assert_eq!(
+            control_binding["schemaVersion"],
+            PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_SCHEMA_VERSION
+        );
+        assert_eq!(
+            control_binding["type"],
+            PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_TYPE
+        );
+        assert_eq!(
+            control_binding["proofAuthority"],
+            PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_AUTHORITY
+        );
+        assert_eq!(control_binding["acceptedForGpuHmr"], false);
+        assert_eq!(control_binding["gpuHmrSuccess"], false);
+        assert_eq!(control_binding["canSatisfyRuntimeProof"], false);
+        assert_eq!(control_binding["compileSessionId"], "compile-session:test");
+        assert_eq!(
+            control_binding["compileRequestNonce"],
+            "gpu-proof-transport-request:0123456789abcdef0123456789abcdef"
+        );
+        assert_eq!(
+            control_binding["requestId"],
+            expectation.identity.request_id
+        );
+        assert_eq!(
+            control_binding["sourceEditId"],
+            expectation.identity.source_edit_id
+        );
+        assert_eq!(
+            control_binding["artifactContentHash"],
+            expectation.identity.artifact_content_hash
+        );
+        assert_eq!(control_binding["fullRuntimeProofId"], proof_id);
+        assert_eq!(control_binding["proofLedgerId"], verified.ledger_proof_id);
+        assert_eq!(
+            control_binding["protectedProofJsonSha256"],
+            proof_json_sha256
+        );
+        assert_eq!(
+            control_binding["canonicalProofSha256"],
+            canonical_gpu_runtime_proof_json_sha256(&proof)
+        );
+        assert_eq!(control_binding["runnerPid"], expectation.runner_pid);
+        assert_eq!(
+            control_binding["runnerRuntimeSessionId"],
+            expectation.runner_runtime_session_id
+        );
+        assert_eq!(
+            control_binding["runnerChallenge"],
+            expectation.runner_challenge
+        );
+        assert_eq!(
+            control_binding["commandEnvelopeSha256"],
+            expectation.command_envelope_sha256
+        );
+        assert_eq!(
+            control_binding["computeExpectedOutputContractHash"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            control_binding["prepublicationOutputOracleCommitment"],
+            serde_json::Value::Null
+        );
+        let mut control_payload = control_binding.clone();
+        let control_payload = control_payload.as_object_mut().unwrap();
+        let control_envelope = control_payload
+            .remove("runtimeEvidenceTransportEnvelope")
+            .unwrap();
+        let binding_id = control_payload.remove("bindingId").unwrap();
+        let binding_sha256 = control_payload.remove("bindingCanonicalSha256").unwrap();
+        let canonical_control_payload = serde_json::Value::Object(control_payload.clone());
+        let recomputed_binding_sha256 =
+            canonical_gpu_runtime_proof_json_sha256(&canonical_control_payload);
+        let canonical_control_payload_bytes =
+            canonical_gpu_runtime_proof_json_bytes(&canonical_control_payload);
+        assert_eq!(binding_sha256, recomputed_binding_sha256);
+        assert_eq!(
+            binding_id,
+            format!(
+                "{PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_ID_PREFIX}{recomputed_binding_sha256}"
+            )
+        );
+        assert_eq!(
+            control_envelope["observedPayloadSha256"],
+            recomputed_binding_sha256
+        );
+        assert_eq!(
+            control_envelope["runtimeEvidenceTransportReceipt"]["subjectIdentityNamespace"],
+            PARENT_GPU_RUNTIME_PROOF_CONTROL_BINDING_SUBJECT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            control_envelope["runtimeEvidenceTransportReceipt"]["keyId"],
+            transport_signer.verification_key().key_id()
+        );
+        assert!(
+            control_envelope["runtimeEvidenceTransportReceipt"]["signature"]
+                .as_str()
+                .unwrap()
+                .starts_with("ed25519:")
+        );
+        let control_delivery: serde_json::Value = serde_json::from_str(
+            &control_publication
+                .delivery
+                .serialize_for_transport()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            control_delivery["schemaVersion"],
+            OBSERVED_RUNTIME_EVIDENCE_DELIVERY_SCHEMA_VERSION
+        );
+        assert_eq!(
+            control_delivery["type"],
+            OBSERVED_RUNTIME_EVIDENCE_DELIVERY_TYPE
+        );
+        assert_eq!(
+            control_delivery["proofAuthority"],
+            OBSERVED_RUNTIME_EVIDENCE_DELIVERY_AUTHORITY
+        );
+        assert_eq!(control_delivery["acceptedForGpuHmr"], false);
+        assert_eq!(control_delivery["gpuHmrSuccess"], false);
+        assert_eq!(control_delivery["canSatisfyRuntimeProof"], false);
+        assert_eq!(
+            control_delivery["runtimeEvidenceTransportEnvelope"],
+            control_envelope
+        );
+        assert_eq!(
+            general_purpose::URL_SAFE_NO_PAD
+                .decode(control_delivery["observedPayloadBase64"].as_str().unwrap())
+                .unwrap(),
+            canonical_control_payload_bytes
+        );
+
+        let canonical_parent_payload_bytes = canonical_gpu_runtime_proof_json_bytes(&receipt.proof);
+        let parent_publication = receipt
+            .into_parent_verified_proof_message_with_signer(
+                "compile-session:test",
+                &transport_signer,
+            )
+            .unwrap();
+        let parent_message: serde_json::Value =
+            serde_json::from_str(&parent_publication.build_log_message).unwrap();
+        assert_eq!(parent_message["type"], "gpu_hmr_proof");
+        assert_eq!(parent_message["proofId"], proof_id);
+        let parent_verification = parent_message["parentVerification"].as_object().unwrap();
+        assert_eq!(
+            parent_verification["schemaVersion"],
+            PARENT_VERIFIED_GPU_RUNTIME_PROOF_SCHEMA_VERSION
+        );
+        assert_eq!(
+            parent_verification["proofAuthority"],
+            PARENT_VERIFIED_GPU_RUNTIME_PROOF_AUTHORITY
+        );
+        assert_eq!(parent_verification["acceptedForGpuHmr"], false);
+        assert_eq!(parent_verification["gpuHmrSuccess"], false);
+        assert_eq!(parent_verification["canSatisfyRuntimeProof"], false);
+        assert_eq!(parent_verification["runtimeContinuationAcknowledged"], true);
+        assert_eq!(
+            parent_verification["compileSessionId"],
+            "compile-session:test"
+        );
+        assert_eq!(
+            parent_verification["requestId"],
+            expectation.identity.request_id
+        );
+        assert_eq!(
+            parent_verification["sourceEditId"],
+            expectation.identity.source_edit_id
+        );
+        assert_eq!(
+            parent_verification["artifactContentHash"],
+            expectation.identity.artifact_content_hash
+        );
+        assert_eq!(parent_verification["fullRuntimeProofId"], proof_id);
+        assert_eq!(
+            parent_verification["proofLedgerId"],
+            verified.ledger_proof_id
+        );
+        assert_eq!(
+            parent_verification["protectedProofJsonSha256"],
+            proof_json_sha256
+        );
+        assert_eq!(
+            parent_verification["canonicalProofSha256"],
+            canonical_gpu_runtime_proof_json_sha256(&proof)
+        );
+        assert_eq!(parent_verification["runnerPid"], expectation.runner_pid);
+        assert_eq!(
+            parent_verification["runnerRuntimeSessionId"],
+            expectation.runner_runtime_session_id
+        );
+        assert_eq!(
+            parent_verification["runnerChallenge"],
+            expectation.runner_challenge
+        );
+        assert_eq!(
+            parent_verification["commandEnvelopeSha256"],
+            expectation.command_envelope_sha256
+        );
+        assert_eq!(
+            parent_verification["prepublicationOutputOracleCommitment"],
+            serde_json::Value::Null
+        );
+        let transport_envelope = &parent_verification["runtimeEvidenceTransportEnvelope"];
+        assert_eq!(
+            transport_envelope["schemaVersion"],
+            "synthi.gpu_hmr.observed_runtime_evidence_envelope.v2"
+        );
+        assert_eq!(
+            transport_envelope["proofAuthority"],
+            "worker_signed_observation_transport_only_not_gpu_hmr_acceptance"
+        );
+        assert_eq!(transport_envelope["acceptedForGpuHmr"], false);
+        assert_eq!(transport_envelope["gpuHmrSuccess"], false);
+        assert_eq!(transport_envelope["canSatisfyRuntimeProof"], false);
+        assert_eq!(
+            transport_envelope["observedPayloadSha256"],
+            canonical_gpu_runtime_proof_json_sha256(&proof)
+        );
+        let parent_delivery: serde_json::Value = serde_json::from_str(
+            &parent_publication
+                .delivery
+                .serialize_for_transport()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            parent_delivery["runtimeEvidenceTransportEnvelope"],
+            *transport_envelope
+        );
+        assert_eq!(parent_delivery["acceptedForGpuHmr"], false);
+        assert_eq!(parent_delivery["gpuHmrSuccess"], false);
+        assert_eq!(parent_delivery["canSatisfyRuntimeProof"], false);
+        assert_eq!(
+            general_purpose::URL_SAFE_NO_PAD
+                .decode(parent_delivery["observedPayloadBase64"].as_str().unwrap())
+                .unwrap(),
+            canonical_parent_payload_bytes
+        );
+        let transport_receipt = &transport_envelope["runtimeEvidenceTransportReceipt"];
+        assert_eq!(transport_receipt["algorithm"], "ed25519");
+        assert_eq!(
+            transport_receipt["runnerChallengeSha256"],
+            format!(
+                "sha256:{}",
+                sha256_hex_local(expectation.runner_challenge.as_bytes())
+            )
+        );
+        let subject_bytes = serde_json::to_vec(&serde_json::json!([
+            PARENT_VERIFIED_GPU_RUNTIME_PROOF_SUBJECT_SCHEMA_VERSION,
+            "compile-session:test",
+            expectation.identity.request_id,
+            expectation.identity.source_edit_id,
+            expectation.identity.artifact_content_hash,
+            proof_id,
+            verified.ledger_proof_id,
+            proof_json_sha256,
+            canonical_gpu_runtime_proof_json_sha256(&proof),
+            expectation.runner_pid,
+            expectation.runner_runtime_session_id,
+            expectation.runner_challenge,
+            expectation.command_envelope_sha256,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            parent_verification["parentPid"],
+            true,
+        ]))
+        .unwrap();
+        let subject_bytes_sha256 = format!("sha256:{}", sha256_hex_local(&subject_bytes));
+        let subject_identity_material = serde_json::to_vec(&serde_json::json!([
+            "synthi.gpu_hmr.runtime_evidence_transport_subject_identity.v1",
+            PARENT_VERIFIED_GPU_RUNTIME_PROOF_SUBJECT_SCHEMA_VERSION,
+            subject_bytes_sha256,
+        ]))
+        .unwrap();
+        assert_eq!(
+            transport_receipt["subjectIdentityHash"],
+            format!("sha256:{}", sha256_hex_local(&subject_identity_material))
+        );
+        assert_eq!(
+            transport_receipt["keyId"],
+            transport_signer.verification_key().key_id()
+        );
+        assert!(transport_receipt["signature"]
+            .as_str()
+            .unwrap()
+            .starts_with("ed25519:"));
+        let receipt_id = parent_verification["receiptId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let mut receipt_material = serde_json::Value::Object(parent_verification.clone());
+        receipt_material
+            .as_object_mut()
+            .unwrap()
+            .remove("receiptId");
+        assert_eq!(
+            receipt_id,
+            format!(
+                "gpu-parent-runtime-proof-receipt:{}",
+                canonical_gpu_runtime_proof_json_sha256(&receipt_material)
+            )
+        );
+
+        let mut preclaimed_proof = proof.clone();
+        preclaimed_proof["parentVerification"] = serde_json::json!({
+            "schemaVersion": PARENT_VERIFIED_GPU_RUNTIME_PROOF_SCHEMA_VERSION,
+            "acceptedForGpuHmr": true,
+        });
+        let preclaimed_terminal = GpuReloadV2Result::applied(
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            &proof_id,
+            proof_material(&expectation, &preclaimed_proof, &proof_id),
+        )
+        .unwrap();
+        let (preclaimed_verified, preclaimed_hash, preclaimed_value) =
+            verify_applied_gpu_terminal_proof(&preclaimed_terminal, &expectation).unwrap();
+        let error = VerifiedHotGpuReloadReceipt {
+            request_id: expectation.identity.request_id.clone(),
+            source_edit_id: expectation.identity.source_edit_id.clone(),
+            artifact_content_hash: expectation.identity.artifact_content_hash.clone(),
+            full_runtime_proof_id: preclaimed_verified.proof_id,
+            proof_ledger_id: preclaimed_verified.ledger_proof_id,
+            proof_json_sha256: preclaimed_hash,
+            runner_pid: expectation.runner_pid,
+            runner_runtime_session_id: expectation.runner_runtime_session_id.clone(),
+            runner_challenge: expectation.runner_challenge.clone(),
+            command_envelope_sha256: expectation.command_envelope_sha256.clone(),
+            compute_expected_output_contract_hash: preclaimed_verified
+                .compute_expected_output_contract_hash,
+            compute_expected_output_semantics_hash: preclaimed_verified
+                .compute_expected_output_semantics_hash,
+            compute_expected_output_compile_transport_nonce: preclaimed_verified
+                .compute_expected_output_compile_transport_nonce,
+            prepublication_output_oracle_commitment: expectation
+                .prepublication_output_oracle_commitment
+                .clone(),
+            proof: preclaimed_value,
+        }
+        .into_parent_verified_proof_message_with_signer("compile-session:test", &transport_signer)
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("already contains a parent-verification claim"));
+
+        let mut forged_semantics = proof.clone();
+        forged_semantics["resultState"] = serde_json::json!("gpu-hmr-compile-proven");
+        let forged = GpuReloadV2Result::applied(
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            &proof_id,
+            proof_material(&expectation, &forged_semantics, &proof_id),
+        )
+        .unwrap();
+        assert!(verify_applied_gpu_terminal_proof(&forged, &expectation)
+            .unwrap_err()
+            .to_string()
+            .contains("parent rejected strict GPU runtime proof semantics"));
+
+        let stale_proof_id = format!("gpu-runtime-proof:sha256:{}", "7".repeat(64));
+        let mut forged_proof_id = proof.clone();
+        forged_proof_id["proofId"] = serde_json::json!(stale_proof_id);
+        forged_proof_id["runtimeProofArtifact"]["proofId"] = serde_json::json!(stale_proof_id);
+        let forged = GpuReloadV2Result::applied(
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            &stale_proof_id,
+            proof_material(&expectation, &forged_proof_id, &stale_proof_id),
+        )
+        .unwrap();
+        assert!(verify_applied_gpu_terminal_proof(&forged, &expectation)
+            .unwrap_err()
+            .to_string()
+            .contains("parent rejected strict GPU runtime proof semantics"));
+
+        let context_splices = [
+            (
+                expectation.runner_pid.saturating_add(1),
+                expectation.runner_runtime_session_id.clone(),
+                expectation.runner_challenge.clone(),
+                expectation.command_envelope_sha256.clone(),
+            ),
+            (
+                expectation.runner_pid,
+                "pid999-999".to_string(),
+                expectation.runner_challenge.clone(),
+                expectation.command_envelope_sha256.clone(),
+            ),
+            (
+                expectation.runner_pid,
+                expectation.runner_runtime_session_id.clone(),
+                "2".repeat(32),
+                expectation.command_envelope_sha256.clone(),
+            ),
+            (
+                expectation.runner_pid,
+                expectation.runner_runtime_session_id.clone(),
+                expectation.runner_challenge.clone(),
+                format!("sha256:{}", "f".repeat(64)),
+            ),
+        ];
+        for (runner_pid, runtime_session_id, challenge, command_envelope_sha256) in context_splices
+        {
+            let material = GpuRuntimeProofMaterialV1::new(
+                &proof,
+                &expectation.identity.request_id,
+                &expectation.identity.source_edit_id,
+                &expectation.identity.artifact_content_hash,
+                &proof_id,
+                command_envelope_sha256,
+                runner_pid,
+                runtime_session_id,
+                challenge,
+            )
+            .unwrap();
+            let terminal = GpuReloadV2Result::applied(
+                &expectation.identity.request_id,
+                &expectation.identity.source_edit_id,
+                &expectation.identity.artifact_content_hash,
+                &proof_id,
+                material,
+            )
+            .unwrap();
+            assert!(verify_applied_gpu_terminal_proof(&terminal, &expectation).is_err());
+        }
+    }
+
+    #[test]
+    fn parent_rejects_runtime_contract_outside_prepublication_commitment() {
+        let mut expectation = strict_terminal_expectation(
+            GpuReloadV2Expectation::new(
+                format!("gpu-reload:request:{}", "5".repeat(32)),
+                canonical_source_edit_id(),
+                format!("sha256:{}", "d".repeat(64)),
+            )
+            .unwrap(),
+        );
+        let accepted_commitment = strict_output_oracle_commitment(&expectation);
+        expectation.prepublication_output_oracle_commitment = Some(accepted_commitment.clone());
+        let (proof, proof_id) = strict_runtime_proof_fixture(&expectation);
+        let terminal = GpuReloadV2Result::applied(
+            &expectation.identity.request_id,
+            &expectation.identity.source_edit_id,
+            &expectation.identity.artifact_content_hash,
+            &proof_id,
+            proof_material(&expectation, &proof, &proof_id),
+        )
+        .unwrap();
+
+        let mut contract_mismatch = expectation.clone();
+        contract_mismatch
+            .prepublication_output_oracle_commitment
+            .as_mut()
+            .unwrap()
+            .fission_output_oracle_contract_sha256 = format!("sha256:{}", "f".repeat(64));
+        let error = verify_applied_gpu_terminal_proof(&terminal, &contract_mismatch).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("does not match the prepublication capsule commitment"));
+
+        let mut profile_mismatch = expectation.clone();
+        profile_mismatch
+            .prepublication_output_oracle_commitment
+            .as_mut()
+            .unwrap()
+            .profile_bytes_sha256 = format!("sha256:{}", "f".repeat(64));
+        let error = verify_applied_gpu_terminal_proof(&terminal, &profile_mismatch).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("profile bytes do not match the prepublication capsule commitment"));
+
+        let (verified, proof_json_sha256, verified_proof) =
+            verify_applied_gpu_terminal_proof(&terminal, &expectation).unwrap();
+        let signer = RuntimeEvidenceTransportSigner::generate(std::process::id()).unwrap();
+        let receipt = VerifiedHotGpuReloadReceipt {
+            request_id: expectation.identity.request_id.clone(),
+            source_edit_id: expectation.identity.source_edit_id.clone(),
+            artifact_content_hash: expectation.identity.artifact_content_hash.clone(),
+            full_runtime_proof_id: verified.proof_id,
+            proof_ledger_id: verified.ledger_proof_id,
+            proof_json_sha256,
+            runner_pid: expectation.runner_pid,
+            runner_runtime_session_id: expectation.runner_runtime_session_id.clone(),
+            runner_challenge: expectation.runner_challenge.clone(),
+            command_envelope_sha256: expectation.command_envelope_sha256.clone(),
+            compute_expected_output_contract_hash: verified.compute_expected_output_contract_hash,
+            compute_expected_output_semantics_hash: verified.compute_expected_output_semantics_hash,
+            compute_expected_output_compile_transport_nonce: verified
+                .compute_expected_output_compile_transport_nonce,
+            prepublication_output_oracle_commitment: Some(accepted_commitment.clone()),
+            proof: verified_proof,
+        };
+        let control: serde_json::Value = serde_json::from_str(
+            &receipt
+                .parent_control_binding_message_with_signer(
+                    "compile-session:test",
+                    "gpu-proof-transport-request:0123456789abcdef0123456789abcdef",
+                    &signer,
+                )
+                .unwrap()
+                .build_log_message,
+        )
+        .unwrap();
+        assert_eq!(
+            control["prepublicationOutputOracleCommitment"]["fissionOutputOracleContractSha256"],
+            accepted_commitment.fission_output_oracle_contract_sha256
+        );
+        let parent: serde_json::Value = serde_json::from_str(
+            &receipt
+                .into_parent_verified_proof_message_with_signer("compile-session:test", &signer)
+                .unwrap()
+                .build_log_message,
+        )
+        .unwrap();
+        assert_eq!(
+            parent["parentVerification"]["prepublicationOutputOracleCommitment"]
+                ["profileBytesSha256"],
+            accepted_commitment.profile_bytes_sha256
+        );
+    }
+
+    #[tokio::test]
+    async fn mixed_module_and_gpu_terminals_are_collected_independently_out_of_order() {
+        let module_request_id = format!("runner-module-load:request:{}", "7".repeat(32));
+        let module_hash = format!("sha256:{}", "8".repeat(64));
+        let control_session = format!("runner-control-session:{}", "9".repeat(32));
+        let module_expectation = RunnerModuleLoadExpectation {
+            request_id: module_request_id.clone(),
+            module_id: "opaque host partition".to_string(),
+            artifact_content_hash: module_hash.clone(),
+            loader_epoch: 1,
+            artifact_staging_mechanism: LINUX_SEALED_MEMFD_MAPPING_MECHANISM.to_string(),
+            runner_pid: std::process::id(),
+            runner_control_session_id: control_session.clone(),
+        };
+        let module_result = RunnerModuleLoadResultV1::applied(
+            &module_request_id,
+            &module_expectation.module_id,
+            &module_hash,
+            &control_session,
+            1,
+            LINUX_SEALED_MEMFD_MAPPING_MECHANISM,
+        )
+        .unwrap();
+
+        let gpu_expectation = RunnerGpuTerminalExpectation::ColdLoad(GpuArtifactLoadExpectation {
+            request_id: format!("gpu-reload:request:{}", "a".repeat(32)),
+            source_edit_id: canonical_source_edit_id(),
+            artifact_content_hash: artifact_content_hash(),
+            runner_pid: std::process::id(),
+            runner_runtime_session_id: "runtime-session:opaque".to_string(),
+            command_envelope_sha256: format!("sha256:{}", "b".repeat(64)),
+        });
+        let RunnerGpuTerminalExpectation::ColdLoad(cold) = &gpu_expectation else {
+            panic!("expected a cold artifact-load terminal");
+        };
+
+        let (sender, _) = tokio::sync::broadcast::channel(8);
+        let module_receiver = sender.subscribe();
+        let gpu_receiver = sender.subscribe();
+        sender
+            .send(format!(
+                "[Runner] [HMR-STATUS] {}",
+                GpuArtifactLoadV1Result::loaded(
+                    &cold.request_id,
+                    &cold.source_edit_id,
+                    &cold.artifact_content_hash,
+                )
+                .unwrap()
+                .to_json()
+                .unwrap()
+            ))
+            .unwrap();
+        sender.send(module_result.line().unwrap()).unwrap();
+        let barrier_request_id = format!("runner-capability:request:{}", "6".repeat(32));
+        let barrier = RunnerTerminalBarrierExpectation {
+            request_id: barrier_request_id.clone(),
+            capability: RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY.to_string(),
+            runner_pid: std::process::id(),
+            runner_control_session_id: control_session.clone(),
+        };
+        sender
+            .send(
+                RunnerCapabilityObservationV1::current(
+                    &barrier_request_id,
+                    RUNNER_CONTENT_BOUND_MODULE_LOAD_CAPABILITY,
+                    &control_session,
+                )
+                .unwrap()
+                .line()
+                .unwrap(),
+            )
+            .unwrap();
+
+        let (module_receipts, gpu_receipts) = wait_for_runner_command_terminals(
+            module_receiver,
+            gpu_receiver,
+            vec![module_expectation],
+            vec![gpu_expectation],
+            Some(barrier),
+        )
+        .await
+        .unwrap();
+        assert_eq!(module_receipts.len(), 1);
+        assert_eq!(gpu_receipts.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn cold_gpu_load_wait_requires_correlated_hash_bound_terminal() {
+        let marker = format!(
+            "__gpu_device:rocm:advance:12345:capsulev1_abcd:{}:{}:{}",
+            encoded_source_edit_id(),
+            encoded_artifact_content_hash(),
+            encoded_proof_runtime_session_id(),
+        );
+        let command =
+            runner_load_command(&marker, "/tmp/device.hsaco", false, Some(proof_context()))
+                .unwrap();
+        let expectation = command.gpu_terminal.clone().unwrap();
+        let RunnerGpuTerminalExpectation::ColdLoad(cold) = &expectation else {
+            panic!("expected a cold artifact-load terminal");
+        };
+        let (sender, _) = tokio::sync::broadcast::channel(4);
+        let mut receiver = sender.subscribe();
+        sender
+            .send(format!(
+                "[Runner] [HMR-STATUS] {}",
+                GpuArtifactLoadV1Result::loaded(
+                    &cold.request_id,
+                    &cold.source_edit_id,
+                    &cold.artifact_content_hash,
+                )
+                .unwrap()
+                .to_json()
+                .unwrap()
+            ))
+            .unwrap();
+        let receipts = wait_for_gpu_command_terminals(&mut receiver, &[expectation])
+            .await
+            .unwrap();
+        let terminal = RunnerExecutionOutcome {
+            gpu_terminal_receipts: receipts,
+        }
+        .into_single_gpu_terminal()
+        .unwrap()
+        .unwrap();
+        let CorrelatedGpuTerminalReceipt::ColdLoad(receipt) = terminal else {
+            panic!("cold artifact load minted hot reload authorization");
+        };
+        assert_eq!(receipt.runner_pid, proof_context().runner_pid);
+        assert_eq!(
+            receipt.runner_runtime_session_id,
+            proof_context().runner_runtime_session_id
+        );
+        assert!(receipt.command_envelope_sha256.starts_with("sha256:"));
+
+        let expectation = command.gpu_terminal.unwrap();
+        let RunnerGpuTerminalExpectation::ColdLoad(cold) = &expectation else {
+            panic!("expected a cold artifact-load terminal");
+        };
+        let mut mismatch_receiver = sender.subscribe();
+        sender
+            .send(format!(
+                "[Runner] [HMR-STATUS] {}",
+                GpuArtifactLoadV1Result::loaded(
+                    &cold.request_id,
+                    &cold.source_edit_id,
+                    format!("sha256:{}", "f".repeat(64)),
+                )
+                .unwrap()
+                .to_json()
+                .unwrap()
+            ))
+            .unwrap();
+        assert!(
+            wait_for_gpu_command_terminals(&mut mismatch_receiver, &[expectation])
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("identity or hash mismatch")
+        );
+    }
+
+    #[test]
+    fn hot_gpu_device_load_rejects_capsule_placeholder() {
+        let marker = format!(
+            "__gpu_device:rocm:advance,init:12345:-:{}:{}",
+            encoded_source_edit_id(),
+            encoded_artifact_content_hash(),
+        );
+        let error = runner_load_command(&marker, "/tmp/device.hsaco", true, Some(proof_context()))
+            .unwrap_err();
+        assert!(error.to_string().contains("requires a typed proof capsule"));
     }
 
     #[test]
@@ -1638,11 +6518,36 @@ mod tests {
         assert_eq!(
             runner_load_command(
                 "__gpu_device_partial:rocm:advance:12345",
-                "/tmp/device_part.hsaco"
+                "/tmp/device_part.hsaco",
+                false,
+                None,
             )
-            .unwrap(),
+            .unwrap()
+            .wire,
             "load_device_partial rocm /tmp/device_part.hsaco advance 12345\n"
         );
+    }
+
+    #[test]
+    fn gpu_device_partial_load_command_carries_independent_source_edit_identity() {
+        let capsule = legacy_capsule_token();
+        let marker = format!(
+            "__gpu_device_partial:rocm:advance:12345:{}:{}:{}:{}",
+            capsule,
+            encoded_source_edit_id(),
+            encoded_artifact_content_hash(),
+            encoded_proof_runtime_session_id(),
+        );
+        let command = runner_load_command(
+            &marker,
+            "/tmp/device_part.hsaco",
+            true,
+            Some(proof_context()),
+        )
+        .unwrap();
+        let (_, payload) = decode_gpu_v4_command(&command.wire, "gpu_reload_v4");
+        assert_eq!(payload.mode, "partial");
+        assert_eq!(payload.source_edit_id, canonical_source_edit_id());
     }
 
     #[test]
@@ -1653,6 +6558,12 @@ mod tests {
         );
         assert_eq!(
             full_device_abi_from_marker("__gpu_device:rocm:advance:abi-full:capsulev1_abcd"),
+            Some("abi-full")
+        );
+        assert_eq!(
+            full_device_abi_from_marker(
+                "__gpu_device:rocm:advance:abi-full:capsulev1_abcd:source%2Dedit%3Aproof"
+            ),
             Some("abi-full")
         );
         assert_eq!(
@@ -1681,7 +6592,20 @@ mod tests {
     }
 
     #[test]
-    fn loaded_runner_module_state_records_fresh_spawn_host_paths_and_device_abi() {
+    fn fresh_runner_state_stays_uncommitted_before_load_terminals() {
+        let state = uncommitted_runner_module_state();
+
+        assert_eq!(state.module_hashes.shared_hash, 0);
+        assert_eq!(state.module_hashes.core_hash, 0);
+        assert_eq!(state.module_hashes.gui_hash, 0);
+        assert_eq!(state.module_hashes.main_hash, 0);
+        assert!(state.loaded_core_path.is_none());
+        assert!(state.loaded_gui_path.is_none());
+        assert!(state.loaded_device_abi.is_none());
+    }
+
+    #[test]
+    fn loaded_runner_module_state_records_only_committed_paths_and_device_abi() {
         let hashes = ModuleHashes {
             shared_hash: 11,
             core_hash: 22,
@@ -1775,10 +6699,20 @@ mod tests {
 
     #[test]
     fn gpu_device_load_command_rejects_missing_or_unknown_vendor() {
-        assert!(runner_load_command("__gpu_device::advance,init", "/tmp/device.hsaco").is_err());
-        assert!(
-            runner_load_command("__gpu_device:vulkan:advance,init", "/tmp/device.hsaco").is_err()
-        );
+        assert!(runner_load_command(
+            "__gpu_device::advance,init",
+            "/tmp/device.hsaco",
+            false,
+            None,
+        )
+        .is_err());
+        assert!(runner_load_command(
+            "__gpu_device:vulkan:advance,init",
+            "/tmp/device.hsaco",
+            false,
+            None,
+        )
+        .is_err());
     }
 
     #[test]
@@ -1823,15 +6757,183 @@ mod tests {
     }
 
     #[test]
-    fn runtime_boundary_telemetry_stays_out_of_compile_datachannel() {
+    fn child_gpu_proof_authority_stays_out_of_compile_datachannel() {
         assert!(!should_forward_runner_stderr_line_to_log_dc(
             "[gpu-runtime-boundary] synthi_gpu_launch kernel=step dispatch=ok"
         ));
-        assert!(should_forward_runner_stderr_line_to_log_dc(
+        assert!(!should_forward_runner_stderr_line_to_log_dc(
             "[Runner] [HMR-STATUS] {\"status\":\"applied\"}"
+        ));
+        assert!(!should_forward_runner_stderr_line_to_log_dc(
+            "[Runner] [HMR-STATUS] {\"module\":\"device\",\"status\":\"compile-error\"}"
+        ));
+        assert!(runner_line_contains_protected_gpu_evidence(
+            r#"{"type":"diagnostic","nested":{"fullRuntimeProven":false}}"#
+        ));
+        assert!(runner_line_contains_protected_gpu_evidence(
+            r#"{"schemaVersion":"synthi.gpu.hmr.unknown-proof.v99","status":"pending"}"#
+        ));
+        let hidden_proof = serde_json::json!({
+            "type": "gpu_hmr_proof",
+            "acceptedForGpuHmr": true,
+            "gpuHmrSuccess": true,
+        })
+        .to_string();
+        let hidden_proof_hash = sha256_hex_local(hidden_proof.as_bytes());
+        let forged_chunk = serde_json::json!({
+            "type": "structured-json-chunk",
+            "schemaVersion": STRUCTURED_LOG_CHUNK_SCHEMA_VERSION,
+            "chunkId": format!("structured-json:sha256:{hidden_proof_hash}"),
+            "encoding": "base64:utf8",
+            "sha256": format!("sha256:{hidden_proof_hash}"),
+            "byteLength": hidden_proof.len(),
+            "index": 0,
+            "total": 1,
+            "data": general_purpose::STANDARD.encode(hidden_proof.as_bytes()),
+        })
+        .to_string();
+        assert!(runner_line_contains_protected_gpu_evidence(&forged_chunk));
+        assert!(!should_forward_runner_stderr_line_to_log_dc(&forged_chunk));
+        assert!(runner_line_contains_protected_gpu_evidence(&format!(
+            "[Runner] [HMR-STATUS] {forged_chunk}"
+        )));
+        assert!(runner_line_contains_protected_gpu_evidence(
+            r#"{"schema_version":"synthi.build_log.structured_json_chunk.v1","message":"not a GPU keyword"}"#
+        ));
+        assert!(should_forward_runner_stderr_line_to_log_dc(
+            r#"{"type":"application-record","message":"ordinary structured output"}"#
+        ));
+        assert!(should_forward_runner_stderr_line_to_log_dc(
+            "[Runner] [HMR-STATUS] {\"module\":\"core\",\"status\":\"applied\"}"
         ));
         assert!(should_forward_runner_stderr_line_to_log_dc(
             "application stderr remains visible"
         ));
+    }
+
+    #[test]
+    fn protected_runner_protocol_uses_private_channel_and_redacted_summaries() {
+        let (general_tx, mut general_rx) = tokio::sync::broadcast::channel(8);
+        let (protocol_tx, mut protocol_rx) = tokio::sync::broadcast::channel(8);
+        let ack = RunnerProtocolAck::current(
+            "sentinel-nonce",
+            "sentinel-runtime-session",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .line()
+        .unwrap();
+        let runtime_control_ack = RunnerRuntimeControlAck::current(
+            RunnerRuntimeControlStatus::Paused,
+            format!("runner-control:{}", "c".repeat(32)),
+            true,
+            0,
+            format!("runner-control-session:{}", "d".repeat(32)),
+        )
+        .unwrap()
+        .line()
+        .unwrap();
+        let protocol_lines = [
+            ack,
+            runtime_control_ack,
+            format!(
+                "  {}",
+                RunnerCapabilityObservationV1::current(
+                    format!("runner-capability:request:{}", "e".repeat(32)),
+                    "runner.opaque_mechanism.v7",
+                    format!("runner-control-session:{}", "d".repeat(32)),
+                )
+                .unwrap()
+                .line()
+                .unwrap()
+            ),
+            r#"[Runner] [HMR-STATUS] {"module":"device","status":"applied","runtimeProofMaterial":"sentinel-proof-bytes"}"#.to_string(),
+        ];
+
+        for line in protocol_lines {
+            assert_eq!(
+                route_runner_output_line(&line, &general_tx, &protocol_tx),
+                RunnerOutputRoute::ProtectedProtocol
+            );
+            assert_eq!(protocol_rx.try_recv().unwrap(), line);
+            assert!(general_rx.try_recv().is_err());
+            let summary = protected_runner_line_log_summary(&line);
+            assert!(!summary.contains("sentinel"));
+        }
+
+        let protected_evidence_lines = [
+            "[Runner] Processing command: gpu_reload_v4 sentinel-command-bytes".to_string(),
+            "[gpu-runtime-boundary] dispatch_trace sentinel-runtime-evidence".to_string(),
+            r#"{"type":"diagnostic","fullRuntimeProven":false,"value":"sentinel-authority"}"#
+                .to_string(),
+        ];
+        for line in protected_evidence_lines {
+            assert_eq!(
+                route_runner_output_line(&line, &general_tx, &protocol_tx),
+                RunnerOutputRoute::ProtectedEvidence
+            );
+            assert!(general_rx.try_recv().is_err());
+            assert!(protocol_rx.try_recv().is_err());
+            assert!(!protected_runner_line_log_summary(&line).contains("sentinel"));
+        }
+
+        let loose_runtime_ack = r#"[Runner] [HMR-STATUS] {"module":"runner","status":"runtime-paused","runtimeControlToken":"runner-control:cccccccccccccccccccccccccccccccc"}"#;
+        assert_eq!(
+            route_runner_output_line(loose_runtime_ack, &general_tx, &protocol_tx),
+            RunnerOutputRoute::ProtectedEvidence
+        );
+        assert!(protocol_rx.try_recv().is_err());
+
+        let malformed_runtime_ack = format!(
+            "{}{}",
+            crate::runtime::runner_protocol::RUNNER_RUNTIME_CONTROL_ACK_PREFIX,
+            r#"{"schemaVersion":"synthi.runner.runtime_control_ack.v1","status":"runtime-paused","runtimeControlToken":"runner-control:cccccccccccccccccccccccccccccccc","runtimePaused":true,"gpuReloadInflightCount":0,"runnerPid":1,"runnerRuntimeSessionId":"session","acceptedForGpuHmr":true}"#,
+        );
+        assert_eq!(
+            route_runner_output_line(&malformed_runtime_ack, &general_tx, &protocol_tx),
+            RunnerOutputRoute::ProtectedEvidence
+        );
+        assert!(protocol_rx.try_recv().is_err());
+        assert!(general_rx.try_recv().is_err());
+
+        let malformed_indented_module_receipt = format!(
+            "  {}not-json",
+            crate::runtime::runner_protocol::RUNNER_MODULE_LOAD_RESULT_PREFIX
+        );
+        assert_eq!(
+            route_runner_output_line(
+                &malformed_indented_module_receipt,
+                &general_tx,
+                &protocol_tx
+            ),
+            RunnerOutputRoute::ProtectedEvidence
+        );
+        assert!(protocol_rx.try_recv().is_err());
+        assert!(general_rx.try_recv().is_err());
+
+        let visible = "application output remains visible";
+        assert_eq!(
+            route_runner_output_line(visible, &general_tx, &protocol_tx),
+            RunnerOutputRoute::General
+        );
+        assert_eq!(general_rx.try_recv().unwrap(), visible);
+        assert!(protocol_rx.try_recv().is_err());
+
+        let command_summary = runner_command_log_summary("gpu_reload_v4 sentinel-command-bytes");
+        assert!(!command_summary.contains("sentinel"));
+        assert!(command_summary.contains("sha256=sha256:"));
+    }
+
+    #[test]
+    fn native_output_fault_signal_is_sticky_and_observable() {
+        let lifecycle = std::sync::Arc::new(
+            crate::runtime::native_runner_codec::NativeRunnerOutputLifecycle::new(),
+        );
+        let (fault_tx, fault_rx) = tokio::sync::watch::channel(false);
+
+        super::mark_native_runner_output_fault(&lifecycle, &fault_tx);
+        super::mark_native_runner_output_fault(&lifecycle, &fault_tx);
+
+        assert!(lifecycle.process_faulted());
+        assert!(*fault_rx.borrow());
     }
 }

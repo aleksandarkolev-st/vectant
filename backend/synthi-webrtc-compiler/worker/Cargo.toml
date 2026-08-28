@@ -73,6 +73,7 @@ byteorder = "1.5"
 hex = "0.4"
 base64 = "0.22"
 sha2 = "0.10"
+ring = "0.17"
 # ELF/DWARF parsing for layout hash extraction
 object = { version = "0.36", default-features = false, features = ["read", "elf"] }
 gimli = { version = "0.31", default-features = false, features = ["read", "std"] }
@@ -82,6 +83,7 @@ iced-x86 = { version = "1.21", default-features = false, features = ["decoder", 
 # Phase 11: AST-based value-only classification
 tree-sitter = "0.24"
 tree-sitter-cpp = "0.23"
+unicode-normalization = "0.1"
 
 [build-dependencies]
 tonic-build = "0.11"
