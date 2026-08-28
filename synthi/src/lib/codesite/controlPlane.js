@@ -2140,6 +2140,7 @@ export async function executeAgentWarrantAuthority(
     principal,
     policy: configuredWarrantAuthorityPolicy(),
     auditSigner: configuredWarrantAuditSigner(),
+    transactionRetry: configuredWarrantTransactionRetry(),
   }, normalizedOperation, canonicalBody);
 }
 
@@ -2175,6 +2176,22 @@ function configuredWarrantAuthorityPolicy() {
     maxTtlMs: configuredWarrantPositiveInteger('SYNTHI_CODESITE_WARRANT_MAX_TTL_MS'),
     maxInvocations: configuredWarrantPositiveInteger('SYNTHI_CODESITE_WARRANT_MAX_INVOCATIONS'),
   };
+}
+
+function configuredWarrantTransactionRetry() {
+  return {
+    maxRetries: configuredWarrantPositiveInteger('SYNTHI_CODESITE_WARRANT_TRANSACTION_MAX_RETRIES'),
+    delayMs: configuredWarrantPositiveInteger('SYNTHI_CODESITE_WARRANT_TRANSACTION_RETRY_DELAY_MS'),
+    retryableErrorCodes: configuredWarrantRetryableErrorCodes('SYNTHI_CODESITE_WARRANT_TRANSACTION_RETRYABLE_ERROR_CODES_JSON'),
+  };
+}
+
+function configuredWarrantRetryableErrorCodes(key) {
+  const values = parseJson(String(process.env[key] || '').trim(), null);
+  if (!Array.isArray(values) || values.length === 0 || values.some((value) => typeof value !== 'string' || !value.trim())) {
+    throw forbidden('codesite_warrant_policy_unconfigured');
+  }
+  return values;
 }
 
 function configuredWarrantAuditSigner() {

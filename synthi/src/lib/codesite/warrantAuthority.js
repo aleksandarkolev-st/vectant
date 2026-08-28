@@ -38,14 +38,25 @@ async function withinProjectTransaction(db, scope, operation) {
   if (typeof db?.$transaction !== 'function') {
     throw new WarrantAuthorityError('warrant_authority_transaction_required', 503);
   }
-  return db.$transaction(async (tx) => {
-    // This ORM update serializes warrant mutations per project as well as the
-    // Serializable transaction isolation level. It is not a hand-written lock.
-    await tx.codeSiteProject.update({ where: { id: scope.projectId }, data: { updatedAt: new Date() } });
-    const auditHead = await tx.codeSiteWarrantAuditHead.findUnique({ where: { projectId: scope.projectId } });
-    await verifyAuditChain(tx, scope, auditHead);
-    return operation(tx);
-  }, { isolationLevel: 'Serializable' });
+  let retryCount = 0;
+  while (true) {
+    try {
+      return await db.$transaction(async (tx) => {
+        // This ORM update serializes warrant mutations per project as well as the
+        // Serializable transaction isolation level. It is not a hand-written lock.
+        await tx.codeSiteProject.update({ where: { id: scope.projectId }, data: { updatedAt: new Date() } });
+        const auditHead = await tx.codeSiteWarrantAuditHead.findUnique({ where: { projectId: scope.projectId } });
+        await verifyAuditChain(tx, scope, auditHead);
+        return operation(tx);
+      }, { isolationLevel: 'Serializable' });
+    } catch (error) {
+      const retry = scope.transactionRetry;
+      if (!retry || !retryableTransactionError(error, retry)) throw error;
+      if (retryCount >= retry.maxRetries) throw new WarrantAuthorityError('warrant_transaction_contention', 409);
+      retryCount += 1;
+      await delay(retry.delayMs);
+    }
+  }
 }
 
 async function issue(db, scope, policy, body) {
@@ -200,7 +211,7 @@ async function renew(db, scope, policy, body) {
     throw new WarrantAuthorityError('bearer_mismatch');
   }
   const lineage = await lineageFor(db, scope, warrant.id);
-  const ancestorExpiry = lineage.slice(1).reduce((value, row) => Math.min(value, row.ancestor.expiresAt.getTime()), Number.MAX_SAFE_INTEGER);
+  const ancestorExpiry = lineage.slice(1).reduce((value, row) => Math.min(value, row.ancestorWarrant.expiresAt.getTime()), Number.MAX_SAFE_INTEGER);
   const totalExpiry = Math.min(warrant.issuedAt.getTime() + policy.maxTtlMs, ancestorExpiry);
   const extension = positiveInt(input.ttl_ms, 'warrant_ttl_invalid');
   const nextExpiry = Math.min(warrant.expiresAt.getTime() + extension, totalExpiry);
@@ -245,7 +256,7 @@ async function reserve(db, scope, body) {
   const decision = decisionFor(warrant, lineage, scope.principal, tool, record(input.args), optionalString(input.bearer), new Date());
   if (!decision.allowed) return decision;
   for (const row of lineage) {
-    const budget = row.ancestor.budgets.find((item) => item.tool === tool);
+    const budget = row.ancestorWarrant.budgets.find((item) => item.tool === tool);
     if (!budget) continue;
     const updated = await db.codeSiteWarrantBudget.updateMany({
       where: { id: budget.id, remainingInvocations: { gt: 0 } },
@@ -290,7 +301,7 @@ async function settle(db, scope, body) {
   if (outcome === 'failed') {
     const lineage = await lineageFor(db, scope, receipt.warrantId);
     for (const row of lineage) {
-      const budget = row.ancestor.budgets.find((item) => item.tool === receipt.tool);
+      const budget = row.ancestorWarrant.budgets.find((item) => item.tool === receipt.tool);
       if (budget) await db.codeSiteWarrantBudget.update({ where: { id: budget.id }, data: { remainingInvocations: { increment: 1 } } });
     }
   }
@@ -314,7 +325,7 @@ async function loadWarrant(db, scope, warrantId, includeBudgets) {
 async function lineageFor(db, scope, warrantId) {
   const lineage = await db.codeSiteWarrantLineage.findMany({
     where: { projectId: scope.projectId, descendantWarrantId: warrantId },
-    include: { ancestor: { include: { budgets: true } } },
+    include: { ancestorWarrant: { include: { budgets: true } } },
     orderBy: { depth: 'asc' },
   });
   if (
@@ -337,8 +348,8 @@ function decisionFor(warrant, lineage, actingPrincipal, tool, args, bearer, now)
   if (covering.length === 0) return deny('tool_not_covered', `This warrant does not cover the '${tool}' capability.`);
   if (!covering.some((grant) => grantAccepts(grant, args))) return deny('arg_out_of_scope', 'The requested arguments are outside this warrant scope.');
   for (const row of lineage) {
-    if (row.ancestor.status !== 'active' || now >= row.ancestor.expiresAt) return deny('revoked', 'An ancestor warrant is no longer active.');
-    const budget = row.ancestor.budgets.find((item) => item.tool === tool);
+    if (row.ancestorWarrant.status !== 'active' || now >= row.ancestorWarrant.expiresAt) return deny('revoked', 'An ancestor warrant is no longer active.');
+    const budget = row.ancestorWarrant.budgets.find((item) => item.tool === tool);
     if (budget && budget.remainingInvocations <= 0) return deny('invocations_exhausted', `This warrant used up its allowance for '${tool}'.`);
   }
   return { allowed: true, warrant_id: warrant.id };
@@ -447,6 +458,7 @@ function requiredScope(value) {
     principal: principal(scope.principal),
     auditSigningRequired,
     auditSigner: auditSigner(scope.auditSigner, auditSigningRequired),
+    transactionRetry: transactionRetry(scope.transactionRetry, auditSigningRequired),
   };
 }
 function requiredPolicy(value) {
@@ -473,6 +485,28 @@ function auditSigner(value, required) {
     throw new WarrantAuthorityError('warrant_audit_signer_invalid', 503);
   }
   return value;
+}
+function transactionRetry(value, required) {
+  if (value === undefined || value === null) {
+    if (required) throw new WarrantAuthorityError('warrant_transaction_retry_required', 503);
+    return undefined;
+  }
+  const policy = object(value);
+  const retryableErrorCodes = Array.isArray(policy.retryableErrorCodes)
+    ? policy.retryableErrorCodes.map((code) => requiredString(code, 'warrant_transaction_retry_invalid'))
+    : [];
+  if (retryableErrorCodes.length === 0) throw new WarrantAuthorityError('warrant_transaction_retry_invalid', 400);
+  return {
+    maxRetries: positiveInt(policy.maxRetries, 'warrant_transaction_retry_invalid'),
+    delayMs: positiveInt(policy.delayMs, 'warrant_transaction_retry_invalid'),
+    retryableErrorCodes: new Set(retryableErrorCodes),
+  };
+}
+function retryableTransactionError(error, policy) {
+  return typeof error?.code === 'string' && policy.retryableErrorCodes.has(error.code);
+}
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 function auditSigningPayload(scope, sequence, previousHash, eventHash) {
   return stableJson({
