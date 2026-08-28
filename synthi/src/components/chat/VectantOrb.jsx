@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * VectantOrb — Vectant AI's identity: a fluid, morphing gradient orb rendered
+ * VectantOrb - Vectant console identity: a fluid, morphing gradient orb rendered
  * with a tiny WebGL fragment shader. Solid brand-gradient colours warped like
  * liquid; the silhouette morphs through a few smooth lobes (2·3·4 harmonics)
  * plus envelope-gated higher harmonics so the "spikiness" varies over time.

@@ -35,6 +35,94 @@ async fn send_progress_update(
     }
 }
 
+fn env_value(keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        std::env::var(key)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn gcs_bucket_name() -> String {
+    env_value(&["SYNTHI_GCS_BUCKET", "GCS_BUCKET_NAME"])
+        .unwrap_or_else(|| "synthi-cloud-storage".to_string())
+}
+
+fn gcs_credentials_json() -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(raw_json) = env_value(&[
+        "SYNTHI_GCS_SERVICE_ACCOUNT_JSON",
+        "GCS_SERVICE_ACCOUNT_JSON",
+    ]) {
+        validate_credentials_json(&raw_json)?;
+        return Ok(raw_json);
+    }
+
+    if let Some(path) = env_value(&[
+        "SYNTHI_GCS_SERVICE_ACCOUNT_JSON_FILE",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+    ]) {
+        let raw_json = fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read GCS credentials file {}: {}", path, e))?;
+        validate_credentials_json(&raw_json)?;
+        return Ok(raw_json);
+    }
+
+    let client_email = env_value(&["SYNTHI_GCS_CLIENT_EMAIL", "GCS_CLIENT_EMAIL"]);
+    let private_key = env_value(&["SYNTHI_GCS_PRIVATE_KEY", "GCS_PRIVATE_KEY"]);
+    if let (Some(client_email), Some(private_key)) = (client_email, private_key) {
+        let private_key = private_key.replace("\\n", "\n");
+        let credentials_json = json!({
+            "type": "service_account",
+            "client_email": client_email,
+            "private_key": private_key,
+        })
+        .to_string();
+        validate_credentials_json(&credentials_json)?;
+        return Ok(credentials_json);
+    }
+
+    Err("GCS credentials missing; set SYNTHI_GCS_SERVICE_ACCOUNT_JSON, SYNTHI_GCS_SERVICE_ACCOUNT_JSON_FILE, or SYNTHI_GCS_CLIENT_EMAIL plus SYNTHI_GCS_PRIVATE_KEY".into())
+}
+
+fn validate_credentials_json(
+    raw_json: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let value: serde_json::Value = serde_json::from_str(raw_json)
+        .map_err(|e| format!("GCS credentials JSON invalid: {}", e))?;
+    if value
+        .get("private_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .is_empty()
+    {
+        return Err("GCS credentials JSON missing private_key".into());
+    }
+    if value
+        .get("client_email")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .is_empty()
+    {
+        return Err("GCS credentials JSON missing client_email".into());
+    }
+    Ok(())
+}
+
+fn gcs_store() -> Result<Arc<dyn ObjectStore>, Box<dyn std::error::Error + Send + Sync>> {
+    std::env::remove_var("GCLOUD_PROJECT");
+    std::env::remove_var("CLOUDSDK_CORE_PROJECT");
+
+    let credentials_json = gcs_credentials_json()?;
+    let mut builder = GoogleCloudStorageBuilder::new();
+    builder = builder.with_bucket_name(&gcs_bucket_name());
+    builder = builder.with_config(GoogleConfigKey::ServiceAccountKey, &credentials_json);
+    let store_impl = builder
+        .build()
+        .map_err(|e| format!("Failed to build GCS store: {}", e))?;
+    Ok(Arc::new(store_impl))
+}
+
 pub async fn download(
     slug: &str,
     mut progress_tx: Option<mpsc::UnboundedSender<String>>,
@@ -74,43 +162,7 @@ pub async fn download(
         }
     }
 
-    let credentials_json = json!({
-        "type": "service_account",
-        "project_id": "overview-synti",
-        "private_key_id": "abc123def456ghi789jkl012mno345pqr678stu901vwx234yz",
-        "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCZ4GiBbEtfsT/j\nl1mnS2MRbjyDjU7wQGeBvi3TD4jmBcWi8EHzp+H1rIxj9fHWBHA2LhEiETN6Hw6z\n4MnEGSLCk+XsGWIJrzc4oX8RGpEg9XLFAHEszSVavaumS4KMSuYc8MTZYsfRjYHd\nZDlej5i8qFsEn9F+UO/oOo/gQuAV2/uiT19qZTs0biKiJKT5a22O44QzD1tk0Fah\nZyvjv1YLGuwnRVNipLFqzxQQOkcJhj3r2KX+BQ+CAseanMzBf3JL+L9tJnnxZ0kD\nW/BYbmvDx48HAhdUZhAv0t0ZL3+1NzW8emVzRuzcsRRlt2v1f69PscAJUmtiHV9E\nPE3Hn5jFAgMBAAECggEAGtFvpU7YfB8KQYI5T9zlsT4DMfJI1bqDz6rzlZtZgq1y\n2okBFZQm34hpF2rf8Sro26h/t+5DiH8tMtB0mca/tiXMpq9t1L5C443R9YspzBK7\nI/aFwwcmAYCZD+yNHiJXpKeZx0FeDfmZrpovHXntZsP4yP+JpXg5t8GtHarKH0To\nhuTcnqKo7BfSjN/sZMGnvIjyja7eACVJU5FG9nd7vNQekm0ZUxLXylOvzBIAW1Xx\nDba3HHX0YIL+nyleZvC4A4JrXE65iPU3dqQvbwkZNsfCTtaE6AFfKiVcAAXf2icw\nU57e8NoH5fwmQ+5VXofhD7jbG8N2+8vZp+552fD7AQKBgQDNdUg2n7SZR75MNwx2\nXusH1U8xrt9R3cE0QE0vFglG7HzkSICXIvYytrdZWyxA0WTaT+xMxDGO4L7Ohuqk\nk8OiJ1r3RblrmING2eXaMl2cEYsZAlRBnrykSDNAIj0kD9S0lGFve+wmxC5Jw7dr\n5BaqpKRwGwHIJ+oewjEst9gcpQKBgQC/usfgUdsXqj0GO1gqMgL2u2bjsWKQHd53\nIC4lsL5kXwj/nCougXtrRIh2n1Gcq17tGPKPkryT5QLnxUu9ZY+6WkNZSJhcfFS8\nXxStrWH8NgCMpFR1O5hREKCYlebXL2zCRTUZS4943E8Olj4CjxLfStuU8t/W1p+b\nsEGB9zIxoQKBgQC0WmSWlqDZALJaguQssGuOR8Ap88DTQ18K9/sI/0YLfSKw3bgL\nc8Q8hknyZWc2StlGDmx2gq6iJkU4VBR7fb54hCWE9C6s9YcfVb1ASYAEtR2uSW4e\n4DHl3/8lKCkVk9P65FmXnGeTLBkZ5XUIf4MqLjautfZddjQ85eh2wbcyhQKBgEHw\n74WLIZtGBa77AhuhD7vkQELXY1rFqxm1i6mS3CiRNvsSrr9H8Ta3X2fM67jCh+dr\nySDwCsOi5Bjqll4RbBlfqgIvIZfNeyc+XFJPa3/e4tl8O0AGuyBGY7WW+MnRmcpH\nGzgT8MhUnSwbKEChDJCXomXcEnhFYKefOyiD6FOBAoGAfiXxNfmK6iTGqG3A+HHI\n1TupEEPZudygJ2Awd1+22iy5++0BqvMf3o0j0JP0u8ArwkcVDWNuLWrpI6aHZIb8\nVb34haFWR82J/tX2NTq9zAQq//d8OAgEH6PDb0K2YlQVOSmPcYWqd7aGVGMW5+QO\nhZeaOzLwbJLOa36t6Ph+70c=\n-----END PRIVATE KEY-----\n",
-        "client_email": "file-uploader-service@overview-synti.iam.gserviceaccount.com",
-        "client_id": "123456789012345678901",
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/file-uploader-service%40overview-synti.iam.gserviceaccount.com"
-    }).to_string();
-
-    // Optional sanity check: ensure valid JSON
-    let _value: serde_json::Value = serde_json::from_str(&credentials_json)
-        .map_err(|e| format!("Credentials JSON invalid: {}", e))?;
-
-    // -------------------------
-    // Build the GCS object store
-    // -------------------------
-    let bucket_name = "synthi-cloud-storage";
-
-    std::env::remove_var("GCLOUD_PROJECT");
-    std::env::remove_var("CLOUDSDK_CORE_PROJECT");
-
-    // Build the GCS object store with explicit service account key
-    let mut builder = GoogleCloudStorageBuilder::new();
-    builder = builder.with_bucket_name(bucket_name);
-
-    // Try multiple approaches to force use of service account key
-    builder = builder.with_config(GoogleConfigKey::ServiceAccountKey, &credentials_json);
-
-    let store_impl = builder
-        .build()
-        .map_err(|e| format!("Failed to build GCS store: {}", e))?;
-
-    let store: Arc<dyn ObjectStore> = Arc::new(store_impl);
+    let store = gcs_store()?;
 
     // List objects with workspaces/slug prefix
     let prefix = Path::from(format!("workspaces/{}/", slug.trim_matches('/')));
@@ -300,29 +352,7 @@ pub async fn upload_directory(
         sub_path
     );
 
-    // GCS setup (duplicated from download for now to allow independent usage)
-    let credentials_json = json!({
-        "type": "service_account",
-        "project_id": "overview-synti",
-        "private_key_id": "abc123def456ghi789jkl012mno345pqr678stu901vwx234yz",
-        "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCZ4GiBbEtfsT/j\nl1mnS2MRbjyDjU7wQGeBvi3TD4jmBcWi8EHzp+H1rIxj9fHWBHA2LhEiETN6Hw6z\n4MnEGSLCk+XsGWIJrzc4oX8RGpEg9XLFAHEszSVavaumS4KMSuYc8MTZYsfRjYHd\nZDlej5i8qFsEn9F+UO/oOo/gQuAV2/uiT19qZTs0biKiJKT5a22O44QzD1tk0Fah\nZyvjv1YLGuwnRVNipLFqzxQQOkcJhj3r2KX+BQ+CAseanMzBf3JL+L9tJnnxZ0kD\nW/BYbmvDx48HAhdUZhAv0t0ZL3+1NzW8emVzRuzcsRRlt2v1f69PscAJUmtiHV9E\nPE3Hn5jFAgMBAAECggEAGtFvpU7YfB8KQYI5T9zlsT4DMfJI1bqDz6rzlZtZgq1y\n2okBFZQm34hpF2rf8Sro26h/t+5DiH8tMtB0mca/tiXMpq9t1L5C443R9YspzBK7\nI/aFwwcmAYCZD+yNHiJXpKeZx0FeDfmZrpovHXntZsP4yP+JpXg5t8GtHarKH0To\nhuTcnqKo7BfSjN/sZMGnvIjyja7eACVJU5FG9nd7vNQekm0ZUxLXylOvzBIAW1Xx\nDba3HHX0YIL+nyleZvC4A4JrXE65iPU3dqQvbwkZNsfCTtaE6AFfKiVcAAXf2icw\nU57e8NoH5fwmQ+5VXofhD7jbG8N2+8vZp+552fD7AQKBgQDNdUg2n7SZR75MNwx2\nXusH1U8xrt9R3cE0QE0vFglG7HzkSICXIvYytrdZWyxA0WTaT+xMxDGO4L7Ohuqk\nk8OiJ1r3RblrmING2eXaMl2cEYsZAlRBnrykSDNAIj0kD9S0lGFve+wmxC5Jw7dr\n5BaqpKRwGwHIJ+oewjEst9gcpQKBgQC/usfgUdsXqj0GO1gqMgL2u2bjsWKQHd53\nIC4lsL5kXwj/nCougXtrRIh2n1Gcq17tGPKPkryT5QLnxUu9ZY+6WkNZSJhcfFS8\nXxStrWH8NgCMpFR1O5hREKCYlebXL2zCRTUZS4943E8Olj4CjxLfStuU8t/W1p+b\nsEGB9zIxoQKBgQC0WmSWlqDZALJaguQssGuOR8Ap88DTQ18K9/sI/0YLfSKw3bgL\nc8Q8hknyZWc2StlGDmx2gq6iJkU4VBR7fb54hCWE9C6s9YcfVb1ASYAEtR2uSW4e\n4DHl3/8lKCkVk9P65FmXnGeTLBkZ5XUIf4MqLjautfZddjQ85eh2wbcyhQKBgEHw\n74WLIZtGBa77AhuhD7vkQELXY1rFqxm1i6mS3CiRNvsSrr9H8Ta3X2fM67jCh+dr\nySDwCsOi5Bjqll4RbBlfqgIvIZfNeyc+XFJPa3/e4tl8O0AGuyBGY7WW+MnRmcpH\nGzgT8MhUnSwbKEChDJCXomXcEnhFYKefOyiD6FOBAoGAfiXxNfmK6iTGqG3A+HHI\n1TupEEPZudygJ2Awd1+22iy5++0BqvMf3o0j0JP0u8ArwkcVDWNuLWrpI6aHZIb8\nVb34haFWR82J/tX2NTq9zAQq//d8OAgEH6PDb0K2YlQVOSmPcYWqd7aGVGMW5+QO\nhZeaOzLwbJLOa36t6Ph+70c=\n-----END PRIVATE KEY-----\n",
-        "client_email": "file-uploader-service@overview-synti.iam.gserviceaccount.com",
-        "client_id": "123456789012345678901",
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/file-uploader-service%40overview-synti.iam.gserviceaccount.com"
-    }).to_string();
-
-    let bucket_name = "synthi-cloud-storage";
-    let mut builder = GoogleCloudStorageBuilder::new();
-    builder = builder.with_bucket_name(bucket_name);
-    builder = builder.with_config(GoogleConfigKey::ServiceAccountKey, &credentials_json);
-
-    let store_impl = builder
-        .build()
-        .map_err(|e| format!("Failed to build GCS store: {}", e))?;
-    let store: Arc<dyn ObjectStore> = Arc::new(store_impl);
+    let store = gcs_store()?;
 
     // Recursively walk directory and upload
     let mut stack = vec![local_path.clone()];

@@ -1,0 +1,477 @@
+import { expect, test } from "@playwright/test";
+import path from "path";
+import { pathToFileURL } from "url";
+
+const desktopShellUrl = pathToFileURL(
+  path.resolve("backend/vectant-local-support-app/desktop/ui/index.html"),
+).toString();
+
+test.describe("local support desktop shell", () => {
+  test("shows a security-first desktop control surface without faking connection state", async ({ page }) => {
+    await page.goto(desktopShellUrl);
+
+    await expect(page.getByRole("heading", { name: "Vectant Local Support" })).toBeVisible();
+    await expect(page.getByText("Local enforcement state")).toBeVisible();
+    await expect(page.getByText("Workspace scope, pairing state, approvals, and port grants are controlled here.")).toBeVisible();
+    await expect(page.getByText("Disconnected", { exact: true })).toBeVisible();
+    await expect(page.getByText("No workspace selected")).toBeVisible();
+    await expect(page.getByText("Policy check unavailable")).toBeVisible();
+    await expect(page.getByText("New pairing is disabled until it can be checked.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Disconnect" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Revoke session approvals" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Pause" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Check for signed update" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Install update" })).toBeDisabled();
+    await page.getByRole("button", { name: "Choose workspace" }).click();
+    await expect(page.getByText("Workspace picker needs the paired desktop daemon. No local paths were exposed.")).toBeVisible();
+    await page.getByRole("button", { name: "Pair session" }).click();
+    await expect(page.getByLabel("One-time code")).toBeFocused();
+    await expect(page.getByRole("button", { name: "Check code" })).toBeDisabled();
+
+    await page.getByRole("tab", { name: "Control plane", exact: true }).focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(page.getByRole("tab", { name: "Bootstrap", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByText("Set up Local Support")).toBeVisible();
+    await expect(page.getByText("Enter the browser code")).toBeVisible();
+    await expect(page.getByText("Choose one workspace", { exact: true })).toBeVisible();
+    await expect(page.getByText("Confirm pairing fingerprint")).toBeVisible();
+    await expect(page.getByText("No folder is selected. This screen sends no workspace bytes while disconnected.")).toBeVisible();
+
+    await page.getByRole("tab", { name: "Approvals", exact: true }).click();
+    await expect(page.getByText("No live approval request")).toBeVisible();
+    await expect(page.getByText("Zero bytes sent")).toBeVisible();
+    await expect(page.getByText(".env and credential stores")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Open approval review" })).toBeDisabled();
+
+    await page.getByRole("tab", { name: "Ports", exact: true }).click();
+    await expect(page.getByText("No ports approved")).toBeVisible();
+    await expect(page.getByText("Explicit capabilities")).toBeVisible();
+    await expect(page.getByText("AI page body reading")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approve port capabilities" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Open in system browser" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Revoke port approval" })).toBeDisabled();
+
+    await page.getByRole("tab", { name: "Activity", exact: true }).click();
+    await expect(page.getByText("History is empty")).toBeVisible();
+    await expect(page.getByText("Raw bodies excluded")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Export scrubbed history" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Delete local history" })).toBeDisabled();
+
+    await page.getByRole("tab", { name: "Control plane", exact: true }).click();
+    await expect(page.getByText("Disconnected", { exact: true })).toBeVisible();
+  });
+
+  test("renders sanitized desktop IPC state without exposing local secrets", async ({ page }) => {
+    await page.addInitScript(() => {
+      (window as any).__ipcCalls = [];
+      window.__TAURI__ = {
+        core: {
+          invoke: async (command, args) => {
+            if (command !== "local_support_ipc") throw new Error("unexpected command");
+            (window as any).__ipcCalls.push(args);
+            if (args.command === "session.status") {
+              return {
+                connected: true,
+                paused: false,
+                session: {
+                  account_id: "acct_demo",
+                  workspace_id: "wk_demo",
+                  device_fingerprint: "sha256:1111111111111111",
+                  mode: "Balanced review before send",
+                },
+                approvals: [{ request_id: "req_file_review" }],
+                ports: [{ port: 5173, preview_host: "br-local-p5173.vectant-preview.dev", preview_token: "raw-token-must-not-render" }],
+                activity: [{ summary: "Blocked .env locally. Nothing was sent." }],
+                update_policy: {
+                  available: true,
+                  enabled: true,
+                  pairing_disabled: false,
+                  update_required: false,
+                  current_version: "0.1.0",
+                  minimum_version: "0.1.0",
+                  reason: "policy_current",
+                  user_visible_message: "This Local Support version satisfies current policy.",
+                },
+              };
+            }
+            if (args.command === "workspace.pick") {
+              return {
+                connected: false,
+                paused: false,
+                session: {
+                  account_id: "not paired",
+                  workspace_id: "wk_selected",
+                  device_fingerprint: "sha256:1111111111111111",
+                  mode: "Balanced review before send",
+                },
+                approvals: [],
+                ports: [],
+                activity: [{ summary: "Workspace selected locally. No files were sent." }],
+                update_policy: {
+                  available: true,
+                  enabled: true,
+                  pairing_disabled: false,
+                  update_required: false,
+                  current_version: "0.1.0",
+                  minimum_version: "0.1.0",
+                  reason: "policy_current",
+                  user_visible_message: "This Local Support version satisfies current policy.",
+                },
+              };
+            }
+            if (args.command === "pairing.start") {
+              return {
+                connected: false,
+                paused: true,
+                session: {
+                  account_id: "not paired",
+                  workspace_id: "wk_selected",
+                  device_fingerprint: "sha256:1111111111111111",
+                  mode: "Balanced review before send",
+                },
+                pairing: {
+                  status: "awaiting_confirmation",
+                  fingerprint: "1a2b-3c4d-5e6f",
+                  account_id: "acct_demo",
+                  org_id: "org_demo",
+                },
+                approvals: [],
+                ports: [],
+                activity: [{ summary: "Pairing code claimed locally." }],
+              };
+            }
+            if (args.command === "pairing.confirm") {
+              return {
+                connected: true,
+                paused: false,
+                session: {
+                  account_id: "acct_demo",
+                  workspace_id: "wk_selected",
+                  device_fingerprint: "sha256:1111111111111111",
+                  mode: "Balanced review before send",
+                },
+                approvals: [{ request_id: "req_file_review" }],
+                ports: [{ port: 5173, preview_host: "br-local-p5173.vectant-preview.dev", preview_token: "raw-token-must-not-render" }],
+                activity: [{ summary: "Pairing fingerprint confirmed locally." }],
+              };
+            }
+            if (args.command === "approval.file.review") {
+              return {
+                connected: true,
+                paused: false,
+                session: {
+                  account_id: "acct_demo",
+                  workspace_id: "wk_selected",
+                  device_fingerprint: "sha256:1111111111111111",
+                  mode: "Balanced review before send",
+                },
+                approvals: [{ request_id: "req_file_review" }],
+                ports: [{ port: 5173, preview_host: "br-local-p5173.vectant-preview.dev", preview_token: "raw-token-must-not-render" }],
+                activity: [{ summary: "Opened local file approval review. Content stayed local." }],
+              };
+            }
+            if (args.command === "approval.port.review") {
+              return {
+                connected: true,
+                paused: false,
+                session: {
+                  account_id: "acct_demo",
+                  workspace_id: "wk_selected",
+                  device_fingerprint: "sha256:1111111111111111",
+                  mode: "Balanced review before send",
+                },
+                approvals: [{ request_id: "req_file_review" }],
+                ports: [{ port: 5173, preview_host: "br-local-p5173.vectant-preview.dev", preview_token: "raw-token-must-not-render" }],
+                activity: [{ summary: "Approved port capabilities for this session. Preview token stayed hidden." }],
+              };
+            }
+            if (args.command === "session.pause") {
+              return {
+                connected: true,
+                paused: true,
+                session: { account_id: "acct_demo", workspace_id: "wk_selected" },
+                approvals: [],
+                ports: [],
+                activity: [{ summary: "Session paused by local user." }],
+              };
+            }
+            if (args.command === "history.export") {
+              return {
+                connected: true,
+                paused: false,
+                session: { account_id: "acct_demo", workspace_id: "wk_demo" },
+                approvals: [],
+                ports: [{ port: 5173, preview_host: "br-local-p5173.vectant-preview.dev" }],
+                activity: [{ summary: "Exported scrubbed history locally." }],
+              };
+            }
+            if (args.command === "history.delete") {
+              return {
+                connected: true,
+                paused: false,
+                session: { account_id: "acct_demo", workspace_id: "wk_demo" },
+                approvals: [],
+                ports: [],
+                activity: [{ summary: "Deleted local activity history." }],
+              };
+            }
+            if (args.command === "update.check" || args.command === "update.install") {
+              return {
+                connected: true,
+                paused: false,
+                session: { account_id: "acct_demo", workspace_id: "wk_demo" },
+                approvals: [],
+                ports: [],
+                activity: [],
+                available_update_version: "0.2.0",
+                update_policy: {
+                  available: true,
+                  enabled: true,
+                  pairing_disabled: false,
+                  update_required: false,
+                  current_version: "0.1.0",
+                  minimum_version: "0.1.0",
+                  reason: "policy_current",
+                  user_visible_message: "This Local Support version satisfies current policy.",
+                },
+              };
+            }
+            return { connected: true, paused: false, session: { account_id: "acct_demo", workspace_id: "wk_demo" } };
+          },
+        },
+      };
+    });
+
+    await page.goto(desktopShellUrl);
+
+    await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+    await expect(page.getByText("Desktop IPC connected. Renderer received sanitized state only.")).toBeVisible();
+    await expect(page.getByText("Version 0.1.0 is current")).toBeVisible();
+    await expect(page.getByText("Minimum 0.1.0")).toBeVisible();
+    await page.getByRole("button", { name: "Check for signed update" }).click();
+    await expect(page.getByText("Signed update 0.2.0 available")).toBeVisible();
+    await expect(page.getByText("Signed update 0.2.0 is ready to install.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Install 0.2.0" })).toBeEnabled();
+    await page.getByRole("button", { name: "Install 0.2.0" }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__ipcCalls.at(-1))).toMatchObject({
+      command: "update.install",
+    });
+    await expect(page.getByText("acct_demo", { exact: true })).toBeVisible();
+    await expect(page.getByText("wk_demo", { exact: true }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Disconnect" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Revoke session approvals" })).toBeEnabled();
+    await page.getByRole("button", { name: "Choose workspace" }).click();
+    await page.getByRole("tab", { name: "Activity", exact: true }).click();
+    await expect(page.getByText("Workspace selected locally. No files were sent.")).toBeVisible();
+    await page.getByRole("tab", { name: "Control plane", exact: true }).click();
+    await page.getByRole("button", { name: "Pair session" }).click();
+    await page.getByLabel("One-time code").fill("ABCD2345WXYZ");
+    await page.getByRole("button", { name: "Check code" }).click();
+    await expect(page.getByText("1a2b-3c4d-5e6f", { exact: true })).toBeVisible();
+    await expect(page.getByText("Account acct_demo. Organization org_demo.")).toBeVisible();
+    await expect(page.getByLabel("One-time code")).toHaveValue("");
+    await page.getByRole("button", { name: "Confirm fingerprint" }).click();
+    await page.getByRole("tab", { name: "Activity", exact: true }).click();
+    await expect(page.getByText("Pairing fingerprint confirmed locally.")).toBeVisible();
+    await page.getByRole("tab", { name: "Control plane", exact: true }).click();
+    await expect(page.getByText("raw-token-must-not-render")).toHaveCount(0);
+
+    await page.getByRole("tab", { name: "Bootstrap", exact: true }).click();
+    await expect(page.getByText("Live sanitized state")).toBeVisible();
+    await expect(page.getByText("Workspace wk_selected is selected for this support session only.")).toBeVisible();
+    await expect(page.getByText("Sanitized IPC reports account acct_demo and device sha256:1111111111111111.")).toBeVisible();
+    await expect(page.getByText("1 preview port approved with explicit session capabilities.")).toBeVisible();
+    await expect(page.getByText("raw-token-must-not-render")).toHaveCount(0);
+
+    await page.getByRole("tab", { name: "Approvals", exact: true }).click();
+    await expect(page.getByText("1 approval request pending")).toBeVisible();
+    await expect(page.getByText("Review required")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Open approval review" })).toBeEnabled();
+    await page.getByRole("button", { name: "Open approval review" }).click();
+    await page.getByRole("tab", { name: "Activity", exact: true }).click();
+    await expect(page.getByText("Opened local file approval review. Content stayed local.")).toBeVisible();
+
+    await page.getByRole("tab", { name: "Ports", exact: true }).click();
+    await expect(page.getByText("127.0.0.1:5173 via br-local-p5173.vectant-preview.dev")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approve port capabilities" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Open in system browser" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Revoke port approval" })).toBeEnabled();
+    await page.getByRole("button", { name: "Approve port capabilities" }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__ipcCalls.at(-1))).toMatchObject({
+      command: "approval.port.review",
+      payload: { port: 3000 },
+    });
+    await page.getByRole("tab", { name: "Activity", exact: true }).click();
+    await expect(page.getByText("Approved port capabilities for this session. Preview token stayed hidden.")).toBeVisible();
+    await expect(page.getByText("raw-token-must-not-render")).toHaveCount(0);
+
+    await page.getByRole("tab", { name: "Activity", exact: true }).click();
+    await expect(page.getByText("1 local event recorded")).toBeVisible();
+    await expect(page.getByText("Approved port capabilities for this session. Preview token stayed hidden.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Export scrubbed history" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Delete local history" })).toBeEnabled();
+    await page.getByRole("button", { name: "Export scrubbed history" }).click();
+    await expect(page.getByText("Exported scrubbed history locally.")).toBeVisible();
+
+    await page.getByRole("tab", { name: "Control plane", exact: true }).click();
+    await page.getByRole("button", { name: "Pause" }).click();
+    await expect(page.getByText("Paused", { exact: true })).toBeVisible();
+    await page.getByRole("tab", { name: "Activity", exact: true }).click();
+    await expect(page.getByText("Session paused by local user.")).toBeVisible();
+  });
+
+  test("blocks pairing submission when cloud policy requires an update", async ({ page }) => {
+    await page.addInitScript(() => {
+      (window as any).__ipcCalls = [];
+      window.__TAURI__ = {
+        core: {
+          invoke: async (_command, args) => {
+            (window as any).__ipcCalls.push(args);
+            return {
+              connected: false,
+              paused: false,
+              session: { workspace_id: "wk_selected" },
+              approvals: [],
+              ports: [],
+              activity: [],
+              update_policy: {
+                available: true,
+                enabled: true,
+                pairing_disabled: false,
+                update_required: true,
+                current_version: "0.1.0",
+                minimum_version: "0.2.0",
+                reason: "version_too_old",
+                user_visible_message: "Install a signed update before pairing.",
+              },
+            };
+          },
+        },
+      };
+    });
+
+    await page.goto(desktopShellUrl);
+
+    await expect(page.getByText("Signed update required")).toBeVisible();
+    await expect(page.getByText("Install a signed update before pairing.")).toBeVisible();
+    await expect(page.getByText("Blocked", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Pair session" }).click();
+    await expect(page.getByRole("button", { name: "Check code" })).toBeDisabled();
+    await page.getByLabel("One-time code").fill("ABCD2345WXYZ");
+    await expect(page.getByRole("button", { name: "Check code" })).toBeDisabled();
+    const calls = await page.evaluate(() => (window as any).__ipcCalls);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].command).toBe("session.status");
+  });
+
+  test("renders the real daemon approval summary shape", async ({ page }) => {
+    await page.addInitScript(() => {
+      window.__TAURI__ = {
+        core: {
+          invoke: async (_command, args) => {
+            window.__lastIpcArgs = args;
+            return {
+            connected: true,
+            paused: false,
+            session: {
+              account_id: "acct_live",
+              workspace_id: "wk_live",
+              device_fingerprint: "sha256:2222222222222222",
+            },
+            approvals: {
+              pending_count: 1,
+              content_included: true,
+              content_is_redacted_review_only: true,
+              items: [{
+                approval_id: "appr_live_12345678",
+                request_id: "req_live_12345678",
+                actor: "vectant_ai",
+                reason: "Debug the local startup failure",
+                capability: "workspace.log.read",
+                target_display: "server.log",
+                classification: "L3",
+                expires_at: "2026-07-10T20:00:00Z",
+                content_sha256: "sha256:1111",
+                redactions: ["authorization_header"],
+                redacted_preview: "Authorization: [REDACTED:authorization_header]",
+                bytes_sent: 0,
+              }],
+            },
+            ports: [],
+            activity: [],
+            };
+          },
+        },
+      };
+    });
+
+    await page.goto(desktopShellUrl);
+    await page.getByRole("tab", { name: "Approvals", exact: true }).click();
+
+    await expect(page.getByText("1 approval request pending")).toBeVisible();
+    await expect(page.getByText("server.log", { exact: true })).toBeVisible();
+    await expect(page.getByText("vectant_ai", { exact: true })).toBeVisible();
+    await expect(page.getByText("Debug the local startup failure", { exact: false })).toBeVisible();
+    await expect(page.getByText("Authorization: [REDACTED:authorization_header]", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Open approval review" })).toBeEnabled();
+    await page.getByRole("button", { name: "Approve locally" }).click();
+    const ipc = await page.evaluate(() => window.__lastIpcArgs);
+    expect(ipc).toMatchObject({
+      command: "approval.file.approve",
+      payload: { approval_id: "appr_live_12345678" },
+    });
+  });
+
+  test("shows a native-selected workspace without exposing its absolute path", async ({ page }) => {
+    await page.addInitScript(() => {
+      window.__TAURI__ = {
+        core: {
+          invoke: async () => ({
+            connected: false,
+            paused: true,
+            session: {
+              account_id: "not paired",
+              workspace_id: "wk_private",
+              device_fingerprint: "sha256:3333333333333333",
+            },
+            workspace: {
+              selected: true,
+              display: "vectant-app",
+              root_hash: "sha256:4444444444444444",
+              root_path_included: false,
+            },
+            approvals: { pending_count: 0, content_included: false },
+            ports: [],
+            activity: [{ summary: "Workspace selected locally. No files were sent." }],
+            history_controls_available: true,
+          }),
+        },
+      };
+    });
+
+    await page.goto(desktopShellUrl);
+    await page.getByRole("tab", { name: "Bootstrap", exact: true }).click();
+
+    await expect(page.getByText("Workspace vectant-app is selected for this support session only.")).toBeVisible();
+    await expect(page.getByText("C:\\Users\\private\\vectant-app")).toHaveCount(0);
+    await expect(page.getByText("Disconnected", { exact: true })).toBeVisible();
+    await page.getByRole("tab", { name: "Activity", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Export scrubbed history" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Delete local history" })).toBeEnabled();
+  });
+
+  test("keeps controls reachable in a narrow desktop window", async ({ page }) => {
+    await page.setViewportSize({ width: 800, height: 700 });
+    await page.goto(desktopShellUrl);
+
+    const viewport = await page.evaluate(() => ({
+      contentWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+    }));
+
+    expect(viewport.contentWidth).toBeLessThanOrEqual(viewport.viewportWidth);
+    await expect(page.getByRole("button", { name: "Choose workspace" })).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Activity", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Disconnect" })).toBeVisible();
+  });
+});

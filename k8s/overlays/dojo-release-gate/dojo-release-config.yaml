@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: synthi-config
+  namespace: synthi
+data:
+  SYNTHI_DOJO_PRODUCTION_ENFORCEMENT: "1"
+  SYNTHI_DOJO_REQUIRE_DURABLE_STORE: "1"
+  SYNTHI_DOJO_CONTROL_PLANE_STORE: "postgres"
+  SYNTHI_DOJO_REQUIRE_EXTERNAL_SIGNING: "1"
+  SYNTHI_DOJO_PROOF_SIGNING_PROVIDER: "managed-key-service"
+  SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER: "1"
+  SYNTHI_DOJO_EVIDENCE_LEDGER_STORE: "postgres"
+  SYNTHI_DOJO_MCP_MANIFEST_ISSUER: "synthi-dojo-skill-bus-prod"
+  SYNTHI_DOJO_MCP_MANIFEST_SIGNING_ALGORITHM: "ed25519"
+  # "0" until the 16 synthi-therapeutic-prod-* secrets exist in Secret Manager.
+  # They were never created, so the matching ExternalSecret entries could not
+  # sync and blocked the entire production deploy. See the note in
+  # dojo-release-external-secrets.yaml for how to turn this back on.
+  SYNTHI_THERAPEUTIC_PROD_ENDPOINTS_ENABLED: "0"
+  SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST: "https://beta.vectant.dev"
+  SYNTHI_HOSTED_BROWSER_SESSION_TTL_MS: "3600000"
+  SYNTHI_HOSTED_BROWSER_REDACT_SCREENSHOTS: "true"
+  SYNTHI_TENANT_ID: "vectant"

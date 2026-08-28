@@ -1,0 +1,93 @@
+{
+  "generatedAt": "2026-07-06T15:43:48.971Z",
+  "cases": [
+    {
+      "name": "workspace-desktop",
+      "url": "/workspace",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "waitFor": "text=Build from the command deck.",
+      "status": 200,
+      "screenshot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/.visual-proof/tool-ui-redesign/workspace-desktop.png",
+      "screenshotBytes": 282967,
+      "ok": true,
+      "metrics": {
+        "title": "Vectant ADE",
+        "h1": "Build from the command deck.",
+        "textLength": 388,
+        "visibleElementCount": 115,
+        "largestVisibleArea": 1296000,
+        "scrollHeight": 900,
+        "bodyBackground": "rgb(6, 6, 10)"
+      }
+    },
+    {
+      "name": "workspace-mobile",
+      "url": "/workspace",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "waitFor": "text=Build from the command deck.",
+      "status": 200,
+      "screenshot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/.visual-proof/tool-ui-redesign/workspace-mobile.png",
+      "screenshotBytes": 213029,
+      "ok": true,
+      "metrics": {
+        "title": "Vectant ADE",
+        "h1": "Build from the command deck.",
+        "textLength": 388,
+        "visibleElementCount": 115,
+        "largestVisibleArea": 596919,
+        "scrollHeight": 1531,
+        "bodyBackground": "rgb(6, 6, 10)"
+      }
+    },
+    {
+      "name": "login-desktop",
+      "url": "/login",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "waitFor": "body",
+      "status": 200,
+      "screenshot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/.visual-proof/tool-ui-redesign/login-desktop.png",
+      "screenshotBytes": 82079,
+      "ok": true,
+      "metrics": {
+        "title": "Vectant ADE",
+        "h1": "Workspace access starts at the identity boundary.",
+        "textLength": 758,
+        "visibleElementCount": 98,
+        "largestVisibleArea": 1296000,
+        "scrollHeight": 900,
+        "bodyBackground": "rgb(6, 6, 10)"
+      }
+    },
+    {
+      "name": "docking-demo-desktop",
+      "url": "/workspace/docking-demo",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "waitFor": "text=Docking WM Demo",
+      "status": 200,
+      "screenshot": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/.visual-proof/tool-ui-redesign/docking-demo-desktop.png",
+      "screenshotBytes": 26332,
+      "ok": true,
+      "metrics": {
+        "title": "Vectant ADE",
+        "h1": "Docking WM Demo",
+        "textLength": 133,
+        "visibleElementCount": 57,
+        "largestVisibleArea": 1296000,
+        "scrollHeight": 900,
+        "bodyBackground": "rgb(6, 6, 10)"
+      }
+    }
+  ]
+}

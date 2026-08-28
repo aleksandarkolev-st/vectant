@@ -1,0 +1,484 @@
+{
+  "id": "cmr76teyq00d3qk01jeexvwpo",
+  "projectId": "cmr76rvc3008sqk01itxc3o8s",
+  "shadowJobRef": "shadow:codesite-full-workflow-proof-1783219369293:learned-policy-memory",
+  "baseSnapshot": "sha256:c04ec87252abc33affeebd968d3047f4ca887142e76e4905b25459490e38ed92",
+  "universes": [
+    {
+      "strategy": "schema-first",
+      "result": "review",
+      "predictedCollisionRisk": 0.199,
+      "staleAssumptions": 0,
+      "inspectionCost": 9,
+      "reworkRiskReduction": 0.66,
+      "confidence": 0.53,
+      "avoidedRisks": [
+        "contract_collision",
+        "wake_turbulence"
+      ],
+      "unresolvedRisks": [
+        "restricted_airspace_occupancy"
+      ],
+      "requiredTowerActions": [
+        "schema_first",
+        "inspect_before_landing",
+        "hold_for_wake_turbulence",
+        "refresh_downstream_assumptions",
+        "run_owned_tests_before_landing"
+      ],
+      "counterfactualPolicyPriority": 0.84,
+      "reasonCodes": [
+        "schema_airspace_first",
+        "downstream_assumptions_refresh_after_contract",
+        "contract_collision_mitigated",
+        "wake_turbulence_mitigated",
+        "prior_incidents_weighted",
+        "counterfactual_policy_delta_applied",
+        "learned_policy_delta_preferred_strategy",
+        "shadow_universe_executed",
+        "shadow_universe_repo_commands_passed"
+      ],
+      "learnedPolicyDeltaRefs": [
+        "cmr76t9bm00ctqk01nm3hvu3q"
+      ],
+      "sourceSignals": {
+        "forecastRiskCount": 3,
+        "highRiskCount": 2,
+        "contractRiskCount": 2,
+        "migrationRiskCount": 0,
+        "importGraphEdges": 0,
+        "downstreamDependents": 0,
+        "testOwners": 0,
+        "missingTestRoutes": 3,
+        "schemaOwners": 1,
+        "migrationLocks": 0,
+        "packageExports": 0,
+        "priorIncidents": 2,
+        "learnedPolicyDeltas": 1,
+        "activeLeaseLocks": 2,
+        "inspectionRuns": 0,
+        "signalStrength": "simulated"
+      },
+      "execution": {
+        "status": "passed",
+        "evidenceRefs": [
+          "codesite:shadow-universe:schema-first:sha256:c5cd42e0452032bf28951ed02dcc2900f1946ebfeeceb64dc593852d70cb98c9",
+          "codesite:shadow-job:shadow:codesite-full-workflow-proof-1783219369293:learned-policy-memory",
+          "codesite:shadow-command:schema-first:schema-typecheck:sha256:23413e9657fbebeaf84d0ef283dd0f36f6aa93ed663bace870f8f1bea984c088",
+          "codesite:shadow-command:schema-first:schema-contract-test:sha256:093a5270cb24ed3d75e34abf384777acef82d557a5c6a59c8474fc6ab3871b53"
+        ],
+        "command": "codesite-shadow-runner:repo-command-execution",
+        "executionMode": "repo_command_execution",
+        "exitCode": 0,
+        "outputDigest": "sha256:c5cd42e0452032bf28951ed02dcc2900f1946ebfeeceb64dc593852d70cb98c9"
+      },
+      "evidenceRefs": [
+        "codesite:shadow-universe:schema-first:sha256:c5cd42e0452032bf28951ed02dcc2900f1946ebfeeceb64dc593852d70cb98c9",
+        "codesite:shadow-job:shadow:codesite-full-workflow-proof-1783219369293:learned-policy-memory",
+        "codesite:shadow-command:schema-first:schema-typecheck:sha256:23413e9657fbebeaf84d0ef283dd0f36f6aa93ed663bace870f8f1bea984c088",
+        "codesite:shadow-command:schema-first:schema-contract-test:sha256:093a5270cb24ed3d75e34abf384777acef82d557a5c6a59c8474fc6ab3871b53"
+      ]
+    },
+    {
+      "strategy": "frontend-backend-parallel",
+      "result": "risk",
+      "predictedCollisionRisk": 1,
+      "staleAssumptions": 4,
+      "inspectionCost": 19,
+      "reworkRiskReduction": 0,
+      "confidence": 0.53,
+      "avoidedRisks": [],
+      "unresolvedRisks": [
+        "contract_collision",
+        "restricted_airspace_occupancy",
+        "wake_turbulence"
+      ],
+      "requiredTowerActions": [
+        "schema_first",
+        "inspect_before_landing",
+        "hold_for_wake_turbulence",
+        "refresh_downstream_assumptions",
+        "run_owned_tests_before_landing"
+      ],
+      "counterfactualPolicyPriority": -0.84,
+      "reasonCodes": [
+        "parallelism_crosses_contract_airspace",
+        "requires_extra_assumption_refresh",
+        "prior_incidents_weighted",
+        "counterfactual_policy_delta_applied",
+        "learned_policy_delta_avoided_strategy",
+        "shadow_universe_executed",
+        "shadow_universe_repo_commands_failed"
+      ],
+      "learnedPolicyDeltaRefs": [
+        "cmr76t9bm00ctqk01nm3hvu3q"
+      ],
+      "sourceSignals": {
+        "forecastRiskCount": 3,
+        "highRiskCount": 2,
+        "contractRiskCount": 2,
+        "migrationRiskCount": 0,
+        "importGraphEdges": 0,
+        "downstreamDependents": 0,
+        "testOwners": 0,
+        "missingTestRoutes": 3,
+        "schemaOwners": 1,
+        "migrationLocks": 0,
+        "packageExports": 0,
+        "priorIncidents": 2,
+        "learnedPolicyDeltas": 1,
+        "activeLeaseLocks": 2,
+        "inspectionRuns": 0,
+        "signalStrength": "simulated"
+      },
+      "execution": {
+        "status": "near_miss",
+        "evidenceRefs": [
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:cf3e6b156048031c9dbc659c7369274804dff448fb1f4f31c0d7072125135aca",
+          "codesite:shadow-job:shadow:codesite-full-workflow-proof-1783219369293:learned-policy-memory",
+          "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:d7b5031ac25441284bcc5c907b7639050e3eed3c6eadfaf566ac137d7e5cc312",
+          "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:dd4094115d81340d038d8b3b27fd15bef13e1acbaa0af8641b2e1da08b79040a"
+        ],
+        "command": "codesite-shadow-runner:repo-command-execution",
+        "executionMode": "repo_command_execution",
+        "exitCode": 1,
+        "outputDigest": "sha256:cf3e6b156048031c9dbc659c7369274804dff448fb1f4f31c0d7072125135aca"
+      },
+      "evidenceRefs": [
+        "codesite:shadow-universe:frontend-backend-parallel:sha256:cf3e6b156048031c9dbc659c7369274804dff448fb1f4f31c0d7072125135aca",
+        "codesite:shadow-job:shadow:codesite-full-workflow-proof-1783219369293:learned-policy-memory",
+        "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:d7b5031ac25441284bcc5c907b7639050e3eed3c6eadfaf566ac137d7e5cc312",
+        "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:dd4094115d81340d038d8b3b27fd15bef13e1acbaa0af8641b2e1da08b79040a"
+      ]
+    }
+  ],
+  "arbiterVerdict": {
+    "selected": "schema-first",
+    "appliedPolicyDeltas": [
+      "cmr76t9bm00ctqk01nm3hvu3q"
+    ],
+    "reason": {
+      "reasonCodes": [
+        "schema_airspace_first",
+        "downstream_assumptions_refresh_after_contract",
+        "contract_collision_mitigated",
+        "wake_turbulence_mitigated",
+        "prior_incidents_weighted",
+        "counterfactual_policy_delta_applied",
+        "learned_policy_delta_preferred_strategy"
+      ],
+      "staleAssumptions": 0,
+      "inspectionCost": 9,
+      "predictedCollisionRisk": 0.199,
+      "riskLevel": "high",
+      "sourceSignals": {
+        "forecastRiskCount": 3,
+        "highRiskCount": 2,
+        "contractRiskCount": 2,
+        "migrationRiskCount": 0,
+        "importGraphEdges": 0,
+        "downstreamDependents": 0,
+        "testOwners": 0,
+        "missingTestRoutes": 3,
+        "schemaOwners": 1,
+        "migrationLocks": 0,
+        "packageExports": 0,
+        "priorIncidents": 2,
+        "learnedPolicyDeltas": 1,
+        "activeLeaseLocks": 2,
+        "inspectionRuns": 0,
+        "signalStrength": "simulated"
+      },
+      "learnedPolicyDeltaRefs": [
+        "cmr76t9bm00ctqk01nm3hvu3q"
+      ],
+      "shadowExecutionMode": "external_runner",
+      "shadowExecutionPolicy": {
+        "ok": true,
+        "required": true,
+        "sources": [
+          "option:requireExternalRunnerEvidence",
+          "option:proofMaturity"
+        ],
+        "status": "satisfied",
+        "shadowExecutionStatus": "completed",
+        "shadowExecutionMode": "external_runner",
+        "runner": "codesite-shadow-runner",
+        "executionMode": "repo_command_execution",
+        "evidenceRefs": [
+          "codesite:shadow-runner:sha256:45fd7f442f5f53fa3a2f861e97b42a4a5f898d6693ecfd721b753f5baf29bb9c",
+          "codesite:shadow-universe:schema-first:sha256:c5cd42e0452032bf28951ed02dcc2900f1946ebfeeceb64dc593852d70cb98c9",
+          "codesite:shadow-job:shadow:codesite-full-workflow-proof-1783219369293:learned-policy-memory",
+          "codesite:shadow-command:schema-first:schema-typecheck:sha256:23413e9657fbebeaf84d0ef283dd0f36f6aa93ed663bace870f8f1bea984c088",
+          "codesite:shadow-command:schema-first:schema-contract-test:sha256:093a5270cb24ed3d75e34abf384777acef82d557a5c6a59c8474fc6ab3871b53",
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:cf3e6b156048031c9dbc659c7369274804dff448fb1f4f31c0d7072125135aca",
+          "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:d7b5031ac25441284bcc5c907b7639050e3eed3c6eadfaf566ac137d7e5cc312",
+          "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:dd4094115d81340d038d8b3b27fd15bef13e1acbaa0af8641b2e1da08b79040a",
+          "codesite:shadow-runner-input:sha256:440037e3de7ed42c8ab05473859f1eeba39c42b8ac930750d373c55ecc040a6d",
+          "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+          "codesite:shadow-runner-output-artifact:sha256:69ed0ef130aa8813189dd7ccf06a57272643909de7bd734570c23f68756f32b2",
+          "codesite:shadow-runner-output:sha256:69ed0ef130aa8813189dd7ccf06a57272643909de7bd734570c23f68756f32b2",
+          "codesite:shadow-runner-result:sha256:72e8ab967787985e8dd8e5ba0c7483efc5c4343a4eab6e2e82881e9ab8860b08"
+        ],
+        "reasonCodes": [
+          "shadow_runner_evidence_required",
+          "shadow_runner_evidence_satisfied"
+        ]
+      }
+    },
+    "universes": [
+      {
+        "strategy": "schema-first",
+        "result": "review",
+        "predictedCollisionRisk": 0.199,
+        "staleAssumptions": 0,
+        "inspectionCost": 9,
+        "reworkRiskReduction": 0.66,
+        "confidence": 0.53,
+        "avoidedRisks": [
+          "contract_collision",
+          "wake_turbulence"
+        ],
+        "unresolvedRisks": [
+          "restricted_airspace_occupancy"
+        ],
+        "requiredTowerActions": [
+          "schema_first",
+          "inspect_before_landing",
+          "hold_for_wake_turbulence",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "counterfactualPolicyPriority": 0.84,
+        "reasonCodes": [
+          "schema_airspace_first",
+          "downstream_assumptions_refresh_after_contract",
+          "contract_collision_mitigated",
+          "wake_turbulence_mitigated",
+          "prior_incidents_weighted",
+          "counterfactual_policy_delta_applied",
+          "learned_policy_delta_preferred_strategy",
+          "shadow_universe_executed",
+          "shadow_universe_repo_commands_passed"
+        ],
+        "learnedPolicyDeltaRefs": [
+          "cmr76t9bm00ctqk01nm3hvu3q"
+        ],
+        "sourceSignals": {
+          "forecastRiskCount": 3,
+          "highRiskCount": 2,
+          "contractRiskCount": 2,
+          "migrationRiskCount": 0,
+          "importGraphEdges": 0,
+          "downstreamDependents": 0,
+          "testOwners": 0,
+          "missingTestRoutes": 3,
+          "schemaOwners": 1,
+          "migrationLocks": 0,
+          "packageExports": 0,
+          "priorIncidents": 2,
+          "learnedPolicyDeltas": 1,
+          "activeLeaseLocks": 2,
+          "inspectionRuns": 0,
+          "signalStrength": "simulated"
+        },
+        "execution": {
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:shadow-universe:schema-first:sha256:c5cd42e0452032bf28951ed02dcc2900f1946ebfeeceb64dc593852d70cb98c9",
+            "codesite:shadow-job:shadow:codesite-full-workflow-proof-1783219369293:learned-policy-memory",
+            "codesite:shadow-command:schema-first:schema-typecheck:sha256:23413e9657fbebeaf84d0ef283dd0f36f6aa93ed663bace870f8f1bea984c088",
+            "codesite:shadow-command:schema-first:schema-contract-test:sha256:093a5270cb24ed3d75e34abf384777acef82d557a5c6a59c8474fc6ab3871b53"
+          ],
+          "command": "codesite-shadow-runner:repo-command-execution",
+          "executionMode": "repo_command_execution",
+          "exitCode": 0,
+          "outputDigest": "sha256:c5cd42e0452032bf28951ed02dcc2900f1946ebfeeceb64dc593852d70cb98c9"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:schema-first:sha256:c5cd42e0452032bf28951ed02dcc2900f1946ebfeeceb64dc593852d70cb98c9",
+          "codesite:shadow-job:shadow:codesite-full-workflow-proof-1783219369293:learned-policy-memory",
+          "codesite:shadow-command:schema-first:schema-typecheck:sha256:23413e9657fbebeaf84d0ef283dd0f36f6aa93ed663bace870f8f1bea984c088",
+          "codesite:shadow-command:schema-first:schema-contract-test:sha256:093a5270cb24ed3d75e34abf384777acef82d557a5c6a59c8474fc6ab3871b53"
+        ]
+      },
+      {
+        "strategy": "frontend-backend-parallel",
+        "result": "risk",
+        "predictedCollisionRisk": 1,
+        "staleAssumptions": 4,
+        "inspectionCost": 19,
+        "reworkRiskReduction": 0,
+        "confidence": 0.53,
+        "avoidedRisks": [],
+        "unresolvedRisks": [
+          "contract_collision",
+          "restricted_airspace_occupancy",
+          "wake_turbulence"
+        ],
+        "requiredTowerActions": [
+          "schema_first",
+          "inspect_before_landing",
+          "hold_for_wake_turbulence",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "counterfactualPolicyPriority": -0.84,
+        "reasonCodes": [
+          "parallelism_crosses_contract_airspace",
+          "requires_extra_assumption_refresh",
+          "prior_incidents_weighted",
+          "counterfactual_policy_delta_applied",
+          "learned_policy_delta_avoided_strategy",
+          "shadow_universe_executed",
+          "shadow_universe_repo_commands_failed"
+        ],
+        "learnedPolicyDeltaRefs": [
+          "cmr76t9bm00ctqk01nm3hvu3q"
+        ],
+        "sourceSignals": {
+          "forecastRiskCount": 3,
+          "highRiskCount": 2,
+          "contractRiskCount": 2,
+          "migrationRiskCount": 0,
+          "importGraphEdges": 0,
+          "downstreamDependents": 0,
+          "testOwners": 0,
+          "missingTestRoutes": 3,
+          "schemaOwners": 1,
+          "migrationLocks": 0,
+          "packageExports": 0,
+          "priorIncidents": 2,
+          "learnedPolicyDeltas": 1,
+          "activeLeaseLocks": 2,
+          "inspectionRuns": 0,
+          "signalStrength": "simulated"
+        },
+        "execution": {
+          "status": "near_miss",
+          "evidenceRefs": [
+            "codesite:shadow-universe:frontend-backend-parallel:sha256:cf3e6b156048031c9dbc659c7369274804dff448fb1f4f31c0d7072125135aca",
+            "codesite:shadow-job:shadow:codesite-full-workflow-proof-1783219369293:learned-policy-memory",
+            "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:d7b5031ac25441284bcc5c907b7639050e3eed3c6eadfaf566ac137d7e5cc312",
+            "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:dd4094115d81340d038d8b3b27fd15bef13e1acbaa0af8641b2e1da08b79040a"
+          ],
+          "command": "codesite-shadow-runner:repo-command-execution",
+          "executionMode": "repo_command_execution",
+          "exitCode": 1,
+          "outputDigest": "sha256:cf3e6b156048031c9dbc659c7369274804dff448fb1f4f31c0d7072125135aca"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:cf3e6b156048031c9dbc659c7369274804dff448fb1f4f31c0d7072125135aca",
+          "codesite:shadow-job:shadow:codesite-full-workflow-proof-1783219369293:learned-policy-memory",
+          "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:d7b5031ac25441284bcc5c907b7639050e3eed3c6eadfaf566ac137d7e5cc312",
+          "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:dd4094115d81340d038d8b3b27fd15bef13e1acbaa0af8641b2e1da08b79040a"
+        ]
+      }
+    ],
+    "shadowJobRef": "shadow:codesite-full-workflow-proof-1783219369293:learned-policy-memory",
+    "baseSnapshot": "sha256:c04ec87252abc33affeebd968d3047f4ca887142e76e4905b25459490e38ed92",
+    "evidenceRefs": [
+      "codesite:shadow_merge_simulator",
+      "codesite:repo-policy:sha256:6b0a73bdab9130ada048856eb6fcf89b69377e6804304ad138d49f2ac3baf8e1",
+      "codesite:collision-forecast:sha256:dbbb7416a1575b2b32d487ccb98abac384dd9f09056d9fd7d995a62c90952ca7",
+      "codesite:incident:cmr76snbq00bhqk01ohox8ez4",
+      "codesite:incident:cmr76setn00b1qk016rwy464r",
+      "codesite:policy-delta:cmr76t9bm00ctqk01nm3hvu3q",
+      "codesite:shadow-runner:sha256:45fd7f442f5f53fa3a2f861e97b42a4a5f898d6693ecfd721b753f5baf29bb9c",
+      "codesite:shadow-universe:schema-first:sha256:c5cd42e0452032bf28951ed02dcc2900f1946ebfeeceb64dc593852d70cb98c9",
+      "codesite:shadow-job:shadow:codesite-full-workflow-proof-1783219369293:learned-policy-memory",
+      "codesite:shadow-command:schema-first:schema-typecheck:sha256:23413e9657fbebeaf84d0ef283dd0f36f6aa93ed663bace870f8f1bea984c088",
+      "codesite:shadow-command:schema-first:schema-contract-test:sha256:093a5270cb24ed3d75e34abf384777acef82d557a5c6a59c8474fc6ab3871b53",
+      "codesite:shadow-universe:frontend-backend-parallel:sha256:cf3e6b156048031c9dbc659c7369274804dff448fb1f4f31c0d7072125135aca",
+      "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:d7b5031ac25441284bcc5c907b7639050e3eed3c6eadfaf566ac137d7e5cc312",
+      "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:dd4094115d81340d038d8b3b27fd15bef13e1acbaa0af8641b2e1da08b79040a",
+      "codesite:shadow-runner-input:sha256:440037e3de7ed42c8ab05473859f1eeba39c42b8ac930750d373c55ecc040a6d",
+      "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+      "codesite:shadow-runner-output-artifact:sha256:69ed0ef130aa8813189dd7ccf06a57272643909de7bd734570c23f68756f32b2",
+      "codesite:shadow-runner-output:sha256:69ed0ef130aa8813189dd7ccf06a57272643909de7bd734570c23f68756f32b2",
+      "codesite:shadow-runner-result:sha256:72e8ab967787985e8dd8e5ba0c7483efc5c4343a4eab6e2e82881e9ab8860b08",
+      "codesite:shadow-runner:sha256:31e66d516c0a99cfe78f061ec4ee170f7d53793dcaaa6ed063a3ed39988554e2"
+    ],
+    "policyDeltaCandidates": [
+      {
+        "rule": "require_test_owner_for_mutation_route",
+        "affectedRoutes": [
+          "synthi/prisma/**",
+          "synthi/src/app/api/auth/**",
+          "synthi/src/lib/codesite/__tests__/**"
+        ],
+        "expectedRiskReduction": 0.18,
+        "confidence": 0.72
+      }
+    ],
+    "shadowExecution": {
+      "status": "completed",
+      "runner": "codesite-shadow-runner",
+      "executionMode": "repo_command_execution",
+      "evidenceRefs": [
+        "codesite:shadow-runner:sha256:45fd7f442f5f53fa3a2f861e97b42a4a5f898d6693ecfd721b753f5baf29bb9c",
+        "codesite:shadow-universe:schema-first:sha256:c5cd42e0452032bf28951ed02dcc2900f1946ebfeeceb64dc593852d70cb98c9",
+        "codesite:shadow-job:shadow:codesite-full-workflow-proof-1783219369293:learned-policy-memory",
+        "codesite:shadow-command:schema-first:schema-typecheck:sha256:23413e9657fbebeaf84d0ef283dd0f36f6aa93ed663bace870f8f1bea984c088",
+        "codesite:shadow-command:schema-first:schema-contract-test:sha256:093a5270cb24ed3d75e34abf384777acef82d557a5c6a59c8474fc6ab3871b53",
+        "codesite:shadow-universe:frontend-backend-parallel:sha256:cf3e6b156048031c9dbc659c7369274804dff448fb1f4f31c0d7072125135aca",
+        "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:d7b5031ac25441284bcc5c907b7639050e3eed3c6eadfaf566ac137d7e5cc312",
+        "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:dd4094115d81340d038d8b3b27fd15bef13e1acbaa0af8641b2e1da08b79040a",
+        "codesite:shadow-runner-input:sha256:440037e3de7ed42c8ab05473859f1eeba39c42b8ac930750d373c55ecc040a6d",
+        "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+        "codesite:shadow-runner-output-artifact:sha256:69ed0ef130aa8813189dd7ccf06a57272643909de7bd734570c23f68756f32b2",
+        "codesite:shadow-runner-output:sha256:69ed0ef130aa8813189dd7ccf06a57272643909de7bd734570c23f68756f32b2",
+        "codesite:shadow-runner-result:sha256:72e8ab967787985e8dd8e5ba0c7483efc5c4343a4eab6e2e82881e9ab8860b08"
+      ],
+      "universeCount": 2,
+      "digest": "sha256:31e66d516c0a99cfe78f061ec4ee170f7d53793dcaaa6ed063a3ed39988554e2"
+    },
+    "repoSignals": {
+      "signalStrength": "simulated",
+      "planCount": 3,
+      "activeLeaseCount": 2,
+      "forecastRiskCount": 3,
+      "highRiskCount": 2,
+      "contractRiskCount": 2,
+      "migrationRiskCount": 0,
+      "classAOrBZones": 1,
+      "importGraphEdges": 0,
+      "downstreamDependents": 0,
+      "testOwners": 0,
+      "missingTestRoutes": 3,
+      "schemaOwners": 1,
+      "migrationLocks": 0,
+      "packageExports": 0,
+      "priorIncidents": 2,
+      "learnedPolicyDeltas": 1,
+      "activeLeaseLocks": 2,
+      "inspectionRuns": 0
+    }
+  },
+  "userChoice": null,
+  "laterManualEdits": [],
+  "validityStrength": "executed",
+  "evidenceRefs": [
+    "codesite:shadow_merge_simulator",
+    "codesite:repo-policy:sha256:6b0a73bdab9130ada048856eb6fcf89b69377e6804304ad138d49f2ac3baf8e1",
+    "codesite:collision-forecast:sha256:dbbb7416a1575b2b32d487ccb98abac384dd9f09056d9fd7d995a62c90952ca7",
+    "codesite:incident:cmr76snbq00bhqk01ohox8ez4",
+    "codesite:incident:cmr76setn00b1qk016rwy464r",
+    "codesite:policy-delta:cmr76t9bm00ctqk01nm3hvu3q",
+    "codesite:shadow-runner:sha256:45fd7f442f5f53fa3a2f861e97b42a4a5f898d6693ecfd721b753f5baf29bb9c",
+    "codesite:shadow-universe:schema-first:sha256:c5cd42e0452032bf28951ed02dcc2900f1946ebfeeceb64dc593852d70cb98c9",
+    "codesite:shadow-job:shadow:codesite-full-workflow-proof-1783219369293:learned-policy-memory",
+    "codesite:shadow-command:schema-first:schema-typecheck:sha256:23413e9657fbebeaf84d0ef283dd0f36f6aa93ed663bace870f8f1bea984c088",
+    "codesite:shadow-command:schema-first:schema-contract-test:sha256:093a5270cb24ed3d75e34abf384777acef82d557a5c6a59c8474fc6ab3871b53",
+    "codesite:shadow-universe:frontend-backend-parallel:sha256:cf3e6b156048031c9dbc659c7369274804dff448fb1f4f31c0d7072125135aca",
+    "codesite:shadow-command:frontend-backend-parallel:schema-typecheck:sha256:d7b5031ac25441284bcc5c907b7639050e3eed3c6eadfaf566ac137d7e5cc312",
+    "codesite:shadow-command:frontend-backend-parallel:schema-contract-test:sha256:dd4094115d81340d038d8b3b27fd15bef13e1acbaa0af8641b2e1da08b79040a",
+    "codesite:shadow-runner-input:sha256:440037e3de7ed42c8ab05473859f1eeba39c42b8ac930750d373c55ecc040a6d",
+    "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+    "codesite:shadow-runner-output-artifact:sha256:69ed0ef130aa8813189dd7ccf06a57272643909de7bd734570c23f68756f32b2",
+    "codesite:shadow-runner-output:sha256:69ed0ef130aa8813189dd7ccf06a57272643909de7bd734570c23f68756f32b2",
+    "codesite:shadow-runner-result:sha256:72e8ab967787985e8dd8e5ba0c7483efc5c4343a4eab6e2e82881e9ab8860b08",
+    "codesite:shadow-runner:sha256:31e66d516c0a99cfe78f061ec4ee170f7d53793dcaaa6ed063a3ed39988554e2"
+  ],
+  "createdAt": "2026-07-05T02:44:06.530Z"
+}

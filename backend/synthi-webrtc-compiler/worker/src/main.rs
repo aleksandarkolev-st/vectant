@@ -222,6 +222,61 @@ async fn fetch_turn_credentials() -> Vec<webrtc::ice_transport::ice_server::RTCI
     }
 }
 
+fn is_legacy_vscode_ws_tunnel_label(label: &str) -> bool {
+    label == "vscode-ws-tunnel" || label.starts_with("vscode-ws-tunnel?")
+}
+
+#[cfg(test)]
+mod vscode_tunnel_policy_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_vscode_ws_tunnel_policy_matches_only_exact_legacy_label() {
+        assert!(is_legacy_vscode_ws_tunnel_label("vscode-ws-tunnel"));
+        assert!(is_legacy_vscode_ws_tunnel_label("vscode-ws-tunnel?port=18000"));
+        assert!(!is_legacy_vscode_ws_tunnel_label("vscode-ws-tunnel-extra?port=22"));
+        assert!(!is_legacy_vscode_ws_tunnel_label("vscode-server?slug=workspace"));
+    }
+}
+
+#[cfg(test)]
+mod remote_read_policy_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn remote_read_policy_allows_only_narrow_source_roots() {
+        assert!(remote_read_path_allowed(Path::new("/usr/include/c++/11/iostream")));
+        assert!(remote_read_path_allowed(Path::new(
+            "/usr/lib/gcc/x86_64-linux-gnu/13/include/stddef.h"
+        )));
+        assert!(remote_read_path_allowed(Path::new(
+            "/root/.cargo/registry/src/index.crates.io-abc/serde/src/lib.rs"
+        )));
+        assert!(remote_read_path_allowed(Path::new(
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/lib.rs"
+        )));
+    }
+
+    #[test]
+    fn remote_read_policy_rejects_root_owned_toolchain_config_and_opt() {
+        assert!(!remote_read_path_allowed(Path::new("/root/.cargo/credentials.toml")));
+        assert!(!remote_read_path_allowed(Path::new("/root/.cargo/config.toml")));
+        assert!(!remote_read_path_allowed(Path::new("/root/.rustup/settings.toml")));
+        assert!(!remote_read_path_allowed(Path::new("/opt/vendor-sdk/token.json")));
+        assert!(!remote_read_path_allowed(Path::new("/etc/passwd")));
+    }
+
+    #[test]
+    fn requested_remote_read_path_rejects_parent_components() {
+        assert!(requested_remote_read_path("/usr/include/stdio.h").is_some());
+        assert!(requested_remote_read_path("usr/include/stdio.h").is_some());
+        assert!(requested_remote_read_path("/usr/include/../etc/passwd").is_none());
+        assert!(requested_remote_read_path("../../etc/passwd").is_none());
+        assert!(requested_remote_read_path("/usr/include/\0secret").is_none());
+    }
+}
+
 // Removed: `const GUI_TOOLS = &["Xvfb", "matchbox-window-manager"]` — the
 // runner now handles input via stdin, no external GUI tooling needed.
 
@@ -844,6 +899,53 @@ fn install_x11_error_handlers() {
     }
 }
 
+fn requested_remote_read_path(raw_path: &str) -> Option<std::path::PathBuf> {
+    if raw_path.is_empty() || raw_path.contains('\0') {
+        return None;
+    }
+    let abs = if raw_path.starts_with('/') {
+        std::path::PathBuf::from(raw_path)
+    } else {
+        std::path::PathBuf::from(format!("/{}", raw_path))
+    };
+    if abs
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    Some(abs)
+}
+
+fn remote_read_path_allowed(path: &std::path::Path) -> bool {
+    let path_text = path.to_string_lossy().replace('\\', "/");
+    const GENERAL_READ_PREFIXES: &[&str] = &[
+        "/usr/include/",
+        "/usr/local/include/",
+        "/usr/lib/gcc/",
+        "/usr/lib/clang/",
+        "/usr/lib/llvm-",
+        "/usr/lib/rustlib/",
+        "/usr/local/lib/node_modules/typescript/lib/",
+        "/lib/clang/",
+    ];
+    if GENERAL_READ_PREFIXES
+        .iter()
+        .any(|prefix| path_text.starts_with(prefix))
+    {
+        return true;
+    }
+
+    // Rust navigation needs source roots, not the entire root-owned toolchain
+    // home. Keep credentials/config such as /root/.cargo/credentials.toml and
+    // /root/.rustup/settings.toml outside the remote read surface.
+    if path_text.starts_with("/root/.cargo/registry/src/") {
+        return true;
+    }
+    path_text.starts_with("/root/.rustup/toolchains/")
+        && path_text.contains("/lib/rustlib/src/")
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     debug_log!("=== WORKER BUILD 2026-02-06-LSP-DEBUG ===");
@@ -1028,7 +1130,29 @@ async fn main() -> Result<()> {
     if let Some(ref sid) = session_id {
         debug_log!("Session ID: {sid}");
     }
-    let (ws_stream, _) = connect_async(&signaling_url).await?;
+    // Docker may start this container before embedded DNS has published the
+    // signaling service. Treat that as a recoverable dependency condition,
+    // not a fatal worker error: exiting here leaves every editor without an
+    // LSP transport until Docker happens to recreate the worker.
+    let mut reconnect_delay = std::time::Duration::from_millis(250);
+    let (ws_stream, _) = loop {
+        match connect_async(&signaling_url).await {
+            Ok(connection) => break connection,
+            Err(error) => {
+                eprintln!(
+                    "[Worker] Signaling service is not reachable yet ({}). Retrying in {}ms.",
+                    error,
+                    reconnect_delay.as_millis(),
+                );
+                tokio::time::sleep(reconnect_delay).await;
+                reconnect_delay = std::cmp::min(
+                    reconnect_delay.saturating_mul(2),
+                    std::time::Duration::from_secs(10),
+                );
+            }
+        }
+    };
+    debug_log!("Connected to signaling server");
     let (mut ws_write, mut ws_read) = ws_stream.split();
     let (signal_tx, mut signal_rx) = mpsc::unbounded_channel::<SignalMessage>();
 
@@ -2959,30 +3083,20 @@ async fn wire_peer_channels(
 
                 debug_log!("[on_data_channel] LSP branch matched: lang='{}', spawning handler task...", lang);
                 tokio::spawn(async move {
-                    // Try to download the workspace files
+                    // The session workspace is the source of truth for both
+                    // file-sync and the LSP. Using storage::download here
+                    // created a second /synthi/<slug> tree while browser
+                    // edits were written to this session's temp directory.
+                    // clangd then indexed stale files and could not resolve
+                    // newly edited headers or cross-file symbols.
                     let slug_to_use = slug_opt.as_deref().unwrap_or("test-workspace");
                     debug_log!("LSP Request: lang={}, slug={}", lang, slug_to_use);
-
-                    let workspace_path = match storage::download(slug_to_use, None).await {
-                        Ok(path) => {
-                            let abs_path = if cfg!(target_os = "windows") {
-                                if let Ok(full) = tokio::fs::canonicalize(&path).await {
-                                    full
-                                } else {
-                                    path
-                                }
-                            } else {
-                                path
-                            };
-                            debug_log!("Successfully downloaded workspace to: {}", abs_path.display());
-                            abs_path
-                        },
-                        Err(e) => {
-                            eprintln!("Failed to download workspace: {}", e);
-                            debug_log!("Falling back to temp workspace: {}", workspace_path_for_lsp.display());
-                            workspace_path_for_lsp.as_ref().clone()
-                        }
-                    };
+                    let workspace_path = workspace_path_for_lsp.as_ref().clone();
+                    debug_log!(
+                        "[LSP] Using session workspace for {}: {}",
+                        slug_to_use,
+                        workspace_path.display(),
+                    );
 
                     // ── Install dependencies + language server in parallel ─────
                     // These two steps are independent: dep_installer scans
@@ -3044,13 +3158,19 @@ async fn wire_peer_channels(
                     debug_log!("Starting LSP for language: {}", lang);
                     let mut cmd = match lang.as_str() {
                         "cpp" | "c" => {
-                            // Create compile_flags.txt to enforce C++26
+                            // Respect the project's compilation database or
+                            // compile_flags.txt. A universal C++26 / -xc++
+                            // file makes C translation units and projects
+                            // targeting another standard report false errors.
+                            // For standalone files clangd can derive the host
+                            // toolchain defaults through --query-driver below.
+                            remove_legacy_cpp_lsp_flags(&workspace_path);
+                            let compile_commands = workspace_path.join("compile_commands.json");
                             let flags_path = workspace_path.join("compile_flags.txt");
-                            if let Ok(mut file) = std::fs::File::create(&flags_path) {
-                                use std::io::Write;
-                                let _ = writeln!(file, "-std=c++26");
-                                // Force C++ mode to ensure headers are treated correctly
-                                let _ = writeln!(file, "-xc++");
+                            if !compile_commands.exists() && !flags_path.exists() {
+                                debug_log!(
+                                    "[LSP] No C/C++ compile database or flags found; using clangd toolchain defaults"
+                                );
                             }
 
                             // Create .clang-tidy to disable the include-cleaner check.
@@ -4087,15 +4207,11 @@ async fn wire_peer_channels(
 
                         let op = json.get("op").and_then(|o| o.as_str()).unwrap_or("");
 
-                        // Resolve workspace root.  The files were downloaded to
-                        // /tmp/workspaces/{slug}/ by storage::download, but we may
-                        // also have a slug in the message for safety.
-                        let base = if let Some(slug) = json.get("slug").and_then(|s| s.as_str()) {
-                            let p = std::path::PathBuf::from(format!("/tmp/workspaces/{}", slug));
-                            if p.exists() { p } else { ws_path.as_ref().clone() }
-                        } else {
-                            ws_path.as_ref().clone()
-                        };
+                        // Keep file-sync on the same per-peer workspace that
+                        // owns the LSP process. A slug is routing metadata,
+                        // never a filesystem authority: mapping it to a second
+                        // directory makes the language server index stale data.
+                        let base = ws_path.as_ref().clone();
 
                         match op {
                             "write" | "edit_delta" => {
@@ -4219,27 +4335,38 @@ async fn wire_peer_channels(
                                     }
                                     return;
                                 }
-                                // Allow only well-known read-only roots so the
-                                // channel can't be turned into an arbitrary
-                                // disk-read primitive.
-                                const READ_ALLOWED_PREFIXES: &[&str] = &[
-                                    "/usr/include/",
-                                    "/usr/lib/",
-                                    "/usr/local/include/",
-                                    "/usr/local/lib/",
-                                    "/opt/",
-                                    "/lib/",
-                                    "/lib64/",
-                                    "/root/.cargo/",
-                                    "/root/.rustup/",
-                                ];
-                                let abs = if raw_path.starts_with('/') {
-                                    raw_path.to_string()
-                                } else {
-                                    format!("/{}", raw_path)
+                                let requested_path = match requested_remote_read_path(raw_path) {
+                                    Some(path) => path,
+                                    None => {
+                                        let reply = serde_json::json!({
+                                            "op": "read-result",
+                                            "requestId": req_id,
+                                            "path": raw_path,
+                                            "error": "path not allowed",
+                                        });
+                                        if let Ok(text) = serde_json::to_string(&reply) {
+                                            let _ = dc_reply.send_text(text).await;
+                                        }
+                                        return;
+                                    }
                                 };
-                                let allowed = READ_ALLOWED_PREFIXES.iter().any(|p| abs.starts_with(p));
-                                if !allowed || abs.contains("..") {
+                                let canonical_path = match tokio::fs::canonicalize(&requested_path).await {
+                                    Ok(path) => path,
+                                    Err(e) => {
+                                        let reply = serde_json::json!({
+                                            "op": "read-result",
+                                            "requestId": req_id,
+                                            "path": requested_path.to_string_lossy(),
+                                            "error": e.to_string(),
+                                        });
+                                        if let Ok(text) = serde_json::to_string(&reply) {
+                                            let _ = dc_reply.send_text(text).await;
+                                        }
+                                        return;
+                                    }
+                                };
+                                let abs = canonical_path.to_string_lossy().to_string();
+                                if !remote_read_path_allowed(&canonical_path) {
                                     let reply = serde_json::json!({
                                         "op": "read-result",
                                         "requestId": req_id,
@@ -4251,8 +4378,7 @@ async fn wire_peer_channels(
                                     }
                                     return;
                                 }
-                                let read_path = std::path::PathBuf::from(&abs);
-                                let reply = match tokio::fs::read_to_string(&read_path).await {
+                                let reply = match tokio::fs::read_to_string(&canonical_path).await {
                                     Ok(content) => serde_json::json!({
                                         "op": "read-result",
                                         "requestId": req_id,
@@ -4543,101 +4669,23 @@ async fn wire_peer_channels(
                 });
             }
             // ── VS Code Server WebSocket Tunnel ──────────────────────
-            // Bridges a DataChannel to the VS Code Server's TCP port so
-            // the browser can establish a WebSocket connection to the real
-            // Extension Host through the WebRTC transport.
-            //
-            // Label format: "vscode-ws-tunnel?port=18000"
-            // Data flows bidirectionally: DC ↔ TCP (127.0.0.1:<port>)
-            else if label.starts_with("vscode-ws-tunnel") {
-                let port: u16 = label
-                    .split_once("?port=")
-                    .and_then(|(_, p)| p.parse().ok())
-                    .unwrap_or(18000);
-
-                let dc_clone = dc.clone();
-
-                // Buffer incoming DC messages
-                let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<webrtc::data_channel::data_channel_message::DataChannelMessage>();
-                let incoming_tx_clone = incoming_tx.clone();
-                dc.on_message(Box::new(move |msg| {
-                    let tx = incoming_tx_clone.clone();
-                    async move { let _ = tx.send(msg); }.boxed()
-                }));
-
-                // Wait for DC to open, then connect TCP
-                let (dc_open_tx, dc_open_rx) = tokio::sync::oneshot::channel::<()>();
-                let dc_open_tx = std::sync::Mutex::new(Some(dc_open_tx));
-                dc.on_open(Box::new(move || {
-                    debug_log!("[vscode-ws-tunnel] DataChannel opened, port={}", port);
-                    if let Some(tx) = dc_open_tx.lock().unwrap().take() {
-                        let _ = tx.send(());
-                    }
-                    async {}.boxed()
-                }));
-
-                tokio::spawn(async move {
-                    // Wait for DC open
-                    if dc_open_rx.await.is_err() {
-                        debug_log!("[vscode-ws-tunnel] DC open signal dropped");
-                        return;
-                    }
-
-                    // Connect to the VS Code Server's TCP port
-                    let addr = format!("127.0.0.1:{}", port);
-                    let tcp_stream = match tokio::net::TcpStream::connect(&addr).await {
-                        Ok(s) => s,
-                        Err(e) => {
-                            eprintln!("[vscode-ws-tunnel] Failed to connect to {}: {}", addr, e);
-                            let err = serde_json::json!({
-                                "id": 0, "type": "event", "method": "error",
-                                "args": [format!("TCP connect failed: {}", e)],
-                                "generation": 0
-                            });
-                            let _ = dc_clone.send_text(serde_json::to_string(&err).unwrap_or_default()).await;
-                            return;
-                        }
-                    };
-                    debug_log!("[vscode-ws-tunnel] TCP connected to {}", addr);
-
-                    let (tcp_read, mut tcp_write) = tcp_stream.into_split();
-
-                    // DC → TCP: forward DataChannel binary data to TCP socket
-                    let dc_to_tcp = tokio::spawn(async move {
-                        while let Some(msg) = incoming_rx.recv().await {
-                            if tcp_write.write_all(&msg.data).await.is_err() { break; }
-                        }
-                        debug_log!("[vscode-ws-tunnel] DC→TCP forwarder exited");
-                    });
-
-                    // TCP → DC: forward TCP data back to DataChannel
-                    let dc_for_tcp = dc_clone.clone();
-                    let tcp_to_dc = tokio::spawn(async move {
-                        let mut reader = tokio::io::BufReader::new(tcp_read);
-                        let mut buf = vec![0u8; 64 * 1024];
-                        loop {
-                            match reader.read(&mut buf).await {
-                                Ok(0) => break, // EOF
-                                Ok(n) => {
-                                    let data = Bytes::copy_from_slice(&buf[..n]);
-                                    if dc_for_tcp.send(&data).await.is_err() { break; }
-                                }
-                                Err(e) => {
-                                    eprintln!("[vscode-ws-tunnel] TCP read error: {}", e);
-                                    break;
-                                }
-                            }
-                        }
-                        debug_log!("[vscode-ws-tunnel] TCP→DC forwarder exited");
-                    });
-
-                    // Wait for either direction to finish
-                    tokio::select! {
-                        _ = dc_to_tcp => {}
-                        _ = tcp_to_dc => {}
-                    }
-                    debug_log!("[vscode-ws-tunnel] Tunnel closed for port {}", port);
+            // Disabled legacy raw DataChannel tunnel. The active product path
+            // uses the vscode-server manager RPC tunnel instead.
+            else if is_legacy_vscode_ws_tunnel_label(&label) {
+                eprintln!(
+                    "[vscode-ws-tunnel] Rejected disabled legacy tunnel DataChannel: {}",
+                    label
+                );
+                let err = serde_json::json!({
+                    "id": 0,
+                    "type": "event",
+                    "method": "error",
+                    "args": ["legacy vscode-ws-tunnel is disabled; use vscode-server manager RPC tunnel"],
+                    "generation": 0
                 });
+                let _ = dc
+                    .send_text(serde_json::to_string(&err).unwrap_or_default())
+                    .await;
             }
         }
         .boxed()
@@ -5387,9 +5435,68 @@ path = "{}"
             // Could provide schema associations via settings.
         }
         // Python: pylsp/pyright works well for standalone files without extra config.
-        // C/C++: compile_flags.txt is created in the cmd match arm below.
+        // C/C++: clangd can derive standalone defaults from its toolchain.
         // Java: jdtls creates .jdtls-data itself.
         // TOML, GraphQL, Dockerfile, Tailwind, ESLint: work without extra config.
         _ => {}
+    }
+}
+
+/// Remove only the obsolete fallback that earlier workers generated for every
+/// C/C++ workspace. Project-owned compile flags must never be changed: the
+/// exact two-line legacy content is the sole migration target.
+fn remove_legacy_cpp_lsp_flags(workspace: &std::path::Path) {
+    let flags_path = workspace.join("compile_flags.txt");
+    let Ok(contents) = std::fs::read_to_string(&flags_path) else {
+        return;
+    };
+
+    let flags: Vec<_> = contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if flags != ["-std=c++26", "-xc++"] {
+        return;
+    }
+
+    match std::fs::remove_file(&flags_path) {
+        Ok(()) => debug_log!(
+            "[LSP-CONFIG] Removed obsolete generated C++ flags from {}",
+            flags_path.display()
+        ),
+        Err(error) => eprintln!(
+            "[LSP-CONFIG] Failed to remove obsolete C++ flags from {}: {}",
+            flags_path.display(),
+            error
+        ),
+    }
+}
+
+#[cfg(test)]
+mod legacy_cpp_lsp_flags_tests {
+    use super::remove_legacy_cpp_lsp_flags;
+
+    #[test]
+    fn removes_only_the_obsolete_generated_cpp_flags() {
+        let temp = tempfile::tempdir().expect("create temporary workspace");
+        let flags_path = temp.path().join("compile_flags.txt");
+        std::fs::write(&flags_path, "-std=c++26\n-xc++\n").expect("write legacy flags");
+
+        remove_legacy_cpp_lsp_flags(temp.path());
+
+        assert!(!flags_path.exists());
+    }
+
+    #[test]
+    fn preserves_project_owned_cpp_flags() {
+        let temp = tempfile::tempdir().expect("create temporary workspace");
+        let flags_path = temp.path().join("compile_flags.txt");
+        let project_flags = "-std=c++20\n-Iinclude\n";
+        std::fs::write(&flags_path, project_flags).expect("write project flags");
+
+        remove_legacy_cpp_lsp_flags(temp.path());
+
+        assert_eq!(std::fs::read_to_string(&flags_path).unwrap(), project_flags);
     }
 }

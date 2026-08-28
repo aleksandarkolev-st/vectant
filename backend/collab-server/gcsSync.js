@@ -37,10 +37,10 @@ let bucket = null;
 function getStorage() {
     if (!storage) {
         try {
-            storage = new Storage({
-                projectId: GCS_CONFIG.projectId,
-                credentials: GCS_CONFIG.credentials,
-            });
+            const options = {};
+            if (GCS_CONFIG.projectId) options.projectId = GCS_CONFIG.projectId;
+            if (GCS_CONFIG.credentials) options.credentials = GCS_CONFIG.credentials;
+            storage = new Storage(options);
             bucket = storage.bucket(GCS_CONFIG.bucketName);
             console.log('[GCS] Initialized GCS client for bucket:', GCS_CONFIG.bucketName);
         } catch (e) {
@@ -55,7 +55,7 @@ function getStorage() {
  * Check if GCS is properly configured
  */
 function isGcsConfigured() {
-    return !!(GCS_CONFIG.credentials.private_key && GCS_CONFIG.credentials.client_email);
+    return !!(GCS_CONFIG.projectId && GCS_CONFIG.bucketName);
 }
 
 /**
@@ -125,7 +125,20 @@ async function uploadRepoToGcs(repoPath, slug, options = {}) {
         return { success: false, reason: 'GCS not configured' };
     }
 
-    const { onProgress, excludePatterns = ['.git'], userId } = options;
+    const { onProgress, excludePatterns = [
+        '.git',
+        '.synthi',
+        '.synthi-backups',
+        '.code_intel',
+        '.code_intel_backups',
+        'node_modules',
+        '.next',
+        '.turbo',
+        '.cache',
+        'dist',
+        'build',
+        'coverage',
+    ], userId } = options;
     const gcsPrefix = userId
         ? `${GCS_PREFIX}/${slug}/${userId}/`
         : `${GCS_PREFIX}/${slug}/`;

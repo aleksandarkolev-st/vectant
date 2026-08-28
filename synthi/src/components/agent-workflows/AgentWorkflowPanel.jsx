@@ -1,6 +1,7 @@
 'use client';
 
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { motion, useReducedMotion } from 'framer-motion';
 import {
   AlertTriangle,
   BadgeCheck,
@@ -23,35 +24,57 @@ import {
 
 export const WORKFLOW_ACTIONS = Object.freeze({
   ATTACH_WORKSPACE: 'synthi_browser_attach_current_workspace',
+  LIST_SUBSTRATES: 'synthi_attach_substrate',
   OBSERVE: 'synthi_browser_observe_preview',
   BEGIN_TEACH: 'synthi_browser_begin_teach',
   END_TEACH: 'synthi_browser_end_teach',
+  RUN_CHECKRIDE: 'synthi_dojo_run_checkride',
   CONFIGURE_AUTH: 'synthi_auth_get_tool_auth_readiness',
   OPEN_SOURCE: 'synthi_source_get_mapping_status',
   COMPILE_CONTRACT: 'synthi_browser_compile_workflow',
+  GET_MUTATION_PLAN: 'synthi_safety_get_mutation_plan',
+  SET_REPLAY_ISOLATION_PROFILE: 'synthi_safety_set_replay_isolation_profile',
   PREFIX_VALIDATE: 'synthi_safety_run_prefix_validation',
+  RUN_CI_ISOLATED_REPLAY: 'synthi_safety_run_ci_isolated_replay',
   GENERATE_SCRIPT: 'synthi_browser_generate_script',
   GENERATE_MANIFEST: 'synthi_browser_generate_private_tool_manifest',
-  PUBLISH_TOOL: 'synthi_workflow_publish_tool',
+  PUBLISH_TOOL: 'synthi_dojo_publish_skill',
+  EXPORT_DOJO_ARTIFACTS: 'synthi_dojo_export_artifacts',
+  ISSUE_PROOF_CAPSULE: 'synthi_dojo_issue_proof_capsule',
+  VALIDATE_PROOF_CAPSULE: 'synthi_dojo_validate_proof_capsule',
+  RUN_PROOF_DRY_RUN: 'synthi_dojo_run_with_proof_capsule',
+  EXPLAIN_BLOCK: 'synthi_dojo_explain_block',
+  REQUEST_PERMISSION_UPGRADE: 'synthi_dojo_request_permission_upgrade',
+  GET_UNIVERSE_DOSSIER: 'synthi_dojo_get_universe_dossier',
+  GET_LIFECYCLE: 'synthi_dojo_get_lifecycle',
+  GET_GOVERNANCE_REPORT: 'synthi_dojo_get_governance_report',
+  GET_METRICS: 'synthi_dojo_get_metrics',
+  GET_SOURCE_AFFORDANCE_PR_PLAN: 'synthi_dojo_get_source_affordance_pr_plan',
+  RUN_TIME_MACHINE_DEBUGGER: 'synthi_dojo_run_time_machine_debugger',
+  RUN_VIVARIUM_SCENARIO: 'synthi_dojo_run_vivarium_scenario',
+  RUN_WIND_TUNNEL: 'synthi_dojo_run_wind_tunnel',
+  GET_LICENSE_HEALTH: 'synthi_dojo_get_license_health',
+  RECORD_CASE_LAW: 'synthi_dojo_record_case_law',
+  REVOKE_LICENSE: 'synthi_dojo_revoke_license',
 });
 
 const DEFAULT_WORKSPACE_LABEL = 'Current workspace';
 
 const STATUS_STYLES = {
   ok: {
-    color: 'var(--success-foreground, var(--text-primary))',
-    background: 'color-mix(in srgb, var(--success, #238636) 14%, transparent)',
-    borderColor: 'color-mix(in srgb, var(--success, #238636) 34%, var(--border-subtle))',
+    color: 'var(--text-primary)',
+    background: 'color-mix(in srgb, var(--accent-success) 14%, transparent)',
+    borderColor: 'color-mix(in srgb, var(--accent-success) 34%, var(--border-subtle))',
   },
   warn: {
-    color: 'var(--warning-foreground, var(--text-primary))',
-    background: 'color-mix(in srgb, var(--warning, #b7791f) 13%, transparent)',
-    borderColor: 'color-mix(in srgb, var(--warning, #b7791f) 34%, var(--border-subtle))',
+    color: 'var(--text-primary)',
+    background: 'color-mix(in srgb, var(--accent-warning) 13%, transparent)',
+    borderColor: 'color-mix(in srgb, var(--accent-warning) 34%, var(--border-subtle))',
   },
   danger: {
-    color: 'var(--error-foreground, var(--text-primary))',
-    background: 'color-mix(in srgb, var(--error, #d73a49) 13%, transparent)',
-    borderColor: 'color-mix(in srgb, var(--error, #d73a49) 34%, var(--border-subtle))',
+    color: 'var(--text-primary)',
+    background: 'color-mix(in srgb, var(--accent-danger) 13%, transparent)',
+    borderColor: 'color-mix(in srgb, var(--accent-danger) 34%, var(--border-subtle))',
   },
   neutral: {
     color: 'var(--text-muted)',
@@ -86,6 +109,20 @@ const STEP_ICONS = {
   verified: CheckCircle2,
 };
 
+const OPERATIONAL_BLOCKER_IDS = new Set([
+  'workflow_bridge_error',
+  'preview_not_found',
+  'preview_target_not_found',
+  'preview_discovery_failed',
+  'preview_sidecar_discovery_failed',
+  'preview_open_failed',
+  'preview_snapshot_failed',
+  'workflow_runtime_ensure_unreachable',
+  'workflow_runtime_ensure_failed',
+  'workflow_runtime_unavailable',
+  'workflow_bridge_unreachable',
+]);
+
 function normalizeTone(value, fallback = 'neutral') {
   if (value === 'ok' || value === 'warn' || value === 'danger' || value === 'neutral') {
     return value;
@@ -112,6 +149,10 @@ function hasObservedPage(model) {
   return ['ready', 'observing', 'teaching', 'recording'].includes(model.observe?.status) || model.observe?.lastScreenshotAt;
 }
 
+function observeNeedsPreview(model) {
+  return model.observe?.status === 'needsPreview';
+}
+
 function hasRecordedTrace(model) {
   return Number(model.workflow?.stepCount || 0) > 0 || (Array.isArray(model.steps) && model.steps.length > 0);
 }
@@ -131,9 +172,237 @@ function unresolvedQuestionCount(model) {
   );
 }
 
+function pickObject(...values) {
+  return values.find((value) => value && typeof value === 'object' && !Array.isArray(value)) || null;
+}
+
+function normalizeArray(value) {
+  return Array.isArray(value) ? value.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim()) : [];
+}
+
+function normalizeIsolationState(value = {}) {
+  const profile = pickObject(
+    value.isolation,
+    value.isolationProfile,
+    value.isolation_profile,
+    value.profileManifest,
+    value.profile_manifest,
+  ) || {};
+  const manifest = pickObject(value.profileManifest, value.profile_manifest, profile) || {};
+  const mutationPlan = pickObject(value.mutationPlan, value.mutation_plan) || {};
+  const ciReplay = pickObject(mutationPlan.ci_full_replay) || {};
+  const commands = pickObject(manifest.commands, profile.commands) || {};
+  const missing = normalizeArray(profile.missing || manifest.missing || ciReplay.blockers);
+  const readiness = profile.readiness || manifest.readiness || (missing.length > 0 ? 'ciIsolatedIncomplete' : 'notConfigured');
+  const canRunFullMutationReplay = Boolean(
+    profile.can_run_full_mutation_replay ||
+    manifest.can_run_full_mutation_replay ||
+    ciReplay.allowed,
+  );
+  const hasMutation = Boolean(mutationPlan.has_mutation || value.workflow?.hasMutation || canRunFullMutationReplay || missing.length > 0);
+
+  return {
+    readiness,
+    hasMutation,
+    canRunFullMutationReplay,
+    baseUrl: profile.base_url || manifest.base_url || null,
+    ciCommand: profile.ci_command || commands.ci || null,
+    dataResetCommand: profile.data_reset_command || commands.data_reset || null,
+    resetAssertionCommand: profile.reset_assertion_command || commands.reset_assertion || null,
+    postconditionCommand: profile.postcondition_command || commands.postcondition || null,
+    workingDirectory: profile.working_directory || manifest.working_directory || null,
+    authProviderId: profile.auth_provider_id || manifest.auth_provider_id || null,
+    resetProfileId: profile.reset_profile_id || manifest.reset_profile_id || null,
+    stateSeedId: profile.state_seed_id || manifest.state_seed_id || null,
+    postconditionConfigured: Boolean(profile.postcondition_command || commands.postcondition),
+    allowMutationReplay: Boolean(profile.allow_mutation_replay || manifest.allow_mutation_replay),
+    missing,
+    detail: profile.detail || manifest.detail || mutationPlan.background_hardening?.reason || '',
+  };
+}
+
+function normalizeDojoState(value = {}) {
+  const raw = pickObject(value.dojo, value.skillCredential, value.skill_credential) || {};
+  const skillCard = pickObject(raw.skillCard, raw.skill_card) || {};
+  const skillPassport = pickObject(raw.skillPassport, raw.skill_passport) || {};
+  const checkride = pickObject(raw.checkride) || {};
+  const license = pickObject(raw.license) || {};
+  const artifactExport = pickObject(raw.artifactExport, raw.artifact_export) || {};
+  const proof = pickObject(raw.proof, raw.proofCapsule, raw.proof_capsule) || {};
+  const proofDryRun = pickObject(raw.proofDryRun, raw.proof_dry_run) || {};
+  const blockExplanation = pickObject(raw.blockExplanation, raw.block_explanation) || {};
+  const permissionUpgrade = pickObject(raw.permissionUpgrade, raw.permission_upgrade) || {};
+  const universe = pickObject(raw.universe, raw.universe_dossier) || {};
+  const lifecycle = pickObject(raw.lifecycle) || {};
+  const governance = pickObject(raw.governance, raw.governance_report) || {};
+  const metrics = pickObject(raw.metrics) || {};
+  const sourceAffordancePrPlan = pickObject(raw.sourceAffordancePrPlan, raw.source_affordance_pr_plan) || {};
+  const timeMachine = pickObject(raw.timeMachine, raw.time_machine) || {};
+  const vivariumRun = pickObject(raw.vivariumRun, raw.vivarium_run) || {};
+  const windTunnel = pickObject(raw.windTunnel, raw.wind_tunnel) || {};
+  const licenseHealth = pickObject(raw.licenseHealth, raw.license_health) || {};
+  const caseLawRecord = pickObject(raw.caseLawRecord, raw.case_law_record) || {};
+  const guardrails = Array.isArray(raw.guardrails) ? raw.guardrails : [];
+  const allowedActions = Array.isArray(license.allowedActions) ? license.allowedActions : Array.isArray(license.allowed_actions) ? license.allowed_actions : [];
+  const gatedActions = Array.isArray(license.gatedActions) ? license.gatedActions : Array.isArray(license.gated_actions) ? license.gated_actions : [];
+  const blockedActions = Array.isArray(license.blockedActions) ? license.blockedActions : Array.isArray(license.blocked_actions) ? license.blocked_actions : [];
+
+  return {
+    status: raw.status || 'notStarted',
+    label: raw.label || skillCard.status || 'No Dojo skill',
+    detail: raw.detail || 'Teach a workflow before Dojo can issue a skill license.',
+    published: Boolean(raw.published),
+    skillId: raw.skillId || raw.skill_id || skillPassport.skill_id || null,
+    workflowId: raw.workflowId || raw.workflow_id || null,
+    entrustmentLevel: raw.entrustmentLevel || raw.entrustment_level || skillPassport.entrustment_level || 'E0',
+    readinessLevel: Number(raw.readinessLevel ?? raw.readiness_level ?? skillPassport.readiness_level ?? 0),
+    proofRequired: Boolean(raw.proofRequired ?? raw.proof_required ?? skillPassport.proof_required),
+    publishedToolName: raw.publishedToolName || raw.published_tool_name || null,
+    scenarioCount: Number(raw.scenarioCount ?? raw.scenario_count ?? 0),
+    caseLawCount: Number(raw.caseLawCount ?? raw.case_law_count ?? 0),
+    artifactCount: Number(raw.artifactCount ?? raw.artifact_count ?? artifactExport.artifact_count ?? 0),
+    licenseExpiresAt: raw.licenseExpiresAt || raw.license_expires_at || skillPassport.license_expires_at || null,
+    attackSuccessRate: Number(raw.attackSuccessRate ?? raw.attack_success_rate ?? skillPassport.attack_success_rate ?? 0),
+    proof: {
+      capsuleId: proof.capsuleId || proof.capsule_id || null,
+      status: proof.status || proof.validation?.status || null,
+      requestedAction: proof.requestedAction || proof.requested_action || null,
+    },
+    proofDryRun: {
+      status: proofDryRun.status || proofDryRun.validation?.status || null,
+      dryRun: Boolean(proofDryRun.dryRun ?? proofDryRun.dry_run),
+    },
+    blockExplanation: {
+      status: blockExplanation.status || blockExplanation.validation?.status || null,
+      refusal: blockExplanation.refusal || null,
+    },
+    permissionUpgrade: {
+      requiredSteps: Array.isArray(permissionUpgrade.requiredSteps)
+        ? permissionUpgrade.requiredSteps
+        : Array.isArray(permissionUpgrade.required_steps)
+          ? permissionUpgrade.required_steps
+          : [],
+    },
+    universe: {
+      status: universe.status || raw.status || 'draft',
+      enterpriseReady: Number(universe.enterpriseReady ?? universe.enterprise_ready ?? 0),
+      enterpriseTotal: Number(universe.enterpriseTotal ?? universe.enterprise_total ?? 0),
+      personalReady: Number(universe.personalReady ?? universe.personal_ready ?? 0),
+      personalTotal: Number(universe.personalTotal ?? universe.personal_total ?? 0),
+    },
+    lifecycle: {
+      status: lifecycle.status || 'draft',
+      daysUntilExpiry: lifecycle.daysUntilExpiry ?? lifecycle.days_until_expiry ?? null,
+      recertificationRequired: Boolean(lifecycle.recertificationRequired ?? lifecycle.recertification_required),
+    },
+    governance: {
+      approvalCount: Number(governance.approvalCount ?? governance.approval_count ?? 0),
+      policyGateCount: Number(governance.policyGateCount ?? governance.policy_gate_count ?? 0),
+      evidenceClaims: Array.isArray(governance.evidenceClaims) ? governance.evidenceClaims : Array.isArray(governance.evidence_claims) ? governance.evidence_claims : [],
+      blockedActions: Array.isArray(governance.blockedActions) ? governance.blockedActions : Array.isArray(governance.blocked_actions) ? governance.blocked_actions : [],
+    },
+    metrics: {
+      skillCount: Number(metrics.skillCount ?? metrics.skill_count ?? 0),
+      coverage: Number(metrics.coverage ?? 0),
+      attackSuccessRate: Number(metrics.attackSuccessRate ?? metrics.attack_success_rate ?? 0),
+      mcpBackedSkillCount: Number(metrics.mcpBackedSkillCount ?? metrics.mcp_backed_skill_count ?? 0),
+      proofRequiredPercent: Number(metrics.proofRequiredPercent ?? metrics.proof_required_percent ?? 0),
+      staleLicenseCount: Number(metrics.staleLicenseCount ?? metrics.stale_license_count ?? 0),
+    },
+    sourceAffordancePrPlan: {
+      readiness: sourceAffordancePrPlan.readiness || 'not_ready',
+      patchCount: Number(sourceAffordancePrPlan.patchCount ?? sourceAffordancePrPlan.patch_count ?? 0),
+    },
+    timeMachine: {
+      baselineStatus: timeMachine.baselineStatus || timeMachine.baseline_status || null,
+      mutationKind: timeMachine.mutationKind || timeMachine.mutation_kind || null,
+      changedVariable: timeMachine.changedVariable || timeMachine.changed_variable || null,
+      expectedStatusAfterChange: timeMachine.expectedStatusAfterChange || timeMachine.expected_status_after_change || null,
+    },
+    vivariumRun: {
+      scenarioTitle: vivariumRun.scenarioTitle || vivariumRun.scenario_title || null,
+      mutationKind: vivariumRun.mutationKind || vivariumRun.mutation_kind || null,
+      status: vivariumRun.status || null,
+      syntheticDataOnly: Boolean(vivariumRun.syntheticDataOnly ?? vivariumRun.synthetic_data_only),
+    },
+    windTunnel: {
+      runCount: Number(windTunnel.runCount ?? windTunnel.run_count ?? 0),
+      passCount: Number(windTunnel.passCount ?? windTunnel.pass_count ?? 0),
+      failCount: Number(windTunnel.failCount ?? windTunnel.fail_count ?? 0),
+      blockedCount: Number(windTunnel.blockedCount ?? windTunnel.blocked_count ?? 0),
+      stopReason: windTunnel.stopReason || windTunnel.stop_reason || null,
+    },
+    licenseHealth: {
+      status: licenseHealth.status || lifecycle.status || raw.status || 'draft',
+      daysUntilExpiry: licenseHealth.daysUntilExpiry ?? licenseHealth.days_until_expiry ?? lifecycle.daysUntilExpiry ?? null,
+      proofRecords: pickObject(licenseHealth.proofRecords, licenseHealth.proof_records) || {},
+    },
+    caseLawRecord: {
+      title: caseLawRecord.title || null,
+      status: caseLawRecord.status || null,
+      guardrailTitle: caseLawRecord.guardrailTitle || caseLawRecord.guardrail_title || null,
+    },
+    checkride: {
+      coverageScore: Number(checkride.coverageScore ?? checkride.coverage_score ?? 0),
+      criticalFailures: Number(checkride.criticalFailures ?? checkride.critical_failures ?? 0),
+      blockedScenarios: Number(checkride.blockedScenarios ?? checkride.blocked_scenarios ?? 0),
+    },
+    skillCard: {
+      title: skillCard.title || raw.label || 'Dojo skill',
+      status: skillCard.status || raw.label || 'Draft',
+      canDoAlone: Array.isArray(skillCard.can_do_alone) ? skillCard.can_do_alone : Array.isArray(skillCard.canDoAlone) ? skillCard.canDoAlone : [],
+      willAskBefore: Array.isArray(skillCard.will_ask_before) ? skillCard.will_ask_before : Array.isArray(skillCard.willAskBefore) ? skillCard.willAskBefore : [],
+      willNotDo: Array.isArray(skillCard.will_not_do) ? skillCard.will_not_do : Array.isArray(skillCard.willNotDo) ? skillCard.willNotDo : [],
+      practiced: skillCard.practiced || '',
+      foundAndFixed: skillCard.found_and_fixed || skillCard.foundAndFixed || '',
+      proofBadge: skillCard.proof_badge || skillCard.proofBadge || (raw.proofRequired ? 'Proof required' : 'Proof optional'),
+    },
+    license: {
+      allowedActions,
+      gatedActions,
+      blockedActions,
+    },
+    guardrails,
+  };
+}
+
+function shouldShowIsolationProfile(model) {
+  return Boolean(
+    model.isolation?.hasMutation ||
+    model.isolation?.canRunFullMutationReplay ||
+    model.isolation?.readiness === 'ciIsolatedReady' ||
+    (Array.isArray(model.isolation?.missing) && model.isolation.missing.length > 0),
+  );
+}
+
+function shouldShowDojoSkill(model) {
+  return Boolean(model.dojo?.skillId || model.dojo?.status === 'draft' || model.dojo?.status === 'licensed');
+}
+
+// Plain-language names for the kinds of places the agent can watch or work
+// in. The picker never shows internal vocabulary - just where things live.
+const WORLD_PICKER_LABELS = Object.freeze({
+  browser: 'This workspace preview',
+  terminal: 'A terminal here',
+  runtime: 'Programs and notebooks',
+  game: 'A game world',
+  kernel: 'System internals (careful)',
+  notebook: 'Notebooks',
+  api: 'Web services',
+  desktop: 'Apps on this computer',
+});
+
+function worldPickerLabel(item) {
+  if (typeof item !== 'string' || item.length === 0) return 'Somewhere else';
+  return WORLD_PICKER_LABELS[item] || item;
+}
+
+export { worldPickerLabel };
+
 function buildReadinessRows(model) {
   const runtimeReady = isRuntimeAttached(model.runtime);
   const observed = hasObservedPage(model);
+  const needsPreview = observeNeedsPreview(model);
   const traceReady = hasRecordedTrace(model);
   const compiled = hasCompiledContract(model);
   const scriptReady = hasGeneratedScript(model);
@@ -147,7 +416,7 @@ function buildReadinessRows(model) {
     },
     {
       label: 'Observe',
-      value: observed ? 'Screenshot allowed' : 'Consent pending',
+      value: observed ? 'Screenshot allowed' : needsPreview ? 'Preview needed' : 'Consent pending',
       tone: observed ? 'ok' : 'warn',
     },
     {
@@ -171,6 +440,7 @@ function buildReadinessRows(model) {
 function buildStages(model) {
   const runtimeReady = isRuntimeAttached(model.runtime);
   const observed = hasObservedPage(model);
+  const needsPreview = observeNeedsPreview(model);
   const traceReady = hasRecordedTrace(model);
   const compiled = hasCompiledContract(model);
   const scriptReady = hasGeneratedScript(model);
@@ -193,11 +463,18 @@ function buildStages(model) {
     {
       id: 'observe',
       label: 'Observe',
-      title: 'Screenshot consent',
+      title: needsPreview ? 'Preview target' : 'Screenshot consent',
       detail: observed
         ? model.observe?.detail || 'The current workspace view can be inspected.'
-        : model.observe?.detail || 'Attach first, then request a screenshot from the hosted runtime.',
+        : model.observe?.detail || 'Pick where to look, then take a look.',
       tone: observed ? 'ok' : runtimeReady ? 'warn' : 'neutral',
+      // Substrate picker: fed by synthi_attach_substrate (plan acceptance).
+      // Labels stay plain-language; users never see adapter vocabulary.
+      picker: {
+        action: WORKFLOW_ACTIONS.LIST_SUBSTRATES,
+        placeholder: 'Where should I watch?',
+        items: Array.isArray(model.substrates) ? model.substrates : [],
+      },
       action: WORKFLOW_ACTIONS.OBSERVE,
       actionLabel: 'Observe',
       actionEnabled: runtimeReady,
@@ -271,6 +548,8 @@ function buildActions(model) {
   const compiled = hasCompiledContract(model);
   const scriptReady = hasGeneratedScript(model);
   const unresolvedCount = unresolvedQuestionCount(model);
+  const dojoSkillReady = Boolean(model.dojo?.skillId);
+  const dojoLicensed = Boolean(model.dojo?.published || model.dojo?.status === 'licensed');
 
   return {
     primary: {
@@ -280,6 +559,13 @@ function buildActions(model) {
       disabledReason: primary.disabledReason,
     },
     secondary: [
+      {
+        action: WORKFLOW_ACTIONS.RUN_CHECKRIDE,
+        label: 'Checkride',
+        icon: 'run',
+        enabled: compiled || traceReady,
+        disabledReason: 'Teach a workflow first',
+      },
       {
         action: WORKFLOW_ACTIONS.COMPILE_CONTRACT,
         label: 'Compile',
@@ -310,13 +596,110 @@ function buildActions(model) {
       },
       {
         action: WORKFLOW_ACTIONS.PUBLISH_TOOL,
-        label: 'Publish',
+        label: 'License',
         icon: 'teach',
-        enabled: scriptReady && unresolvedCount === 0,
-        disabledReason: scriptReady ? 'Resolve workflow questions first' : 'Generate the Playwright workflow first',
+        enabled: compiled && unresolvedCount === 0,
+        disabledReason: compiled ? 'Resolve workflow questions first' : 'Compile the workflow contract first',
+      },
+      {
+        action: WORKFLOW_ACTIONS.EXPORT_DOJO_ARTIFACTS,
+        label: 'Dojo Export',
+        icon: 'export',
+        enabled: dojoSkillReady,
+        disabledReason: 'License or preview a skill first',
+      },
+      {
+        action: WORKFLOW_ACTIONS.RUN_PROOF_DRY_RUN,
+        label: 'Proof Dry-run',
+        icon: 'run',
+        enabled: dojoLicensed,
+        disabledReason: 'License this skill first',
+      },
+      {
+        action: WORKFLOW_ACTIONS.GET_UNIVERSE_DOSSIER,
+        label: 'Capability',
+        icon: 'manifest',
+        enabled: dojoSkillReady,
+        disabledReason: 'License or preview a skill first',
+      },
+      {
+        action: WORKFLOW_ACTIONS.RUN_VIVARIUM_SCENARIO,
+        label: 'Practice',
+        icon: 'run',
+        enabled: dojoSkillReady,
+        disabledReason: 'License or preview a skill first',
+      },
+      {
+        action: WORKFLOW_ACTIONS.RUN_WIND_TUNNEL,
+        label: 'Hardening',
+        icon: 'run',
+        enabled: dojoSkillReady,
+        disabledReason: 'License or preview a skill first',
+      },
+      {
+        action: WORKFLOW_ACTIONS.GET_LICENSE_HEALTH,
+        label: 'Health',
+        icon: 'auth',
+        enabled: dojoSkillReady,
+        disabledReason: 'License or preview a skill first',
       },
     ],
   };
+}
+
+function buildAgentModes(model, summary, localRecording) {
+  const traceReady = hasRecordedTrace(model);
+  const compiled = hasCompiledContract(model);
+  const scriptReady = hasGeneratedScript(model);
+  const unresolvedCount = unresolvedQuestionCount(model);
+  const reviewCount = Number(summary.blockerCount || 0);
+
+  return [
+    {
+      id: 'plan',
+      label: 'Plan',
+      status: compiled ? 'Contract' : traceReady ? 'Trace' : 'Draft',
+      detail: unresolvedCount > 0
+        ? `${unresolvedCount} contract decisions`
+        : traceReady
+          ? 'Trace can be compiled'
+          : 'Attach, observe, teach',
+      tone: compiled ? 'ok' : traceReady ? 'warn' : 'neutral',
+      icon: Route,
+      section: 'runbook',
+    },
+    {
+      id: 'execute',
+      label: 'Execute',
+      status: localRecording ? 'Recording' : scriptReady ? 'Replay' : 'Manual',
+      detail: localRecording
+        ? 'Browser events are captured'
+        : scriptReady
+          ? 'Replay artifact is ready'
+          : 'Controlled browser actions',
+      tone: localRecording || scriptReady ? 'ok' : 'neutral',
+      icon: Play,
+      section: 'runbook',
+    },
+    {
+      id: 'debug',
+      label: 'Debug',
+      status: traceReady ? `${summary.stepCount} events` : 'No trace',
+      detail: traceReady ? 'Inspect trace and replay state' : 'Teach a workflow first',
+      tone: traceReady ? 'ok' : 'neutral',
+      icon: Gauge,
+      section: 'trace',
+    },
+    {
+      id: 'review',
+      label: 'Review',
+      status: reviewCount > 0 ? `${reviewCount} gates` : 'Clear',
+      detail: reviewCount > 0 ? 'Resolve hardening gates' : 'Policy gates are clear',
+      tone: reviewCount > 0 ? 'warn' : 'ok',
+      icon: ShieldCheck,
+      section: reviewCount > 0 ? 'hardening' : 'dojo',
+    },
+  ];
 }
 
 export function createDefaultWorkflowViewModel(workspaceSlug) {
@@ -367,6 +750,8 @@ export function createDefaultWorkflowViewModel(workspaceSlug) {
     blockers: [],
     unresolvedSteps: [],
     history: [],
+    isolation: normalizeIsolationState(),
+    dojo: normalizeDojoState(),
   };
 
   return {
@@ -395,6 +780,8 @@ export function normalizeWorkflowPanelState(input, workspaceSlug) {
     blockers: Array.isArray(value.blockers) ? value.blockers : base.blockers,
     unresolvedSteps: Array.isArray(value.unresolvedSteps) ? value.unresolvedSteps : base.unresolvedSteps,
     history: Array.isArray(value.history) ? value.history : base.history,
+    isolation: normalizeIsolationState(value),
+    dojo: normalizeDojoState(value),
   };
 
   const withDerived = {
@@ -427,6 +814,14 @@ export function deriveWorkflowPanelSummary(input) {
   const enabledFooterActions = [
     model.actions.primary,
     ...(Array.isArray(model.actions.secondary) ? model.actions.secondary : []),
+    shouldShowIsolationProfile(model)
+      ? {
+          action: model.isolation.canRunFullMutationReplay
+            ? WORKFLOW_ACTIONS.RUN_CI_ISOLATED_REPLAY
+            : WORKFLOW_ACTIONS.GET_MUTATION_PLAN,
+          enabled: true,
+        }
+      : null,
   ]
     .filter((action) => action?.action && action.enabled)
     .map((action) => action.action);
@@ -475,9 +870,142 @@ function ReadinessRow({ row }) {
   );
 }
 
-function ActionButton({ action, label, icon, enabled = true, disabledReason, variant = 'secondary', onAction }) {
+function WorkflowCommandStrip({ items, activeId, onSelect }) {
+  return (
+    <div
+      data-testid="agent-workflow-command-strip"
+      className="grid gap-1 rounded-md border p-1 sm:grid-cols-4"
+      style={{
+        borderColor: 'var(--border-subtle)',
+        background: 'color-mix(in srgb, var(--bg-panel) 72%, transparent)',
+      }}
+      role="tablist"
+      aria-label="Workflow sections"
+    >
+      {items.map((item) => {
+        const active = activeId === item.id;
+        const Icon = item.icon || Workflow;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            className="th-focus-ring grid min-h-11 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-2 rounded-[var(--radius-control)] border px-2 text-left text-[11px] transition-[background,border-color,transform] hover:-translate-y-px"
+            style={{
+              borderColor: active
+                ? 'color-mix(in srgb, var(--accent-primary) 42%, var(--border-subtle))'
+                : 'color-mix(in srgb, var(--border-subtle) 74%, transparent)',
+              background: active
+                ? 'color-mix(in srgb, var(--accent-primary) 10%, var(--bg-panel))'
+                : 'color-mix(in srgb, var(--bg-app) 34%, transparent)',
+              color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+            }}
+            onClick={() => onSelect?.(item.id)}
+          >
+            <Icon className="h-3.5 w-3.5 shrink-0" strokeWidth={2} />
+            <span className="min-w-0">
+              <span className="block truncate font-semibold">{item.label}</span>
+              <span className="block truncate font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                {item.detail}
+              </span>
+            </span>
+            <span className="font-mono text-[10px]" style={{ color: active ? 'var(--accent-primary)' : 'var(--text-muted)' }}>
+              {item.count}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function AgentModeStrip({ modes, activeId, onSelect, reducedMotion = false }) {
+  const activeMode = modes.find((mode) => mode.id === activeId) || modes[0];
+
+  return (
+    <section
+      data-testid="agent-workflow-mode-strip"
+      className="rounded-md border p-1"
+      style={{
+        borderColor: 'var(--border-subtle)',
+        background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 74%, transparent), color-mix(in srgb, var(--bg-panel) 88%, transparent))',
+      }}
+      aria-label="Agent operating mode"
+    >
+      <div className="grid grid-cols-2 gap-1" role="tablist" aria-label="Agent modes">
+        {modes.map((mode) => {
+          const active = activeId === mode.id;
+          const Icon = mode.icon || Workflow;
+          const statusStyle = toneStyle(mode.tone);
+          return (
+            <button
+              key={mode.id}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              className="th-focus-ring relative min-h-[58px] overflow-hidden rounded-[var(--radius-control)] border px-2.5 py-2 text-left transition-[border-color,color,transform] hover:-translate-y-px"
+              style={{
+                borderColor: active
+                  ? 'color-mix(in srgb, var(--primary) 42%, var(--border-subtle))'
+                  : 'color-mix(in srgb, var(--border-subtle) 78%, transparent)',
+                color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+              }}
+              onClick={() => onSelect?.(mode.id)}
+            >
+              {active ? (
+                <motion.span
+                  layoutId="agent-workflow-mode-active"
+                  className="absolute inset-0"
+                  style={{
+                    background: 'linear-gradient(135deg, color-mix(in srgb, var(--primary) 13%, var(--bg-panel)), color-mix(in srgb, var(--bg-surface) 84%, transparent))',
+                  }}
+                  transition={reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 420, damping: 34 }}
+                />
+              ) : null}
+              <span className="relative z-10 grid min-w-0 gap-1">
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <Icon className="h-3.5 w-3.5 shrink-0" strokeWidth={2} />
+                  <span className="truncate text-xs font-semibold">{mode.label}</span>
+                </span>
+                <span
+                  className="w-fit max-w-full truncate rounded border px-1.5 py-0.5 font-mono text-[10px]"
+                  style={statusStyle}
+                >
+                  {mode.status}
+                </span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      {activeMode ? (
+        <div className="mt-1 flex min-h-8 items-center justify-between gap-3 border-t px-2 pt-1.5 text-[11px]" style={{ borderColor: 'var(--border-subtle)' }}>
+          <span className="truncate" style={{ color: 'var(--text-muted)' }}>
+            Operating mode
+          </span>
+          <span className="min-w-0 truncate text-right font-medium">
+            {activeMode.label}: {activeMode.detail}
+          </span>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function ActionButton({
+  action,
+  label,
+  icon,
+  enabled = true,
+  disabledReason,
+  variant = 'secondary',
+  isBusy = false,
+  onAction,
+}) {
   const Icon = STAGE_ICONS[icon] || (action === WORKFLOW_ACTIONS.BEGIN_TEACH ? Eye : action === WORKFLOW_ACTIONS.END_TEACH ? Square : Play);
-  const disabled = !enabled;
+  const disabled = isBusy || !enabled;
+  const disabledMessage = disabled ? disabledReason || (isBusy ? 'Workflow action in progress...' : undefined) : undefined;
   const primary = variant === 'primary';
 
   return (
@@ -490,11 +1018,11 @@ function ActionButton({ action, label, icon, enabled = true, disabledReason, var
       ].join(' ')}
       style={{
         borderColor: 'var(--border-subtle)',
-        background: primary ? 'var(--accent-primary)' : 'var(--bg-panel)',
-        color: primary ? 'var(--accent-foreground, var(--bg-app))' : 'var(--text-primary)',
+        background: primary ? 'var(--primary)' : 'var(--bg-panel)',
+        color: primary ? 'var(--primary-foreground)' : 'var(--text-primary)',
       }}
       disabled={disabled}
-      title={disabled ? disabledReason : undefined}
+      title={disabledMessage}
       onClick={() => onAction?.(action)}
     >
       <Icon className="h-3.5 w-3.5 shrink-0" strokeWidth={2} />
@@ -503,36 +1031,184 @@ function ActionButton({ action, label, icon, enabled = true, disabledReason, var
   );
 }
 
-function WorkflowStage({ stage, onAction }) {
-  const Icon = STAGE_ICONS[stage.id] || Workflow;
-  const style = toneStyle(stage.tone);
+function profileFormFromIsolation(isolation = {}) {
+  return {
+    baseUrl: isolation.baseUrl || '',
+    ciCommand: isolation.ciCommand || '',
+    dataResetCommand: isolation.dataResetCommand || '',
+    resetAssertionCommand: isolation.resetAssertionCommand || '',
+    postconditionCommand: isolation.postconditionCommand || '',
+    workingDirectory: isolation.workingDirectory || '',
+    authProviderId: isolation.authProviderId || '',
+    resetProfileId: isolation.resetProfileId || '',
+    stateSeedId: isolation.stateSeedId || '',
+    allowMutationReplay: Boolean(isolation.allowMutationReplay),
+  };
+}
+
+function trimOrUndefined(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function profilePayloadFromForm(form) {
+  const commands = {
+    ...(trimOrUndefined(form.ciCommand) ? { ci: trimOrUndefined(form.ciCommand) } : {}),
+    ...(trimOrUndefined(form.dataResetCommand) ? { data_reset: trimOrUndefined(form.dataResetCommand) } : {}),
+    ...(trimOrUndefined(form.resetAssertionCommand) ? { reset_assertion: trimOrUndefined(form.resetAssertionCommand) } : {}),
+    ...(trimOrUndefined(form.postconditionCommand) ? { postcondition: trimOrUndefined(form.postconditionCommand) } : {}),
+  };
+
+  return {
+    profile_manifest: {
+      schema_version: 'synthi.replayIsolationProfile.v1',
+      kind: 'ciIsolated',
+      ...(trimOrUndefined(form.baseUrl) ? { base_url: trimOrUndefined(form.baseUrl) } : {}),
+      ...(Object.keys(commands).length > 0 ? { commands } : {}),
+      ...(trimOrUndefined(form.workingDirectory) ? { working_directory: trimOrUndefined(form.workingDirectory) } : {}),
+      ...(trimOrUndefined(form.authProviderId) ? { auth_provider_id: trimOrUndefined(form.authProviderId) } : {}),
+      ...(trimOrUndefined(form.resetProfileId) ? { reset_profile_id: trimOrUndefined(form.resetProfileId) } : {}),
+      ...(trimOrUndefined(form.stateSeedId) ? { state_seed_id: trimOrUndefined(form.stateSeedId) } : {}),
+      allow_mutation_replay: Boolean(form.allowMutationReplay),
+    },
+  };
+}
+
+function ProfileField({ label, value, onChange, multiline = false }) {
+  const commonProps = {
+    className: 'w-full rounded-md border px-2 py-1.5 text-[11px] outline-none focus:ring-2',
+    style: {
+      borderColor: 'var(--border-subtle)',
+      background: 'var(--bg-panel)',
+      color: 'var(--text-primary)',
+    },
+    value,
+    onChange: (event) => onChange(event.target.value),
+  };
 
   return (
-    <div className="grid min-h-16 grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-3 border-t px-3 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
-      <div className="flex h-5 w-5 items-center justify-center rounded" style={{ background: 'var(--bg-panel)', color: 'var(--text-muted)' }}>
-        <Icon className="h-3.5 w-3.5" strokeWidth={2} />
-      </div>
-      <div className="min-w-0">
-        <div className="truncate text-xs font-semibold">{stage.title}</div>
-        <div className="mt-0.5 flex min-w-0 items-center gap-2">
-          <span className="shrink-0 text-[10px] font-semibold uppercase tracking-normal" style={{ color: 'var(--text-muted)' }}>
-            {stage.label}
-          </span>
-          <p className="min-w-0 truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>{stage.detail}</p>
+    <label className="grid gap-1">
+      <span className="text-[10px] font-semibold uppercase tracking-normal" style={{ color: 'var(--text-muted)' }}>
+        {label}
+      </span>
+      {multiline ? (
+        <textarea {...commonProps} rows={2} />
+      ) : (
+        <input {...commonProps} />
+      )}
+    </label>
+  );
+}
+
+function WorkflowStage({ stage, onAction, isBusy = false, selected = false, onSelect }) {
+  const Icon = STAGE_ICONS[stage.id] || Workflow;
+  const style = toneStyle(stage.tone);
+  const disabled = isBusy || !stage.actionEnabled;
+  const disabledMessage = disabled ? (stage.disabledReason || (isBusy ? 'Workflow action in progress...' : undefined)) : undefined;
+
+  return (
+    <div
+      className="grid min-h-16 w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t px-3 py-2 text-left transition-[background,border-color] hover:bg-[color-mix(in_srgb,var(--text-primary)_4%,transparent)]"
+      style={{
+        borderColor: selected
+          ? 'color-mix(in srgb, var(--accent-primary) 42%, var(--border-subtle))'
+          : 'var(--border-subtle)',
+        background: selected
+          ? 'color-mix(in srgb, var(--accent-primary) 8%, transparent)'
+          : 'transparent',
+      }}
+    >
+      <button
+        type="button"
+        data-workflow-stage-selector={stage.id}
+        className="th-focus-ring grid min-h-12 min-w-0 grid-cols-[1.25rem_minmax(0,1fr)] items-center gap-3 rounded-md bg-transparent py-1 text-left"
+        style={{ color: 'var(--text-primary)' }}
+        aria-pressed={selected}
+        onClick={() => onSelect?.(stage.id)}
+      >
+        <div className="flex h-5 w-5 items-center justify-center rounded" style={{ background: 'var(--bg-panel)', color: 'var(--text-muted)' }}>
+          <Icon className="h-3.5 w-3.5" strokeWidth={2} />
         </div>
-      </div>
+        <div className="min-w-0">
+          <div className="truncate text-xs font-semibold">{stage.title}</div>
+          <div className="mt-0.5 flex min-w-0 items-center gap-2">
+            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-normal" style={{ color: 'var(--text-muted)' }}>
+              {stage.label}
+            </span>
+            <p className="min-w-0 truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>{stage.detail}</p>
+          </div>
+        </div>
+      </button>
+      {stage.picker && !isBusy ? (
+        <select
+          data-workflow-substrate-picker={stage.id}
+          aria-label={stage.picker.placeholder}
+          defaultValue=""
+          onChange={(event) => {
+            const value = event.target.value;
+            if (value) onAction?.(stage.picker.action, { stageId: stage.id, substrate: value });
+          }}
+          className="mr-1 h-7 max-w-32 rounded-md border px-1 text-[11px]"
+          style={{ background: 'var(--bg-panel)', color: 'var(--text-primary)', borderColor: 'var(--border-subtle)' }}
+        >
+          <option value="" disabled>{stage.picker.placeholder}</option>
+          {(stage.picker.items ?? []).map((item) => (
+            <option key={item} value={item}>{worldPickerLabel(item)}</option>
+          ))}
+        </select>
+      ) : null}
       <button
         type="button"
         className="inline-flex h-7 min-w-16 items-center justify-center gap-1.5 rounded-md border px-2 text-[11px] font-semibold transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-55"
         style={{ ...style, minWidth: 64 }}
-        disabled={!stage.actionEnabled}
-        title={stage.actionEnabled ? undefined : stage.disabledReason}
-        onClick={() => onAction?.(stage.action, { stageId: stage.id })}
+        disabled={disabled}
+        title={disabledMessage}
+        onClick={() => {
+          onAction?.(stage.action, { stageId: stage.id });
+        }}
       >
         {stage.action === WORKFLOW_ACTIONS.END_TEACH ? <Square className="h-3.5 w-3.5" strokeWidth={2} /> : <Play className="h-3.5 w-3.5" strokeWidth={2} />}
         <span className="truncate">{stage.actionLabel}</span>
       </button>
     </div>
+  );
+}
+
+function WorkflowStageInspector({ stage, onAction, isBusy }) {
+  if (!stage) return null;
+  const Icon = STAGE_ICONS[stage.id] || Workflow;
+  return (
+    <section
+      data-testid="agent-workflow-stage-inspector"
+      className="mt-3 rounded-md border px-3 py-3"
+      style={{
+        borderColor: 'color-mix(in srgb, var(--accent-primary) 30%, var(--border-subtle))',
+        background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--accent-primary) 6%), color-mix(in srgb, var(--bg-app) 70%, transparent))',
+      }}
+    >
+      <div className="grid gap-3">
+        <div className="flex min-w-0 items-start gap-2.5">
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md border" style={toneStyle(stage.tone)}>
+            <Icon className="h-4 w-4" strokeWidth={2} />
+          </span>
+          <div className="min-w-0">
+            <div className="vt-panel-kicker">{stage.label}</div>
+            <h4 className="mt-0.5 truncate text-sm font-semibold">{stage.title}</h4>
+            <p className="mt-1 text-[11px] leading-5" style={{ color: 'var(--text-muted)' }}>
+              {stage.detail}
+            </p>
+          </div>
+        </div>
+        <ActionButton
+          action={stage.action}
+          label={stage.actionLabel}
+          enabled={stage.actionEnabled}
+          disabledReason={stage.disabledReason}
+          icon={stage.id}
+          isBusy={isBusy}
+          onAction={(action) => onAction?.(action, { stageId: stage.id, source: 'stage-inspector' })}
+        />
+      </div>
+    </section>
   );
 }
 
@@ -577,13 +1253,14 @@ function EmptyTrace() {
 }
 
 function ReviewQueue({ items, blockers }) {
-  const rows = items.length > 0 ? items : blockers;
+  const replayBlockers = blockers.filter((item) => !OPERATIONAL_BLOCKER_IDS.has(item?.id));
+  const rows = items.length > 0 ? items : replayBlockers;
   if (!rows.length) return null;
 
   return (
     <section className="mt-3 rounded-md border" style={{ borderColor: 'var(--border-subtle)' }} data-testid="agent-workflow-review">
       <div className="flex items-center gap-2 px-3 py-2">
-        <AlertTriangle className="h-3.5 w-3.5 shrink-0" strokeWidth={2} style={{ color: 'var(--warning, #b7791f)' }} />
+        <AlertTriangle className="h-3.5 w-3.5 shrink-0" strokeWidth={2} style={{ color: 'var(--accent-warning)' }} />
         <h3 className="truncate text-xs font-semibold">Publish Hardening</h3>
       </div>
       <ul>
@@ -596,6 +1273,258 @@ function ReviewQueue({ items, blockers }) {
           </li>
         ))}
       </ul>
+    </section>
+  );
+}
+
+function DojoSkillCredential({ dojo, traceReady, onAction, workspaceSlug }) {
+  if (!dojo || !shouldShowDojoSkill({ dojo })) return null;
+  const licensed = dojo.status === 'licensed' || dojo.published;
+  const criticalFailures = Number(dojo.checkride?.criticalFailures || 0);
+  const tone = licensed ? 'ok' : criticalFailures > 0 ? 'warn' : 'neutral';
+  const allowed = dojo.skillCard?.canDoAlone?.length ? dojo.skillCard.canDoAlone : dojo.license?.allowedActions || [];
+  const gated = dojo.skillCard?.willAskBefore?.length ? dojo.skillCard.willAskBefore : dojo.license?.gatedActions || [];
+  const blocked = dojo.skillCard?.willNotDo?.length ? dojo.skillCard.willNotDo : dojo.license?.blockedActions || [];
+
+  return (
+    <section className="mt-3 scroll-mt-4 rounded-md border" style={{ borderColor: 'var(--border-subtle)' }} data-testid="agent-workflow-dojo" data-workflow-section="dojo">
+      <div className="flex items-center justify-between gap-3 px-3 py-2">
+        <div className="min-w-0">
+          <h3 className="truncate text-xs font-semibold">Dojo Skill</h3>
+          <p className="truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            {dojo.detail}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <a
+            className="rounded-md border px-2 py-1 text-[11px]"
+            href={`/workspace/${encodeURIComponent(workspaceSlug || 'current')}/dojo`}
+            style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+            data-testid="agent-workflow-dojo-open"
+          >
+            Open Dojo
+          </a>
+          <StatusBadge label={dojo.entrustmentLevel || 'E0'} tone={tone} icon={ShieldCheck} />
+        </div>
+      </div>
+      <dl className="grid gap-1 border-t px-3 py-2 text-[11px]" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>Readiness</dt>
+          <dd className="min-w-0 truncate text-right">SRL {dojo.readinessLevel}</dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>Checkride</dt>
+          <dd className="min-w-0 truncate text-right">
+            {Math.round(Number(dojo.checkride?.coverageScore || 0) * 100)}% coverage
+          </dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>Practice</dt>
+          <dd className="min-w-0 truncate text-right">{dojo.skillCard?.practiced || `${dojo.scenarioCount || 0} synthetic cases`}</dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>Guardrails</dt>
+          <dd className="min-w-0 truncate text-right">{dojo.skillCard?.foundAndFixed || `${dojo.guardrails?.length || 0} active`}</dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>Proof</dt>
+          <dd className="min-w-0 truncate text-right">{dojo.proofRequired ? 'Required' : 'Optional'}</dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>Lifecycle</dt>
+          <dd className="min-w-0 truncate text-right">
+            {dojo.lifecycle?.status || dojo.licenseHealth?.status || 'draft'}
+            {typeof dojo.lifecycle?.daysUntilExpiry === 'number' ? ` · ${dojo.lifecycle.daysUntilExpiry}d` : ''}
+          </dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>Source plan</dt>
+          <dd className="min-w-0 truncate text-right">
+            {dojo.sourceAffordancePrPlan?.patchCount || 0} patches
+          </dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>Adversarial runs</dt>
+          <dd className="min-w-0 truncate text-right">
+            {dojo.windTunnel?.runCount || 0} runs
+          </dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>Artifacts</dt>
+          <dd className="min-w-0 truncate text-right">{dojo.artifactCount || 0} exported</dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>Escape rate</dt>
+          <dd className="min-w-0 truncate text-right">{Math.round(Number(dojo.attackSuccessRate || 0) * 100)}% escaped</dd>
+        </div>
+        {dojo.licenseExpiresAt ? (
+          <div className="flex items-center justify-between gap-3">
+            <dt style={{ color: 'var(--text-muted)' }}>Expires</dt>
+            <dd className="min-w-0 truncate text-right">{String(dojo.licenseExpiresAt).slice(0, 10)}</dd>
+          </div>
+        ) : null}
+        {dojo.publishedToolName ? (
+          <div className="flex items-center justify-between gap-3">
+            <dt style={{ color: 'var(--text-muted)' }}>MCP tool</dt>
+            <dd className="min-w-0 truncate text-right">{dojo.publishedToolName}</dd>
+          </div>
+        ) : null}
+      </dl>
+      <div className="grid gap-1 border-t px-3 py-2 text-[11px]" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Can:</span> {allowed.slice(0, 4).join(', ') || 'Practice only'}</div>
+        <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Ask:</span> {gated.slice(0, 4).join(', ') || 'None'}</div>
+        <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Block:</span> {blocked.slice(0, 4).join(', ') || 'None'}</div>
+        {dojo.proof?.capsuleId ? (
+          <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Capsule:</span> {dojo.proof.capsuleId}</div>
+        ) : null}
+        {dojo.proofDryRun?.status ? (
+          <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Dry-run:</span> {dojo.proofDryRun.status}</div>
+        ) : null}
+        {dojo.blockExplanation?.refusal ? (
+          <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Block reason:</span> {dojo.blockExplanation.refusal}</div>
+        ) : null}
+        {dojo.permissionUpgrade?.requiredSteps?.length ? (
+          <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Upgrade:</span> {dojo.permissionUpgrade.requiredSteps.slice(0, 3).join(', ')}</div>
+        ) : null}
+        {dojo.vivariumRun?.scenarioTitle ? (
+          <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Practice:</span> {dojo.vivariumRun.scenarioTitle} · {dojo.vivariumRun.status || 'run'}</div>
+        ) : null}
+        {dojo.timeMachine?.changedVariable ? (
+          <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Debug:</span> {dojo.timeMachine.changedVariable} → {dojo.timeMachine.expectedStatusAfterChange || 'review'}</div>
+        ) : null}
+        {dojo.caseLawRecord?.title ? (
+          <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Case law:</span> {dojo.caseLawRecord.title}</div>
+        ) : null}
+        {dojo.governance?.approvalCount || dojo.governance?.policyGateCount ? (
+          <div className="truncate"><span style={{ color: 'var(--text-muted)' }}>Governance:</span> {dojo.governance.approvalCount} approvals · {dojo.governance.policyGateCount} gates</div>
+        ) : null}
+      </div>
+      <div className="grid grid-cols-2 gap-2 border-t p-2" style={{ borderColor: 'var(--border-subtle)' }}>
+        <ActionButton
+          action={WORKFLOW_ACTIONS.RUN_CHECKRIDE}
+          label="Checkride"
+          icon="run"
+          enabled={traceReady}
+          disabledReason="Teach a workflow first"
+          onAction={onAction}
+        />
+        <ActionButton
+          action={WORKFLOW_ACTIONS.PUBLISH_TOOL}
+          label={licensed ? 'Relicense' : 'License'}
+          icon="teach"
+          enabled={traceReady}
+          disabledReason="Teach a workflow first"
+          onAction={onAction}
+        />
+      </div>
+      <div className="grid grid-cols-3 gap-2 border-t p-2" style={{ borderColor: 'var(--border-subtle)' }}>
+        <ActionButton
+          action={WORKFLOW_ACTIONS.EXPORT_DOJO_ARTIFACTS}
+          label="Dojo Export"
+          icon="export"
+          enabled={Boolean(dojo.skillId)}
+          disabledReason="License or preview a skill first"
+          onAction={onAction}
+        />
+        <ActionButton
+          action={WORKFLOW_ACTIONS.ISSUE_PROOF_CAPSULE}
+          label="Proof"
+          icon="auth"
+          enabled={licensed}
+          disabledReason="License this skill first"
+          onAction={onAction}
+        />
+        <ActionButton
+          action={WORKFLOW_ACTIONS.RUN_PROOF_DRY_RUN}
+          label="Dry-run"
+          icon="run"
+          enabled={licensed}
+          disabledReason="License this skill first"
+          onAction={onAction}
+        />
+        <ActionButton
+          action={WORKFLOW_ACTIONS.EXPLAIN_BLOCK}
+          label="Block Reason"
+          icon="manifest"
+          enabled={Boolean(dojo.skillId)}
+          disabledReason="License or preview a skill first"
+          onAction={onAction}
+        />
+        <ActionButton
+          action={WORKFLOW_ACTIONS.REQUEST_PERMISSION_UPGRADE}
+          label="Upgrade"
+          icon="teach"
+          enabled={Boolean(dojo.skillId)}
+          disabledReason="License or preview a skill first"
+          onAction={onAction}
+        />
+      </div>
+      <div className="grid grid-cols-3 gap-2 border-t p-2" style={{ borderColor: 'var(--border-subtle)' }}>
+        <ActionButton
+          action={WORKFLOW_ACTIONS.GET_UNIVERSE_DOSSIER}
+          label="Capability"
+          icon="manifest"
+          enabled={Boolean(dojo.skillId)}
+          disabledReason="License or preview a skill first"
+          onAction={onAction}
+        />
+        <ActionButton
+          action={WORKFLOW_ACTIONS.RUN_VIVARIUM_SCENARIO}
+          label="Practice"
+          icon="run"
+          enabled={Boolean(dojo.skillId)}
+          disabledReason="License or preview a skill first"
+          onAction={onAction}
+        />
+        <ActionButton
+          action={WORKFLOW_ACTIONS.RUN_WIND_TUNNEL}
+          label="Hardening"
+          icon="run"
+          enabled={Boolean(dojo.skillId)}
+          disabledReason="License or preview a skill first"
+          onAction={onAction}
+        />
+        <ActionButton
+          action={WORKFLOW_ACTIONS.GET_LICENSE_HEALTH}
+          label="Health"
+          icon="auth"
+          enabled={Boolean(dojo.skillId)}
+          disabledReason="License or preview a skill first"
+          onAction={onAction}
+        />
+        <ActionButton
+          action={WORKFLOW_ACTIONS.GET_SOURCE_AFFORDANCE_PR_PLAN}
+          label="Source PR"
+          icon="source"
+          enabled={Boolean(dojo.skillId)}
+          disabledReason="License or preview a skill first"
+          onAction={onAction}
+        />
+        <ActionButton
+          action={WORKFLOW_ACTIONS.RUN_TIME_MACHINE_DEBUGGER}
+          label="Debug"
+          icon="manifest"
+          enabled={Boolean(dojo.skillId)}
+          disabledReason="License or preview a skill first"
+          onAction={onAction}
+        />
+        <ActionButton
+          action={WORKFLOW_ACTIONS.RECORD_CASE_LAW}
+          label="Case Law"
+          icon="manifest"
+          enabled={Boolean(dojo.skillId)}
+          disabledReason="License or preview a skill first"
+          onAction={onAction}
+        />
+        <ActionButton
+          action={WORKFLOW_ACTIONS.REVOKE_LICENSE}
+          label="Revoke"
+          icon="auth"
+          enabled={licensed}
+          disabledReason="License this skill first"
+          onAction={onAction}
+        />
+      </div>
     </section>
   );
 }
@@ -630,12 +1559,182 @@ function HistoryList({ history }) {
   );
 }
 
+function IsolationProfileCard({ isolation, traceReady, onAction }) {
+  const safeIsolation = isolation || {};
+  const [editing, setEditing] = useState(!safeIsolation.canRunFullMutationReplay);
+  const [form, setForm] = useState(() => profileFormFromIsolation(safeIsolation));
+  useEffect(() => {
+    setForm(profileFormFromIsolation(safeIsolation));
+    if (!safeIsolation.canRunFullMutationReplay) setEditing(true);
+  }, [
+    safeIsolation.baseUrl,
+    safeIsolation.ciCommand,
+    safeIsolation.dataResetCommand,
+    safeIsolation.resetAssertionCommand,
+    safeIsolation.postconditionCommand,
+    safeIsolation.workingDirectory,
+    safeIsolation.authProviderId,
+    safeIsolation.resetProfileId,
+    safeIsolation.stateSeedId,
+    safeIsolation.allowMutationReplay,
+    safeIsolation.canRunFullMutationReplay,
+  ]);
+  if (!isolation) return null;
+  const ready = isolation.canRunFullMutationReplay || isolation.readiness === 'ciIsolatedReady';
+  const missing = Array.isArray(isolation.missing) ? isolation.missing : [];
+  const action = ready ? WORKFLOW_ACTIONS.RUN_CI_ISOLATED_REPLAY : WORKFLOW_ACTIONS.GET_MUTATION_PLAN;
+  const actionLabel = ready ? 'CI replay' : 'Plan';
+  const updateForm = (key) => (value) => setForm((current) => ({ ...current, [key]: value }));
+  const saveProfile = () => {
+    onAction?.(WORKFLOW_ACTIONS.SET_REPLAY_ISOLATION_PROFILE, profilePayloadFromForm(form));
+  };
+
+  return (
+    <section className="mt-3 rounded-md border" style={{ borderColor: 'var(--border-subtle)' }} data-testid="agent-workflow-isolation">
+      <div className="flex items-center justify-between gap-3 px-3 py-2">
+        <div className="min-w-0">
+          <h3 className="truncate text-xs font-semibold">CI replay profile</h3>
+          <p className="truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            {ready
+              ? 'Mutation replay is isolated by reset, seed, and postcondition checks.'
+              : isolation.detail || 'Full mutation replay needs a resettable profile and postcondition.'}
+          </p>
+        </div>
+        <StatusBadge
+          label={ready ? 'Ready' : missing.length > 0 ? 'Incomplete' : 'Plan'}
+          tone={ready ? 'ok' : missing.length > 0 ? 'warn' : 'neutral'}
+          icon={ShieldCheck}
+        />
+      </div>
+      <dl className="grid gap-1 border-t px-3 py-2 text-[11px]" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>Reset profile</dt>
+          <dd className="min-w-0 truncate text-right">{isolation.resetProfileId || 'Not configured'}</dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>State seed</dt>
+          <dd className="min-w-0 truncate text-right">{isolation.stateSeedId || 'Not configured'}</dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt style={{ color: 'var(--text-muted)' }}>Postcondition</dt>
+          <dd className="min-w-0 truncate text-right">{isolation.postconditionConfigured ? 'Configured' : 'Missing'}</dd>
+        </div>
+        {missing.length > 0 ? (
+          <div className="flex items-center justify-between gap-3">
+            <dt style={{ color: 'var(--text-muted)' }}>Missing</dt>
+            <dd className="min-w-0 truncate text-right">{missing.slice(0, 3).join(', ')}</dd>
+          </div>
+        ) : null}
+      </dl>
+      {editing ? (
+        <form
+          className="grid gap-2 border-t px-3 py-2"
+          style={{ borderColor: 'var(--border-subtle)' }}
+          onSubmit={(event) => {
+            event.preventDefault();
+            saveProfile();
+          }}
+        >
+          <ProfileField label="Base URL" value={form.baseUrl} onChange={updateForm('baseUrl')} />
+          <ProfileField label="CI command" value={form.ciCommand} onChange={updateForm('ciCommand')} multiline />
+          <ProfileField label="Reset command" value={form.dataResetCommand} onChange={updateForm('dataResetCommand')} multiline />
+          <ProfileField label="Reset assertion" value={form.resetAssertionCommand} onChange={updateForm('resetAssertionCommand')} multiline />
+          <ProfileField label="Postcondition" value={form.postconditionCommand} onChange={updateForm('postconditionCommand')} multiline />
+          <div className="grid grid-cols-2 gap-2">
+            <ProfileField label="Reset profile" value={form.resetProfileId} onChange={updateForm('resetProfileId')} />
+            <ProfileField label="State seed" value={form.stateSeedId} onChange={updateForm('stateSeedId')} />
+          </div>
+          <ProfileField label="Working directory" value={form.workingDirectory} onChange={updateForm('workingDirectory')} />
+          <ProfileField label="Auth provider" value={form.authProviderId} onChange={updateForm('authProviderId')} />
+          <button
+            type="button"
+            role="switch"
+            aria-checked={form.allowMutationReplay}
+            onClick={() => updateForm('allowMutationReplay')(!form.allowMutationReplay)}
+            className="th-focus-ring flex min-h-8 items-center gap-2 rounded-[var(--radius-control)] border px-2 text-left text-[11px]"
+            style={{
+              borderColor: form.allowMutationReplay
+                ? 'color-mix(in srgb, var(--accent-primary) 42%, var(--border-subtle))'
+                : 'var(--border-subtle)',
+              background: form.allowMutationReplay
+                ? 'color-mix(in srgb, var(--accent-primary) 10%, var(--bg-panel))'
+                : 'transparent',
+            }}
+          >
+            <span
+              className="grid h-4 w-7 rounded-full border p-0.5"
+              style={{
+                borderColor: form.allowMutationReplay ? 'var(--accent-primary)' : 'var(--border-medium)',
+              }}
+            >
+              <span
+                className="h-2.5 w-2.5 rounded-full transition-transform"
+                style={{
+                  transform: form.allowMutationReplay ? 'translateX(12px)' : 'translateX(0)',
+                  background: form.allowMutationReplay ? 'var(--accent-primary)' : 'var(--text-muted)',
+                }}
+              />
+            </span>
+            <span>Allow mutation replay in isolated CI</span>
+          </button>
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              className="inline-flex h-8 min-w-0 items-center justify-center gap-1.5 rounded-md border px-2 text-[11px] font-semibold transition hover:opacity-90"
+              style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-panel)', color: 'var(--text-primary)' }}
+            >
+              <ShieldCheck className="h-3.5 w-3.5" strokeWidth={2} />
+              <span className="truncate">Save profile</span>
+            </button>
+            {ready ? (
+              <button
+                type="button"
+                className="inline-flex h-8 min-w-0 items-center justify-center gap-1.5 rounded-md border px-2 text-[11px] font-semibold transition hover:opacity-90"
+                style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-panel)', color: 'var(--text-muted)' }}
+                onClick={() => setEditing(false)}
+              >
+                <span className="truncate">Cancel</span>
+              </button>
+            ) : null}
+          </div>
+        </form>
+      ) : null}
+      <div className="border-t p-2" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="grid grid-cols-2 gap-2">
+          <ActionButton
+            action={action}
+            label={actionLabel}
+            icon="run"
+            enabled={traceReady || ready}
+            disabledReason="Teach a workflow first"
+            onAction={onAction}
+          />
+          <button
+            type="button"
+            className="inline-flex h-8 min-w-0 items-center justify-center gap-1.5 rounded-md border px-2 text-[11px] font-semibold transition hover:opacity-90"
+            style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-panel)', color: 'var(--text-primary)' }}
+            onClick={() => setEditing((current) => !current)}
+          >
+            <ShieldCheck className="h-3.5 w-3.5" strokeWidth={2} />
+            <span className="truncate">{editing ? 'Hide setup' : 'Edit profile'}</span>
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
   workspaceSlug,
   workflowState,
   onWorkflowAction,
+  isBusy = false,
 }) {
   const [localRecording, setLocalRecording] = useState(false);
+  const [activeAgentMode, setActiveAgentMode] = useState('plan');
+  const [activeWorkflowSection, setActiveWorkflowSection] = useState('runbook');
+  const [selectedStageId, setSelectedStageId] = useState('');
+  const prefersReducedMotion = useReducedMotion();
 
   useEffect(() => {
     const externalTeachState = workflowState?.teach?.state;
@@ -668,6 +1767,40 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
   const summary = useMemo(() => deriveWorkflowPanelSummary(model), [model]);
   const headerTone = summary.blockerCount > 0 ? 'warn' : hasGeneratedScript(model) ? 'ok' : 'neutral';
   const headerLabel = localRecording ? 'Teaching' : model.workflow?.label || 'Workflow draft';
+  const traceReady = hasRecordedTrace(model);
+  const agentModes = useMemo(
+    () => buildAgentModes(model, summary, localRecording),
+    [localRecording, model, summary],
+  );
+  const selectedStage = useMemo(() => (
+    model.stages.find((stage) => stage.id === selectedStageId) || model.stages[0] || null
+  ), [model.stages, selectedStageId]);
+  const workflowSections = useMemo(() => ([
+    { id: 'runbook', label: 'Runbook', detail: headerLabel, count: model.stages.length, icon: Workflow },
+    { id: 'trace', label: 'Trace', detail: traceReady ? 'Captured' : 'Waiting', count: summary.stepCount, icon: Route },
+    { id: 'hardening', label: 'Hardening', detail: summary.blockerCount ? 'Needs review' : 'Clear', count: summary.blockerCount, icon: ShieldCheck },
+    { id: 'dojo', label: 'Dojo', detail: model.dojo?.published ? 'Licensed' : model.dojo?.status || 'Draft', count: model.dojo?.readinessLevel ?? 0, icon: BadgeCheck },
+  ]), [headerLabel, model.dojo?.published, model.dojo?.readinessLevel, model.dojo?.status, model.stages.length, summary.blockerCount, summary.stepCount, traceReady]);
+
+  useEffect(() => {
+    if (!model.stages.length) {
+      setSelectedStageId('');
+      return;
+    }
+    setSelectedStageId((current) => (
+      model.stages.some((stage) => stage.id === current) ? current : model.stages[0].id
+    ));
+  }, [model.stages]);
+
+  useEffect(() => {
+    if (localRecording) {
+      setActiveAgentMode('execute');
+      return;
+    }
+    setActiveAgentMode((current) => (
+      agentModes.some((mode) => mode.id === current) ? current : agentModes[0]?.id || 'plan'
+    ));
+  }, [agentModes, localRecording]);
 
   const emitWorkflowAction = useCallback((action, payload = {}) => {
     if (!action) return;
@@ -687,13 +1820,26 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
     }
   }, [onWorkflowAction, workspaceSlug]);
 
+  const selectWorkflowSection = useCallback((sectionId) => {
+    setActiveWorkflowSection(sectionId);
+    if (typeof document === 'undefined') return;
+    const target = document.querySelector(`[data-workflow-section="${sectionId}"]`);
+    target?.scrollIntoView?.({ behavior: prefersReducedMotion ? 'auto' : 'smooth', block: 'start' });
+  }, [prefersReducedMotion]);
+
+  const selectAgentMode = useCallback((modeId) => {
+    const mode = agentModes.find((item) => item.id === modeId);
+    setActiveAgentMode(modeId);
+    if (mode?.section) selectWorkflowSection(mode.section);
+  }, [agentModes, selectWorkflowSection]);
+
   return (
     <section
       data-testid="agent-workflow-panel"
-      className="flex h-full min-h-0 w-full flex-col overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)', color: 'var(--text-primary)' }}
+      className="vt-app-surface flex h-full min-h-0 w-full flex-col overflow-hidden"
+      style={{ color: 'var(--text-primary)' }}
     >
-      <header className="border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+      <header className="vt-toolbar px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
             <Workflow className="h-4 w-4 shrink-0" strokeWidth={2} style={{ color: 'var(--accent-tertiary)' }} />
@@ -709,13 +1855,28 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-        <div className="grid gap-2" data-testid="agent-workflow-readiness">
+        <AgentModeStrip
+          modes={agentModes}
+          activeId={activeAgentMode}
+          onSelect={selectAgentMode}
+          reducedMotion={prefersReducedMotion}
+        />
+
+        <div className="mt-3 grid gap-2" data-testid="agent-workflow-readiness">
           {model.readiness.map((row) => (
             <ReadinessRow key={row.label} row={row} />
           ))}
         </div>
 
-        <section className="mt-4 rounded-md border" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="mt-3">
+          <WorkflowCommandStrip
+            items={workflowSections}
+            activeId={activeWorkflowSection}
+            onSelect={selectWorkflowSection}
+          />
+        </div>
+
+        <section className="vt-shell-panel mt-4 scroll-mt-4" data-workflow-section="runbook">
           <div className="flex items-center justify-between gap-3 px-3 py-2">
             <div className="min-w-0">
               <h3 className="truncate text-xs font-semibold">{model.workflow.title}</h3>
@@ -728,14 +1889,25 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
             />
           </div>
 
+          <div className="px-3 pb-2">
+            <WorkflowStageInspector stage={selectedStage} onAction={emitWorkflowAction} isBusy={isBusy} />
+          </div>
+
           <div data-testid="agent-workflow-stages">
             {model.stages.map((stage) => (
-              <WorkflowStage key={stage.id} stage={stage} onAction={emitWorkflowAction} />
+              <WorkflowStage
+                key={stage.id}
+                stage={stage}
+                selected={selectedStage?.id === stage.id}
+                onSelect={setSelectedStageId}
+                onAction={emitWorkflowAction}
+                isBusy={isBusy}
+              />
             ))}
           </div>
         </section>
 
-        <section className="mt-3 rounded-md border" style={{ borderColor: 'var(--border-subtle)' }} data-testid="agent-workflow-steps">
+        <section className="vt-shell-panel mt-3 scroll-mt-4" data-testid="agent-workflow-steps" data-workflow-section="trace">
           <div className="flex items-center gap-2 px-3 py-2">
             <Route className="h-3.5 w-3.5 shrink-0" strokeWidth={2} style={{ color: 'var(--text-muted)' }} />
             <h3 className="truncate text-xs font-semibold">Recorded Trace</h3>
@@ -747,16 +1919,23 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
           </ol>
         </section>
 
-        <ReviewQueue items={model.unresolvedSteps} blockers={model.blockers} />
+        <div className="scroll-mt-4" data-workflow-section="hardening">
+          <ReviewQueue items={model.unresolvedSteps} blockers={model.blockers} />
+          {shouldShowIsolationProfile(model) ? (
+            <IsolationProfileCard isolation={model.isolation} traceReady={traceReady} onAction={emitWorkflowAction} />
+          ) : null}
+        </div>
+        <DojoSkillCredential dojo={model.dojo} traceReady={traceReady} onAction={emitWorkflowAction} workspaceSlug={workspaceSlug} />
         <HistoryList history={model.history} />
       </div>
 
-      <footer className="grid gap-2 border-t p-3" style={{ borderColor: 'var(--border-subtle)' }}>
+      <footer className="grid gap-2 border-t p-3" style={{ borderColor: 'var(--border-subtle)', background: 'color-mix(in srgb, var(--bg-panel) 72%, transparent)' }}>
         <ActionButton
           action={model.actions.primary?.action}
           label={model.actions.primary?.label || 'Attach'}
           enabled={model.actions.primary?.enabled}
           disabledReason={model.actions.primary?.disabledReason}
+          isBusy={isBusy}
           variant="primary"
           icon={model.actions.primary?.action === WORKFLOW_ACTIONS.ATTACH_WORKSPACE ? 'connect' : undefined}
           onAction={emitWorkflowAction}
@@ -770,6 +1949,7 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
               icon={action.icon}
               enabled={action.enabled}
               disabledReason={action.disabledReason}
+              isBusy={isBusy}
               onAction={emitWorkflowAction}
             />
           ))}

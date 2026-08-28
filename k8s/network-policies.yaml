@@ -23,33 +23,134 @@ spec:
 
 ---
 # ── Allow Ingress LB → public-facing services ─────────────────────────────
-# Frontend, Collab Server, Signaling, AI Gateway, and Y-Sweet are exposed
-# via the GCE Ingress. Allow ingress from any source on their service ports.
+# Frontend is exposed via the GCE Ingress. Only Google Cloud Load Balancer
+# proxy/health-check ranges may reach the NEG backend port.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-ingress-to-public-services
+  name: allow-gclb-to-frontend
   namespace: synthi
   labels:
     app.kubernetes.io/part-of: synthi-ide
 spec:
   podSelector:
-    matchExpressions:
-      - key: app
-        operator: In
-        values:
-          - frontend
-          - collab-server
-          - signaling-server
-          - ai-gateway
-          - y-sweet
+    matchLabels:
+      app: frontend
   ingress:
-    - {}
+    - from:
+        - ipBlock:
+            cidr: 35.191.0.0/16
+        - ipBlock:
+            cidr: 130.211.0.0/22
+      ports:
+        - port: 3000
+          protocol: TCP
   policyTypes:
     - Ingress
 
 ---
-# ── AI Engine: accept from gateway, collab-server, and workspace pods ──────
+# Collab Server is exposed via the GCE Ingress for HTTP/WebSocket traffic.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-gclb-to-collab-server
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  podSelector:
+    matchLabels:
+      app: collab-server
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 35.191.0.0/16
+        - ipBlock:
+            cidr: 130.211.0.0/22
+      ports:
+        - port: 1234
+          protocol: TCP
+  policyTypes:
+    - Ingress
+
+---
+# Signaling is exposed via the GCE Ingress for WebSocket traffic.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-gclb-to-signaling-server
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  podSelector:
+    matchLabels:
+      app: signaling-server
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 35.191.0.0/16
+        - ipBlock:
+            cidr: 130.211.0.0/22
+      ports:
+        - port: 9000
+          protocol: TCP
+        - port: 8080
+          protocol: TCP
+  policyTypes:
+    - Ingress
+
+---
+# AI Gateway is exposed via the GCE Ingress for API and WebSocket traffic.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-gclb-to-ai-gateway
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  podSelector:
+    matchLabels:
+      app: ai-gateway
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 35.191.0.0/16
+        - ipBlock:
+            cidr: 130.211.0.0/22
+      ports:
+        - port: 7070
+          protocol: TCP
+  policyTypes:
+    - Ingress
+
+---
+# Y-Sweet is cluster-internal; only Collab Server should reach its HTTP API.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-to-y-sweet
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  podSelector:
+    matchLabels:
+      app: y-sweet
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: collab-server
+      ports:
+        - port: 8080
+          protocol: TCP
+  policyTypes:
+    - Ingress
+
+---
+# AI Engine: accept from gateway, collab-server, and workspace pods.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -79,7 +180,7 @@ spec:
     - Ingress
 
 ---
-# ── Redis: accept from any pod in the namespace ───────────────────────────
+# ── Redis: accept only from services that use REDIS_URL ───────────────────
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -93,7 +194,12 @@ spec:
       app: redis
   ingress:
     - from:
-        - podSelector: {}
+        - podSelector:
+            matchLabels:
+              app: collab-server
+        - podSelector:
+            matchLabels:
+              app: signaling-server
       ports:
         - port: 6379
           protocol: TCP
@@ -101,7 +207,7 @@ spec:
     - Ingress
 
 ---
-# ── PostgreSQL: accept from any pod in the namespace ──────────────────────
+# ── PostgreSQL: accept only from services and jobs that use DATABASE_URL ──
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -115,7 +221,12 @@ spec:
       app: postgres
   ingress:
     - from:
-        - podSelector: {}
+        - podSelector:
+            matchLabels:
+              app: frontend
+        - podSelector:
+            matchLabels:
+              app: prisma-migrate
       ports:
         - port: 5432
           protocol: TCP
@@ -123,7 +234,7 @@ spec:
     - Ingress
 
 ---
-# ── Workspace pods: allow health checks from collab-server only ───────────
+# ── Workspace pods: allow runtime-scoped preview and workflow bridge traffic ─
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -143,5 +254,98 @@ spec:
       ports:
         - port: 8080
           protocol: TCP
+        - port: 18080
+          protocol: TCP
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend
+      ports:
+        - port: 9466
+          protocol: TCP
+    - from:
+        - podSelector:
+            matchLabels:
+              app: dojo-mcp-host
+      ports:
+        - port: 9222
+          protocol: TCP
   policyTypes:
     - Ingress
+
+---
+# ── Sysbox runtime pods (Slice 4): allow collab-server → preview sidecar ─────
+# Mirrors allow-to-workspace-pods. Lets the preview proxy reach ports opened inside
+# the runtime pod (rt-<hash>-rt Service → :18080 sidecar). default-deny-ingress is
+# in effect, so this explicit allow is required. Inert until runtime pods exist
+# (RUNTIME_BACKEND=sysbox-pod).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-to-runtime-pods
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  podSelector:
+    matchLabels:
+      app: runtime
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: collab-server
+      ports:
+        - port: 18080
+          protocol: TCP
+  policyTypes:
+    - Ingress
+
+---
+# ── Sysbox runtime pods (Slice 6): egress hardening ─────────────────────────
+# Untrusted USER code runs in these pods. Allow DNS + the PUBLIC internet (image
+# registries, user-app outbound API calls) but DENY the cluster-internal network
+# (lateral movement to other workspaces / internal services), RFC1918, and the GKE
+# metadata server 169.254.169.254 (node-credential theft). NetworkPolicy egress
+# rules are additive (OR), so the kube-dns rule allows DNS even though kube-dns
+# lives in 10/8. Selects app=runtime → inert until runtime pods exist. REQUIRES a
+# NetworkPolicy-enforcing dataplane (GKE Dataplane V2 / Calico).
+# DEFERRED (Spike 3 / infra): per-pod bandwidth cap (kubernetes.io/egress-bandwidth),
+# abuse detection (Cilium/Falco flow-logs), dedicated egress IPs, auto-hibernate.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: runtime-egress-hardening
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  podSelector:
+    matchLabels:
+      app: runtime
+  policyTypes:
+    - Egress
+  egress:
+    # DNS — allow UDP/TCP :53 to ALL destinations. A kube-dns podSelector is NOT
+    # sufficient on GKE: NodeLocal DNSCache (node-local-dns) answers via a
+    # hostNetwork pod and intercepts the kube-dns ClusterIP on the node, so the
+    # responder's identity is the NODE (in 10/8) — which the cluster-internal deny
+    # below would block, breaking DNS entirely (validated live on Dataplane V2:
+    # the podSelector rule left runtime pods unable to resolve any name). Port 53
+    # is DNS-only (no other internal service listens on it) and public egress is
+    # already permitted below, so this does not widen the lateral-movement surface.
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Public internet only: everything EXCEPT cluster-internal / RFC1918 / link-local
+    # (the GKE metadata server 169.254.169.254 is inside 169.254.0.0/16).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16

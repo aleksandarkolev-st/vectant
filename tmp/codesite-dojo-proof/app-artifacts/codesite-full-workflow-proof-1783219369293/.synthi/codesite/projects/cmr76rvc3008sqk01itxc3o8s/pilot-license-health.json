@@ -1,0 +1,483 @@
+{
+  "schemaVersion": "synthi.codesite.pilotLicenseHealth.index.v1",
+  "summary": {
+    "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+    "statusCounts": {
+      "active": 3,
+      "expired": 1,
+      "suspended": 2
+    },
+    "active": 3,
+    "blocked": 3,
+    "requiredActions": [
+      "renew_pilot_license_source:cmr76v37z00fbqk013exmm4kh",
+      "review_pilot_license:cmr76rypy009lqk017lm2gi9u",
+      "review_pilot_license:cmr76vdhk00fvqk01u45erl2g"
+    ]
+  },
+  "records": [
+    {
+      "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+      "key": "cmr76s0bl009vqk013j9fu23i",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+      "agentSessionId": "cmr76s0bl009vqk013j9fu23i",
+      "ownerUserId": "cmr76rv86008mqk012u5bt8pa",
+      "displayCallsign": "API-02",
+      "status": "active",
+      "level": "VFR",
+      "levelRank": 2,
+      "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+      "dojoLicenseRef": "schema.level_2@2026-06-25",
+      "dojoProofRef": "pcap-full-workflow-schema",
+      "dojoDecisionDigest": "sha256:191636b75e25f06190592b1a363b8fdb9b2a4b2f24461c1a840bdecb22466016",
+      "repoScope": "codesite-full-workflow-proof-1783219369293",
+      "authorizedAirspace": [
+        "synthi/prisma/**",
+        "synthi/src/app/api/auth/**"
+      ],
+      "restrictedAirspace": [
+        "secrets/**"
+      ],
+      "requiredRadar": [
+        "typecheck",
+        "tests"
+      ],
+      "earnedBy": [
+        "dojo:full-workflow-checkride",
+        "dojo:evidence:full-workflow-checkride"
+      ],
+      "expiresAt": null,
+      "expiresOn": [],
+      "sourceDrift": {
+        "monitored": false,
+        "sourceDigest": null,
+        "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+        "expired": false
+      },
+      "landingStats": {
+        "total": 0,
+        "passed": 0,
+        "failed": 0,
+        "evidenceRefs": []
+      },
+      "violationStats": {
+        "total": 0,
+        "critical": 0,
+        "latestAt": null,
+        "evidenceRefs": []
+      },
+      "reasonCodes": [
+        "pilot_license_health_active"
+      ],
+      "requiredAction": null,
+      "evidenceRefs": [
+        "dojo:evidence:full-workflow-checkride",
+        "dojo:full-workflow-checkride",
+        "codesite:read-snapshot:sha256:b9066ca51bd9ad7db5a268b291e187f2df00eebcd9da05c7501a193df43ecf3b",
+        "codesite:transaction:cmr76t0i700c3qk01kdzofyhs",
+        "codesite:lease:cmr76sywz00bxqk01zmk2x6mw",
+        "codesite:policy-decision:cmr76syx300bzqk01a35zevre"
+      ],
+      "lifecycle": {
+        "issuedAt": "2026-07-05T02:43:00.898Z",
+        "checkedAt": "2026-07-05T02:48:56.964Z",
+        "latestLandingAt": null,
+        "latestViolationAt": null,
+        "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712"
+      }
+    },
+    {
+      "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+      "key": "cmr76ut1q00exqk014vfg2dty",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+      "agentSessionId": "cmr76ut1q00exqk014vfg2dty",
+      "ownerUserId": "cmr76rv7e008jqk01igpdj00w",
+      "displayCallsign": "CURRENT-04",
+      "status": "active",
+      "level": "IFR",
+      "levelRank": 3,
+      "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+      "dojoLicenseRef": "schema.level_2@2026-06-25",
+      "dojoProofRef": "pcap-full-workflow-schema",
+      "dojoDecisionDigest": "sha256:0a2283f5f85248bece5c787c7a6d5164f7569c2cfb6303a9d4d32a4969eb3813",
+      "repoScope": "codesite-full-workflow-proof-1783219369293",
+      "authorizedAirspace": [
+        "synthi/prisma/**"
+      ],
+      "restrictedAirspace": [],
+      "requiredRadar": [
+        "typecheck",
+        "tests"
+      ],
+      "earnedBy": [
+        "dojo:evidence:source-current-checkride"
+      ],
+      "expiresAt": null,
+      "expiresOn": [
+        "source_drift"
+      ],
+      "sourceDrift": {
+        "monitored": true,
+        "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+        "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+        "expired": false
+      },
+      "landingStats": {
+        "total": 1,
+        "passed": 1,
+        "failed": 0,
+        "evidenceRefs": [
+          "codesite:landing:current-source-proof"
+        ]
+      },
+      "violationStats": {
+        "total": 0,
+        "critical": 0,
+        "latestAt": null,
+        "evidenceRefs": []
+      },
+      "reasonCodes": [
+        "pilot_license_health_active",
+        "pilot_license_source_current"
+      ],
+      "requiredAction": null,
+      "evidenceRefs": [
+        "dojo:evidence:source-current-checkride",
+        "codesite:landing:current-source-proof"
+      ],
+      "lifecycle": {
+        "issuedAt": "2026-07-05T02:45:11.438Z",
+        "checkedAt": "2026-07-05T02:48:56.964Z",
+        "latestLandingAt": "2026-07-05T02:45:18.657Z",
+        "latestViolationAt": null,
+        "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712"
+      }
+    },
+    {
+      "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+      "key": "cmr76v37z00fbqk013exmm4kh",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+      "agentSessionId": "cmr76v37z00fbqk013exmm4kh",
+      "ownerUserId": "cmr76rv7e008jqk01igpdj00w",
+      "displayCallsign": "DRIFT-04",
+      "status": "expired",
+      "level": "IFR",
+      "levelRank": 3,
+      "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+      "dojoLicenseRef": "schema.level_2@2026-06-25",
+      "dojoProofRef": "pcap-full-workflow-schema",
+      "dojoDecisionDigest": "sha256:98341f8775babee6b0e344240b8d2025f40459304a8b52763d4d5a4ad42f7c4f",
+      "repoScope": "codesite-full-workflow-proof-1783219369293",
+      "authorizedAirspace": [
+        "synthi/prisma/**"
+      ],
+      "restrictedAirspace": [],
+      "requiredRadar": [
+        "typecheck",
+        "tests",
+        "governance"
+      ],
+      "earnedBy": [
+        "dojo:evidence:source-drift-checkride"
+      ],
+      "expiresAt": null,
+      "expiresOn": [
+        "source_drift"
+      ],
+      "sourceDrift": {
+        "monitored": true,
+        "sourceDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+        "expired": true
+      },
+      "landingStats": {
+        "total": 0,
+        "passed": 0,
+        "failed": 0,
+        "evidenceRefs": []
+      },
+      "violationStats": {
+        "total": 2,
+        "critical": 0,
+        "latestAt": "2026-07-05T02:45:35.082Z",
+        "evidenceRefs": [
+          "codesite:policy-decision:cmr76v94600fpqk01rwyros8f",
+          "codesite:cmr76v94600fpqk01rwyros8f"
+        ]
+      },
+      "reasonCodes": [
+        "pilot_license_source_drift_expired"
+      ],
+      "requiredAction": "renew_pilot_license_source:cmr76v37z00fbqk013exmm4kh",
+      "evidenceRefs": [
+        "dojo:evidence:source-drift-checkride",
+        "full-workflow-checkride",
+        "codesite:policy-decision:cmr76v94600fpqk01rwyros8f"
+      ],
+      "lifecycle": {
+        "issuedAt": "2026-07-05T02:45:24.622Z",
+        "checkedAt": "2026-07-05T02:48:56.964Z",
+        "latestLandingAt": null,
+        "latestViolationAt": "2026-07-05T02:45:35.082Z",
+        "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712"
+      }
+    },
+    {
+      "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+      "key": "cmr76rypy009lqk017lm2gi9u",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+      "agentSessionId": "cmr76rypy009lqk017lm2gi9u",
+      "ownerUserId": "cmr76rv7e008jqk01igpdj00w",
+      "displayCallsign": "SCHEMA-01",
+      "status": "suspended",
+      "level": "IFR",
+      "levelRank": 3,
+      "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+      "dojoLicenseRef": "schema.level_2@2026-06-25",
+      "dojoProofRef": "pcap-full-workflow-schema",
+      "dojoDecisionDigest": "sha256:7719e9ce4785edcdf1663981edbd7b0e8027aad7334c9da80d6dd3189bcb3652",
+      "repoScope": "codesite-full-workflow-proof-1783219369293",
+      "authorizedAirspace": [
+        "packages/schemas/**",
+        "openapi/**",
+        "packages/*/src/index.ts",
+        "synthi/prisma/**",
+        "backend/collab-server/permissionMiddleware.js"
+      ],
+      "restrictedAirspace": [
+        "secrets/**"
+      ],
+      "requiredRadar": [
+        "typecheck",
+        "tests",
+        "governance"
+      ],
+      "earnedBy": [
+        "dojo:full-workflow-checkride",
+        "dojo:evidence:full-workflow-checkride"
+      ],
+      "expiresAt": null,
+      "expiresOn": [
+        "source_drift"
+      ],
+      "sourceDrift": {
+        "monitored": true,
+        "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+        "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+        "expired": false
+      },
+      "landingStats": {
+        "total": 2,
+        "passed": 1,
+        "failed": 0,
+        "evidenceRefs": [
+          "runtime:event:inspection-full-workflow",
+          "codesite:permit:cmr76s48400afqk01o8bcd748",
+          "typecheck:run:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+          "artifact:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+          "test:run:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+          "artifact:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+          "codesite:landing:passed-health-proof"
+        ]
+      },
+      "violationStats": {
+        "total": 3,
+        "critical": 2,
+        "latestAt": "2026-07-05T02:44:37.095Z",
+        "evidenceRefs": [
+          "codesite:policy-decision:cmr76s97n00anqk01fxeme8ab",
+          "mcp:audit:codesitefs-denied-full-workflow"
+        ]
+      },
+      "reasonCodes": [
+        "pilot_license_critical_violation_window"
+      ],
+      "requiredAction": "review_pilot_license:cmr76rypy009lqk017lm2gi9u",
+      "evidenceRefs": [
+        "dojo:evidence:full-workflow-checkride",
+        "dojo:full-workflow-checkride",
+        "full-workflow-checkride",
+        "runtime:event:inspection-full-workflow",
+        "codesite:permit:cmr76s48400afqk01o8bcd748",
+        "typecheck:run:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+        "artifact:sha256:672e8e3fbd9a56eee7c631f69bd8c7339f4e9ef99d2dfec97470f4f18f3c35a6",
+        "test:run:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+        "artifact:sha256:fc926e4c1996bf13eba187d87581016f2bb1f187b26e8d08106d87fdc06e6959",
+        "codesite:landing:passed-health-proof",
+        "codesite:governance:full-workflow-schema-permit",
+        "codesite:policy-decision:cmr76s97n00anqk01fxeme8ab",
+        "codesite:transaction:cmr76sbkw00atqk019prwd8lw",
+        "codesite:lease:cmr76s97i00alqk01mvljd1m6",
+        "codesite:read-snapshot:sha256:94f2b35b589a24907a0ab40956321a3522d68a05c831e16801c35dc8b2ad409c",
+        "codesite:transaction:cmr76sgjw00b5qk01xadbal59",
+        "codesite:read-snapshot:sha256:ec8199f8668dee7f87523f5839403218bd5f73b8ccdc0a6884689c24d50be2bb",
+        "mcp:audit:read-full-workflow",
+        "mcp:audit:codesitefs-denied-full-workflow",
+        "codesitefs:quarantine:sha256:e9f2c6f943782d6545d875372973434641d5a5a90723531c2cc96a745fd39432",
+        "mcp:audit:write-full-workflow",
+        "codesite:document:cmr76trqd00dlqk011lwlhv5g",
+        "codesite:counterfactual-run:cmr76t9bj00crqk016ywgi72z",
+        "mcp:audit:commit-full-workflow",
+        "git:commit:8f5c8e93c5a049b7d8556c179f6a3bf266b4cdad",
+        "codesite:runtime-attestation:sha256:11e8b941ed3c6038111b02110b262846e1f4098398f7ac25af2572dd9d7dc96f",
+        "codesite:runtime-attestation:sha256:25e88092960046acb5f0ac29bc634f9ed8062c3404b0bd041e91e130468bbd5b",
+        "codesite:inspection:cmr76urak00etqk01095qmkpo",
+        "codesite:inspection:cmr76ujz100elqk01f5b2l9mx",
+        "codesite:repo-state:sha256:610901da873348539bc5bf0ec6e8397bc7d3a6b7f751692820f4ff12148f68a3",
+        "codesite:transaction:cmr76sqte00blqk01jga6jnj3",
+        "codesite:proof-bundle:cmr76z76b00gjqk01x6cwpr50",
+        "git:commit:6e6231718ba31a32cee2225f5a0a58155d8e0964",
+        "git:trailers:sha256:57a80fda2b1e861c77856fd83d9d0c6e6d8f4b5c4b38d3342c307139c60edfff",
+        "git:commit-message:sha256:a3b6fb51fa9026a2bda2a7209f9538906e3775e7502e49caf0c00ecf37bcbf80",
+        "codesite:policy-decision:cmr76u2jm00dxqk013fcdp17q",
+        "codesite:policy-decision:cmr76u5pf00e3qk01wmn1puqo"
+      ],
+      "lifecycle": {
+        "issuedAt": "2026-07-05T02:42:58.823Z",
+        "checkedAt": "2026-07-05T02:48:56.964Z",
+        "latestLandingAt": "2026-07-05T02:45:09.165Z",
+        "latestViolationAt": "2026-07-05T02:44:37.095Z",
+        "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712"
+      }
+    },
+    {
+      "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+      "key": "cmr76s21w00a5qk013a1jv8gl",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+      "agentSessionId": "cmr76s21w00a5qk013a1jv8gl",
+      "ownerUserId": "cmr76rv8r008pqk01hsboray8",
+      "displayCallsign": "TEST-03",
+      "status": "active",
+      "level": "VFR",
+      "levelRank": 2,
+      "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+      "dojoLicenseRef": "schema.level_2@2026-06-25",
+      "dojoProofRef": "pcap-full-workflow-schema",
+      "dojoDecisionDigest": "sha256:5989d0a2acb32e597215925718d720756f4a5820272dc0fd2d539a0a241ee3c4",
+      "repoScope": "codesite-full-workflow-proof-1783219369293",
+      "authorizedAirspace": [
+        "synthi/src/lib/codesite/__tests__/**"
+      ],
+      "restrictedAirspace": [],
+      "requiredRadar": [
+        "tests"
+      ],
+      "earnedBy": [
+        "dojo:full-workflow-checkride",
+        "dojo:evidence:full-workflow-checkride"
+      ],
+      "expiresAt": null,
+      "expiresOn": [],
+      "sourceDrift": {
+        "monitored": false,
+        "sourceDigest": null,
+        "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+        "expired": false
+      },
+      "landingStats": {
+        "total": 0,
+        "passed": 0,
+        "failed": 0,
+        "evidenceRefs": []
+      },
+      "violationStats": {
+        "total": 0,
+        "critical": 0,
+        "latestAt": null,
+        "evidenceRefs": []
+      },
+      "reasonCodes": [
+        "pilot_license_health_active"
+      ],
+      "requiredAction": null,
+      "evidenceRefs": [
+        "dojo:evidence:full-workflow-checkride",
+        "dojo:full-workflow-checkride"
+      ],
+      "lifecycle": {
+        "issuedAt": "2026-07-05T02:43:03.140Z",
+        "checkedAt": "2026-07-05T02:48:56.964Z",
+        "latestLandingAt": null,
+        "latestViolationAt": null,
+        "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712"
+      }
+    },
+    {
+      "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+      "key": "cmr76vdhk00fvqk01u45erl2g",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+      "agentSessionId": "cmr76vdhk00fvqk01u45erl2g",
+      "ownerUserId": "cmr76rv8r008pqk01hsboray8",
+      "displayCallsign": "VIOLATION-05",
+      "status": "suspended",
+      "level": "IFR",
+      "levelRank": 3,
+      "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+      "dojoLicenseRef": "schema.level_2@2026-06-25",
+      "dojoProofRef": "pcap-full-workflow-schema",
+      "dojoDecisionDigest": "sha256:2bf694cefc69c1bd51bde6872ddb3c57a490a5d475852984d5a7a55cbe37a374",
+      "repoScope": "codesite-full-workflow-proof-1783219369293",
+      "authorizedAirspace": [
+        "synthi/prisma/**"
+      ],
+      "restrictedAirspace": [],
+      "requiredRadar": [
+        "security",
+        "tests"
+      ],
+      "earnedBy": [
+        "dojo:evidence:landing-health-checkride"
+      ],
+      "expiresAt": null,
+      "expiresOn": [
+        "source_drift"
+      ],
+      "sourceDrift": {
+        "monitored": true,
+        "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+        "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+        "expired": false
+      },
+      "landingStats": {
+        "total": 2,
+        "passed": 0,
+        "failed": 2,
+        "evidenceRefs": [
+          "security:failed:violation-proof-1",
+          "test:failed:violation-proof-2"
+        ]
+      },
+      "violationStats": {
+        "total": 1,
+        "critical": 1,
+        "latestAt": "2026-07-05T02:45:50.683Z",
+        "evidenceRefs": [
+          "codesite:incident:critical-violation-proof"
+        ]
+      },
+      "reasonCodes": [
+        "pilot_license_critical_violation_window"
+      ],
+      "requiredAction": "review_pilot_license:cmr76vdhk00fvqk01u45erl2g",
+      "evidenceRefs": [
+        "dojo:evidence:landing-health-checkride",
+        "security:failed:violation-proof-1",
+        "test:failed:violation-proof-2",
+        "codesite:incident:critical-violation-proof"
+      ],
+      "lifecycle": {
+        "issuedAt": "2026-07-05T02:45:37.928Z",
+        "checkedAt": "2026-07-05T02:48:56.965Z",
+        "latestLandingAt": "2026-07-05T02:45:47.016Z",
+        "latestViolationAt": "2026-07-05T02:45:50.683Z",
+        "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712"
+      }
+    }
+  ]
+}

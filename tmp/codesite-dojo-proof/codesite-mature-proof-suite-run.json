@@ -1,0 +1,849 @@
+{
+  "ok": true,
+  "generatedAt": "2026-07-06T02:22:06.991Z",
+  "proofRoot": "tmp/codesite-dojo-proof",
+  "git": {
+    "head": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+    "branch": "codex/codesite-atc-full-from-dev-20260630",
+    "statusShort": "M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.html\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.json\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.png\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.html\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.json\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.png\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.html\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.json\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.png\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-latest.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof-summary.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.html\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-publication.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-handover.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-mobile.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-coordination.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-line-inspector.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-proof-section.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui.png\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.png\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.html\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.json\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.png\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.html\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.json\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.html\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.json\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.html\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.json\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.png\n M tmp/codesite-dojo-proof/codesite-metrics-proof.html\n M tmp/codesite-dojo-proof/codesite-metrics-proof.json\n M tmp/codesite-dojo-proof/codesite-metrics-proof.png\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.html\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.json\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.png\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.html\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.json\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.html\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.json\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-desktop-full.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-panel.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-rejected.png\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.json\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-host-block-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-overlay-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-panel.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.html\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.json\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.png\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.html\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.json\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.png\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.html\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.json\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.html\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.json\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.html\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.json\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.png\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.html\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.json\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.png\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.html\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.json\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.png\n?? .synthi/codesite/"
+  },
+  "results": [
+    {
+      "name": "activeMutationBoundary",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:activeMutationBoundary",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "gitServiceBoundary",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:gitServiceBoundary",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "gitServiceIndexBoundary",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-gitservice-index-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-gitservice-index-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-gitservice-index-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:gitServiceIndexBoundary",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "gitServiceWorktreeBoundary",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:gitServiceWorktreeBoundary",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "directGitServiceBoundary",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:directGitServiceBoundary",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "gitProvisioningBoundary",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:gitProvisioningBoundary",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "repoCacheBoundary",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:repoCacheBoundary",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "workspacePrepGuard",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:workspacePrepGuard",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "runtimeFilesystemHydration",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:runtimeFilesystemHydration",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "runtimeOverlay",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:runtimeOverlay",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "runtimeQuarantine",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:runtimeQuarantine",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "codesiteFsRuntimeBoundary",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:codesiteFsRuntimeBoundary",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "unmanagedHostBoundary",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:unmanagedHostBoundary",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "quarantineReview",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-quarantine-review-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-quarantine-review-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-quarantine-review-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:quarantineReview",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "proofCarryingCommit",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofVerifierHelp",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "actualGitCommitProof",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:actualGitCommitProof",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "proofBundleGitContext",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:proofBundleGitContext",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "repoStateIdentity",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:repoStateIdentity",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "blackBoxCompleteness",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:blackBoxCompleteness",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "lineInspector",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-line-inspector-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-line-inspector-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-line-inspector-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:lineInspector",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "lineProvenanceDiff",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:lineProvenanceDiff",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "shadowSimulator",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:shadowSimulator",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "runwayOccupancy",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:runwayOccupancy",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "counterfactualMemory",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:counterfactualMemory",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "emergencyBroadcasts",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-emergency-broadcasts-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-emergency-broadcasts-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-emergency-broadcasts-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:emergencyBroadcasts",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "repoPolicyCompiler",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:repoPolicyCompiler",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "repoLocalAutosync",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:repoLocalAutosync",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "radarAdapter",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-radar-adapter-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-radar-adapter-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-radar-adapter-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:radarAdapter",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "governanceMcpLifecycle",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:governanceMcpLifecycle",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "radarUi",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-radar-ui-proof.json",
+      "visual": null,
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:radarUi",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "schemaFirstClearance",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.png"
+      },
+      "commands": [
+        {
+          "name": "artifactIntegrity:schemaFirstClearance",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "metrics",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-metrics-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-metrics-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-metrics-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:metrics",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "isolationContract",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-isolation-contract-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-isolation-contract-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-isolation-contract-proof.png"
+      },
+      "commands": [
+        {
+          "name": "artifactIntegrity:isolationContract",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "serializableCommitRace",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:serializableCommitRace",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "runtimeContext",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-runtime-context-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-runtime-context-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-runtime-context-proof.png"
+      },
+      "commands": [
+        {
+          "name": "artifactIntegrity:runtimeContext",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "contextAlias",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-context-alias-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-context-alias-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-context-alias-proof.png"
+      },
+      "commands": [
+        {
+          "name": "artifactIntegrity:contextAlias",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "monitorDowngrade",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.png"
+      },
+      "commands": [
+        {
+          "name": "artifactIntegrity:monitorDowngrade",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "pathlessRun",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-pathless-run-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-pathless-run-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-pathless-run-proof.png"
+      },
+      "commands": [
+        {
+          "name": "artifactIntegrity:pathlessRun",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "terminalReattach",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:terminalReattach",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    },
+    {
+      "name": "mutationSurfaceCoverage",
+      "ok": true,
+      "proofPath": "tmp/codesite-dojo-proof/codesite-mutation-surface-coverage-proof.json",
+      "visual": {
+        "htmlPath": "tmp/codesite-dojo-proof/codesite-mutation-surface-coverage-proof.html",
+        "pngPath": "tmp/codesite-dojo-proof/codesite-mutation-surface-coverage-proof.png"
+      },
+      "commands": [
+        {
+          "name": "proofSuiteGenerator:mutationSurfaceCoverage",
+          "exitCode": 0,
+          "summary": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "runner": "command"
+          }
+        }
+      ]
+    }
+  ]
+}

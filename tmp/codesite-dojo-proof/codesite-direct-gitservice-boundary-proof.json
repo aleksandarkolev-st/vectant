@@ -1,0 +1,415 @@
+{
+  "schemaVersion": "synthi.codesite.directGitServiceBoundaryProof.v1",
+  "generatedAt": "2026-07-06T01:51:08.845Z",
+  "ok": true,
+  "git": {
+    "head": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+    "branch": "codex/codesite-atc-full-from-dev-20260630",
+    "statusShort": "M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.html\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.json\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.png\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.html\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.json\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.png\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.html\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.json\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.png\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-latest.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof-summary.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.html\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-publication.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-handover.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-mobile.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-coordination.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-line-inspector.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-proof-section.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui.png\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.png\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.html\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.json\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.png\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.html\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.json\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.html\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.json\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.html\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.json\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.png\n M tmp/codesite-dojo-proof/codesite-metrics-proof.html\n M tmp/codesite-dojo-proof/codesite-metrics-proof.json\n M tmp/codesite-dojo-proof/codesite-metrics-proof.png\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.html\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.json\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.png\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.html\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.json\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.html\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.json\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-desktop-full.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-panel.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-rejected.png\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.json\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-host-block-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-overlay-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-panel.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.html\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.json\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.png\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.html\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.json\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.png\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.html\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.json\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.html\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.json\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.html\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.json\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.png\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.html\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.json\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.png\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.html\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.json\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.png\n?? .synthi/codesite/"
+  },
+  "assertions": [
+    {
+      "name": "push enters git_refs boundary before repo lock/materialization",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "createTag enters git_refs boundary before repo lock/materialization",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "deleteTag enters git_refs boundary before repo lock/materialization",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "pushTag enters git_refs boundary before repo lock/materialization",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "stashDrop enters git_refs boundary before repo lock/materialization",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "addRemote enters git_config boundary before repo lock/materialization",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "removeRemote enters git_config boundary before repo lock/materialization",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "setRemoteUrl enters git_config boundary before repo lock/materialization",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "createTag mutates inside git_refs boundary",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "deleteTag mutates inside git_refs boundary",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "pushTag mutates inside git_refs boundary",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "push mutates inside git_refs boundary",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "stashDrop mutates inside git_refs boundary",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "addRemote mutates inside git_config boundary",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "removeRemote mutates inside git_config boundary",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "setRemoteUrl mutates inside git_config boundary",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "push auto-remote bootstrap requires nested git_config boundary",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "HTTP git routes propagate CodeSite context into direct gitService methods",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "tests cover contextless denial and matching active git refs/config workflows",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "tests behaviorally cover contextless denial for every patched direct mutator",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "tests behaviorally cover matching active refs and config mutator workflows",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "tests prove push cannot smuggle a config write through refs-only clearance",
+      "ok": true,
+      "details": {}
+    },
+    {
+      "name": "syntaxGitService command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "node --check backend/collab-server/gitService.js",
+        "summary": {
+          "tests": 0,
+          "pass": 1,
+          "fail": 0,
+          "runner": "command"
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "syntaxServer command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "node --check backend/collab-server/server.js",
+        "summary": {
+          "tests": 0,
+          "pass": 1,
+          "fail": 0,
+          "runner": "command"
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "activeBoundaryTests command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "node --test backend/collab-server/__tests__/codesiteActiveBoundary.test.js",
+        "summary": {
+          "tests": 14,
+          "suites": 0,
+          "pass": 14,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0,
+          "runner": "node:test"
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "gitServiceBoundaryTests command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "node --test backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js",
+        "summary": {
+          "tests": 46,
+          "suites": 0,
+          "pass": 46,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0,
+          "runner": "node:test"
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "dockerReplay command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm sh -lc node --check backend/collab-server/gitService.js && node --check backend/collab-server/server.js && node --test backend/collab-server/__tests__/codesiteActiveBoundary.test.js backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js",
+        "summary": {
+          "tests": 60,
+          "suites": 0,
+          "pass": 60,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0,
+          "runner": "node:test"
+        },
+        "exitCode": 0
+      }
+    }
+  ],
+  "commands": [
+    {
+      "name": "syntaxGitService",
+      "command": "node --check backend/collab-server/gitService.js",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 0,
+        "pass": 1,
+        "fail": 0,
+        "runner": "command"
+      },
+      "outputTail": []
+    },
+    {
+      "name": "syntaxServer",
+      "command": "node --check backend/collab-server/server.js",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 0,
+        "pass": 1,
+        "fail": 0,
+        "runner": "command"
+      },
+      "outputTail": []
+    },
+    {
+      "name": "activeBoundaryTests",
+      "command": "node --test backend/collab-server/__tests__/codesiteActiveBoundary.test.js",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 14,
+        "suites": 0,
+        "pass": 14,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "runner": "node:test"
+      },
+      "outputTail": [
+        "# Subtest: async active workspace boundary still requires authority for active CodeSite contexts",
+        "ok 12 - async active workspace boundary still requires authority for active CodeSite contexts",
+        "  ---",
+        "  duration_ms: 1.090132",
+        "  ...",
+        "# Subtest: async active workspace boundary fails closed when configured authority is unavailable",
+        "ok 13 - async active workspace boundary fails closed when configured authority is unavailable",
+        "  ---",
+        "  duration_ms: 1.151351",
+        "  ...",
+        "# Subtest: async active workspace boundary rejects caller-supplied untrusted control-plane URLs before fetch",
+        "ok 14 - async active workspace boundary rejects caller-supplied untrusted control-plane URLs before fetch",
+        "  ---",
+        "  duration_ms: 0.904228",
+        "  ...",
+        "1..14",
+        "# tests 14",
+        "# suites 0",
+        "# pass 14",
+        "# fail 0",
+        "# cancelled 0",
+        "# skipped 0",
+        "# todo 0",
+        "# duration_ms 230.897892"
+      ]
+    },
+    {
+      "name": "gitServiceBoundaryTests",
+      "command": "node --test backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 46,
+        "suites": 0,
+        "pass": 46,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "runner": "node:test"
+      },
+      "outputTail": [
+        "# Subtest: direct gitService.syncFile and deleteItem use CodeSiteFS boundary metadata",
+        "ok 44 - direct gitService.syncFile and deleteItem use CodeSiteFS boundary metadata",
+        "  ---",
+        "  duration_ms: 183.080702",
+        "  ...",
+        "# Subtest: direct gitService.createDirectory can be required to fail closed without CodeSite context",
+        "ok 45 - direct gitService.createDirectory can be required to fail closed without CodeSite context",
+        "  ---",
+        "  duration_ms: 93.73139",
+        "  ...",
+        "# Subtest: nested CodeSite options can override authoritative hydration",
+        "ok 46 - nested CodeSite options can override authoritative hydration",
+        "  ---",
+        "  duration_ms: 94.213719",
+        "  ...",
+        "1..46",
+        "# tests 46",
+        "# suites 0",
+        "# pass 46",
+        "# fail 0",
+        "# cancelled 0",
+        "# skipped 0",
+        "# todo 0",
+        "# duration_ms 16358.455522"
+      ]
+    },
+    {
+      "name": "dockerReplay",
+      "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo node:20-bookworm sh -lc node --check backend/collab-server/gitService.js && node --check backend/collab-server/server.js && node --test backend/collab-server/__tests__/codesiteActiveBoundary.test.js backend/collab-server/__tests__/gitServiceCodesiteBoundary.test.js",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 60,
+        "suites": 0,
+        "pass": 60,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "runner": "node:test"
+      },
+      "outputTail": [
+        "# Subtest: direct gitService.syncFile and deleteItem use CodeSiteFS boundary metadata",
+        "ok 58 - direct gitService.syncFile and deleteItem use CodeSiteFS boundary metadata",
+        "  ---",
+        "  duration_ms: 136.959548",
+        "  ...",
+        "# Subtest: direct gitService.createDirectory can be required to fail closed without CodeSite context",
+        "ok 59 - direct gitService.createDirectory can be required to fail closed without CodeSite context",
+        "  ---",
+        "  duration_ms: 71.877136",
+        "  ...",
+        "# Subtest: nested CodeSite options can override authoritative hydration",
+        "ok 60 - nested CodeSite options can override authoritative hydration",
+        "  ---",
+        "  duration_ms: 68.666627",
+        "  ...",
+        "1..60",
+        "# tests 60",
+        "# suites 0",
+        "# pass 60",
+        "# fail 0",
+        "# cancelled 0",
+        "# skipped 0",
+        "# todo 0",
+        "# duration_ms 15060.505673"
+      ]
+    },
+    {
+      "name": "proofSuiteGenerator:directGitServiceBoundary",
+      "command": "node tmp/codesite-dojo-proof/run-direct-gitservice-boundary-proof.mjs",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "runner": "command"
+      },
+      "outputTail": [
+        "{",
+        "  \"ok\": true,",
+        "  \"jsonPath\": \"tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.json\",",
+        "  \"htmlPath\": \"tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.html\",",
+        "  \"pngPath\": \"tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.png\",",
+        "  \"assertions\": \"27/27\"",
+        "}"
+      ]
+    }
+  ],
+  "workflowSnapshot": {
+    "denied": [
+      "active transaction + direct addRemote without CodeSite context rejects before remote config changes",
+      "active transaction + direct createTag without CodeSite context rejects before tag creation",
+      "active transaction + remaining direct refs/config mutators without CodeSite context reject before repo materialization",
+      "refs-only active transaction + push auto-remote bootstrap rejects the git_config write before adding origin"
+    ],
+    "allowed": [
+      "active transaction + matching git_config context records CodeSiteFS evidence and adds remote",
+      "active transaction + matching git_refs context records CodeSiteFS evidence and creates tag",
+      "active transaction + matching git_config context updates and removes a real git remote",
+      "active transaction + matching git_refs context deletes a tag, pushes a tag, drops a stash, and pushes a branch to a bare remote"
+    ],
+    "surfaces": [
+      "push",
+      "createTag",
+      "deleteTag",
+      "pushTag",
+      "stashDrop",
+      "addRemote",
+      "removeRemote",
+      "setRemoteUrl"
+    ]
+  },
+  "status": "validated",
+  "proofSuite": {
+    "runner": "synthi/scripts/codesite-run-mature-proof-suite.mjs",
+    "stampedAt": "2026-07-06T01:51:08.845Z",
+    "proofFile": "tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.json"
+  }
+}

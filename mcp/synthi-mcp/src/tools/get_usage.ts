@@ -1,5 +1,6 @@
 import { eventLog } from "../events/index.js";
 import type { UsageEvent } from "../events/index.js";
+import { getActiveFrameSinkCount } from "../frames.js";
 import { session } from "../session.js";
 import { inputQueueDepth } from "../correctness/input_queue_depth.js";
 import { jsonResponse, type ToolResponse } from "./shared.js";
@@ -43,6 +44,13 @@ export async function getUsageTool(_args: unknown): Promise<ToolResponse> {
     vision_inference_count: counters["vision_inference"] ?? 0,
     vision_cost_usd_estimate: Number(costUsdEstimate.toFixed(4)),
     hot_seconds: hotSeconds,
+    runtime_session_diagnostics: {
+      session_state: session.getState(),
+      active_session_count: attached ? 1 : 0,
+      attached_session_id: attached?.sessionId ?? null,
+      attached_at_ms: attachedAt,
+      active_frame_sink_count: getActiveFrameSinkCount(),
+    },
     events_in_log: eventLog.size(),
     last_seq: eventLog.lastSeq(),
     input_queue_depth: {

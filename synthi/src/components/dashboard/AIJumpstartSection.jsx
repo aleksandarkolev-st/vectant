@@ -6,15 +6,15 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { useNewProjectPicker } from "@/components/NewProjectPicker";
 import {
-  Sparkles,
-  Paperclip,
-  X,
-  FileText,
-  ImageIcon,
-  AlertCircle,
-  FolderPlus,
-  Check,
-} from "lucide-react";
+  PiCheck as Check,
+  PiCommand as Command,
+  PiFileText as FileText,
+  PiFolderPlus as FolderPlus,
+  PiImage as ImageIcon,
+  PiPaperclip as Paperclip,
+  PiWarningCircle as AlertCircle,
+  PiX as X,
+} from "react-icons/pi";
 
 /* ──────────────────── constants ──────────────────── */
 
@@ -179,7 +179,7 @@ export default function AIJumpstartSection({
 
       for (const file of incoming) {
         if (!isAllowedType(file)) {
-          setAttachError(`"${file.name}" — unsupported file type.`);
+          setAttachError(`"${file.name}" has an unsupported file type.`);
           return;
         }
         if (file.size > MAX_FILE_SIZE) {
@@ -244,9 +244,15 @@ export default function AIJumpstartSection({
     [handleFiles],
   );
 
+  const handleAttachmentZoneKeyDown = useCallback((e) => {
+    if (disabled || (e.key !== "Enter" && e.key !== " ")) return;
+    e.preventDefault();
+    fileInputRef.current?.click();
+  }, [disabled]);
+
   /* ── render ── */
   return (
-    <div className="space-y-3" role="group" aria-label="AI Jumpstart options">
+    <div className="space-y-3" role="group" aria-label="Agent initialization options">
       {/* ── Checkbox toggle ── */}
       <div className="flex items-center gap-2.5">
         <Checkbox
@@ -270,7 +276,7 @@ export default function AIJumpstartSection({
           className="flex items-center gap-1.5 text-sm font-medium cursor-pointer select-none"
           style={{ color: "var(--text-secondary)" }}
         >
-          <Sparkles
+          <Command
             className="h-3.5 w-3.5"
             aria-hidden="true"
             style={{
@@ -279,7 +285,7 @@ export default function AIJumpstartSection({
                 : "var(--text-dim)",
             }}
           />
-          Jumpstart your project with Vectant AI
+          Initialize workspace with an agent
         </Label>
       </div>
 
@@ -288,23 +294,24 @@ export default function AIJumpstartSection({
         id="ai-jumpstart-panel"
         ref={expandRef}
         role="region"
-        aria-label="AI project description"
+        aria-label="Agent project brief"
         aria-hidden={!enabled}
-        className="overflow-hidden transition-all duration-300 ease-in-out"
+        className="overflow-hidden transition-all duration-200 ease-in-out"
         style={{
-          maxHeight: enabled ? 600 : 0,
+          maxHeight: enabled ? "min(720px, calc(100dvh - 180px))" : 0,
           opacity: enabled ? 1 : 0,
+          overflowY: enabled ? "auto" : "hidden",
         }}
       >
         <div
-          className="space-y-3 rounded-lg p-4"
+          className="space-y-3 rounded-md p-4"
           style={{
             background:
-              "color-mix(in srgb, var(--accent-primary) 5%, var(--bg-app))",
-            border: "1px solid color-mix(in srgb, var(--accent-primary) 20%, transparent)",
+              "color-mix(in srgb, var(--bg-app) 62%, var(--bg-editor))",
+            border: "1px solid var(--border-subtle)",
           }}
         >
-          {/* Project-type picker — gates the prompt textarea */}
+          {/* Project-type picker gates the prompt textarea */}
           <div className="space-y-1.5">
             <label
               className="synthi-label"
@@ -314,10 +321,10 @@ export default function AIJumpstartSection({
             </label>
             {typeChosen ? (
               <div
-                className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm"
+                className="flex items-center gap-2 rounded-md px-3 py-2 text-sm"
                 style={{
                   background: "var(--bg-editor)",
-                  border: "1px solid var(--accent-primary)",
+                  border: "1px solid var(--border-medium)",
                   color: "var(--text-primary)",
                 }}
               >
@@ -332,7 +339,7 @@ export default function AIJumpstartSection({
                   type="button"
                   onClick={handleClearType}
                   disabled={disabled}
-                  className="text-xs underline transition-opacity hover:opacity-80 disabled:opacity-50"
+                  className="th-focus-ring rounded-sm text-xs underline transition-opacity hover:opacity-80 disabled:opacity-50"
                   style={{ color: "var(--text-secondary)" }}
                 >
                   Change
@@ -344,7 +351,7 @@ export default function AIJumpstartSection({
                 variant="outline"
                 onClick={handlePickType}
                 disabled={disabled}
-                className="w-full justify-start gap-2 transition-all duration-150 hover:-translate-y-0.5 hover:shadow-md"
+                className="w-full justify-start gap-2 rounded-md transition-colors duration-150"
                 style={{
                   borderColor: "var(--border-medium)",
                   background: "var(--bg-editor)",
@@ -355,19 +362,19 @@ export default function AIJumpstartSection({
                   className="h-3.5 w-3.5"
                   style={{ color: "var(--accent-primary)" }}
                 />
-                Choose project type…
+                Choose project type
               </Button>
             )}
           </div>
 
-          {/* Prompt textarea — locked until a project type is chosen */}
+          {/* Prompt textarea stays locked until a project type is chosen */}
           <div className="space-y-1.5">
             <label
               htmlFor="ai-jumpstart-prompt"
               className="synthi-label"
               style={{ color: "var(--text-muted)" }}
             >
-              Describe your project idea
+              Agent brief
               {!typeChosen && (
                 <span
                   className="ml-1 text-xs font-normal"
@@ -381,7 +388,7 @@ export default function AIJumpstartSection({
               id="ai-jumpstart-prompt"
               placeholder={
                 typeChosen
-                  ? "e.g. A full-stack Next.js task manager with Prisma, auth, and a clean dashboard UI…"
+                  ? "Describe target stack, services, data model, constraints, and first screen."
                   : "Pick a project type above to unlock the prompt"
               }
               value={prompt}
@@ -393,7 +400,7 @@ export default function AIJumpstartSection({
               disabled={disabled || !typeChosen}
               rows={4}
               maxLength={MAX_PROMPT_LENGTH}
-              className="th-input w-full px-3 py-2.5 rounded-lg text-sm outline-none transition-colors synthi-focus-ring resize-y disabled:cursor-not-allowed disabled:opacity-60"
+              className="th-input w-full px-3 py-2.5 rounded-md text-sm outline-none transition-colors synthi-focus-ring resize-y disabled:cursor-not-allowed disabled:opacity-60"
               style={{
                 background: "var(--bg-editor)",
                 color: "var(--text-primary)",
@@ -431,15 +438,19 @@ export default function AIJumpstartSection({
                 style={{ color: "var(--text-dim)" }}
               >
                 {attachments.length}/{MAX_FILES} files
-                {totalSize > 0 && ` · ${humanFileSize(totalSize)}`}
+                {totalSize > 0 && ` / ${humanFileSize(totalSize)}`}
               </span>
             </div>
 
             {/* Drop zone / attach button */}
             <div
+              role="button"
+              tabIndex={disabled ? -1 : 0}
+              aria-label="Attach files to the agent brief"
               onDragOver={handleDragOver}
               onDrop={disabled ? undefined : handleDrop}
-              className="flex items-center justify-center gap-2 rounded-lg py-3 px-4 cursor-pointer transition-colors"
+              onKeyDown={handleAttachmentZoneKeyDown}
+              className="th-focus-ring flex items-center justify-center gap-2 rounded-md py-3 px-4 cursor-pointer transition-colors"
               style={{
                 border: "1px dashed var(--border-medium)",
                 background: "var(--bg-editor)",
@@ -463,6 +474,7 @@ export default function AIJumpstartSection({
                 ref={fileInputRef}
                 type="file"
                 multiple
+                aria-label="Attach files to the agent brief"
                 className="hidden"
                 onChange={handleFileInputChange}
                 disabled={disabled}
@@ -512,7 +524,8 @@ export default function AIJumpstartSection({
                       type="button"
                       onClick={() => removeAttachment(att.id)}
                       disabled={disabled}
-                      className="p-0.5 rounded hover:bg-white/10 transition-colors cursor-pointer"
+                      aria-label={`Remove ${att.name}`}
+                      className="th-focus-ring p-0.5 rounded hover:bg-white/10 transition-colors cursor-pointer"
                       style={{ color: "var(--text-dim)" }}
                       title="Remove"
                     >

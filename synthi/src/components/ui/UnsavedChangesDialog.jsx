@@ -1,9 +1,10 @@
 'use client';
 import { useCallback, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { AlertTriangle } from 'lucide-react';
 
 /**
- * UnsavedChangesDialog — VSCode-style "Save / Don't Save / Cancel" modal.
+ * UnsavedChangesDialog — Vectant "Save / Discard / Cancel" modal.
  *
  * Shown when the user attempts to close a tab with unsaved changes while
  * auto-save is disabled.  Uses a focus-trapped portal overlay with keyboard
@@ -12,7 +13,7 @@ import { createPortal } from 'react-dom';
  * Props:
  *   fileName  — display name of the file (e.g. "index.js")
  *   onSave    — called when the user clicks "Save"
- *   onDiscard — called when the user clicks "Don't Save"
+ *   onDiscard — called when the user discards changes
  *   onCancel  — called when the user clicks "Cancel" or presses Escape
  */
 export default function UnsavedChangesDialog({ fileName, onSave, onDiscard, onCancel }) {
@@ -38,7 +39,7 @@ export default function UnsavedChangesDialog({ fileName, onSave, onDiscard, onCa
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/50 backdrop-blur-[2px]"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[color-mix(in_srgb,var(--bg-app)_72%,transparent)] px-3 backdrop-blur-sm"
       onClick={onCancel}
       onKeyDown={handleKeyDown}
     >
@@ -48,37 +49,60 @@ export default function UnsavedChangesDialog({ fileName, onSave, onDiscard, onCa
         role="dialog"
         aria-modal="true"
         aria-label={`Save changes to ${fileName}?`}
-        className="bg-[#1e1e1e] border border-[#3f3f46] rounded-lg shadow-2xl w-[340px] outline-none"
+        className="vt-dialog-surface flex w-[420px] max-w-full flex-col overflow-hidden outline-none"
         onClick={handleDialogClick}
       >
+        <div aria-hidden="true" className="h-px w-full" style={{ background: 'var(--brand-gradient-horizontal)' }} />
         {/* Header */}
-        <div className="px-4 pt-4 pb-2">
-          <h2 className="text-sm font-medium text-[#e4e4e7]">
-            Do you want to save the changes you made to{' '}
-            <span className="font-semibold text-[#f4f4f5]">{fileName}</span>?
-          </h2>
-          <p className="text-xs text-[#71717a] mt-1">
-            Your changes will be lost if you don&apos;t save them.
-          </p>
+        <div className="flex items-start gap-3 px-4 py-3">
+          <div
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border"
+            style={{
+              borderColor: 'color-mix(in srgb, var(--accent-warning) 28%, transparent)',
+              color: 'var(--accent-warning)',
+              background: 'color-mix(in srgb, var(--accent-warning) 8%, var(--bg-app))',
+            }}
+          >
+            <AlertTriangle className="h-3.5 w-3.5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h2 className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+              Save changes to <span className="font-semibold">{fileName}</span>?
+            </h2>
+            <p className="mt-1 text-[11px] leading-5" style={{ color: 'var(--text-secondary)' }}>
+              Unsaved editor changes will be discarded if you continue without saving.
+            </p>
+          </div>
         </div>
 
         {/* Actions */}
-        <div className="flex justify-end gap-2 px-4 pb-4 pt-2">
+        <div className="flex justify-end gap-2 border-t px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
           <button
             onClick={onDiscard}
-            className="px-3 py-1.5 text-xs rounded border border-[#3f3f46] text-[#a1a1aa] hover:text-[#e4e4e7] hover:bg-[#27272a] transition-colors"
+            className="th-focus-ring h-8 rounded-md border px-3 text-xs font-medium transition-colors"
+            style={{
+              borderColor: 'color-mix(in srgb, var(--accent-danger) 36%, var(--border-medium))',
+              background: 'color-mix(in srgb, var(--accent-danger) 8%, transparent)',
+              color: 'var(--accent-danger)',
+            }}
           >
-            Don&apos;t Save
+            Discard
           </button>
           <button
             onClick={onCancel}
-            className="px-3 py-1.5 text-xs rounded border border-[#3f3f46] text-[#a1a1aa] hover:text-[#e4e4e7] hover:bg-[#27272a] transition-colors"
+            className="th-focus-ring h-8 rounded-md border px-3 text-xs font-medium transition-colors"
+            style={{ borderColor: 'var(--border-medium)', color: 'var(--text-secondary)', background: 'color-mix(in srgb, var(--bg-panel) 70%, transparent)' }}
           >
             Cancel
           </button>
           <button
             onClick={onSave}
-            className="px-3 py-1.5 text-xs rounded bg-[#3b82f6] text-white hover:bg-[#2563eb] transition-colors font-medium"
+            className="th-focus-ring h-8 rounded-md border px-3 text-xs font-semibold transition-opacity hover:opacity-90 active:scale-[0.97]"
+            style={{
+              borderColor: 'color-mix(in srgb, var(--accent-primary) 42%, transparent)',
+              background: 'var(--brand-gradient)',
+              color: 'var(--bg-app)',
+            }}
           >
             Save
           </button>

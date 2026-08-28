@@ -10,34 +10,89 @@ metadata:
     app.kubernetes.io/part-of: synthi-ide
 data:
   # ── GCP ──────────────────────────────────────────────────────────────────────
-  GCP_PROJECT_ID: "overview-synti"
-  GCS_BUCKET_NAME: "synthi-cloud-storage"
+  GCP_PROJECT_ID: "vectant-proj"
+  GCS_BUCKET_NAME: "vectant-synthi-cloud-storage"
   GCS_WORKSPACE_PREFIX: "workspaces"
-  # Cloud SQL instance connection name (used by the Auth Proxy sidecar).
-  # Format: PROJECT_ID:REGION:INSTANCE_NAME
-  CLOUD_SQL_INSTANCE: "overview-synti:europe-west10:synthi-dev" 
   # ── Networking (cluster-internal URLs) ──────────────────────────────────────
   # These use Kubernetes DNS: <service>.<namespace>.svc.cluster.local
   COLLAB_SERVER_URL: "http://collab-server.synthi.svc.cluster.local:1234"
   YSWEET_URL: "http://y-sweet.synthi.svc.cluster.local:8080"
-  CODE_INTEL_URL: "https://synthi-ai-engine-767721372193.europe-west10.run.app"
-  BACKEND_URL: "https://synthi-ai-engine-767721372193.europe-west10.run.app"
+  CODE_INTEL_URL: "http://ai-engine.synthi.svc.cluster.local:8000"
+  BACKEND_URL: "http://ai-engine.synthi.svc.cluster.local:8000"
   SIGNALING_URL: "ws://signaling-server.synthi.svc.cluster.local:9000"
   REDIS_URL: "redis://redis.synthi.svc.cluster.local:6379"
+  # Optional internal HTTP endpoint for the MCP browser-workflow bridge.
+  # Browser clients call the same-origin Next.js proxy at /api/browser-workflows/*.
+  SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL: ""
+  SYNTHI_BROWSER_WORKFLOW_BRIDGE_TARGET_TEMPLATE: "http://{runtimeId}.synthi.svc.cluster.local:{bridgePort}"
+  SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT: "9466"
+  SYNTHI_HOSTED_BROWSER_CDP_PORT: "9222"
+  SYNTHI_HOSTED_BROWSER_CDP_TARGET_TEMPLATE: "http://{runtimeId}.synthi.svc.cluster.local:{cdpPort}"
+  SYNTHI_HOSTED_BROWSER_CDP_TOPOLOGY: "runtime-service"
+  SYNTHI_HOSTED_BROWSER_VIEW_PORT: "6080"
+  SYNTHI_HOSTED_BROWSER_VNC_PORT: "5900"
+  SYNTHI_BROWSER_WORKFLOW_BRIDGE_IMAGE: "europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-browser-workflow-bridge:build-tag-required"
+  SYNTHI_BROWSER_EXTERNAL_OPEN_BODY_LIMIT_BYTES: "20000"
+  SYNTHI_BROWSER_EXTERNAL_OPEN_TIMEOUT_MS: "15000"
+  # Optional runtime-scoped preview proxy target. Production previews route to
+  # a pod-local preview sidecar so user apps may bind localhost-only ports.
+  SYNTHI_PREVIEW_TARGET_TEMPLATE: "http://{runtimeId}-rt.synthi.svc.cluster.local:{sidecarPort}{sidecarPrefix}/{port}"
+  SYNTHI_PREVIEW_PUBLIC_PREFIX: "/collab"
+  SYNTHI_PREVIEW_PUBLIC_DOMAIN: "preview.vectant.dev"
+  SYNTHI_PREVIEW_PUBLIC_PROTOCOL: "https"
+  SYNTHI_PREVIEW_SIDECAR_PORT: "18080"
+  SYNTHI_PREVIEW_SIDECAR_PREFIX: "/__synthi_preview"
+  SYNTHI_PREVIEW_SIDECAR_TIMEOUT_MS: "30000"
+  SYNTHI_PREVIEW_PORT_PROBE_TIMEOUT_MS: "1500"
+  SYNTHI_PREVIEW_SIDECAR_IMAGE: "node:20-alpine"
+  SYNTHI_PREVIEW_SCAN_PORTS: ""
+  # Runtime infrastructure ports that are reachable inside the pod but should
+  # not be advertised as user previews. Keep this configurable as the runtime
+  # image evolves.
+  SYNTHI_PREVIEW_EXCLUDE_PORTS: "8001,18000"
+  SYNTHI_TERMINAL_PORT_POOL: ""
+  SYNTHI_TERMINAL_BACKEND: "k8s-exec"
+  SYNTHI_NO_JAIL: "1"
+  # Do not inject PORT/NEXT_PORT/VITE_PORT in Kubernetes. Separate runtime pods
+  # give each private/collab runtime its own network namespace, so :5173 in two
+  # private sessions does not collide.
+  SYNTHI_TERMINAL_SCOPE_PORTS: "false"
+  SYNTHI_PREVIEW_BIND_HOST: ""
+  WORKSPACE_DATA_PVC: "collab-data-pvc"
+  WORKSPACE_DATA_MOUNT: "/data"
+  WORKSPACE_REPOS_PATH: "/data/repos"
 
   # ── Public URLs (replace with your domain) ──────────────────────────────────
-  NEXTAUTH_URL: "https://beta.synthi.app"
-  CORS_ORIGIN: "https://beta.synthi.app"
+  NEXTAUTH_URL: "https://beta.vectant.dev"
+  CORS_ORIGIN: "https://beta.vectant.dev"
+  SYNTHI_PUBLIC_APP_URL: "https://beta.vectant.dev"
+  SYNTHI_APP_INTERNAL_URL: "http://frontend.synthi.svc.cluster.local:3000"
+  # CodeSite control-plane authority. MUST be set explicitly: runtime filesystem
+  # hydration calls refreshWorkspaceFromControlPlane with requireAuthority=true,
+  # which throws when no authority is configured, surfacing as
+  # "active_authority_unavailable" and blocking every workspace runtime.
+  # {workspace_slug} is substituted per request.
+  SYNTHI_CODESITE_API_BASE_URL: "http://frontend.synthi.svc.cluster.local:3000/api/workspace/{workspace_slug}/codesite"
 
   # ── Next.js public env (baked into client bundle at build time) ─────────────
   # These MUST be set at `next build` time, not just runtime.
-  NEXT_PUBLIC_COLLAB_SERVER_URL: "https://beta.synthi.app/collab"
-  NEXT_PUBLIC_YSWEET_URL: "https://beta.synthi.app/ysweet"
+  NEXT_PUBLIC_COLLAB_SERVER_URL: "https://beta.vectant.dev/collab"
+  NEXT_PUBLIC_YSWEET_URL: "https://beta.vectant.dev/collab"
   NEXT_PUBLIC_COLLAB_PORT: "443"
-  NEXT_PUBLIC_COMPILE_SIGNAL_URL: "wss://beta.synthi.app/signal"
-  NEXT_PUBLIC_GATEWAY_WS_URL: "wss://beta.synthi.app/gateway/ws"
-  NEXT_PUBLIC_CODE_INTEL_URL: "https://beta.synthi.app"
-  NEXT_PUBLIC_AI_ENGINE_URL: "https://beta.synthi.app"
+  NEXT_PUBLIC_COMPILE_SIGNAL_URL: "wss://beta.vectant.dev/signal"
+  NEXT_PUBLIC_GATEWAY_WS_URL: "wss://beta.vectant.dev/gateway/ws"
+  NEXT_PUBLIC_CODE_INTEL_URL: "https://beta.vectant.dev"
+  NEXT_PUBLIC_AI_ENGINE_URL: "https://beta.vectant.dev"
+  NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER: "true"
+  NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH: "/auth/loopback"
+  NEXT_PUBLIC_VECTANT_OAUTH_RELAY_EXTENSION_URL: "/vectant/extensions/vectant-oauth-relay.zip"
+
+  # ── Terminal loopback auth callback bridge ────────────────────────────────
+  SYNTHI_RUNTIME_CALLBACK_BODY_LIMIT_BYTES: "65536"
+  SYNTHI_RUNTIME_CALLBACK_RESPONSE_LIMIT_BYTES: "131072"
+  SYNTHI_RUNTIME_CALLBACK_BODY_PREVIEW_CHARS: "2000"
+  SYNTHI_RUNTIME_CALLBACK_TIMEOUT_MS: "15000"
+  SYNTHI_OAUTH_RELAY_TTL_MS: "300000"
 
   # ── Feature flags ──────────────────────────────────────────────────────────
   GCS_SYNC_ON_FLUSH: "true"
@@ -49,7 +104,22 @@ data:
   SYNTHI_LOG_LEVEL: "info"
   SYNTHI_ISOLATION_MODEL: "single_worker"
   # Worker container image (used by the dynamic spawner in collab-server).
-  WORKER_IMAGE: "europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-worker:f9e33bbe-runtimefix1"
+  WORKER_IMAGE: "europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-worker:build-tag-required"
+  # Per-workspace Sysbox runtime image (ROOTFUL dind — Sysbox supplies the userns
+  # isolation, so a normal rootful daemon runs unprivileged). Read by spawnRuntimePod()
+  # ONLY when RUNTIME_BACKEND=sysbox-pod — inert otherwise. Built by cloudbuild's
+  # `build-runtime-image` step (rootful --build-args); the `build-tag-required`
+  # placeholder is sed-replaced with the build tag at deploy, like WORKER_IMAGE.
+  # NOTE: the rootful build hasn't been produced/validated yet — the live Slice-2
+  # proof used stock docker:27-dind; the first CI run builds the real toolchain image.
+  # TODO: add a trivy CRITICAL gate to CI before enabling the backend in prod.
+  RUNTIME_POD_IMAGE: "europe-west10-docker.pkg.dev/vectant-proj/synthi/vectant-runtime:build-tag-required"
+  # Slice 4 preview routing: SYNTHI_PREVIEW_TARGET_TEMPLATE is already set ABOVE and
+  # targets the RUNTIME pod's preview sidecar ({runtimeId} -> rt-<hash>-rt). The
+  # worker Service ({runtimeId}) hosts the workflow bridge/CDP sidecars, not user
+  # app ports:
+  #   "http://{runtimeId}-rt.synthi.svc.cluster.local:{sidecarPort}{sidecarPrefix}/{port}"
+  # (One template per deploy; worker-vs-runtime preview coexistence is a follow-up.)
   # Schedule dynamically spawned workspace pods onto the autoscaled workspace pool.
   WORKSPACE_NODE_SELECTOR_KEY: "cloud.google.com/gke-nodepool"
   WORKSPACE_NODE_SELECTOR_VALUE: "workspace-pool"

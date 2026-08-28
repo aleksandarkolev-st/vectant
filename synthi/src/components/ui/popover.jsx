@@ -16,7 +16,7 @@ export const PopoverContent = React.forwardRef(function PopoverContent(
         ref={ref}
         sideOffset={sideOffset}
         align={align}
-        className={`z-50 rounded-md border bg-popover p-0 text-popover-foreground shadow-md focus:outline-none ${className}`}
+        className={`vt-command-popover z-50 p-0 focus:outline-none ${className}`}
         {...props}
       >
         {children}
@@ -24,5 +24,4 @@ export const PopoverContent = React.forwardRef(function PopoverContent(
     </PopoverPrimitive.Portal>
   );
 });
-
 

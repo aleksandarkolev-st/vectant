@@ -1,0 +1,40 @@
+- op: add
+  path: /spec/rules/0/http/paths/3
+  value:
+    path: /dojo/mcp
+    pathType: Prefix
+    backend:
+      service:
+        name: dojo-mcp-host
+        port:
+          number: 9467
+- op: add
+  path: /spec/rules/0/http/paths/4
+  value:
+    path: /therapeutic/runtime-authorization
+    pathType: Prefix
+    backend:
+      service:
+        name: dojo-mcp-host
+        port:
+          number: 9467
+- op: add
+  path: /spec/rules/0/http/paths/5
+  value:
+    path: /therapeutic/runtime-state
+    pathType: Prefix
+    backend:
+      service:
+        name: dojo-mcp-host
+        port:
+          number: 9467
+- op: add
+  path: /spec/rules/0/http/paths/6
+  value:
+    path: /therapeutic/incident-response
+    pathType: Prefix
+    backend:
+      service:
+        name: dojo-mcp-host
+        port:
+          number: 9467

@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "synthi.codesite.runtimeBoundaryAttestation.v1",
+  "proofId": "codesite.runtime.host-block.current",
+  "title": "Active CodeSite host runtime surfaces are blocked",
+  "workspaceSlug": "codesite-mature-full-proof-20260703-overlay8",
+  "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+  "transactionId": "cmr5li1840030pm0ziuph9b1r",
+  "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+  "displayCallsign": "SCHEMA-01",
+  "generatedAt": "2026-07-03T23:59:51.702Z",
+  "currentWorkflowRun": true,
+  "assertions": {
+    "terminalHostBlocked": true,
+    "programHeadlessBlocked": true,
+    "runtimePodWithoutManagedMountBlocked": true
+  },
+  "evidence": {
+    "terminalHostMode": "block-host",
+    "programHeadlessMode": "block-host",
+    "terminalRuntimePodMode": "block-runtime",
+    "programRuntimePodMode": "block-runtime"
+  },
+  "attestationDigest": "sha256:e34514db557630870e629afb7164a59c5df3730470dbe7393fbd8f46acdb32c2"
+}

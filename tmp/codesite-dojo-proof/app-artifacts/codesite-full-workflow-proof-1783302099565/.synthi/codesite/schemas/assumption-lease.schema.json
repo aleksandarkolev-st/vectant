@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CodeSite AssumptionLease",
+  "type": "object",
+  "required": [
+    "assumptionKey",
+    "status"
+  ],
+  "properties": {
+    "assumptionKey": {
+      "type": "string"
+    },
+    "dependsOn": {
+      "type": "array"
+    },
+    "usedBy": {
+      "type": "array"
+    },
+    "status": {
+      "type": "string"
+    },
+    "invalidatedBy": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": true
+}

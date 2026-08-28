@@ -15,6 +15,8 @@ export const BROWSER_ACTION_KINDS = [
   "hover",
   "drag",
   "scroll",
+  "copy",
+  "cut",
   "press",
   "select",
   "check",
@@ -161,6 +163,10 @@ export interface BrowserTraceEvent {
     screenshot_approved: boolean;
     diagnostics_approved: boolean;
     auth_checkpoint_approved: boolean;
+    frame_origin_approved?: boolean;
+    frame_screenshot_approved?: boolean;
+    popup_origin_approved?: boolean;
+    popup_screenshot_approved?: boolean;
   };
 }
 

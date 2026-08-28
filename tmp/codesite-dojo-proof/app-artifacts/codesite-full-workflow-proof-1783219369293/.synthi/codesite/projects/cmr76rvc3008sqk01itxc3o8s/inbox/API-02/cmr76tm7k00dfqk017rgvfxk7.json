@@ -1,0 +1,63 @@
+{
+  "id": "cmr76todp00dhqk01r43bhrgg",
+  "projectId": "cmr76rvc3008sqk01itxc3o8s",
+  "agentSessionId": "cmr76s0bl009vqk013j9fu23i",
+  "recipientUserId": "cmr76rv86008mqk012u5bt8pa",
+  "eventId": "cmr76tm7k00dfqk017rgvfxk7",
+  "documentId": "cmr76tm7e00ddqk01ic8pff9a",
+  "kind": "rfi",
+  "requiresResponse": true,
+  "status": "acknowledged",
+  "redactedPayload": {
+    "documentId": "cmr76tm7e00ddqk01ic8pff9a",
+    "eventId": "cmr76tm7k00dfqk017rgvfxk7",
+    "kind": "rfi",
+    "title": "Confirm schema-first contract before API route",
+    "body": {
+      "question": "Confirm API flight will hold until auth.signup.schema.v1 lands.",
+      "proposedContract": "synthi/prisma/schema-contract-read.txt",
+      "transactionId": "cmr76sqte00blqk01jga6jnj3",
+      "routing": {
+        "fromSessionId": "cmr76rypy009lqk017lm2gi9u",
+        "toSessionIds": [
+          "cmr76s0bl009vqk013j9fu23i"
+        ],
+        "projectRefs": {
+          "executionPlanId": "cmr76rzmj009rqk01rxv77xvc",
+          "mutationLeaseId": "cmr76s97i00alqk01mvljd1m6",
+          "transactionId": "cmr76sqte00blqk01jga6jnj3",
+          "affectedZones": [
+            "synthi/prisma/schema.prisma"
+          ],
+          "contractRefs": [
+            "synthi/prisma/schema-contract-read.txt"
+          ],
+          "inspectionRunId": null,
+          "incidentId": null
+        }
+      }
+    },
+    "redaction": {
+      "policyApplied": true,
+      "recipientSessionId": "cmr76s0bl009vqk013j9fu23i"
+    },
+    "delivery": {
+      "modes": [
+        "durable_inbox",
+        "sse_stream",
+        "mcp_poll",
+        "repo_local_projection"
+      ],
+      "targets": [],
+      "adapterStatus": "not_configured",
+      "recipient": {
+        "agentSessionId": "cmr76s0bl009vqk013j9fu23i",
+        "provider": "codex",
+        "runtime": "tmp-codex-cli",
+        "providerSessionRef": "codex-proof-api-20260705T0050"
+      }
+    }
+  },
+  "createdAt": "2026-07-05T02:44:18.733Z",
+  "acknowledgedAt": "2026-07-05T02:44:20.657Z"
+}

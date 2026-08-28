@@ -1,13 +1,21 @@
 {
+  "name": "vectant-ade",
+  "private": true,
+  "workspaces": ["synthi", "mcp/synthi-mcp", "packages/*"],
   "scripts": {
     "start:collab": "node ./backend/collab-server/server.js",
     "proof:source-first:visual": "npm --prefix mcp/synthi-mcp run proof:source-first:visual",
     "proof:source-first:visual:self-check": "npm --prefix mcp/synthi-mcp run proof:source-first:visual:self-check",
     "proof:flow:source-first:visual": "npm --prefix mcp/synthi-mcp run proof:flow:source-first:visual",
     "proof:rocm:source-first:realistic-visual": "npm --prefix mcp/synthi-mcp run proof:rocm:source-first:realistic-visual"
+    "build:oauth-relay-extension": "node ./scripts/build-oauth-relay-extension.mjs"
   },
   "dependencies": {
     "@google/genai": "^1.30.0",
     "diff": "^8.0.2"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@types/node": "^25.9.2"
   }
 }

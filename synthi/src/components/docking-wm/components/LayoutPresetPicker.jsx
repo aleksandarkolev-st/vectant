@@ -9,6 +9,7 @@
  */
 
 import { memo, useCallback, useState } from 'react';
+import { motion } from 'framer-motion';
 import { LAYOUT_PRESETS, createLayoutFromPreset } from '../panels/layout-presets';
 
 // ────────────────────────────────────────────────────────
@@ -77,37 +78,33 @@ const presetIcons = {
 
 const PresetCard = memo(function PresetCard({ preset, isActive, onSelect }) {
   return (
-    <button
+    <motion.button
       onClick={() => onSelect(preset.id)}
-      className={`
-        group relative flex flex-col items-center gap-2 rounded-lg p-3
-        transition-all duration-150
-        ${isActive
-          ? 'bg-[#327464]/20 ring-1 ring-[#327464]/60'
-          : 'bg-[#1a1a1e] hover:bg-[#222228] ring-1 ring-transparent hover:ring-[#333]'
-        }
-      `}
+      whileHover={{ y: -1 }}
+      whileTap={{ scale: 0.985 }}
+      transition={{ duration: 0.16, ease: [0.32, 0.72, 0, 1] }}
+      className={`vt-agent-card group relative flex flex-col items-center gap-2 p-3 ${isActive ? 'is-active' : ''}`}
       title={preset.description}
     >
       {/* Thumbnail */}
-      <div className="w-full text-zinc-400 group-hover:text-zinc-300 transition-colors">
+      <div className="w-full text-[var(--text-muted)] transition-colors group-hover:text-[var(--text-secondary)]">
         {presetIcons[preset.id] || (
           <div className="h-9 w-12 rounded border border-zinc-600/40 bg-zinc-800/40" />
         )}
       </div>
 
       {/* Label */}
-      <span className={`text-[11px] leading-tight text-center ${
-        isActive ? 'text-[#5ae4c1] font-medium' : 'text-zinc-400 group-hover:text-zinc-300'
+      <span className={`text-center text-[11px] leading-tight ${
+        isActive ? 'font-semibold text-[var(--text-primary)]' : 'text-[var(--text-muted)] group-hover:text-[var(--text-secondary)]'
       }`}>
         {preset.name}
       </span>
 
       {/* Active indicator */}
       {isActive && (
-        <div className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-[#327464]" />
+        <div className="vt-state-dot absolute right-1.5 top-1.5" />
       )}
-    </button>
+    </motion.button>
   );
 });
 
@@ -167,20 +164,20 @@ export const LayoutPresetPicker = memo(function LayoutPresetPicker({
 
       {/* Confirmation banner */}
       {pendingId && (
-        <div className="mt-3 flex items-center gap-2 rounded-md bg-[#1a1a1e] px-3 py-2 text-xs text-zinc-300 border border-[#333]">
+        <div className="vt-agent-card mt-3 flex items-center gap-2 px-3 py-2 text-xs text-[var(--text-secondary)]">
           <span className="flex-1">
             Switch to <strong>{LAYOUT_PRESETS.find(p => p.id === pendingId)?.name}</strong>?
             This will replace your current layout.
           </span>
           <button
             onClick={confirmSwitch}
-            className="rounded bg-[#327464] px-3 py-1 text-xs font-medium text-white hover:bg-[#3a8574] transition-colors"
+            className="th-focus-ring th-btn-primary px-3 py-1 text-xs font-medium"
           >
             Apply
           </button>
           <button
             onClick={cancelSwitch}
-            className="rounded bg-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-600 transition-colors"
+            className="th-focus-ring th-btn-ghost rounded-[var(--radius-control)] px-3 py-1 text-xs"
           >
             Cancel
           </button>

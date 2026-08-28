@@ -1,0 +1,300 @@
+{
+  "ok": true,
+  "runId": "codesite-ui-governance-20260704122126",
+  "runStartedAt": "2026-07-04T12:21:26.220Z",
+  "baseUrl": "http://127.0.0.1:45621",
+  "checks": {
+    "desktop": {
+      "selectorStatus": {
+        "codesite-panel": true,
+        "codesite-responsive-proof-target": true,
+        "codesite-radar-sweep": true,
+        "codesite-tower-feed": true,
+        "codesite-event-stream-status": true,
+        "codesite-governance-console": true,
+        "codesite-document-row": true,
+        "codesite-route-revision-row": true,
+        "codesite-mayday-banner": true,
+        "codesite-mobile-section-tabs": true,
+        "codesite-mobile-action-drawer": true
+      },
+      "missingSelectors": [],
+      "towerInstructionVisible": true,
+      "routeDeviationVisible": true,
+      "maydayResumeEventVisible": true,
+      "permitPathVisible": true,
+      "maydayInspectionVisible": true,
+      "noHorizontalOverflow": true,
+      "scrollWidth": 1440,
+      "viewportWidth": 1440,
+      "mobileTabs": [
+        {
+          "text": "Radar",
+          "width": 0,
+          "height": 0,
+          "visible": false,
+          "role": "tab",
+          "ariaSelected": "true"
+        },
+        {
+          "text": "Tower",
+          "width": 0,
+          "height": 0,
+          "visible": false,
+          "role": "tab",
+          "ariaSelected": "false"
+        },
+        {
+          "text": "Governance",
+          "width": 0,
+          "height": 0,
+          "visible": false,
+          "role": "tab",
+          "ariaSelected": "false"
+        },
+        {
+          "text": "Evidence",
+          "width": 0,
+          "height": 0,
+          "visible": false,
+          "role": "tab",
+          "ariaSelected": "false"
+        },
+        {
+          "text": "Replay",
+          "width": 0,
+          "height": 0,
+          "visible": false,
+          "role": "tab",
+          "ariaSelected": "false"
+        }
+      ],
+      "mobileTouchTargetsOk": true,
+      "reducedMotion": false,
+      "consoleErrors": [],
+      "ok": true
+    },
+    "mobile": {
+      "selectorStatus": {
+        "codesite-panel": true,
+        "codesite-responsive-proof-target": true,
+        "codesite-radar-sweep": true,
+        "codesite-tower-feed": true,
+        "codesite-event-stream-status": true,
+        "codesite-governance-console": true,
+        "codesite-document-row": true,
+        "codesite-route-revision-row": true,
+        "codesite-mayday-banner": true,
+        "codesite-mobile-section-tabs": true,
+        "codesite-mobile-action-drawer": true
+      },
+      "missingSelectors": [],
+      "towerInstructionVisible": true,
+      "routeDeviationVisible": true,
+      "maydayResumeEventVisible": true,
+      "permitPathVisible": true,
+      "maydayInspectionVisible": true,
+      "noHorizontalOverflow": true,
+      "scrollWidth": 390,
+      "viewportWidth": 390,
+      "mobileTabs": [
+        {
+          "text": "Radar",
+          "width": 58,
+          "height": 44,
+          "visible": true,
+          "role": "tab",
+          "ariaSelected": "true"
+        },
+        {
+          "text": "Tower",
+          "width": 60,
+          "height": 44,
+          "visible": true,
+          "role": "tab",
+          "ariaSelected": "false"
+        },
+        {
+          "text": "Governance",
+          "width": 94,
+          "height": 44,
+          "visible": true,
+          "role": "tab",
+          "ariaSelected": "false"
+        },
+        {
+          "text": "Evidence",
+          "width": 77,
+          "height": 44,
+          "visible": true,
+          "role": "tab",
+          "ariaSelected": "false"
+        },
+        {
+          "text": "Replay",
+          "width": 63,
+          "height": 44,
+          "visible": true,
+          "role": "tab",
+          "ariaSelected": "false"
+        }
+      ],
+      "mobileTouchTargetsOk": true,
+      "reducedMotion": false,
+      "consoleErrors": [],
+      "ok": true
+    },
+    "reducedMotion": {
+      "selectorStatus": {
+        "codesite-panel": true,
+        "codesite-responsive-proof-target": true,
+        "codesite-radar-sweep": true,
+        "codesite-tower-feed": true,
+        "codesite-event-stream-status": true,
+        "codesite-governance-console": true,
+        "codesite-document-row": true,
+        "codesite-route-revision-row": true,
+        "codesite-mayday-banner": true,
+        "codesite-mobile-section-tabs": true,
+        "codesite-mobile-action-drawer": true
+      },
+      "missingSelectors": [],
+      "towerInstructionVisible": true,
+      "routeDeviationVisible": true,
+      "maydayResumeEventVisible": true,
+      "permitPathVisible": true,
+      "maydayInspectionVisible": true,
+      "noHorizontalOverflow": true,
+      "scrollWidth": 1280,
+      "viewportWidth": 1280,
+      "mobileTabs": [
+        {
+          "text": "Radar",
+          "width": 0,
+          "height": 0,
+          "visible": false,
+          "role": "tab",
+          "ariaSelected": "true"
+        },
+        {
+          "text": "Tower",
+          "width": 0,
+          "height": 0,
+          "visible": false,
+          "role": "tab",
+          "ariaSelected": "false"
+        },
+        {
+          "text": "Governance",
+          "width": 0,
+          "height": 0,
+          "visible": false,
+          "role": "tab",
+          "ariaSelected": "false"
+        },
+        {
+          "text": "Evidence",
+          "width": 0,
+          "height": 0,
+          "visible": false,
+          "role": "tab",
+          "ariaSelected": "false"
+        },
+        {
+          "text": "Replay",
+          "width": 0,
+          "height": 0,
+          "visible": false,
+          "role": "tab",
+          "ariaSelected": "false"
+        }
+      ],
+      "mobileTouchTargetsOk": true,
+      "reducedMotion": true,
+      "consoleErrors": [],
+      "ok": true
+    }
+  },
+  "screenshots": {
+    "desktop": {
+      "path": "tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704122126/codesite-ui-governance-desktop.png",
+      "bytes": 130447,
+      "sha256": "7a71e21fd2a4aba280738a6332639a2e51904e1b9fc3c697e4c1a631bcc9e4a4",
+      "png": {
+        "width": 1440,
+        "height": 1050,
+        "bitDepth": 8,
+        "colorType": 2,
+        "interlace": 0,
+        "supportedPixelScan": true,
+        "nonblank": true,
+        "variedSampleCount": 11376,
+        "sampleCount": 20160
+      }
+    },
+    "tower": {
+      "path": "tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704122126/codesite-ui-governance-tower-feed.png",
+      "bytes": 42535,
+      "sha256": "b867483cd09b7c315d3f1398c528a78708b506c92c2abd3dd14206015b69cd01",
+      "png": {
+        "width": 1416,
+        "height": 298,
+        "bitDepth": 8,
+        "colorType": 2,
+        "interlace": 0,
+        "supportedPixelScan": true,
+        "nonblank": true,
+        "variedSampleCount": 19965,
+        "sampleCount": 20094
+      }
+    },
+    "governance": {
+      "path": "tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704122126/codesite-ui-governance-console.png",
+      "bytes": 52293,
+      "sha256": "b90b22521e63f55f2bb89963f4217d57dd10e1a9f1a2863dfea60a5df96d7c81",
+      "png": {
+        "width": 1416,
+        "height": 474,
+        "bitDepth": 8,
+        "colorType": 2,
+        "interlace": 0,
+        "supportedPixelScan": true,
+        "nonblank": true,
+        "variedSampleCount": 19777,
+        "sampleCount": 20339
+      }
+    },
+    "mobile": {
+      "path": "tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704122126/codesite-ui-governance-mobile-shell.png",
+      "bytes": 124063,
+      "sha256": "75bd7c4a30d18747c5449ae26e4e9901941680b31000eef1c579aa3c1c8e26a9",
+      "png": {
+        "width": 780,
+        "height": 1800,
+        "bitDepth": 8,
+        "colorType": 2,
+        "interlace": 0,
+        "supportedPixelScan": true,
+        "nonblank": true,
+        "variedSampleCount": 15289,
+        "sampleCount": 20058
+      }
+    },
+    "reducedMotion": {
+      "path": "tmp/codesite-ui-governance-proof/codesite-ui-governance-20260704122126/codesite-ui-governance-reduced-motion.png",
+      "bytes": 111918,
+      "sha256": "6cc299df453797b1e082fba38805888d33f7b9ff193f4ea91b1842e1c70b0133",
+      "png": {
+        "width": 1280,
+        "height": 900,
+        "bitDepth": 8,
+        "colorType": 2,
+        "interlace": 0,
+        "supportedPixelScan": true,
+        "nonblank": true,
+        "variedSampleCount": 11051,
+        "sampleCount": 20211
+      }
+    }
+  }
+}

@@ -9,6 +9,8 @@ import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, markFileSa
 import { fetchGitStatus, forceRefreshGitStatus } from '@/redux/gitSlice';
 import collabClient from '@/services/collabClient';
 import collabSessionService from '@/services/collabSessionService';
+import { resolveCollabHttpUrl } from '@/lib/collab-url';
+import { setContainerPorts, setRuntimePorts } from '@/redux/portsSlice';
 import { consumeJumpstartPayload } from '@/lib/ai-jumpstart-session';
 import { USER_ID_KEY, USER_NAME_KEY, USER_AVATAR_KEY } from '@/services/userIdentity';
 import {
@@ -32,8 +34,13 @@ import dynamic from 'next/dynamic';
 const EditorPanel = dynamic(() => import('./Editor/Editor.jsx'), {
     ssr: false,
     loading: () => (
-        <ResizablePanel defaultSize={76} minSize={20} className="min-w-0 bg-[#18181b]">
-            <div className="h-full w-full bg-[#18181b]" />
+        <ResizablePanel
+            defaultSize={76}
+            minSize={20}
+            className="min-w-0"
+            style={{ background: 'var(--bg-editor, var(--bg-panel))' }}
+        >
+            <div className="h-full w-full" style={{ background: 'var(--bg-editor, var(--bg-panel))' }} />
         </ResizablePanel>
     ),
 });
@@ -94,6 +101,8 @@ import { GuestBanner } from '@/components/collaboration';
 import { useExtensions } from '@/hooks/useExtensions';
 import ExtensionSidebar from '@/components/extensions/ExtensionSidebar';
 import ExtensionViewContainer from '@/components/extensions/ExtensionViewContainer';
+import ProgramsPanel from '@/components/programs/ProgramsPanel';
+import CodeSitePanel from '@/components/codesite/CodeSitePanel';
 import { SettingsPanelContent } from '@/components/SettingsPanelContent';
 
 // ─── New Docking Window Manager ────────────────────────
@@ -114,6 +123,7 @@ const ADAPTED_MANIFEST_CANDIDATES = [
     'synthi/build_manifest.json',
     ADAPTED_SIDECAR_PATH,
 ];
+const LAST_WORKSPACE_KEY = 'vectant:last-workspace';
 const ADAPTED_FALLBACK_HOST_FILES = ['shared.h', 'core.cpp', 'gui.cpp', 'host_runner.cpp'];
 const NATIVE_GUI_SOURCE_PATTERNS = [
     /#\s*include\s*[<"]SDL2\/SDL\.h[>"]/,
@@ -265,6 +275,7 @@ const SIDEBAR_DOCK_PANEL_TYPES = new Set([
     IDE_PANEL.EXTENSION_VIEW,
     IDE_PANEL.CHAT,
     IDE_PANEL.AGENT_WORKFLOWS,
+    IDE_PANEL.CODESITE,
     IDE_PANEL.SETTINGS,
     IDE_PANEL.PULL_REQUESTS,
     IDE_PANEL.AI_HEALING,
@@ -370,12 +381,24 @@ export default function EditorPage({ params }) {
     const router = useRouter();
     const devWorkspaceAuthBypass = process.env.NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS === '1';
 
+    const hasPendingGuestSession = useCallback(() => {
+        try {
+            const raw = sessionStorage.getItem('synthi-pending-guest-session');
+            if (!raw) return false;
+            const pending = JSON.parse(raw);
+            return Boolean(pending?.sessionId && pending?.guestId);
+        } catch (_) {
+            return false;
+        }
+    }, []);
+
     // ── Auth guard: redirect unauthenticated users to the home page ─────
     useEffect(() => {
-        if (!devWorkspaceAuthBypass && authStatus === 'unauthenticated') {
+        const admittedGuest = collabSessionService?.isGuest || hasPendingGuestSession();
+        if (!devWorkspaceAuthBypass && authStatus === 'unauthenticated' && !admittedGuest) {
             router.replace('/');
         }
-    }, [authStatus, router, devWorkspaceAuthBypass]);
+    }, [authStatus, router, devWorkspaceAuthBypass, hasPendingGuestSession]);
 
     // ── Persist auth identity into localStorage so getCurrentUser() works ──
     // Guest pages set this for guest users; workspace pages must do the same
@@ -396,6 +419,22 @@ export default function EditorPage({ params }) {
 
     // 1. Consume the slug parameter first (needed by hooks below)
     const { slug } = use(params);
+
+    // Pre-warm the per-workspace runtime container on workspace open so the first
+    // terminal doesn't wait out the rootless-dockerd cold start (~15-25s). Uses
+    // the SAME localStorage userId the terminal connects with, so it warms the
+    // exact container the terminal will exec into. Fire-and-forget — the terminal
+    // path re-ensures, so a failure here is non-fatal (and a no-op when the
+    // container runtime is disabled server-side).
+    useEffect(() => {
+        if (!slug) return;
+        const userId = (typeof window !== 'undefined' && localStorage.getItem(USER_ID_KEY)) || '';
+        fetch(`${resolveCollabHttpUrl()}/program-runtime/${encodeURIComponent(slug)}/ensure-runtime`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId }),
+        }).catch(() => {});
+    }, [slug]);
 
     const [floatingChatVisible, setFloatingChatVisible] = useState(false);
 
@@ -745,6 +784,17 @@ export default function EditorPage({ params }) {
             .catch(() => resolveTo(null));
         return () => { cancelled = true; };
     }, [slug]);
+
+    useEffect(() => {
+        if (!slug || typeof window === 'undefined') return;
+        try {
+            localStorage.setItem(LAST_WORKSPACE_KEY, JSON.stringify({
+                slug,
+                name: workspaceName || slug,
+                updatedAt: Date.now(),
+            }));
+        } catch (_) { /* best effort */ }
+    }, [slug, workspaceName]);
     const [hmrEnabled, setHmrEnabled] = useState(true);
     const [emulatorRunNonce, setEmulatorRunNonce] = useState(0);
     const [emulatorSessionId, setEmulatorSessionId] = useState(null);
@@ -1018,13 +1068,37 @@ export default function EditorPage({ params }) {
             const raw = sessionStorage.getItem('synthi-pending-guest-session');
             if (!raw) return;
             sessionStorage.removeItem('synthi-pending-guest-session');
-            const { sessionId: sId, guestId, hostId, slug: sessionSlug, hostName, permissions } = JSON.parse(raw);
+            const { sessionId: sId, guestId, hostId, slug: sessionSlug, hostName, permissions, displayName } = JSON.parse(raw);
             if (sId && guestId) {
-                collabSessionService.joinAsGuest(sId, guestId, hostId || '', sessionSlug || slug, { hostName: hostName || null, permissions: permissions || null });
+                collabSessionService.joinAsGuest(sId, guestId, hostId || '', sessionSlug || slug, { hostName: hostName || null, permissions: permissions || null, displayName: displayName || null });
             }
         } catch (_) { }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    // ── Restore host session after reload ───────────────────────────────
+    // The backend keeps collaboration rooms alive across page reloads, but
+    // the browser singleton resets to idle.  Reattach the host socket to an
+    // existing session without auto-creating a new sharing session.
+    useEffect(() => {
+        if (authStatus === 'loading') return;
+        if (collabSessionService?.isActive) return;
+        const authUser = authSession?.user || {};
+        const hostId = authUser.id || authUser.email || localStorage.getItem(USER_ID_KEY);
+        if (!hostId || !slug) return;
+        const hostName =
+            authUser.name ||
+            authUser.email ||
+            localStorage.getItem(USER_NAME_KEY) ||
+            hostId;
+        const hostAvatar = authUser.image || localStorage.getItem(USER_AVATAR_KEY) || '';
+        collabSessionService.restoreHostSession({
+            hostId,
+            hostName,
+            hostAvatar,
+            slug,
+        }).catch(() => {});
+    }, [authStatus, authSession?.user?.id, authSession?.user?.email, authSession?.user?.name, authSession?.user?.image, slug]);
 
     // ── AI Jumpstart: consume pending prompt from dashboard ──────────
     // If the payload carries a projectType, prepend its systemPromptHint
@@ -1226,6 +1300,21 @@ export default function EditorPage({ params }) {
     // all connected clients stay in sync when any teammate mutates the tree.
     const authUserId = authSession?.user?.id || authSession?.user?.email || null;
     useEffect(() => {
+        if (!client || !slug) return;
+        client.setSlug(slug);
+        const desiredSessionId = client._getSignalingSessionId?.();
+        if (
+            desiredSessionId
+            && client._registeredSignalingSessionId
+            && client._registeredSignalingSessionId !== desiredSessionId
+        ) {
+            client.softReconnect?.().catch((err) => {
+                console.warn('[Workspace] Compiler reconnect after session scope change failed:', err?.message || err);
+            });
+        }
+    }, [client, slug, activeSessionId, collabHostId, authUserId]);
+
+    useEffect(() => {
         collabClient.setIdentity({ userId: authUserId, sessionId: activeSessionId, hostId: collabHostId });
     }, [authUserId, activeSessionId, collabHostId]);
 
@@ -1275,6 +1364,17 @@ export default function EditorPage({ params }) {
                     dispatch(markFileSavedRemotely(filePath));
                 }
             },
+            onContainerPorts: (ports) => {
+                // Live set of ports opened inside the workspace runtime container
+                // (terminal-launched servers) — feed the Ports panel.
+                dispatch(setContainerPorts(ports));
+            },
+            onRuntimePorts: ({ runtimeScope, ports }) => {
+                // Live set of ports opened inside the Sysbox per-workspace runtime
+                // pod (only when RUNTIME_BACKEND=sysbox-pod) — feed the Ports panel,
+                // which routes them through /runtime/<scope>/port/<n>/.
+                dispatch(setRuntimePorts({ runtimeScope, ports }));
+            },
             onCollabInvite: (msg) => {
                 // Forward collab-invite to collabSessionService so UI can
                 // show accept/decline prompt in WorkspaceUsersPanel.
@@ -1282,9 +1382,13 @@ export default function EditorPage({ params }) {
                     svc._emit('collab-invite', msg);
                 });
             },
-        }, { userId: authUserId, sessionId: activeSessionId });
+        }, {
+            userId: authUserId,
+            sessionId: activeSessionId,
+            userEmail: authSession?.user?.email || null,
+        });
         return teardown;
-    }, [slug, dispatch, authUserId, activeSessionId]);
+    }, [slug, dispatch, authUserId, authSession?.user?.email, activeSessionId]);
 
     // ── SSE connection — event-driven push from backend ──────────────────
     // Establishes a single EventSource per workspace for server-pushed
@@ -2677,12 +2781,7 @@ export default function EditorPage({ params }) {
         if (activeSessionId) {
             const result = await client.cancelBuild(activeSessionId);
             if (!result || !result.cancelled) {
-                if (typeof window !== 'undefined' && window.alert) {
-                    window.alert(
-                        `Build did not fully stop yet (session ${activeSessionId}).\n` +
-                        `Please wait a moment and try again.`
-                    );
-                }
+                toast.error(`Build did not fully stop yet. Session ${activeSessionId} is still closing.`);
                 return;
             }
         }
@@ -2711,12 +2810,7 @@ export default function EditorPage({ params }) {
         if (activeSessionId) {
             const result = await client.cancelBuild(activeSessionId);
             if (!result || !result.cancelled) {
-                if (typeof window !== 'undefined' && window.alert) {
-                    window.alert(
-                        `Build did not fully stop yet (session ${activeSessionId}).\n` +
-                        `Please wait a moment and try again.`
-                    );
-                }
+                toast.error(`Build did not fully stop yet. Session ${activeSessionId} is still closing.`);
                 return;
             }
         }
@@ -2942,6 +3036,28 @@ export default function EditorPage({ params }) {
         setFloatingChatVisible((v) => !v);
     }, []);
 
+    const handleOpenWorkspaceStart = useCallback(() => {
+        if (collabSessionService?.isGuest && authStatus === 'unauthenticated') {
+            const returnToWorkspace = `/workspace/${encodeURIComponent(slug || '')}`;
+            router.push(`/login?callbackUrl=${encodeURIComponent(returnToWorkspace)}`);
+            return;
+        }
+        router.push('/');
+    }, [authStatus, router, slug]);
+
+    useEffect(() => {
+        const handler = (event) => {
+            const key = String(event.key || '').toLowerCase();
+            if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === 'r') {
+                event.preventDefault();
+                event.stopPropagation();
+                handleOpenWorkspaceStart();
+            }
+        };
+        window.addEventListener('keydown', handler, true);
+        return () => window.removeEventListener('keydown', handler, true);
+    }, [handleOpenWorkspaceStart]);
+
     const handleUndo = useCallback(() => {
         if (editor) {
             const currentValue = editor.getValue();
@@ -3039,7 +3155,6 @@ export default function EditorPage({ params }) {
                             errors={extensionErrors}
                             ready={extensionsReady}
                             hostStatus={extensionHostStatus}
-                            vscodeServerState={vscodeServerState}
                             onInstall={installExtension}
                             onEnable={enableExtension}
                             onDisable={disableExtension}
@@ -3048,6 +3163,10 @@ export default function EditorPage({ params }) {
                             onDismissError={dismissExtensionError}
                             onExecuteCommand={executeExtensionCommand}
                         />
+                    ) : sidebarView === 'programs' ? (
+                        <ProgramsPanel />
+                    ) : sidebarView === 'codesite' ? (
+                        <CodeSitePanel workspaceSlug={slug} />
                     ) : sidebarView && sidebarView.startsWith('ext:') ? (() => {
                         const containerId = sidebarView.replace('ext:', '');
                         const container = contributedContainers.find(c => c.id === containerId);
@@ -3086,7 +3205,13 @@ export default function EditorPage({ params }) {
     );
 
     const ChatPanel = (
-        <ResizablePanel defaultSize={24} minSize={20} maxSize={45} className="border-l border-[#1a1a1e] bg-[#09090b] min-w-0">
+        <ResizablePanel
+            defaultSize={24}
+            minSize={20}
+            maxSize={45}
+            className="min-w-0 border-l"
+            style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}
+        >
             <AIChatWindow
                 docked={true}
                 isVisible={floatingChatVisible}
@@ -3119,7 +3244,7 @@ export default function EditorPage({ params }) {
         let chatPanel = findDockPanel(layout, IDE_PANEL.CHAT);
 
         if (!chatPanel) {
-            dockingHandlers?.chat?.();
+            dockingHandlers?.openChatPanel?.();
             layout = store.getState()?.layout;
             chatPanel = findDockPanel(layout, IDE_PANEL.CHAT);
         }
@@ -3129,7 +3254,11 @@ export default function EditorPage({ params }) {
         const sidebarGroupId = findDockGroup(layout, 'sidebar');
         const dockRightTargetNodeId = findDockRightRailTarget(layout);
 
-        if (dockRightTargetNodeId && chatPanel.groupId === sidebarGroupId) {
+        // Dock the chat to the right of the editor whenever a right target exists.
+        // Don't gate on chatPanel.groupId === sidebarGroupId: the chat opens in its
+        // OWN sidebar-category group, which findDockGroup('sidebar') may not return,
+        // so that check was flaky and silently skipped the split (chat stayed left).
+        if (dockRightTargetNodeId && chatPanel.groupId !== dockRightTargetNodeId) {
             dispatch(splitNodeAction({
                 targetNodeId: dockRightTargetNodeId,
                 tabId: chatPanel.tabId,
@@ -3170,6 +3299,14 @@ export default function EditorPage({ params }) {
         if (ensureDockedChatRight()) {
             setFloatingChatVisible(false);
         }
+    }, [ensureDockedChatRight]);
+
+    // Activity-bar "AI Chat" docks the chat as a full panel on the right of the
+    // editor. The navbar button opens the floating right popup (handleToggleChat).
+    useEffect(() => {
+        const onDockChatRight = () => { ensureDockedChatRight(); };
+        window.addEventListener('synthi:dock-chat-right', onDockChatRight);
+        return () => window.removeEventListener('synthi:dock-chat-right', onDockChatRight);
     }, [ensureDockedChatRight]);
 
     const onProblemsClickCb = useCallback(() => setShowProblemsPanel(prev => !prev), []);
@@ -3268,7 +3405,13 @@ export default function EditorPage({ params }) {
             errors: extensionErrors,
             ready: extensionsReady,
             hostStatus: extensionHostStatus,
-            vscodeServerState,
+            contributedContainers,
+            contributedViews,
+            treeDataMap: extensionTreeDataMap,
+            webviewPanels: extensionWebviewPanels,
+            webviewManager: extensionWebviewManager,
+            viewsWelcome: extensionViewsWelcome,
+            vscodeTunnelService: extensionTunnelService,
             onInstall: installExtension,
             onEnable: enableExtension,
             onDisable: disableExtension,
@@ -3276,6 +3419,7 @@ export default function EditorPage({ params }) {
             onRestart: restartExtension,
             onDismissError: dismissExtensionError,
             onExecuteCommand: executeExtensionCommand,
+            onRequestTreeRefresh: requestTreeRefresh,
         },
     }), [
         editor, activeFile, mergedDiagnostics, diagnosticSummary,
@@ -3284,8 +3428,11 @@ export default function EditorPage({ params }) {
         onCloseProblemsCb, toggleTreeOrientation, onOpenScmCb, memoEditorProps,
         aiHealing, workspaceName,
         installedExtensions, extensionErrors, extensionsReady, extensionHostStatus,
-        vscodeServerState, installExtension, enableExtension, disableExtension,
+        installExtension, enableExtension, disableExtension,
         uninstallExtension, restartExtension, dismissExtensionError, executeExtensionCommand,
+        requestTreeRefresh, contributedContainers, contributedViews, extensionTreeDataMap,
+        extensionWebviewPanels, extensionWebviewManager, extensionViewsWelcome,
+        extensionTunnelService,
     ]);
 
     if (workspaceMissing) {
@@ -3307,14 +3454,13 @@ export default function EditorPage({ params }) {
     return (
         <DockablePanelProvider workspaceId={slug}>
             <div
-                className={cn('workspace-root relative flex flex-col h-screen overflow-hidden', viewportClass)}
+                className={cn('workspace-root vt-workbench-shell relative flex h-[100dvh] flex-col overflow-hidden', viewportClass)}
                 style={{
-                    background: 'var(--bg-sidebar)',
                     color: 'var(--text-primary)',
                     '--workspace-statusbar-terminal-clearance': 'clamp(160px, 24vh, 260px)',
                 }}
             >
-                <div className="flex flex-col flex-1 min-h-0 overflow-hidden" style={{ background: 'var(--bg-editor)', color: 'var(--text-primary)' }}>
+                <div className="flex flex-col flex-1 min-h-0 overflow-hidden" style={{ background: 'transparent', color: 'var(--text-primary)' }}>
                     {/* Suppress native right-click menu inside the workspace
                         so the user can spam right-click to discover which
                         surfaces ship a custom menu. Skips text inputs so
@@ -3341,6 +3487,7 @@ export default function EditorPage({ params }) {
                         onToggleTerminal={onToggleTerminalCb}
                         onUndo={handleUndo}
                         onRedo={handleRedo}
+                        onOpenWorkspaceStart={handleOpenWorkspaceStart}
                         onToggleChat={handleToggleChat}
                         chatVisible={floatingChatVisible}
                         onCopyLineUp={handleCopyLineUp}
@@ -3354,12 +3501,12 @@ export default function EditorPage({ params }) {
                     <GuestBanner />
 
                     {buildLogs.length > 0 && (
-                        <div className="border-b border-[#1a1a1e] bg-[#09090b]">
-                            <div className="flex items-center justify-between px-3 py-1 text-[10px] uppercase tracking-wide text-[#7d7d85]">
+                        <div className="vt-ambient-bottom border-b" style={{ borderColor: 'var(--border-subtle)', background: 'color-mix(in srgb, var(--bg-panel) 84%, transparent)' }}>
+                            <div className="flex items-center justify-between px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.1em]" style={{ color: 'var(--text-muted)' }}>
                                 <button
                                     type="button"
                                     onClick={() => setBuildLogsCollapsed((v) => !v)}
-                                    className="flex items-center gap-1 hover:text-[#D7DAE0]"
+                                    className="th-focus-ring th-btn-ghost flex items-center gap-1 rounded-[6px] px-1.5 py-0.5"
                                     title={buildLogsCollapsed ? 'Show build logs' : 'Hide build logs'}
                                 >
                                     <span aria-hidden="true">{buildLogsCollapsed ? '▸' : '▾'}</span>
@@ -3368,14 +3515,14 @@ export default function EditorPage({ params }) {
                                 <button
                                     type="button"
                                     onClick={() => setBuildLogs([])}
-                                    className="hover:text-[#D7DAE0]"
+                                    className="th-focus-ring th-btn-ghost rounded-[6px] px-1.5 py-0.5"
                                     title="Clear build logs"
                                 >
-                                    ✕
+                                    Clear
                                 </button>
                             </div>
                             {!buildLogsCollapsed && (
-                                <div className="px-3 pb-2 text-xs font-mono text-[#D7DAE0] max-h-28 overflow-auto">
+                                <div className="vt-mono max-h-28 overflow-auto px-3 pb-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
                                     {buildLogs.map((line, idx) => (
                                         <div key={idx} className="leading-5 whitespace-pre-wrap">
                                             {line}
@@ -3436,13 +3583,13 @@ export default function EditorPage({ params }) {
                                         <>
                                             {EditorPanelComponent}
 
-                                            <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                            <ResizableHandle className="vt-workspace-resize-handle !pointer-events-auto w-px z-50" />
 
                                             {FileTreePanel}
 
                                             {floatingChatVisible && (
                                                 <>
-                                                    <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                                    <ResizableHandle className="vt-workspace-resize-handle !pointer-events-auto w-px z-50" />
                                                     {ChatPanel}
                                                 </>
                                             )}
@@ -3451,13 +3598,13 @@ export default function EditorPage({ params }) {
                                         <>
                                             {FileTreePanel}
 
-                                            <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                            <ResizableHandle className="vt-workspace-resize-handle !pointer-events-auto w-px z-50" />
 
                                             {EditorPanelComponent}
 
                                             {floatingChatVisible && (
                                                 <>
-                                                    <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                                    <ResizableHandle className="vt-workspace-resize-handle !pointer-events-auto w-px z-50" />
                                                     {ChatPanel}
                                                 </>
                                             )}
@@ -3472,7 +3619,7 @@ export default function EditorPage({ params }) {
                             className={cn(
                                 "!pointer-events-auto h-px z-50 transition-all duration-300",
                                 showProblemsPanel && isProblemsPanelDocked
-                                    ? "bg-[#1a1a1e] hover:bg-[#3A7AFE]"
+                                    ? "vt-workspace-resize-handle"
                                     : "opacity-0 pointer-events-none"
                             )}
                         />
@@ -3495,7 +3642,7 @@ export default function EditorPage({ params }) {
                                         ? "opacity-100 transition-opacity duration-200 delay-100"
                                         : "opacity-0 transition-opacity duration-150"
                                 )}
-                                style={{ borderColor: 'var(--border-medium, #1a1a1e)' }}
+                                style={{ borderColor: 'var(--border-medium)' }}
                                 id="problems-panel-dock-slot"
                             />
                         </ResizablePanel>

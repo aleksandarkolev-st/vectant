@@ -3,6 +3,8 @@
 import { getSession } from 'next-auth/react';
 import SynthiException from "@/components/SynthiException";
 import collabSessionService from '@/services/collabSessionService';
+import { getWorkspaceRuntimeIdentity } from '@/services/runtimeScope';
+import { resolveCollabHttpUrl } from '@/lib/collab-url';
 
 /**
  * Parse an error response body and extract a human-readable message.
@@ -17,6 +19,29 @@ function parseErrorText(raw) {
         }
     } catch (_) { /* not JSON, use raw */ }
     return raw;
+}
+
+async function fetchCollabGatewayToken(workspaceSlug, scopes, { collabSessionId = '' } = {}) {
+    const params = new URLSearchParams({
+        workspaceSlug,
+        scopes: Array.isArray(scopes) ? scopes.join(',') : String(scopes || ''),
+    });
+    if (collabSessionId) params.set('collabSessionId', collabSessionId);
+
+    const res = await fetch(`/api/auth/token?${params.toString()}`, {
+        method: 'GET',
+        credentials: 'same-origin',
+    });
+    const text = await res.text().catch(() => '');
+    let payload = {};
+    try { payload = text ? JSON.parse(text) : {}; } catch (_) { payload = { error: text }; }
+    if (!res.ok || !payload.token) {
+        throw new SynthiException(
+            `Failed to authorize workspace command (status ${res.status})`,
+            payload.error || 'Unable to mint a workspace command token.'
+        );
+    }
+    return payload;
 }
 
 function languageFromExtension(ext) {
@@ -106,7 +131,7 @@ function buildTreeFromFlatMeta(flatFiles) {
 // Centralized collab-server URL — the single source of truth for file data.
 // All file reads/writes go through the collab-server to prevent dual-source
 // inconsistencies between GCS and disk.
-const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
+const COLLAB_SERVER_URL = resolveCollabHttpUrl();
 
 export class ApiClient {
     constructor() {
@@ -117,7 +142,7 @@ export class ApiClient {
      * Build common headers for collab-server requests.
      * Attaches x-user-id so the server routes to the per-user repo.
      */
-    async _headers(extra = {}) {
+    async _headers(extra = {}, { workspaceSlug = null } = {}) {
         const base = { ...extra };
         try {
             const session = await getSession();
@@ -125,6 +150,12 @@ export class ApiClient {
             if (userId) base['x-user-id'] = userId;
             if (collabSessionService?.isActive && collabSessionService.sessionId) {
                 base['x-session-id'] = collabSessionService.sessionId;
+            }
+            if (workspaceSlug) {
+                const runtimeIdentity = getWorkspaceRuntimeIdentity(workspaceSlug, { userId });
+                if (runtimeIdentity.runtimeScope) base['x-runtime-scope'] = runtimeIdentity.runtimeScope;
+                if (runtimeIdentity.runtimeKind) base['x-runtime-kind'] = runtimeIdentity.runtimeKind;
+                if (runtimeIdentity.filesystemUserId) base['x-runtime-fs-user-id'] = runtimeIdentity.filesystemUserId;
             }
         } catch (_) {
             // Non-fatal — server falls back to slug-level repo
@@ -250,7 +281,7 @@ export class ApiClient {
         return { ok: true };
     }
 
-    async createItem(slug, fullPath, isFolder) {
+    async createItem(slug, fullPath, isFolder, content = '') {
         if (isFolder) {
             // Create directory via collab-server
             const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/create-directory`, {
@@ -264,11 +295,13 @@ export class ApiClient {
             }
             return res.json();
         } else {
-            // Create an empty file via the write-file endpoint
+            // Create the requested initial content through the authoritative
+            // write-file endpoint. Notebook files use this to begin as valid
+            // nbformat JSON instead of an invalid empty text file.
             const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/write-file`, {
                 method: 'POST',
                 headers: await this._headers({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify({ path: fullPath, content: '' }),
+                body: JSON.stringify({ path: fullPath, content }),
             });
             if (!res.ok) {
                 const errText = await res.text().catch(() => 'Unknown error');
@@ -313,8 +346,25 @@ export class ApiClient {
             throw new SynthiException('Missing command', 'No workspace command was provided.');
         }
 
-        const headers = await this._headers({ 'Content-Type': 'application/json' });
-        const body = JSON.stringify({ command: trimmed, timeout });
+        const session = await getSession();
+        const termUserId = session?.user?.id || session?.user?.email || '';
+        const runtimeIdentity = getWorkspaceRuntimeIdentity(slug, { userId: termUserId });
+        const gateway = await fetchCollabGatewayToken(slug, ['collab:exec'], {
+            collabSessionId: runtimeIdentity.collabSessionId || '',
+        });
+        const headers = await this._headers({
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${gateway.token}`,
+        }, { workspaceSlug: slug });
+        if (gateway.runtimeScope) headers['x-runtime-scope'] = gateway.runtimeScope;
+        if (gateway.filesystemUserId) headers['x-runtime-fs-user-id'] = gateway.filesystemUserId;
+        const body = JSON.stringify({
+            command: trimmed,
+            timeout,
+            runtimeScope: headers['x-runtime-scope'] || null,
+            runtimeKind: headers['x-runtime-kind'] || null,
+            filesystemUserId: headers['x-runtime-fs-user-id'] || null,
+        });
         const signal =
             typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
                 ? AbortSignal.timeout(timeout + 5000)

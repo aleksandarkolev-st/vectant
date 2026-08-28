@@ -1,0 +1,132 @@
+from __future__ import annotations
+
+import sys
+import subprocess
+import json
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from shadow.counterfactual_types import BranchTrace
+from shadow.runner_base import BaseRunnerAdapter, RunnerArtifact, RunnerInvocation
+
+
+def test_runner_contract_normalizes_artifact_without_inlining_logs(tmp_path):
+    (tmp_path / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    adapter = BaseRunnerAdapter()
+    snapshot = adapter.prepare_workspace_snapshot(tmp_path)
+    trace = adapter.collect_trace(
+        RunnerInvocation(
+            run_id="run",
+            universe_id="A",
+            runner_id="runner-a",
+            direction_id="safe",
+            direction_label="safe",
+            declared_condition="conservative local fix",
+            start_state_hash=snapshot["state_hash"],
+            prompt_lineage=["root"],
+        ),
+        RunnerArtifact(
+            artifact_summary="one-file patch",
+            diff_summary={"files_changed": 1, "loc_added": 1, "loc_removed": 0},
+            raw_log_ref="artifact://logs/run/A",
+            detector_trace_ids=["det_1"],
+            proof_score=0.9,
+        ),
+    )
+
+    assert isinstance(trace, BranchTrace)
+    assert trace.runner_kind == "custom"
+    assert trace.start_state_hash == snapshot["state_hash"]
+    assert trace.tool_trace_summary == {"raw_log_ref": "artifact://logs/run/A"}
+    assert "print('ok')" not in trace.to_dict()["artifact_summary"]
+
+
+def test_runner_snapshot_hash_changes_with_workspace_files(tmp_path):
+    adapter = BaseRunnerAdapter()
+    before = adapter.prepare_workspace_snapshot(tmp_path)["state_hash"]
+    (tmp_path / "new.txt").write_text("x", encoding="utf-8")
+    after = adapter.prepare_workspace_snapshot(tmp_path)["state_hash"]
+
+    assert before != after
+
+
+def test_runner_snapshot_hash_changes_when_file_content_changes(tmp_path):
+    adapter = BaseRunnerAdapter()
+    target = tmp_path / "existing.txt"
+    target.write_text("before", encoding="utf-8")
+    before = adapter.prepare_workspace_snapshot(tmp_path)["state_hash"]
+    target.write_text("after", encoding="utf-8")
+    after = adapter.prepare_workspace_snapshot(tmp_path)["state_hash"]
+
+    assert before != after
+
+
+def test_runner_executes_explicit_argv_and_stores_raw_artifact_by_reference(tmp_path):
+    adapter = BaseRunnerAdapter()
+    invocation = RunnerInvocation(
+        run_id="run-real", universe_id="A", runner_id="fixture", direction_id="safe",
+        direction_label="safe", declared_condition="fixture execution", start_state_hash="base",
+        task_summary="emit a bounded summary", timeout_seconds=10,
+    )
+
+    artifact = adapter.run(
+        workspace_path=tmp_path,
+        invocation=invocation,
+        command=[sys.executable, "-c", "print('runner summary')"],
+    )
+
+    assert artifact.command_summary["exit_code"] == 0
+    assert artifact.raw_log_ref == ".vectant/runner-artifacts/run-real/custom-A.json"
+    assert "raw output is retained only" in artifact.artifact_summary
+    assert (tmp_path / artifact.raw_log_ref).is_file()
+    trace = adapter.collect_trace(invocation, artifact)
+    assert trace.tool_trace_summary["raw_log_ref"] == artifact.raw_log_ref
+    assert "runner summary" not in trace.tool_trace_summary["raw_log_ref"]
+
+
+def test_runner_redacts_common_credentials_from_durable_raw_logs(tmp_path):
+    adapter = BaseRunnerAdapter()
+    artifact = adapter.run(
+        workspace_path=tmp_path,
+        invocation=RunnerInvocation(run_id="redact", universe_id="A", runner_id="fixture", direction_id="safe", direction_label="safe", declared_condition="test", start_state_hash="base"),
+        command=[sys.executable, "-c", "print('API_TOKEN=super-secret\\nAuthorization: Bearer abc.def_123')"],
+    )
+
+    logged = json.loads((tmp_path / artifact.raw_log_ref).read_text(encoding="utf-8"))
+    assert "super-secret" not in logged["stdout"]
+    assert "abc.def_123" not in logged["stdout"]
+    assert "[REDACTED]" in logged["stdout"]
+
+
+def test_runner_redacts_credentials_in_recorded_argv(tmp_path):
+    adapter = BaseRunnerAdapter()
+    artifact = adapter.run(
+        workspace_path=tmp_path,
+        invocation=RunnerInvocation(run_id="argv-redact", universe_id="A", runner_id="fixture", direction_id="safe", direction_label="safe", declared_condition="test", start_state_hash="base"),
+        command=[sys.executable, "-c", "print('ok')", "API_TOKEN=super-secret"],
+    )
+
+    logged = json.loads((tmp_path / artifact.raw_log_ref).read_text(encoding="utf-8"))
+    assert "super-secret" not in logged["argv"]
+
+
+def test_collect_diff_reports_bounded_change_statistics(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Vectant Tests"], cwd=tmp_path, check=True)
+    target = tmp_path / "app.py"
+    target.write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "add", "app.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=tmp_path, check=True, capture_output=True)
+    adapter = BaseRunnerAdapter()
+    start = adapter.prepare_workspace_snapshot(tmp_path)["state_hash"]
+    target.write_text("after\nnext\n", encoding="utf-8")
+
+    diff = adapter.collect_diff(tmp_path, start)
+
+    assert diff["changed_paths"] == ["app.py"]
+    assert diff["files_touched"] == 1
+    assert diff["loc_added"] == 2
+    assert diff["loc_removed"] == 1
+    assert diff["start_state_hash"] != diff["end_state_hash"]

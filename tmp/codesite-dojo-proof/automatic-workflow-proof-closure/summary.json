@@ -1,0 +1,62 @@
+{
+  "generatedAt": "2026-07-04T23:19:39.191Z",
+  "branch": "codex/codesite-atc-full-from-dev-20260630",
+  "head": "253b68d9aa40",
+  "sourceDiffDigest": "sha256:9c5f7ae4ce03e125a0c94320a65b3f11347603d368887ca29fbd267794ce06f0",
+  "patch": "automatic workflow proof closure, landing command capture, and serializable commit race validation",
+  "focusedVitest": {
+    "success": true,
+    "suites": {
+      "total": 2,
+      "passed": 2,
+      "failed": 0
+    },
+    "tests": {
+      "total": 99,
+      "passed": 3,
+      "failed": 0,
+      "skipped": 96
+    }
+  },
+  "fullVitest": {
+    "success": true,
+    "suites": {
+      "total": 7,
+      "passed": 7,
+      "failed": 0
+    },
+    "tests": {
+      "total": 114,
+      "passed": 114,
+      "failed": 0,
+      "skipped": 0
+    },
+    "failures": []
+  },
+  "repairedFailures": [
+    "CodeSite control plane transaction validation lands writeful automatic workflow plans only with durable agent evidence",
+    "CodeSite control plane transaction validation executes landing inspection commands and records durable radar evidence",
+    "CodeSite control plane transaction validation serializes overlapping proof-carrying commit races and blocks the stale loser"
+  ],
+  "validationClaims": [
+    "Inspection commands capture stdout and stderr through file-backed descriptors, covering environments where child stdout pipes are unreliable.",
+    "Explicit baseSnapshot digests no longer trigger uncontrolled repo-wide scans; real baseSnapshotEvidence objects remain the proof source.",
+    "Writeful automatic workflows now prove serializable base evidence with repo-wide snapshots before commit.",
+    "Overlapping proof-carrying commit races use repo-wide snapshot evidence so the queued loser is blocked by stale read detection after the winner lands.",
+    "The full CodeSite snapshot/artifact/control-plane suite passes for the current worktree patch."
+  ],
+  "evidenceFiles": [
+    "tmp/codesite-dojo-proof/automatic-workflow-proof-closure/vitest-focused.json",
+    "tmp/codesite-dojo-proof/automatic-workflow-proof-closure/vitest-full.json",
+    "tmp/codesite-dojo-proof/automatic-workflow-proof-closure/summary.json",
+    "tmp/codesite-dojo-proof/automatic-workflow-proof-closure/proof.html",
+    "tmp/codesite-dojo-proof/automatic-workflow-proof-closure/proof.png"
+  ],
+  "diffStat": ".../lib/codesite/__tests__/controlPlane.test.js    |  23 +++-\n synthi/src/lib/codesite/controlPlane.js            | 136 ++++++++++-----------\n 2 files changed, 85 insertions(+), 74 deletions(-)",
+  "status": "M synthi/src/lib/codesite/__tests__/controlPlane.test.js\n M synthi/src/lib/codesite/controlPlane.js\n M tmp/codesite-dojo-proof/codesite-full-workflow-latest.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof-summary.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.html\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-publication.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-handover.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-mobile.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-coordination.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-line-inspector.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-proof-section.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui.png\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-host-block-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-overlay-attestation.json\n?? .synthi/codesite/",
+  "proofPng": {
+    "path": "tmp/codesite-dojo-proof/automatic-workflow-proof-closure/proof.png",
+    "bytes": 827028,
+    "sha256": "sha256:9bc53e1204731072c31e194f99b1776f645894bb01074206cc983d21dc58422e"
+  }
+}

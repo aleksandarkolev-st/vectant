@@ -60,6 +60,14 @@ def arbiter_verdict(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"type": "arbiter_verdict", **payload}
 
 
+def counterfactual_policy(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {"type": "counterfactual_policy", **payload}
+
+
+def counterfactual_learned(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {"type": "counterfactual_learned", **payload}
+
+
 def all_done(winner: Optional[str]) -> Dict[str, Any]:
     return {"type": "all_done", "winner": winner}
 
@@ -103,6 +111,15 @@ class JobState:
     intent: str = "fix"
     arbiter_provider: Optional[str] = None
     arbiter_model: Optional[str] = None
+    counterfactual_run_id: Optional[str] = None
+    counterfactual_base_hash: str = ""
+    branch_traces: List[Any] = field(default_factory=list)
+    detector_results: List[Any] = field(default_factory=list)
+    proof_verdict: Optional[Dict[str, Any]] = None
+    selection_verdict: Optional[Dict[str, Any]] = None
+    direction_forecast: List[Dict[str, Any]] = field(default_factory=list)
+    policy_hints: List[str] = field(default_factory=list)
+    learned_lines: List[str] = field(default_factory=list)
 
     async def emit(self, evt: Dict[str, Any]) -> None:
         await self.queue.put(evt)

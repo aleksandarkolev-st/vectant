@@ -30,6 +30,8 @@ mcp/synthi-mcp/.gpu-hmr-test-logs/
 mcp/synthi-mcp/.gpu-hmr-test-artifacts/
 mcp/synthi-mcp/.gpu-hmr-shared-cas/
 /tmp/
+synthi/tmp/
+.vectant/
 
 # Vitest cache inside the vendored root node_modules (phase-3 soak + live-
 # test harnesses drive vitest at the repo root).
@@ -41,3 +43,17 @@ CLAUDE.md
 .playwright-mcp/
 .scratch-playwright/
 .agents/
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/
+
+node_modules/
+backend/vectant-local-support-app/target/
+backend/vectant-local-support-app/desktop/target/
+backend/vectant-local-support-app/target-*/
+backend/vectant-local-support-app/desktop/target-*/
+backend/vectant-local-support-app/desktop/gen/

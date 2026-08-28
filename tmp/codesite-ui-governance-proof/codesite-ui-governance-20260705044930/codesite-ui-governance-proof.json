@@ -1,0 +1,709 @@
+{
+  "schemaVersion": "synthi.codesite.uiGovernanceProof.v2",
+  "ok": true,
+  "runId": "codesite-ui-governance-20260705044930",
+  "runStartedAt": "2026-07-05T04:49:31.022Z",
+  "baseUrl": "http://127.0.0.1:45291",
+  "git": {
+    "head": "3388f6e507a1c1c1b16a8573e4a06e18d8a5b044",
+    "branch": "codex/codesite-atc-full-from-dev-20260630",
+    "statusShort": "?? .synthi/codesite/"
+  },
+  "commands": [
+    {
+      "name": "dockerPlaywrightUiProof",
+      "command": "docker run mcr.microsoft.com/playwright:v1.60.0-noble node synthi/scripts/codesite-ui-governance-proof.mjs",
+      "runner": "playwright",
+      "exitCode": 0
+    }
+  ],
+  "runtime": {
+    "node": "v24.15.0",
+    "platform": "linux"
+  },
+  "checks": {
+    "desktop": {
+      "selectorStatus": {
+        "codesite-panel": true,
+        "codesite-operator-cockpit": true,
+        "codesite-mission-control-header": true,
+        "codesite-tower-now": true,
+        "codesite-responsive-proof-target": true,
+        "codesite-operator-airspace-pane": true,
+        "codesite-operator-tower-pane": true,
+        "codesite-operator-governance-pane": true,
+        "codesite-metric-rail": true,
+        "codesite-status-required": true,
+        "codesite-radar-sweep": true,
+        "codesite-tower-feed": true,
+        "codesite-event-stream-status": true,
+        "codesite-governance-console": true,
+        "codesite-document-row": true,
+        "codesite-route-revision-row": true,
+        "codesite-mayday-banner": true,
+        "codesite-mobile-section-tabs": true,
+        "codesite-mobile-action-drawer": true
+      },
+      "selectorCounts": {
+        "codesite-panel": 1,
+        "codesite-operator-cockpit": 1,
+        "codesite-mission-control-header": 1,
+        "codesite-tower-now": 1,
+        "codesite-responsive-proof-target": 1,
+        "codesite-operator-airspace-pane": 1,
+        "codesite-operator-tower-pane": 1,
+        "codesite-operator-governance-pane": 1,
+        "codesite-metric-rail": 1,
+        "codesite-status-required": 1,
+        "codesite-radar-sweep": 1,
+        "codesite-tower-feed": 1,
+        "codesite-event-stream-status": 1,
+        "codesite-governance-console": 1,
+        "codesite-document-row": 1,
+        "codesite-route-revision-row": 2,
+        "codesite-mayday-banner": 1,
+        "codesite-mobile-section-tabs": 1,
+        "codesite-mobile-action-drawer": 1
+      },
+      "desktopWidth": true,
+      "missingSelectors": [],
+      "operatorRects": {
+        "cockpit": {
+          "top": 106,
+          "left": 0,
+          "bottom": 1875,
+          "right": 1440,
+          "width": 1440,
+          "height": 1769
+        },
+        "airspace": {
+          "top": 365,
+          "left": 16,
+          "bottom": 779,
+          "right": 770,
+          "width": 754,
+          "height": 414
+        },
+        "tower": {
+          "top": 365,
+          "left": 782,
+          "bottom": 864,
+          "right": 1424,
+          "width": 642,
+          "height": 499
+        },
+        "governance": {
+          "top": 876,
+          "left": 782,
+          "bottom": 1859,
+          "right": 1424,
+          "width": 642,
+          "height": 983
+        }
+      },
+      "operatorPaneGeometry": true,
+      "operatorLoopInFirstViewport": true,
+      "singleCriticalSurfaces": true,
+      "workflowStateChips": [
+        {
+          "text": "pending_review",
+          "row": {
+            "left": 808,
+            "right": 1398,
+            "width": 590
+          },
+          "chip": {
+            "left": 1285,
+            "right": 1389,
+            "width": 104,
+            "scrollWidth": 102,
+            "clientWidth": 102,
+            "whiteSpace": "normal"
+          },
+          "contained": true,
+          "unclippedText": true
+        },
+        {
+          "text": "proposed",
+          "row": {
+            "left": 808,
+            "right": 1398,
+            "width": 590
+          },
+          "chip": {
+            "left": 1318,
+            "right": 1389,
+            "width": 71,
+            "scrollWidth": 69,
+            "clientWidth": 69,
+            "whiteSpace": "normal"
+          },
+          "contained": true,
+          "unclippedText": true
+        },
+        {
+          "text": "approved",
+          "row": {
+            "left": 808,
+            "right": 1398,
+            "width": 590
+          },
+          "chip": {
+            "left": 1319,
+            "right": 1389,
+            "width": 70,
+            "scrollWidth": 68,
+            "clientWidth": 68,
+            "whiteSpace": "normal"
+          },
+          "contained": true,
+          "unclippedText": true
+        }
+      ],
+      "workflowStateChipsReadable": true,
+      "cockpitContainsLoop": true,
+      "towerInstructionVisible": true,
+      "routeDeviationVisible": true,
+      "maydayResumeEventVisible": true,
+      "permitPathVisible": true,
+      "maydayInspectionVisible": true,
+      "noHorizontalOverflow": true,
+      "scrollWidth": 1440,
+      "viewportWidth": 1440,
+      "mobileTabs": [
+        {
+          "text": "Radar",
+          "width": 0,
+          "height": 0,
+          "visible": false,
+          "role": "tab",
+          "ariaSelected": "true"
+        },
+        {
+          "text": "Tower",
+          "width": 0,
+          "height": 0,
+          "visible": false,
+          "role": "tab",
+          "ariaSelected": "false"
+        },
+        {
+          "text": "Governance",
+          "width": 0,
+          "height": 0,
+          "visible": false,
+          "role": "tab",
+          "ariaSelected": "false"
+        },
+        {
+          "text": "Evidence",
+          "width": 0,
+          "height": 0,
+          "visible": false,
+          "role": "tab",
+          "ariaSelected": "false"
+        },
+        {
+          "text": "Replay",
+          "width": 0,
+          "height": 0,
+          "visible": false,
+          "role": "tab",
+          "ariaSelected": "false"
+        }
+      ],
+      "mobileTouchTargetsOk": true,
+      "reducedMotion": false,
+      "consoleErrors": [],
+      "ok": true
+    },
+    "mobile": {
+      "selectorStatus": {
+        "codesite-panel": true,
+        "codesite-operator-cockpit": true,
+        "codesite-mission-control-header": true,
+        "codesite-tower-now": true,
+        "codesite-responsive-proof-target": true,
+        "codesite-operator-airspace-pane": true,
+        "codesite-operator-tower-pane": true,
+        "codesite-operator-governance-pane": true,
+        "codesite-metric-rail": true,
+        "codesite-status-required": true,
+        "codesite-radar-sweep": true,
+        "codesite-tower-feed": true,
+        "codesite-event-stream-status": true,
+        "codesite-governance-console": true,
+        "codesite-document-row": true,
+        "codesite-route-revision-row": true,
+        "codesite-mayday-banner": true,
+        "codesite-mobile-section-tabs": true,
+        "codesite-mobile-action-drawer": true
+      },
+      "selectorCounts": {
+        "codesite-panel": 1,
+        "codesite-operator-cockpit": 1,
+        "codesite-mission-control-header": 1,
+        "codesite-tower-now": 1,
+        "codesite-responsive-proof-target": 1,
+        "codesite-operator-airspace-pane": 1,
+        "codesite-operator-tower-pane": 1,
+        "codesite-operator-governance-pane": 1,
+        "codesite-metric-rail": 1,
+        "codesite-status-required": 1,
+        "codesite-radar-sweep": 1,
+        "codesite-tower-feed": 1,
+        "codesite-event-stream-status": 1,
+        "codesite-governance-console": 1,
+        "codesite-document-row": 1,
+        "codesite-route-revision-row": 2,
+        "codesite-mayday-banner": 1,
+        "codesite-mobile-section-tabs": 1,
+        "codesite-mobile-action-drawer": 1
+      },
+      "desktopWidth": false,
+      "missingSelectors": [],
+      "operatorRects": {
+        "cockpit": {
+          "top": 279,
+          "left": 0,
+          "bottom": 3507,
+          "right": 390,
+          "width": 390,
+          "height": 3228
+        },
+        "airspace": {
+          "top": 774,
+          "left": 12,
+          "bottom": 1476,
+          "right": 378,
+          "width": 366,
+          "height": 702
+        },
+        "tower": {
+          "top": 1828,
+          "left": 12,
+          "bottom": 2396,
+          "right": 378,
+          "width": 366,
+          "height": 568
+        },
+        "governance": {
+          "top": 2408,
+          "left": 12,
+          "bottom": 3495,
+          "right": 378,
+          "width": 366,
+          "height": 1088
+        }
+      },
+      "operatorPaneGeometry": true,
+      "operatorLoopInFirstViewport": true,
+      "singleCriticalSurfaces": true,
+      "workflowStateChips": [
+        {
+          "text": "pending_review",
+          "row": {
+            "left": 36,
+            "right": 380,
+            "width": 344
+          },
+          "chip": {
+            "left": 267,
+            "right": 371,
+            "width": 104,
+            "scrollWidth": 102,
+            "clientWidth": 102,
+            "whiteSpace": "normal"
+          },
+          "contained": true,
+          "unclippedText": true
+        },
+        {
+          "text": "proposed",
+          "row": {
+            "left": 36,
+            "right": 380,
+            "width": 344
+          },
+          "chip": {
+            "left": 300,
+            "right": 371,
+            "width": 71,
+            "scrollWidth": 69,
+            "clientWidth": 69,
+            "whiteSpace": "normal"
+          },
+          "contained": true,
+          "unclippedText": true
+        },
+        {
+          "text": "approved",
+          "row": {
+            "left": 36,
+            "right": 380,
+            "width": 344
+          },
+          "chip": {
+            "left": 301,
+            "right": 371,
+            "width": 70,
+            "scrollWidth": 68,
+            "clientWidth": 68,
+            "whiteSpace": "normal"
+          },
+          "contained": true,
+          "unclippedText": true
+        }
+      ],
+      "workflowStateChipsReadable": true,
+      "cockpitContainsLoop": true,
+      "towerInstructionVisible": true,
+      "routeDeviationVisible": true,
+      "maydayResumeEventVisible": true,
+      "permitPathVisible": true,
+      "maydayInspectionVisible": true,
+      "noHorizontalOverflow": true,
+      "scrollWidth": 390,
+      "viewportWidth": 390,
+      "mobileTabs": [
+        {
+          "text": "Radar",
+          "width": 72,
+          "height": 44,
+          "visible": true,
+          "role": "tab",
+          "ariaSelected": "true"
+        },
+        {
+          "text": "Tower",
+          "width": 74,
+          "height": 44,
+          "visible": true,
+          "role": "tab",
+          "ariaSelected": "false"
+        },
+        {
+          "text": "Governance",
+          "width": 108,
+          "height": 44,
+          "visible": true,
+          "role": "tab",
+          "ariaSelected": "false"
+        },
+        {
+          "text": "Evidence",
+          "width": 91,
+          "height": 44,
+          "visible": true,
+          "role": "tab",
+          "ariaSelected": "false"
+        },
+        {
+          "text": "Replay",
+          "width": 77,
+          "height": 44,
+          "visible": true,
+          "role": "tab",
+          "ariaSelected": "false"
+        }
+      ],
+      "mobileTouchTargetsOk": true,
+      "reducedMotion": false,
+      "consoleErrors": [],
+      "ok": true
+    },
+    "reducedMotion": {
+      "selectorStatus": {
+        "codesite-panel": true,
+        "codesite-operator-cockpit": true,
+        "codesite-mission-control-header": true,
+        "codesite-tower-now": true,
+        "codesite-responsive-proof-target": true,
+        "codesite-operator-airspace-pane": true,
+        "codesite-operator-tower-pane": true,
+        "codesite-operator-governance-pane": true,
+        "codesite-metric-rail": true,
+        "codesite-status-required": true,
+        "codesite-radar-sweep": true,
+        "codesite-tower-feed": true,
+        "codesite-event-stream-status": true,
+        "codesite-governance-console": true,
+        "codesite-document-row": true,
+        "codesite-route-revision-row": true,
+        "codesite-mayday-banner": true,
+        "codesite-mobile-section-tabs": true,
+        "codesite-mobile-action-drawer": true
+      },
+      "selectorCounts": {
+        "codesite-panel": 1,
+        "codesite-operator-cockpit": 1,
+        "codesite-mission-control-header": 1,
+        "codesite-tower-now": 1,
+        "codesite-responsive-proof-target": 1,
+        "codesite-operator-airspace-pane": 1,
+        "codesite-operator-tower-pane": 1,
+        "codesite-operator-governance-pane": 1,
+        "codesite-metric-rail": 1,
+        "codesite-status-required": 1,
+        "codesite-radar-sweep": 1,
+        "codesite-tower-feed": 1,
+        "codesite-event-stream-status": 1,
+        "codesite-governance-console": 1,
+        "codesite-document-row": 1,
+        "codesite-route-revision-row": 2,
+        "codesite-mayday-banner": 1,
+        "codesite-mobile-section-tabs": 1,
+        "codesite-mobile-action-drawer": 1
+      },
+      "desktopWidth": true,
+      "missingSelectors": [],
+      "operatorRects": {
+        "cockpit": {
+          "top": 106,
+          "left": 0,
+          "bottom": 1880,
+          "right": 1280,
+          "width": 1280,
+          "height": 1774
+        },
+        "airspace": {
+          "top": 365,
+          "left": 16,
+          "bottom": 807,
+          "right": 683,
+          "width": 667,
+          "height": 442
+        },
+        "tower": {
+          "top": 365,
+          "left": 695,
+          "bottom": 869,
+          "right": 1264,
+          "width": 569,
+          "height": 504
+        },
+        "governance": {
+          "top": 881,
+          "left": 695,
+          "bottom": 1864,
+          "right": 1264,
+          "width": 569,
+          "height": 983
+        }
+      },
+      "operatorPaneGeometry": true,
+      "operatorLoopInFirstViewport": true,
+      "singleCriticalSurfaces": true,
+      "workflowStateChips": [
+        {
+          "text": "pending_review",
+          "row": {
+            "left": 721,
+            "right": 1238,
+            "width": 517
+          },
+          "chip": {
+            "left": 1125,
+            "right": 1229,
+            "width": 104,
+            "scrollWidth": 102,
+            "clientWidth": 102,
+            "whiteSpace": "normal"
+          },
+          "contained": true,
+          "unclippedText": true
+        },
+        {
+          "text": "proposed",
+          "row": {
+            "left": 721,
+            "right": 1238,
+            "width": 517
+          },
+          "chip": {
+            "left": 1158,
+            "right": 1229,
+            "width": 71,
+            "scrollWidth": 69,
+            "clientWidth": 69,
+            "whiteSpace": "normal"
+          },
+          "contained": true,
+          "unclippedText": true
+        },
+        {
+          "text": "approved",
+          "row": {
+            "left": 721,
+            "right": 1238,
+            "width": 517
+          },
+          "chip": {
+            "left": 1159,
+            "right": 1229,
+            "width": 70,
+            "scrollWidth": 68,
+            "clientWidth": 68,
+            "whiteSpace": "normal"
+          },
+          "contained": true,
+          "unclippedText": true
+        }
+      ],
+      "workflowStateChipsReadable": true,
+      "cockpitContainsLoop": true,
+      "towerInstructionVisible": true,
+      "routeDeviationVisible": true,
+      "maydayResumeEventVisible": true,
+      "permitPathVisible": true,
+      "maydayInspectionVisible": true,
+      "noHorizontalOverflow": true,
+      "scrollWidth": 1280,
+      "viewportWidth": 1280,
+      "mobileTabs": [
+        {
+          "text": "Radar",
+          "width": 0,
+          "height": 0,
+          "visible": false,
+          "role": "tab",
+          "ariaSelected": "true"
+        },
+        {
+          "text": "Tower",
+          "width": 0,
+          "height": 0,
+          "visible": false,
+          "role": "tab",
+          "ariaSelected": "false"
+        },
+        {
+          "text": "Governance",
+          "width": 0,
+          "height": 0,
+          "visible": false,
+          "role": "tab",
+          "ariaSelected": "false"
+        },
+        {
+          "text": "Evidence",
+          "width": 0,
+          "height": 0,
+          "visible": false,
+          "role": "tab",
+          "ariaSelected": "false"
+        },
+        {
+          "text": "Replay",
+          "width": 0,
+          "height": 0,
+          "visible": false,
+          "role": "tab",
+          "ariaSelected": "false"
+        }
+      ],
+      "mobileTouchTargetsOk": true,
+      "reducedMotion": true,
+      "consoleErrors": [],
+      "ok": true
+    }
+  },
+  "screenshots": {
+    "desktop": {
+      "path": "tmp/codesite-ui-governance-proof/codesite-ui-governance-20260705044930/codesite-ui-governance-desktop.png",
+      "bytes": 286330,
+      "sha256": "5eb8054541fc4444050929c6ee4be5de7ff92f8243792cc87c84d702398da048",
+      "png": {
+        "width": 1440,
+        "height": 1050,
+        "bitDepth": 8,
+        "colorType": 2,
+        "interlace": 0,
+        "supportedPixelScan": true,
+        "nonblank": true,
+        "variedSampleCount": 18610,
+        "sampleCount": 20160
+      }
+    },
+    "cockpit": {
+      "path": "tmp/codesite-ui-governance-proof/codesite-ui-governance-20260705044930/codesite-ui-governance-cockpit.png",
+      "bytes": 273760,
+      "sha256": "eee52ed6d4e787f8d37256499663537523f5b5a3d53ed7d2854b30e533339b11",
+      "png": {
+        "width": 1440,
+        "height": 945,
+        "bitDepth": 8,
+        "colorType": 2,
+        "interlace": 0,
+        "supportedPixelScan": true,
+        "nonblank": true,
+        "variedSampleCount": 19974,
+        "sampleCount": 20012
+      }
+    },
+    "tower": {
+      "path": "tmp/codesite-ui-governance-proof/codesite-ui-governance-20260705044930/codesite-ui-governance-tower-feed.png",
+      "bytes": 39361,
+      "sha256": "9e174079ec6a51e2748ac7b6c931d022a4855945e81d65a37d1db07a7cc99dda",
+      "png": {
+        "width": 609,
+        "height": 417,
+        "bitDepth": 8,
+        "colorType": 2,
+        "interlace": 0,
+        "supportedPixelScan": true,
+        "nonblank": true,
+        "variedSampleCount": 20647,
+        "sampleCount": 21163
+      }
+    },
+    "governance": {
+      "path": "tmp/codesite-ui-governance-proof/codesite-ui-governance-20260705044930/codesite-ui-governance-console.png",
+      "bytes": 71463,
+      "sha256": "99fdc0657683e2f247f1d15448bb485a46187459eea1f111657f00fd426f4fd9",
+      "png": {
+        "width": 609,
+        "height": 902,
+        "bitDepth": 8,
+        "colorType": 2,
+        "interlace": 0,
+        "supportedPixelScan": true,
+        "nonblank": true,
+        "variedSampleCount": 19480,
+        "sampleCount": 20346
+      }
+    },
+    "mobile": {
+      "path": "tmp/codesite-ui-governance-proof/codesite-ui-governance-20260705044930/codesite-ui-governance-mobile-shell.png",
+      "bytes": 137247,
+      "sha256": "7c5e1dd91522fcf8deec76c0d6f641f7661caf3f4cf8a0e084ca3e1087ce70ca",
+      "png": {
+        "width": 780,
+        "height": 1800,
+        "bitDepth": 8,
+        "colorType": 2,
+        "interlace": 0,
+        "supportedPixelScan": true,
+        "nonblank": true,
+        "variedSampleCount": 18110,
+        "sampleCount": 20058
+      }
+    },
+    "reducedMotion": {
+      "path": "tmp/codesite-ui-governance-proof/codesite-ui-governance-20260705044930/codesite-ui-governance-reduced-motion.png",
+      "bytes": 255620,
+      "sha256": "1aba753d9e21f4301c09673cc120310cf31bcc11aad8d75a2c006defb20fd667",
+      "png": {
+        "width": 1280,
+        "height": 900,
+        "bitDepth": 8,
+        "colorType": 2,
+        "interlace": 0,
+        "supportedPixelScan": true,
+        "nonblank": true,
+        "variedSampleCount": 18744,
+        "sampleCount": 20211
+      }
+    }
+  }
+}

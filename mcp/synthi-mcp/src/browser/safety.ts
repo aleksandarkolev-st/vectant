@@ -12,8 +12,42 @@ export interface ReplayIsolationProfileInput {
   base_url?: string;
   ci_command?: string;
   data_reset_command?: string;
+  reset_assertion_command?: string;
+  postcondition_command?: string;
+  working_directory?: string;
   auth_provider_id?: string;
+  reset_profile_id?: string;
+  state_seed_id?: string;
   allow_mutation_replay?: boolean;
+}
+
+export const REPLAY_ISOLATION_PROFILE_SCHEMA_VERSION = "synthi.replayIsolationProfile.v1" as const;
+
+export interface ReplayIsolationProfileManifestV7 {
+  schema_version: typeof REPLAY_ISOLATION_PROFILE_SCHEMA_VERSION;
+  workspace_id?: string;
+  kind?: ReplayIsolationKindV7;
+  base_url?: string;
+  commands?: {
+    ci?: string;
+    data_reset?: string;
+    reset_assertion?: string;
+    postcondition?: string;
+  };
+  working_directory?: string;
+  auth_provider_id?: string;
+  reset_profile_id?: string;
+  state_seed_id?: string;
+  allow_mutation_replay?: boolean;
+}
+
+export interface ReplayIsolationProfileDocumentV7 extends ReplayIsolationProfileManifestV7 {
+  workspace_id: string;
+  kind: ReplayIsolationKindV7;
+  readiness: ReplayIsolationProfileV7["readiness"];
+  can_run_full_mutation_replay: boolean;
+  missing: string[];
+  updated_at: number | null;
 }
 
 export interface ReplayIsolationProfileV7 {
@@ -24,7 +58,12 @@ export interface ReplayIsolationProfileV7 {
   base_url: string | null;
   ci_command: string | null;
   data_reset_command: string | null;
+  reset_assertion_command: string | null;
+  postcondition_command: string | null;
+  working_directory: string | null;
   auth_provider_id: string | null;
+  reset_profile_id: string | null;
+  state_seed_id: string | null;
   allow_mutation_replay: boolean;
   missing: string[];
   updated_at: number | null;
@@ -83,7 +122,12 @@ export class ReplayIsolationProfileManager {
       base_url: stringOpt(input.base_url) ?? null,
       ci_command: stringOpt(input.ci_command) ?? null,
       data_reset_command: stringOpt(input.data_reset_command) ?? null,
+      reset_assertion_command: stringOpt(input.reset_assertion_command) ?? null,
+      postcondition_command: stringOpt(input.postcondition_command) ?? null,
+      working_directory: stringOpt(input.working_directory) ?? null,
       auth_provider_id: stringOpt(input.auth_provider_id) ?? null,
+      reset_profile_id: stringOpt(input.reset_profile_id) ?? null,
+      state_seed_id: stringOpt(input.state_seed_id) ?? null,
       allow_mutation_replay: input.allow_mutation_replay === true,
       missing,
       updated_at: Date.now(),
@@ -104,6 +148,73 @@ export class ReplayIsolationProfileManager {
 }
 
 export const replayIsolationProfiles = new ReplayIsolationProfileManager();
+
+export function replayIsolationProfileInputFromManifest(manifest: unknown): ReplayIsolationProfileInput {
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) return {};
+  const value = manifest as Record<string, unknown>;
+  const commands = value["commands"] && typeof value["commands"] === "object" && !Array.isArray(value["commands"])
+    ? value["commands"] as Record<string, unknown>
+    : {};
+  return {
+    workspace_id: stringOpt(value["workspace_id"]),
+    kind: isolationKind(value["kind"]),
+    base_url: stringOpt(value["base_url"]),
+    ci_command: stringOpt(commands["ci"]) ?? stringOpt(value["ci_command"]),
+    data_reset_command: stringOpt(commands["data_reset"]) ?? stringOpt(value["data_reset_command"]),
+    reset_assertion_command: stringOpt(commands["reset_assertion"]) ?? stringOpt(value["reset_assertion_command"]),
+    postcondition_command: stringOpt(commands["postcondition"]) ?? stringOpt(value["postcondition_command"]),
+    working_directory: stringOpt(value["working_directory"]),
+    auth_provider_id: stringOpt(value["auth_provider_id"]),
+    reset_profile_id: stringOpt(value["reset_profile_id"]),
+    state_seed_id: stringOpt(value["state_seed_id"]),
+    allow_mutation_replay: typeof value["allow_mutation_replay"] === "boolean" ? value["allow_mutation_replay"] as boolean : undefined,
+  };
+}
+
+export function mergeReplayIsolationProfileInputs(
+  base: ReplayIsolationProfileInput,
+  override: ReplayIsolationProfileInput
+): ReplayIsolationProfileInput {
+  return {
+    workspace_id: override.workspace_id ?? base.workspace_id,
+    kind: override.kind ?? base.kind,
+    base_url: override.base_url ?? base.base_url,
+    ci_command: override.ci_command ?? base.ci_command,
+    data_reset_command: override.data_reset_command ?? base.data_reset_command,
+    reset_assertion_command: override.reset_assertion_command ?? base.reset_assertion_command,
+    postcondition_command: override.postcondition_command ?? base.postcondition_command,
+    working_directory: override.working_directory ?? base.working_directory,
+    auth_provider_id: override.auth_provider_id ?? base.auth_provider_id,
+    reset_profile_id: override.reset_profile_id ?? base.reset_profile_id,
+    state_seed_id: override.state_seed_id ?? base.state_seed_id,
+    allow_mutation_replay: override.allow_mutation_replay ?? base.allow_mutation_replay,
+  };
+}
+
+export function replayIsolationProfileManifestFor(profile: ReplayIsolationProfileV7): ReplayIsolationProfileDocumentV7 {
+  const manifest: ReplayIsolationProfileDocumentV7 = {
+    schema_version: REPLAY_ISOLATION_PROFILE_SCHEMA_VERSION,
+    workspace_id: profile.workspace_id,
+    kind: profile.kind,
+    readiness: profile.readiness,
+    can_run_full_mutation_replay: profile.can_run_full_mutation_replay,
+    missing: [...profile.missing],
+    updated_at: profile.updated_at,
+  };
+  if (profile.base_url) manifest.base_url = profile.base_url;
+  const commands: NonNullable<ReplayIsolationProfileManifestV7["commands"]> = {};
+  if (profile.ci_command) commands.ci = profile.ci_command;
+  if (profile.data_reset_command) commands.data_reset = profile.data_reset_command;
+  if (profile.reset_assertion_command) commands.reset_assertion = profile.reset_assertion_command;
+  if (profile.postcondition_command) commands.postcondition = profile.postcondition_command;
+  if (Object.keys(commands).length > 0) manifest.commands = commands;
+  if (profile.working_directory) manifest.working_directory = profile.working_directory;
+  if (profile.auth_provider_id) manifest.auth_provider_id = profile.auth_provider_id;
+  if (profile.reset_profile_id) manifest.reset_profile_id = profile.reset_profile_id;
+  if (profile.state_seed_id) manifest.state_seed_id = profile.state_seed_id;
+  manifest.allow_mutation_replay = profile.allow_mutation_replay;
+  return manifest;
+}
 
 export function mutationSafetyPlanFor(contract: WorkflowContractV7, profile: ReplayIsolationProfileV7): MutationSafetyPlanV7 {
   const hasMutation = contract.mutationBoundaryPlan.mutationSteps.length > 0;
@@ -199,6 +310,7 @@ function ciReplayBlockers(contract: WorkflowContractV7, profile: ReplayIsolation
   if (contract.steps.length === 0) blockers.push("no_actionable_steps");
   if (contract.mutationBoundaryPlan.mutationSteps.length > 0 && profile.readiness !== "ciIsolatedReady") {
     blockers.push("ci_isolation_profile_not_ready");
+    blockers.push(...profile.missing);
   }
   if (contract.mutationBoundaryPlan.mutationSteps.length > 0 && !profile.allow_mutation_replay) {
     blockers.push("mutation_replay_not_explicitly_allowed");
@@ -213,10 +325,97 @@ function missingIsolationFields(kind: ReplayIsolationKindV7, input: ReplayIsolat
   if (kind !== "ciIsolated") return [];
   const missing: string[] = [];
   if (!stringOpt(input.base_url)) missing.push("base_url");
-  if (!stringOpt(input.ci_command)) missing.push("ci_command");
-  if (!stringOpt(input.data_reset_command)) missing.push("data_reset_command");
+  validateReplayCommandField(missing, "ci_command", input.ci_command);
+  validateReplayCommandField(missing, "data_reset_command", input.data_reset_command);
+  validateReplayCommandField(missing, "reset_assertion_command", input.reset_assertion_command);
+  validateReplayCommandField(missing, "postcondition_command", input.postcondition_command);
+  if (!stringOpt(input.reset_profile_id)) missing.push("reset_profile_id");
+  if (!stringOpt(input.state_seed_id)) missing.push("state_seed_id");
   if (input.allow_mutation_replay !== true) missing.push("allow_mutation_replay");
   return missing;
+}
+
+function validateReplayCommandField(missing: string[], field: string, value: unknown): void {
+  const command = stringOpt(value);
+  if (!command) {
+    missing.push(field);
+    return;
+  }
+  if (replayCommandSyntaxError(command)) {
+    missing.push(`invalid_${field}`);
+  }
+}
+
+export function parseReplayCommand(command: string): string[] | null {
+  if (replayCommandSyntaxError(command)) return null;
+  const argv: string[] = [];
+  let current = "";
+  let quote: "'" | "\"" | null = null;
+  let escaped = false;
+  for (const char of command) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (char === "'" && quote !== "\"") {
+      quote = quote === "'" ? null : "'";
+      continue;
+    }
+    if (char === "\"" && quote !== "'") {
+      quote = quote === "\"" ? null : "\"";
+      continue;
+    }
+    if (/\s/.test(char) && quote === null) {
+      if (current.length > 0) {
+        argv.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+  if (escaped) current += "\\";
+  if (quote !== null) return null;
+  if (current.length > 0) argv.push(current);
+  return argv.length > 0 ? argv : null;
+}
+
+export function replayCommandSyntaxError(command: string): string | null {
+  if (command.trim().length === 0) return "empty";
+  let quote: "'" | "\"" | null = null;
+  let escaped = false;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (char === "'" && quote !== "\"") {
+      quote = quote === "'" ? null : "'";
+      continue;
+    }
+    if (char === "\"" && quote !== "'") {
+      quote = quote === "\"" ? null : "\"";
+      continue;
+    }
+    if (quote !== null) continue;
+    if (char === "\n" || char === "\r") return "newline";
+    if (char === ";" || char === "|" || char === "&" || char === "<" || char === ">" || char === "`") {
+      return "shell_control";
+    }
+    if (char === "$" && command[index + 1] === "(") return "shell_substitution";
+  }
+  if (quote !== null) return "unclosed_quote";
+  return null;
 }
 
 function readinessFor(kind: ReplayIsolationKindV7, missing: string[], canRunFullMutationReplay: boolean): ReplayIsolationProfileV7["readiness"] {
@@ -234,7 +433,12 @@ function emptyProfile(workspaceId: string): ReplayIsolationProfileV7 {
     base_url: null,
     ci_command: null,
     data_reset_command: null,
+    reset_assertion_command: null,
+    postcondition_command: null,
+    working_directory: null,
     auth_provider_id: null,
+    reset_profile_id: null,
+    state_seed_id: null,
     allow_mutation_replay: false,
     missing: [],
     updated_at: null,

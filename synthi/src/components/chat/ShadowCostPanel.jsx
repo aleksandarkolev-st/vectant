@@ -95,7 +95,7 @@ export function ShadowCostPanel({ workspacePath }) {
     return (
         <div className={`genome-cost-panel ${overCap ? 'genome-cost-panel--over' : ''}`}>
             <header className="genome-cost-panel__head">
-                <span aria-hidden="true">$</span>
+                <span className="genome-cost-panel__sigil" aria-hidden="true">$</span>
                 <span>Shadow verify spend</span>
                 {loading ? <span className="genome-cost-panel__spinner" aria-hidden="true">…</span> : null}
             </header>
@@ -155,7 +155,7 @@ export function ShadowCostPanel({ workspacePath }) {
                 />
             </div>
             {overCap ? (
-                <p className="genome-cost-panel__warn">⚠ Today's spend has exceeded your cap.</p>
+                <p className="genome-cost-panel__warn">Limit exceeded: today's spend has passed the cap.</p>
             ) : null}
             {Array.isArray(state?.history) && state.history.length > 1 ? (
                 <Sparkline history={state.history} cap={cap} />
@@ -175,7 +175,7 @@ export function ShadowCostPanel({ workspacePath }) {
                     </ul>
                 </details>
             ) : null}
-            {error ? <p className="genome-cost-panel__error">⚠ {error}</p> : null}
+            {error ? <p className="genome-cost-panel__error">Error: {error}</p> : null}
         </div>
     );
 }

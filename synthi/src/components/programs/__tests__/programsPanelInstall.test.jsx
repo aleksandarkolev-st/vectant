@@ -1,0 +1,340 @@
+/* @vitest-environment jsdom */
+
+import React from 'react';
+import { act } from 'react';
+import { createRoot } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { IDE_PANEL } from '@/components/docking-wm/panels/panel-types';
+
+const h = vi.hoisted(() => ({
+  dispatch: vi.fn(),
+  state: {},
+  fetchProgramSessions: vi.fn(),
+  fetchInstalledPrograms: vi.fn(),
+  launchProgramSession: vi.fn(),
+  installWorkspaceProgram: vi.fn(),
+  launchInstalledProgram: vi.fn(),
+  stopProgramSession: vi.fn(),
+  restartProgramSession: vi.fn(),
+  deleteProgramSession: vi.fn(),
+  publishWorkspaceProgram: vi.fn(),
+  submitForReview: vi.fn(),
+  fetchMySubmissions: vi.fn(),
+  unpublishProgram: vi.fn(),
+  generateManifest: vi.fn(),
+  saveWorkspaceManifest: vi.fn(),
+  fetchMarketplace: vi.fn(),
+  installPublishedProgram: vi.fn(),
+  toastSuccess: vi.fn(),
+  toastError: vi.fn(),
+  scaffoldProgram: vi.fn(),
+  fetchDetectedProgram: vi.fn(),
+  launchDetectedProgram: vi.fn(),
+}));
+
+vi.mock('react-redux', () => ({
+  useDispatch: () => h.dispatch,
+  useSelector: (sel) => sel(h.state),
+}));
+vi.mock('sonner', () => ({ toast: { success: h.toastSuccess, error: h.toastError } }));
+vi.mock('../programsClient', () => ({
+  fetchProgramSessions: h.fetchProgramSessions,
+  fetchInstalledPrograms: h.fetchInstalledPrograms,
+  launchProgramSession: h.launchProgramSession,
+  installWorkspaceProgram: h.installWorkspaceProgram,
+  launchInstalledProgram: h.launchInstalledProgram,
+  stopProgramSession: h.stopProgramSession,
+  restartProgramSession: h.restartProgramSession,
+  deleteProgramSession: h.deleteProgramSession,
+  publishWorkspaceProgram: h.publishWorkspaceProgram,
+  submitForReview: h.submitForReview,
+  fetchMySubmissions: h.fetchMySubmissions,
+  unpublishProgram: h.unpublishProgram,
+  generateManifest: h.generateManifest,
+  saveWorkspaceManifest: h.saveWorkspaceManifest,
+  fetchMarketplace: h.fetchMarketplace,
+  installPublishedProgram: h.installPublishedProgram,
+  scaffoldProgram: h.scaffoldProgram,
+  fetchDetectedProgram: h.fetchDetectedProgram,
+  launchDetectedProgram: h.launchDetectedProgram,
+}));
+vi.mock('@/components/docking-wm/state/layout-slice', () => ({
+  selectNodes: (s) => s.nodes,
+  selectTabs: (s) => s.tabs,
+  openTab: (p) => ({ type: 'openTab', payload: p }),
+  activateTabAction: (p) => ({ type: 'activate', payload: p }),
+  setFocusedTabGroup: (p) => ({ type: 'focus', payload: p }),
+  selectFloating: (s) => s.floating,
+  openFloatingPanel: (p) => ({ type: 'openFloatingPanel', payload: p }),
+  bringFloatToFrontAction: (p) => ({ type: 'bringFloatToFront', payload: p }),
+}));
+vi.mock('@/redux/uiSlice', () => ({
+  setShowTerminal: (v) => ({ type: 'ui/setShowTerminal', payload: v }),
+}));
+
+import ProgramsPanel from '../ProgramsPanel';
+
+async function flush() {
+  await act(async () => {
+    for (let i = 0; i < 6; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await Promise.resolve();
+    }
+  });
+}
+
+function byTestId(container, id) {
+  return container.querySelector(`[data-testid="${id}"]`);
+}
+
+// The Store (marketplace / install-from-manifest / publish) is now a view pushed
+// inside the panel — navigate to it before interacting with store-housed controls.
+async function openStore(container) {
+  await act(async () => { byTestId(container, 'open-store').click(); });
+  await flush();
+}
+
+describe('ProgramsPanel install / launch-from-install', () => {
+  let container;
+  let root;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.state = {
+      workspace: { slug: 'team', role: 'owner' },
+      nodes: { g1: { type: 'tabgroup', tabs: ['t1'] } },
+      tabs: { t1: { panelType: IDE_PANEL.EDITOR } },
+      floating: {},
+    };
+    h.fetchProgramSessions.mockResolvedValue([]);
+    h.fetchInstalledPrograms.mockResolvedValue([]);
+    h.fetchMarketplace.mockResolvedValue([]);
+    h.fetchDetectedProgram.mockResolvedValue(null);
+    h.fetchMySubmissions.mockResolvedValue([]);
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  async function render() {
+    await act(async () => {
+      root.render(React.createElement(ProgramsPanel));
+    });
+    await flush();
+  }
+
+  it('shows a consent prompt listing the requested scopes when install needs consent', async () => {
+    h.installWorkspaceProgram.mockRejectedValueOnce({ status: 409, body: { requested: ['program.launch', 'network.outbound'] } });
+    await render();
+    await openStore(container);
+
+    await act(async () => {
+      byTestId(container, 'install-from-manifest').click();
+    });
+    await flush();
+
+    const prompt = byTestId(container, 'consent-prompt');
+    expect(prompt).not.toBeNull();
+    expect(prompt.textContent).toContain('program.launch');
+    expect(prompt.textContent).toContain('network.outbound');
+  });
+
+  it('re-submits with grantScopes when consent is approved', async () => {
+    h.installWorkspaceProgram
+      .mockRejectedValueOnce({ status: 409, body: { requested: ['program.launch'] } })
+      .mockResolvedValueOnce({ install: { id: 'inst1', packageId: 'local:team:web', version: '1.0.0', status: 'installed' } });
+    h.fetchInstalledPrograms.mockResolvedValue([{ id: 'inst1', packageId: 'local:team:web', version: '1.0.0', status: 'installed' }]);
+    await render();
+    await openStore(container);
+
+    await act(async () => {
+      byTestId(container, 'install-from-manifest').click();
+    });
+    await flush();
+    await act(async () => {
+      byTestId(container, 'approve-consent').click();
+    });
+    await flush();
+
+    expect(h.installWorkspaceProgram).toHaveBeenCalledTimes(2);
+    expect(h.installWorkspaceProgram).toHaveBeenLastCalledWith('team', { grantScopes: ['program.launch'] });
+  });
+
+  it('launches an installed program and opens its session tab', async () => {
+    h.fetchInstalledPrograms.mockResolvedValue([{ id: 'inst1', packageId: 'local:team:web', version: '1.0.0', status: 'installed' }]);
+    h.launchInstalledProgram.mockResolvedValue({ session: { id: 'ps1', state: 'running', runtimeType: 'web' } });
+    await render();
+
+    await act(async () => {
+      byTestId(container, 'launch-install-inst1').click();
+    });
+    await flush();
+
+    expect(h.launchInstalledProgram).toHaveBeenCalledWith('team', 'inst1');
+    expect(h.dispatch).toHaveBeenCalled();
+  });
+
+  it('surfaces the manifest_invalid message from a 422 install response', async () => {
+    h.installWorkspaceProgram.mockRejectedValueOnce({ status: 422, body: { error: 'manifest_invalid', message: 'Invalid packageId' } });
+    await render();
+    await openStore(container);
+
+    await act(async () => {
+      byTestId(container, 'install-from-manifest').click();
+    });
+    await flush();
+
+    expect(h.toastError).toHaveBeenCalledWith('Invalid packageId');
+    expect(byTestId(container, 'consent-prompt')).toBeNull();
+  });
+
+  it('hides install / launch controls for a plain member', async () => {
+    h.state.workspace.role = 'member';
+    h.fetchInstalledPrograms.mockResolvedValue([{ id: 'inst1', packageId: 'local:team:web', version: '1.0.0', status: 'installed' }]);
+    await render();
+
+    // Library: a member sees the tile but no launch button.
+    expect(byTestId(container, 'launch-install-inst1')).toBeNull();
+    // Store: a member can browse but install-from-manifest is hidden.
+    await openStore(container);
+    expect(byTestId(container, 'install-from-manifest')).toBeNull();
+  });
+
+  it('submits for review when an owner clicks Submit for review', async () => {
+    const origPrompt = window.prompt;
+    window.prompt = () => '';
+    try {
+      h.submitForReview.mockResolvedValue({ submission: { versionId: 'ver1', reviewState: 'submitted' } });
+      await render();
+      await openStore(container);
+      await act(async () => { byTestId(container, 'publish-program').click(); });
+      await flush();
+      expect(h.submitForReview).toHaveBeenCalledWith('team', { sourceImageRef: undefined });
+    } finally {
+      window.prompt = origPrompt;
+    }
+  });
+
+  it('lists the published catalog and installs a published program', async () => {
+    h.fetchMarketplace.mockResolvedValue([{ id: 'p1', packageId: '@other/web', publisher: 'other', displayName: 'Web', installCount: 4, verified: false, latestVersion: '1.0.0' }]);
+    h.installPublishedProgram.mockResolvedValue({ install: { id: 'inst9', packageId: '@other/web', version: '1.0.0', status: 'installed' } });
+    await render();
+    await openStore(container);
+    const card = byTestId(container, 'marketplace-item-@other/web');
+    expect(card).not.toBeNull();
+    await act(async () => { byTestId(container, 'install-published-@other/web').click(); });
+    await flush();
+    expect(h.installPublishedProgram).toHaveBeenCalledWith('team', '@other/web', '1.0.0', undefined);
+  });
+
+  it('hides the Publish action for a plain member', async () => {
+    h.state.workspace.role = 'member';
+    await render();
+    await openStore(container);
+    expect(byTestId(container, 'publish-program')).toBeNull();
+  });
+
+  it('shows a Verified badge only on verified marketplace programs', async () => {
+    h.fetchMarketplace.mockResolvedValue([
+      { id: 'p1', packageId: '@vectant/nextjs-dev', publisher: 'vectant', displayName: 'Next.js Dev Server', description: 'Next.js development server with hot reload (port 3000).', installCount: 12, verified: true, latestVersion: '1.0.0' },
+      { id: 'p2', packageId: '@other/web', publisher: 'other', displayName: 'Web', description: 'A community app', installCount: 1, verified: false, latestVersion: '1.0.0' },
+    ]);
+    await render();
+    await openStore(container);
+
+    expect(byTestId(container, 'verified-badge-@vectant/nextjs-dev')).not.toBeNull();
+    expect(byTestId(container, 'verified-badge-@other/web')).toBeNull();
+  });
+
+  it('shows "Set up project" for a scaffoldable installed default and scaffolds then launches', async () => {
+    h.fetchInstalledPrograms.mockResolvedValue([{ id: 'inst1', packageId: '@vectant/nextjs-dev', version: '1.0.0', status: 'installed' }]);
+    h.scaffoldProgram.mockResolvedValue({ written: ['package.json', 'app/page.js'], skipped: [] });
+    h.launchInstalledProgram.mockResolvedValue({ session: { id: 'ps1', state: 'running', runtimeType: 'web' } });
+    const origConfirm = window.confirm;
+    window.confirm = () => true;
+    try {
+      await render();
+      await act(async () => { byTestId(container, 'scaffold-inst1').click(); });
+      await flush();
+    } finally {
+      window.confirm = origConfirm;
+    }
+    expect(h.scaffoldProgram).toHaveBeenCalledWith('team', '@vectant/nextjs-dev');
+    expect(h.launchInstalledProgram).toHaveBeenCalledWith('team', 'inst1');
+  });
+
+  it('hides "Set up project" for a non-scaffoldable installed program', async () => {
+    h.fetchInstalledPrograms.mockResolvedValue([{ id: 'inst2', packageId: 'local:team:web', version: '1.0.0', status: 'installed' }]);
+    await render();
+    expect(byTestId(container, 'scaffold-inst2')).toBeNull();
+  });
+
+  it('surfaces a detected repo container program and launches it', async () => {
+    h.fetchDetectedProgram.mockResolvedValue({ config: { runtimeType: 'container', displayName: 'Compose' }, source: 'docker-compose.yml' });
+    h.launchDetectedProgram.mockResolvedValue({ session: { id: 'ps-d', state: 'starting', runtimeType: 'container' } });
+    await render();
+
+    const row = byTestId(container, 'detected-program');
+    expect(row).not.toBeNull();
+    expect(row.textContent).toContain('docker-compose.yml');
+
+    await act(async () => { byTestId(container, 'launch-detected').click(); });
+    await flush();
+
+    expect(h.launchDetectedProgram).toHaveBeenCalledWith('team');
+    expect(h.dispatch).toHaveBeenCalled();
+  });
+
+  it('hides the detected-program row for a plain member', async () => {
+    h.state.workspace.role = 'member';
+    h.fetchDetectedProgram.mockResolvedValue({ config: { runtimeType: 'container' }, source: 'Dockerfile' });
+    await render();
+    expect(byTestId(container, 'detected-program')).toBeNull();
+  });
+
+  it('removing a running session asks for confirmation, then deletes on confirm', async () => {
+    h.fetchProgramSessions.mockResolvedValue([{ id: 'ps-run', state: 'running', runtimeType: 'web' }]);
+    h.deleteProgramSession.mockResolvedValue({ ok: true });
+    await render();
+
+    await act(async () => { byTestId(container, 'session-remove-ps-run').click(); });
+    await flush();
+    // Confirm dialog (portaled to document.body) appears; nothing deleted yet.
+    expect(document.querySelector('[data-testid="confirm-dialog"]')).not.toBeNull();
+    expect(h.deleteProgramSession).not.toHaveBeenCalled();
+
+    await act(async () => { document.querySelector('[data-testid="confirm-accept"]').click(); });
+    await flush();
+    expect(h.deleteProgramSession).toHaveBeenCalledWith('team', 'ps-run');
+  });
+
+  it('removing a stopped session deletes immediately without a dialog', async () => {
+    h.fetchProgramSessions.mockResolvedValue([{ id: 'ps-stop', state: 'stopped', runtimeType: 'web' }]);
+    h.deleteProgramSession.mockResolvedValue({ ok: true });
+    await render();
+
+    await act(async () => { byTestId(container, 'session-remove-ps-stop').click(); });
+    await flush();
+    expect(document.querySelector('[data-testid="confirm-dialog"]')).toBeNull();
+    expect(h.deleteProgramSession).toHaveBeenCalledWith('team', 'ps-stop');
+  });
+
+  it('opening an installed program that already has a running session reuses it (no second launch)', async () => {
+    h.fetchInstalledPrograms.mockResolvedValue([{ id: 'inst1', packageId: 'local:team:web', version: '1.0.0', status: 'installed' }]);
+    h.fetchProgramSessions.mockResolvedValue([{ id: 'ps-existing', state: 'running', runtimeType: 'web', installId: 'inst1' }]);
+    await render();
+
+    await act(async () => { byTestId(container, 'launch-install-inst1').click(); });
+    await flush();
+
+    expect(h.launchInstalledProgram).not.toHaveBeenCalled(); // reused, not relaunched
+    expect(h.dispatch).toHaveBeenCalled();                   // existing session opened
+  });
+});

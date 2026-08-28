@@ -64,10 +64,14 @@ gcloud compute addresses describe synthi-ip --global
 
 ### Build & Push Images
 
-Replace `REGISTRY` with your Artifact Registry path (e.g., `us-central1-docker.pkg.dev/overview-synti/synthi`).
+Set the project and region for the target environment, then derive the Artifact
+Registry path. Keep these as variables so local, staging, and production
+operators do not accidentally build against a stale project.
 
 ```bash
-REGISTRY=us-central1-docker.pkg.dev/overview-synti/synthi
+: "${PROJECT_ID:?Set PROJECT_ID, for example vectant-proj}"
+: "${REGION:?Set REGION, for example europe-west10}"
+REGISTRY="${REGION}-docker.pkg.dev/${PROJECT_ID}/synthi"
 
 # Frontend
 cd synthi
@@ -106,6 +110,10 @@ Production deploys use `k8s/external-secrets.yaml`, which syncs the
 `synthi-secrets` Kubernetes Secret from GCP Secret Manager. Create the remote
 secrets named in that manifest before applying `k8s/`.
 
+Set `synthi-runtime-id-secret` once and keep it stable. It is used to derive
+opaque `rt-...` runtime pod/service names; rotating it changes those names and
+breaks existing preview routes until runtimes are recreated.
+
 For a local/manual deployment without External Secrets Operator, copy
 `k8s/secrets.yaml.example` to `k8s/secrets.yaml`, replace every placeholder with
 real base64-encoded values, and swap the foundation resource in
@@ -120,6 +128,23 @@ echo -n 'your-actual-secret' | base64
 Search-and-replace `synthi.example.com` in:
 - `k8s/configmap.yaml` — public URLs
 - `k8s/ingress.yaml` — Ingress host + ManagedCertificate
+
+### Configure Workspace Node Pool
+
+The app manifests schedule runtime pods onto the `workspace-pool` node pool via
+`cloud.google.com/gke-nodepool=workspace-pool`. The node pool itself is GKE
+infrastructure, not a Kubernetes manifest, so configure it with `gcloud`:
+
+```bash
+scripts/configure-workspace-node-pool.sh \
+  --machine-type n2-standard-4 \
+  --min-nodes 0 \
+  --max-nodes 2
+```
+
+For closed beta, the intended default is `n2-standard-4` with autoscaling from
+0 to 2 nodes. Idle runtime pods are removed by the spawner; when no runtime pods
+remain, the workspace pool can scale down instead of burning node CPU/RAM.
 
 ### Configure DNS
 
@@ -145,16 +170,76 @@ Create a DNS A record pointing your domain to this IP:
 **HTTP to HTTPS redirect:**
 The Ingress uses a `FrontendConfig` to redirect all HTTP traffic to HTTPS with a 301 status code. No additional configuration needed.
 
-### Configure Registry
+### Configure Preview Subdomains
 
-Image references in all manifests default to `us-central1-docker.pkg.dev/overview-synti/synthi/`.
-To use a different registry, override via Kustomize:
+Workspace app previews are served from wildcard subdomains instead of path
+prefixes:
+
+```text
+https://p3000-rt-<runtime-id>.preview.vectant.dev/
+```
+
+This keeps user app assets, HMR WebSockets, cookies, localStorage, and service
+workers rooted at `/` on an isolated origin. The fallback path proxy under
+`/collab/runtime/.../port/...` remains only for local/debug use.
+
+The same preview-domain machinery exposes the per-runtime workspace browser
+viewer used for terminal OAuth flows:
+
+```text
+https://p6080-rt-<runtime-id>.preview.vectant.dev/vnc.html?autoconnect=1&resize=scale&reconnect=1
+```
+
+`6080` is configurable through `SYNTHI_HOSTED_BROWSER_VIEW_PORT`; it is a
+reserved runtime infrastructure port, not a user application port.
+
+The `preview.vectant.dev` sub-zone is delegated to Cloud DNS, and
+`*.preview.vectant.dev` points at the same static IP as `beta.vectant.dev`.
+Wildcard TLS is issued by cert-manager using ACME DNS-01 with Cloud DNS:
 
 ```bash
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.20.2/cert-manager.yaml
+
+gcloud iam service-accounts create synthi-cert-manager-dns01 \
+  --project=vectant-proj \
+  --display-name="Synthi cert-manager Cloud DNS01"
+
+gcloud projects add-iam-policy-binding vectant-proj \
+  --member="serviceAccount:synthi-cert-manager-dns01@vectant-proj.iam.gserviceaccount.com" \
+  --role="roles/dns.admin"
+
+gcloud iam service-accounts add-iam-policy-binding \
+  synthi-cert-manager-dns01@vectant-proj.iam.gserviceaccount.com \
+  --project=vectant-proj \
+  --role="roles/iam.workloadIdentityUser" \
+  --member="serviceAccount:vectant-proj.svc.id.goog[cert-manager/cert-manager]"
+
+kubectl -n cert-manager annotate serviceaccount cert-manager \
+  iam.gke.io/gcp-service-account=synthi-cert-manager-dns01@vectant-proj.iam.gserviceaccount.com \
+  --overwrite
+```
+
+After the Workload Identity binding is in place, `k8s/preview-certificate.yaml`
+creates the `preview-wildcard-tls` secret used by `k8s/ingress.yaml`.
+
+### Configure Registry
+
+Image references in the active manifests point at the current Artifact Registry
+shape and use the `build-tag-required` placeholder. Cloud Build and
+`scripts/deploy-prod.sh` replace that placeholder with an immutable image tag
+during deployment.
+
+For a manual render outside Cloud Build, set the target registry and tag through
+Kustomize instead of editing manifests in place:
+
+```bash
+: "${REGISTRY:?Set REGISTRY, for example europe-west10-docker.pkg.dev/vectant-proj/synthi}"
+: "${IMAGE_TAG:?Set IMAGE_TAG, for example prod-20260618-821d174d4864}"
+
 cd k8s
 kustomize edit set image \
-  us-central1-docker.pkg.dev/overview-synti/synthi/synthi-frontend=YOUR_REGISTRY/synthi-frontend:v1.0 \
-  us-central1-docker.pkg.dev/overview-synti/synthi/synthi-collab-server=YOUR_REGISTRY/synthi-collab-server:v1.0 \
+  europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-frontend="${REGISTRY}/synthi-frontend:${IMAGE_TAG}" \
+  europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-collab-server="${REGISTRY}/synthi-collab-server:${IMAGE_TAG}" \
   # ...etc
 ```
 
@@ -164,15 +249,17 @@ The project includes a `cloudbuild.yaml` at the repo root that automates build a
 
 ```bash
 # One-time setup: create Artifact Registry
+: "${PROJECT_ID:?Set PROJECT_ID}"
+: "${REGION:?Set REGION}"
 gcloud artifacts repositories create synthi \
-  --repository-format=docker --location=us-central1 --project=overview-synti
+  --repository-format=docker --location="${REGION}" --project="${PROJECT_ID}"
 
 # Grant Cloud Build permissions
-PROJECT_NUM=$(gcloud projects describe overview-synti --format='value(projectNumber)')
-gcloud projects add-iam-policy-binding overview-synti \
+PROJECT_NUM=$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
   --member="serviceAccount:${PROJECT_NUM}@cloudbuild.gserviceaccount.com" \
   --role="roles/artifactregistry.writer"
-gcloud projects add-iam-policy-binding overview-synti \
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
   --member="serviceAccount:${PROJECT_NUM}@cloudbuild.gserviceaccount.com" \
   --role="roles/container.developer"
 
@@ -181,16 +268,71 @@ gcloud builds triggers create github \
   --name="synthi-deploy-main" \
   --repo-name="synthi-ide" --repo-owner="YOUR_ORG" \
   --branch-pattern="^main$" --build-config="cloudbuild.yaml" \
-  --project=overview-synti
+  --project="${PROJECT_ID}"
 ```
 
+For the current beta production environment, use one of these paths instead of
+running `kubectl apply -k k8s/` directly:
+
+```bash
+# Local operator deploy from the current checkout.
+scripts/deploy-prod.sh
+
+# Push the current commit to main first, then deploy the same local snapshot.
+scripts/deploy-prod.sh --push
+
+# Use an explicit immutable image tag.
+scripts/deploy-prod.sh --tag prod-20260611-a1b2c3d4
+```
+
+`scripts/deploy-prod.sh` submits `cloudbuild.yaml` to Cloud Build with these
+production defaults:
+
+| Setting | Value |
+|---------|-------|
+| Project | `vectant-proj` |
+| Registry region | `europe-west10` |
+| Registry | `europe-west10-docker.pkg.dev/vectant-proj/synthi` |
+| Cluster | `synthi-beta-cluster` |
+| Cluster location | `europe-west10-a` |
+| Deploy branch | `main` |
+| Kustomize dir | `k8s/overlays/dojo-release-gate` |
+| Kustomize load restrictor | `LoadRestrictionsNone` |
+
+The script refuses dirty local deploys by default because Cloud Build uploads
+the local checkout snapshot. Use `--allow-dirty` only when you intentionally
+want to deploy uncommitted local files.
+
+The repo also includes `.github/workflows/deploy-prod.yml`. It submits the same
+Cloud Build pipeline on every push to `main`, and can also be run
+manually from GitHub Actions. Configure these repository secrets before using it:
+
+| Secret | Purpose |
+|--------|---------|
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | GitHub OIDC provider resource name |
+| `GCP_DEPLOY_SERVICE_ACCOUNT` | Service account email allowed to submit Cloud Builds |
+
+The GitHub deploy service account only needs to submit Cloud Builds. The Cloud
+Build service account still performs the image pushes and GKE rollout, so it
+must keep the Artifact Registry and GKE permissions listed above.
+
+Production deploys render the Dojo release overlay with the immutable image tag
+before applying manifests. This prevents the live cluster from briefly rolling
+Deployments to the placeholder `build-tag-required` image. The base `k8s/`
+render remains available for explicit rollback or beta-compatible debugging.
+
 ### Deploy
+
+Use this section for first-time cluster bootstrap or manual debugging. For
+repeat production rollouts, prefer `scripts/deploy-prod.sh` or the GitHub
+Actions workflow above.
 
 ```bash
 # Apply everything in dependency order
 kubectl apply -k k8s/
 
-# Run Prisma migrations (via dedicated Job with Cloud SQL Auth Proxy)
+# Run Prisma migrations via the dedicated Job.
+# DATABASE_URL must already reach the target Postgres endpoint.
 IMAGE_TAG=<immutable build tag>
 kubectl delete job prisma-migrate -n synthi --ignore-not-found
 sed "s|synthi-prisma-migrate:build-tag-required|synthi-prisma-migrate:${IMAGE_TAG}|g" \
@@ -231,7 +373,18 @@ These are baked into the JavaScript bundle at **build time**, not runtime. You m
 The GCE Ingress default backend timeout is 30s, which kills WebSocket connections. The `BackendConfig` resources in `ingress.yaml` set a 1-hour timeout for WS services.
 
 ### Worker Scaling
-Static worker replicas are kept at `0`. The collab server creates a one-replica Deployment per active compiler session via `/api/spawner/ensure`, keeps it alive with `/api/spawner/touch`, and tears it down when the signaling session ends.
+Static worker replicas are kept at `0`. The collab server creates a one-replica Deployment per active runtime scope via `/api/spawner/ensure`, keeps it alive with `/api/spawner/touch`, and tears it down when the signaling session ends. Each runtime pod includes a preview sidecar on the configured internal sidecar port, so user dev servers can keep binding localhost-only app ports such as `3000` or `5173`.
+
+### Runtime Filesystem Storage
+Runtime pods and the collab server both mount `/data/repos`, so `collab-data-pvc` must use ReadWriteMany storage when pods can schedule on different node pools. The production manifest defaults to GKE Filestore CSI `enterprise-multishare-rwx`; override the StorageClass if your cluster uses another RWX Filestore or NFS class.
+
+Runtime pod cleanup deletes the Kubernetes Deployment/Pod, not the workspace
+filesystem. In production `REPO_CACHE_DELETE_ON_EVICT=false` makes collab-server
+LRU eviction memory-only, so `/data/repos/<workspace>/<filesystem-user>` remains
+on the PVC. Terminals also store generic CLI/package-manager state under
+`/data/repos/<workspace>/<filesystem-user>/.synthi/runtime`, which keeps npm
+global installs, language caches, and CLI login state across idle teardown and
+runtime recreation without placing hidden auth files directly in the user repo.
 
 ### WebSocket Health Checks
 For GKE Ingress, timeout settings alone are not enough. Each public WebSocket backend also needs a valid HTTP health target. In this deployment:
@@ -248,11 +401,16 @@ The collab server holds Yjs documents in memory and uses LevelDB on disk — it 
 ### Production Hardening
 - [x] Replace `secrets.yaml` with GCP Secret Manager + External Secrets Operator
 - [x] Enable Workload Identity for GCS access (remove GCP_CLIENT_EMAIL/KEY)
-- [ ] Set up Cloud SQL instead of in-cluster PostgreSQL
-- [ ] Set up Memorystore instead of in-cluster Redis
+- [x] Set up Cloud SQL for the Dojo release overlay instead of relying on in-cluster PostgreSQL
+- [x] Set up Memorystore for the Dojo release overlay instead of relying on in-cluster Redis
 - [x] Add NetworkPolicies to restrict pod-to-pod traffic
 - [x] Add PodDisruptionBudgets for frontend, gateway, signaling
 - [x] HTTP → HTTPS 301 redirect via FrontendConfig
-- [x] Prisma migration Job with Cloud SQL Auth Proxy sidecar
+- [x] Prisma migration Job using configured `DATABASE_URL`
 - [ ] Configure Cloud Armor WAF rules on the Ingress
 - [ ] Set up Cloud Monitoring alerts for pod restarts and error rates
+
+The default `k8s/` render still includes in-cluster PostgreSQL and Redis for
+beta/base deployments. Production Dojo deployments use
+`k8s/overlays/dojo-release-gate`, which omits those manifests and reads the
+Cloud SQL/Redis connection values from External Secrets.

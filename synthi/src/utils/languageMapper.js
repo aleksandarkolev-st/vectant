@@ -31,8 +31,13 @@ export const getMonacoLanguage = (fileName) => {
     'cpp': 'cpp',
     'cc': 'cpp',
     'cxx': 'cpp',
+    'c++': 'cpp',
     'h': 'c',
     'hpp': 'cpp',
+    'hh': 'cpp',
+    'hxx': 'cpp',
+    'ipp': 'cpp',
+    'inl': 'cpp',
     
     // Python
     'py': 'python',

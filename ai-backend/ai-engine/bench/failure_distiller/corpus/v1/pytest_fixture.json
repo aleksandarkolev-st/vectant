@@ -1,0 +1,11 @@
+{
+  "id": "pytest-fixture-v1",
+  "adapter": "test",
+  "faulty_region": "test_failure.py",
+  "accepted_fix": "remove required.flag dependency",
+  "files": {"test_failure.py": "def test_fixture_failure():\n    assert False, 'FailureSignature pytest-fixture'\n", "unrelated.txt": "discard\n"},
+  "command": ["{python}", "-m", "pytest", "-q", "test_failure.py"],
+  "fixed_content": "def test_fixture_failure():\n    assert True\n",
+  "signature": "FailureSignature pytest-fixture",
+  "candidates": ["unrelated.txt"]
+}

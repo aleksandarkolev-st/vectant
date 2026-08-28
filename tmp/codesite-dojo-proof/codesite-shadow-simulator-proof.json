@@ -1,0 +1,1064 @@
+{
+  "generatedAt": "2026-07-06T02:02:56.445Z",
+  "baseUrl": "http://127.0.0.1:3100",
+  "slug": "codesite-shadow-simulator-proof-1783303331451",
+  "schemaProject": {
+    "id": "cmr8krnyp03rpqg01ky8ona8c",
+    "title": "Tower simulator schema coordination proof",
+    "route": "/workspace/codesite-shadow-simulator-proof-1783303331451/codesite"
+  },
+  "migrationProject": {
+    "id": "cmr8krefv03pwqg01i3zb9o6c",
+    "title": "Tower simulator migration runway proof"
+  },
+  "schemaSimulation": {
+    "selected": "schema-first",
+    "appliedPolicyDeltas": [],
+    "reason": {
+      "reasonCodes": [
+        "schema_airspace_first",
+        "downstream_assumptions_refresh_after_contract",
+        "semantic_collision_mitigated",
+        "prior_incidents_weighted",
+        "import_graph_weighted",
+        "test_ownership_weighted"
+      ],
+      "staleAssumptions": 1,
+      "inspectionCost": 11,
+      "predictedCollisionRisk": 0.352,
+      "riskLevel": "high",
+      "sourceSignals": {
+        "forecastRiskCount": 3,
+        "highRiskCount": 3,
+        "contractRiskCount": 3,
+        "migrationRiskCount": 0,
+        "importGraphEdges": 2,
+        "downstreamDependents": 2,
+        "testOwners": 1,
+        "missingTestRoutes": 0,
+        "schemaOwners": 1,
+        "migrationLocks": 0,
+        "packageExports": 1,
+        "priorIncidents": 1,
+        "learnedPolicyDeltas": 0,
+        "activeLeaseLocks": 0,
+        "inspectionRuns": 1,
+        "signalStrength": "strong"
+      },
+      "learnedPolicyDeltaRefs": [],
+      "shadowExecutionMode": "external_runner",
+      "shadowExecutionPolicy": {
+        "ok": true,
+        "required": false,
+        "sources": [],
+        "status": "not_required",
+        "shadowExecutionStatus": "completed",
+        "shadowExecutionMode": "external_runner",
+        "runner": "codesite-shadow-runner",
+        "executionMode": "risk_budget_evaluation",
+        "evidenceRefs": [
+          "codesite:shadow-runner:sha256:cdd5a09da1299bb977c32095a46f37d749234ea55ea6149138f81fd92682296a",
+          "codesite:shadow-universe:schema-first:sha256:32766c707daa43cd426a78b8bb6cb49bc465295a55b345c239facad1940b9d4e",
+          "codesite:shadow-job:codesite-shadow:sha256:424d55b00be551e5bea467ce2b033734346c00b09037c105f6b3a0bc5b7239de",
+          "codesite:shadow-universe:backend-first:sha256:97d8b07f78577f0e4dc78331d1e074df6ad491c4e99cac2887e433d865fd82fb",
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:d5432d53025ed9961308f3cd33a2312de2930a06c90dc697ae07e70b3772a07f",
+          "codesite:shadow-universe:single-fullstack-agent:sha256:62e2811e811bc87dfb1657d1e077740a81145eb993426983b04b7b50295b2982",
+          "codesite:shadow-universe:test-first:sha256:524ebeab6b91cef029e50e905ad1f50b606f684886996efcef58d3341b04c024",
+          "codesite:shadow-runner-input:sha256:c583f73aa51696e0b43549fd1e5a2f45870103267311f468260228bd5abd0a02",
+          "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+          "codesite:shadow-runner-output-artifact:sha256:49eec74dd0ca87e4e4f8498486b24d04d6797775a4b98e1c7126d38e4c5a0b36",
+          "codesite:shadow-runner-output:sha256:49eec74dd0ca87e4e4f8498486b24d04d6797775a4b98e1c7126d38e4c5a0b36",
+          "codesite:shadow-runner-result:sha256:15ff0d063f873d969c4ed28a54908234db82424e77689e04d3ec7aceb8b05b78"
+        ],
+        "reasonCodes": [
+          "shadow_runner_evidence_not_required"
+        ]
+      }
+    },
+    "universes": [
+      {
+        "strategy": "schema-first",
+        "result": "review",
+        "predictedCollisionRisk": 0.352,
+        "staleAssumptions": 1,
+        "inspectionCost": 11,
+        "reworkRiskReduction": 0.66,
+        "confidence": 0.89,
+        "avoidedRisks": [
+          "semantic_collision"
+        ],
+        "unresolvedRisks": [],
+        "requiredTowerActions": [
+          "schema_first",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "counterfactualPolicyPriority": 0,
+        "reasonCodes": [
+          "schema_airspace_first",
+          "downstream_assumptions_refresh_after_contract",
+          "semantic_collision_mitigated",
+          "prior_incidents_weighted",
+          "import_graph_weighted",
+          "test_ownership_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_risk_budget_passed"
+        ],
+        "learnedPolicyDeltaRefs": [],
+        "sourceSignals": {
+          "forecastRiskCount": 3,
+          "highRiskCount": 3,
+          "contractRiskCount": 3,
+          "migrationRiskCount": 0,
+          "importGraphEdges": 2,
+          "downstreamDependents": 2,
+          "testOwners": 1,
+          "missingTestRoutes": 0,
+          "schemaOwners": 1,
+          "migrationLocks": 0,
+          "packageExports": 1,
+          "priorIncidents": 1,
+          "learnedPolicyDeltas": 0,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 1,
+          "signalStrength": "strong"
+        },
+        "execution": {
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:shadow-universe:schema-first:sha256:32766c707daa43cd426a78b8bb6cb49bc465295a55b345c239facad1940b9d4e",
+            "codesite:shadow-job:codesite-shadow:sha256:424d55b00be551e5bea467ce2b033734346c00b09037c105f6b3a0bc5b7239de"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 0,
+          "outputDigest": "sha256:32766c707daa43cd426a78b8bb6cb49bc465295a55b345c239facad1940b9d4e"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:schema-first:sha256:32766c707daa43cd426a78b8bb6cb49bc465295a55b345c239facad1940b9d4e",
+          "codesite:shadow-job:codesite-shadow:sha256:424d55b00be551e5bea467ce2b033734346c00b09037c105f6b3a0bc5b7239de"
+        ]
+      },
+      {
+        "strategy": "backend-first",
+        "result": "risk",
+        "predictedCollisionRisk": 0.988,
+        "staleAssumptions": 4,
+        "inspectionCost": 16,
+        "reworkRiskReduction": 0.22,
+        "confidence": 0.89,
+        "avoidedRisks": [],
+        "unresolvedRisks": [
+          "semantic_collision"
+        ],
+        "requiredTowerActions": [
+          "schema_first",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "counterfactualPolicyPriority": 0,
+        "reasonCodes": [
+          "backend_route_before_ui",
+          "api_surface_stabilized_before_frontend",
+          "prior_incidents_weighted",
+          "import_graph_weighted",
+          "test_ownership_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_near_miss_preserved"
+        ],
+        "learnedPolicyDeltaRefs": [],
+        "sourceSignals": {
+          "forecastRiskCount": 3,
+          "highRiskCount": 3,
+          "contractRiskCount": 3,
+          "migrationRiskCount": 0,
+          "importGraphEdges": 2,
+          "downstreamDependents": 2,
+          "testOwners": 1,
+          "missingTestRoutes": 0,
+          "schemaOwners": 1,
+          "migrationLocks": 0,
+          "packageExports": 1,
+          "priorIncidents": 1,
+          "learnedPolicyDeltas": 0,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 1,
+          "signalStrength": "strong"
+        },
+        "execution": {
+          "status": "near_miss",
+          "evidenceRefs": [
+            "codesite:shadow-universe:backend-first:sha256:97d8b07f78577f0e4dc78331d1e074df6ad491c4e99cac2887e433d865fd82fb",
+            "codesite:shadow-job:codesite-shadow:sha256:424d55b00be551e5bea467ce2b033734346c00b09037c105f6b3a0bc5b7239de"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 20,
+          "outputDigest": "sha256:97d8b07f78577f0e4dc78331d1e074df6ad491c4e99cac2887e433d865fd82fb"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:backend-first:sha256:97d8b07f78577f0e4dc78331d1e074df6ad491c4e99cac2887e433d865fd82fb",
+          "codesite:shadow-job:codesite-shadow:sha256:424d55b00be551e5bea467ce2b033734346c00b09037c105f6b3a0bc5b7239de"
+        ]
+      },
+      {
+        "strategy": "frontend-backend-parallel",
+        "result": "risk",
+        "predictedCollisionRisk": 1,
+        "staleAssumptions": 7,
+        "inspectionCost": 16,
+        "reworkRiskReduction": 0,
+        "confidence": 0.89,
+        "avoidedRisks": [],
+        "unresolvedRisks": [
+          "semantic_collision"
+        ],
+        "requiredTowerActions": [
+          "schema_first",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "counterfactualPolicyPriority": 0,
+        "reasonCodes": [
+          "parallelism_crosses_contract_airspace",
+          "requires_extra_assumption_refresh",
+          "prior_incidents_weighted",
+          "import_graph_weighted",
+          "test_ownership_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_near_miss_preserved"
+        ],
+        "learnedPolicyDeltaRefs": [],
+        "sourceSignals": {
+          "forecastRiskCount": 3,
+          "highRiskCount": 3,
+          "contractRiskCount": 3,
+          "migrationRiskCount": 0,
+          "importGraphEdges": 2,
+          "downstreamDependents": 2,
+          "testOwners": 1,
+          "missingTestRoutes": 0,
+          "schemaOwners": 1,
+          "migrationLocks": 0,
+          "packageExports": 1,
+          "priorIncidents": 1,
+          "learnedPolicyDeltas": 0,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 1,
+          "signalStrength": "strong"
+        },
+        "execution": {
+          "status": "near_miss",
+          "evidenceRefs": [
+            "codesite:shadow-universe:frontend-backend-parallel:sha256:d5432d53025ed9961308f3cd33a2312de2930a06c90dc697ae07e70b3772a07f",
+            "codesite:shadow-job:codesite-shadow:sha256:424d55b00be551e5bea467ce2b033734346c00b09037c105f6b3a0bc5b7239de"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 20,
+          "outputDigest": "sha256:d5432d53025ed9961308f3cd33a2312de2930a06c90dc697ae07e70b3772a07f"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:d5432d53025ed9961308f3cd33a2312de2930a06c90dc697ae07e70b3772a07f",
+          "codesite:shadow-job:codesite-shadow:sha256:424d55b00be551e5bea467ce2b033734346c00b09037c105f6b3a0bc5b7239de"
+        ]
+      },
+      {
+        "strategy": "single-fullstack-agent",
+        "result": "review",
+        "predictedCollisionRisk": 0.456,
+        "staleAssumptions": 2,
+        "inspectionCost": 17,
+        "reworkRiskReduction": 0.56,
+        "confidence": 0.89,
+        "avoidedRisks": [
+          "semantic_collision"
+        ],
+        "unresolvedRisks": [],
+        "requiredTowerActions": [
+          "schema_first",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "counterfactualPolicyPriority": 0,
+        "reasonCodes": [
+          "single_writer_reduces_merge_collision",
+          "higher_serial_inspection_cost",
+          "semantic_collision_mitigated",
+          "prior_incidents_weighted",
+          "import_graph_weighted",
+          "test_ownership_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_risk_budget_passed"
+        ],
+        "learnedPolicyDeltaRefs": [],
+        "sourceSignals": {
+          "forecastRiskCount": 3,
+          "highRiskCount": 3,
+          "contractRiskCount": 3,
+          "migrationRiskCount": 0,
+          "importGraphEdges": 2,
+          "downstreamDependents": 2,
+          "testOwners": 1,
+          "missingTestRoutes": 0,
+          "schemaOwners": 1,
+          "migrationLocks": 0,
+          "packageExports": 1,
+          "priorIncidents": 1,
+          "learnedPolicyDeltas": 0,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 1,
+          "signalStrength": "strong"
+        },
+        "execution": {
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:shadow-universe:single-fullstack-agent:sha256:62e2811e811bc87dfb1657d1e077740a81145eb993426983b04b7b50295b2982",
+            "codesite:shadow-job:codesite-shadow:sha256:424d55b00be551e5bea467ce2b033734346c00b09037c105f6b3a0bc5b7239de"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 0,
+          "outputDigest": "sha256:62e2811e811bc87dfb1657d1e077740a81145eb993426983b04b7b50295b2982"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:single-fullstack-agent:sha256:62e2811e811bc87dfb1657d1e077740a81145eb993426983b04b7b50295b2982",
+          "codesite:shadow-job:codesite-shadow:sha256:424d55b00be551e5bea467ce2b033734346c00b09037c105f6b3a0bc5b7239de"
+        ]
+      },
+      {
+        "strategy": "test-first",
+        "result": "risk",
+        "predictedCollisionRisk": 0.642,
+        "staleAssumptions": 3,
+        "inspectionCost": 15,
+        "reworkRiskReduction": 0.38,
+        "confidence": 0.89,
+        "avoidedRisks": [
+          "semantic_collision"
+        ],
+        "unresolvedRisks": [],
+        "requiredTowerActions": [
+          "schema_first",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "counterfactualPolicyPriority": 0,
+        "reasonCodes": [
+          "test_ownership_before_landing",
+          "inspection_radar_runs_before_mutation",
+          "semantic_collision_mitigated",
+          "prior_incidents_weighted",
+          "import_graph_weighted",
+          "test_ownership_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_risk_budget_passed"
+        ],
+        "learnedPolicyDeltaRefs": [],
+        "sourceSignals": {
+          "forecastRiskCount": 3,
+          "highRiskCount": 3,
+          "contractRiskCount": 3,
+          "migrationRiskCount": 0,
+          "importGraphEdges": 2,
+          "downstreamDependents": 2,
+          "testOwners": 1,
+          "missingTestRoutes": 0,
+          "schemaOwners": 1,
+          "migrationLocks": 0,
+          "packageExports": 1,
+          "priorIncidents": 1,
+          "learnedPolicyDeltas": 0,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 1,
+          "signalStrength": "strong"
+        },
+        "execution": {
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:shadow-universe:test-first:sha256:524ebeab6b91cef029e50e905ad1f50b606f684886996efcef58d3341b04c024",
+            "codesite:shadow-job:codesite-shadow:sha256:424d55b00be551e5bea467ce2b033734346c00b09037c105f6b3a0bc5b7239de"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 0,
+          "outputDigest": "sha256:524ebeab6b91cef029e50e905ad1f50b606f684886996efcef58d3341b04c024"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:test-first:sha256:524ebeab6b91cef029e50e905ad1f50b606f684886996efcef58d3341b04c024",
+          "codesite:shadow-job:codesite-shadow:sha256:424d55b00be551e5bea467ce2b033734346c00b09037c105f6b3a0bc5b7239de"
+        ]
+      }
+    ],
+    "shadowJobRef": "codesite-shadow:sha256:424d55b00be551e5bea467ce2b033734346c00b09037c105f6b3a0bc5b7239de",
+    "baseSnapshot": "repo@sha256:6a4b052411902d7a0caae9a6c59d5c7c16d5946b2fb6f79f63176bcb027132db",
+    "evidenceRefs": [
+      "codesite:shadow_merge_simulator",
+      "codesite:repo-policy:sha256:1eba7d747e121843d5671cd64760c3c7a86f5e4e73d571cb173ebfc3bd270078",
+      "codesite:collision-forecast:sha256:f238e08619061365c77200a9e09d2f97e42c40f65050f99d020b7c7a91f6943c",
+      "codesite:incident:cmr8krue503tcqg01iom7f0jv",
+      "codesite:inspection:cmr8krzov03tkqg016fzpktic",
+      "codesite:shadow-runner:sha256:cdd5a09da1299bb977c32095a46f37d749234ea55ea6149138f81fd92682296a",
+      "codesite:shadow-universe:schema-first:sha256:32766c707daa43cd426a78b8bb6cb49bc465295a55b345c239facad1940b9d4e",
+      "codesite:shadow-job:codesite-shadow:sha256:424d55b00be551e5bea467ce2b033734346c00b09037c105f6b3a0bc5b7239de",
+      "codesite:shadow-universe:backend-first:sha256:97d8b07f78577f0e4dc78331d1e074df6ad491c4e99cac2887e433d865fd82fb",
+      "codesite:shadow-universe:frontend-backend-parallel:sha256:d5432d53025ed9961308f3cd33a2312de2930a06c90dc697ae07e70b3772a07f",
+      "codesite:shadow-universe:single-fullstack-agent:sha256:62e2811e811bc87dfb1657d1e077740a81145eb993426983b04b7b50295b2982",
+      "codesite:shadow-universe:test-first:sha256:524ebeab6b91cef029e50e905ad1f50b606f684886996efcef58d3341b04c024",
+      "codesite:shadow-runner-input:sha256:c583f73aa51696e0b43549fd1e5a2f45870103267311f468260228bd5abd0a02",
+      "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+      "codesite:shadow-runner-output-artifact:sha256:49eec74dd0ca87e4e4f8498486b24d04d6797775a4b98e1c7126d38e4c5a0b36",
+      "codesite:shadow-runner-output:sha256:49eec74dd0ca87e4e4f8498486b24d04d6797775a4b98e1c7126d38e4c5a0b36",
+      "codesite:shadow-runner-result:sha256:15ff0d063f873d969c4ed28a54908234db82424e77689e04d3ec7aceb8b05b78",
+      "codesite:shadow-runner:sha256:10c2a157ceead06d614720c0378e31d51c091792ef6528cd13abb25014a36483"
+    ],
+    "policyDeltaCandidates": [
+      {
+        "rule": "incident_weighted_preflight_hold",
+        "affectedIncidents": [
+          "cmr8krue503tcqg01iom7f0jv"
+        ],
+        "expectedRiskReduction": 0.16,
+        "confidence": 0.68
+      }
+    ],
+    "shadowExecution": {
+      "status": "completed",
+      "runner": "codesite-shadow-runner",
+      "executionMode": "risk_budget_evaluation",
+      "evidenceRefs": [
+        "codesite:shadow-runner:sha256:cdd5a09da1299bb977c32095a46f37d749234ea55ea6149138f81fd92682296a",
+        "codesite:shadow-universe:schema-first:sha256:32766c707daa43cd426a78b8bb6cb49bc465295a55b345c239facad1940b9d4e",
+        "codesite:shadow-job:codesite-shadow:sha256:424d55b00be551e5bea467ce2b033734346c00b09037c105f6b3a0bc5b7239de",
+        "codesite:shadow-universe:backend-first:sha256:97d8b07f78577f0e4dc78331d1e074df6ad491c4e99cac2887e433d865fd82fb",
+        "codesite:shadow-universe:frontend-backend-parallel:sha256:d5432d53025ed9961308f3cd33a2312de2930a06c90dc697ae07e70b3772a07f",
+        "codesite:shadow-universe:single-fullstack-agent:sha256:62e2811e811bc87dfb1657d1e077740a81145eb993426983b04b7b50295b2982",
+        "codesite:shadow-universe:test-first:sha256:524ebeab6b91cef029e50e905ad1f50b606f684886996efcef58d3341b04c024",
+        "codesite:shadow-runner-input:sha256:c583f73aa51696e0b43549fd1e5a2f45870103267311f468260228bd5abd0a02",
+        "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+        "codesite:shadow-runner-output-artifact:sha256:49eec74dd0ca87e4e4f8498486b24d04d6797775a4b98e1c7126d38e4c5a0b36",
+        "codesite:shadow-runner-output:sha256:49eec74dd0ca87e4e4f8498486b24d04d6797775a4b98e1c7126d38e4c5a0b36",
+        "codesite:shadow-runner-result:sha256:15ff0d063f873d969c4ed28a54908234db82424e77689e04d3ec7aceb8b05b78"
+      ],
+      "universeCount": 5,
+      "digest": "sha256:10c2a157ceead06d614720c0378e31d51c091792ef6528cd13abb25014a36483"
+    },
+    "repoSignals": {
+      "signalStrength": "strong",
+      "planCount": 3,
+      "activeLeaseCount": 0,
+      "forecastRiskCount": 3,
+      "highRiskCount": 3,
+      "contractRiskCount": 3,
+      "migrationRiskCount": 0,
+      "classAOrBZones": 2,
+      "importGraphEdges": 2,
+      "downstreamDependents": 2,
+      "testOwners": 1,
+      "missingTestRoutes": 0,
+      "schemaOwners": 1,
+      "migrationLocks": 0,
+      "packageExports": 1,
+      "priorIncidents": 1,
+      "learnedPolicyDeltas": 0,
+      "activeLeaseLocks": 0,
+      "inspectionRuns": 1
+    }
+  },
+  "migrationSimulation": {
+    "selected": "single-fullstack-agent",
+    "appliedPolicyDeltas": [],
+    "reason": {
+      "reasonCodes": [
+        "single_writer_reduces_merge_collision",
+        "single_migration_runway_lock",
+        "migration_collision_mitigated",
+        "migration_lock_weighted"
+      ],
+      "staleAssumptions": 0,
+      "inspectionCost": 13,
+      "predictedCollisionRisk": 0.126,
+      "riskLevel": "high",
+      "sourceSignals": {
+        "forecastRiskCount": 1,
+        "highRiskCount": 1,
+        "contractRiskCount": 0,
+        "migrationRiskCount": 1,
+        "importGraphEdges": 0,
+        "downstreamDependents": 0,
+        "testOwners": 0,
+        "missingTestRoutes": 2,
+        "schemaOwners": 2,
+        "migrationLocks": 1,
+        "packageExports": 0,
+        "priorIncidents": 0,
+        "learnedPolicyDeltas": 0,
+        "activeLeaseLocks": 0,
+        "inspectionRuns": 0,
+        "signalStrength": "simulated"
+      },
+      "learnedPolicyDeltaRefs": [],
+      "shadowExecutionMode": "external_runner",
+      "shadowExecutionPolicy": {
+        "ok": true,
+        "required": false,
+        "sources": [],
+        "status": "not_required",
+        "shadowExecutionStatus": "completed",
+        "shadowExecutionMode": "external_runner",
+        "runner": "codesite-shadow-runner",
+        "executionMode": "risk_budget_evaluation",
+        "evidenceRefs": [
+          "codesite:shadow-runner:sha256:6a2e258c9ff65de8868a08d754c82c0e93989122ce556006324e5a2ae4da1a8c",
+          "codesite:shadow-universe:schema-first:sha256:ee3b255d271fe8ea9ce26232bb044d7b164fd6a10603e82fa80e31ffe16c6bcb",
+          "codesite:shadow-job:codesite-shadow:sha256:0eb447356b245b5af349eaf925323049db913cf01c50f27bdf7ddb139df18b3a",
+          "codesite:shadow-universe:backend-first:sha256:287484774e35070b3d7ed224804bc9067e5a2a02750ee7bd22e900fed50bad6f",
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:8431711efcdc1954344a17e457153f02d5ab17a420faa1cd7cd73bdcaa9242b2",
+          "codesite:shadow-universe:single-fullstack-agent:sha256:fb50ebe251291bc9917ac893a64063733794ff2bc77449e6b169c32be5fec3d5",
+          "codesite:shadow-universe:test-first:sha256:d8d4dc9edbc27b53fa96814a7b012df31b3c55292e9e896fecc09fdffc72bf5b",
+          "codesite:shadow-runner-input:sha256:0ad583484744f20c297eecf92cbcade5b7041e95bcfaf886336b07b62f985def",
+          "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+          "codesite:shadow-runner-output-artifact:sha256:b9b5ce8bbae7793b05b85f3d9ad579a9a5074c7fc8019400a56137f36822004b",
+          "codesite:shadow-runner-output:sha256:b9b5ce8bbae7793b05b85f3d9ad579a9a5074c7fc8019400a56137f36822004b",
+          "codesite:shadow-runner-result:sha256:5ca2d27d735b5fd8a01e0de74792a7159471050f613319992be103d2f987bd39"
+        ],
+        "reasonCodes": [
+          "shadow_runner_evidence_not_required"
+        ]
+      }
+    },
+    "universes": [
+      {
+        "strategy": "schema-first",
+        "result": "review",
+        "predictedCollisionRisk": 0.277,
+        "staleAssumptions": 0,
+        "inspectionCost": 10,
+        "reworkRiskReduction": 0.66,
+        "confidence": 0.52,
+        "avoidedRisks": [],
+        "unresolvedRisks": [
+          "migration_collision"
+        ],
+        "requiredTowerActions": [
+          "single_migration_runway_lock",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "counterfactualPolicyPriority": 0,
+        "reasonCodes": [
+          "schema_airspace_first",
+          "downstream_assumptions_refresh_after_contract",
+          "migration_lock_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_near_miss_preserved"
+        ],
+        "learnedPolicyDeltaRefs": [],
+        "sourceSignals": {
+          "forecastRiskCount": 1,
+          "highRiskCount": 1,
+          "contractRiskCount": 0,
+          "migrationRiskCount": 1,
+          "importGraphEdges": 0,
+          "downstreamDependents": 0,
+          "testOwners": 0,
+          "missingTestRoutes": 2,
+          "schemaOwners": 2,
+          "migrationLocks": 1,
+          "packageExports": 0,
+          "priorIncidents": 0,
+          "learnedPolicyDeltas": 0,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 0,
+          "signalStrength": "simulated"
+        },
+        "execution": {
+          "status": "near_miss",
+          "evidenceRefs": [
+            "codesite:shadow-universe:schema-first:sha256:ee3b255d271fe8ea9ce26232bb044d7b164fd6a10603e82fa80e31ffe16c6bcb",
+            "codesite:shadow-job:codesite-shadow:sha256:0eb447356b245b5af349eaf925323049db913cf01c50f27bdf7ddb139df18b3a"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 20,
+          "outputDigest": "sha256:ee3b255d271fe8ea9ce26232bb044d7b164fd6a10603e82fa80e31ffe16c6bcb"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:schema-first:sha256:ee3b255d271fe8ea9ce26232bb044d7b164fd6a10603e82fa80e31ffe16c6bcb",
+          "codesite:shadow-job:codesite-shadow:sha256:0eb447356b245b5af349eaf925323049db913cf01c50f27bdf7ddb139df18b3a"
+        ]
+      },
+      {
+        "strategy": "backend-first",
+        "result": "review",
+        "predictedCollisionRisk": 0.403,
+        "staleAssumptions": 1,
+        "inspectionCost": 12,
+        "reworkRiskReduction": 0.22,
+        "confidence": 0.52,
+        "avoidedRisks": [],
+        "unresolvedRisks": [
+          "migration_collision"
+        ],
+        "requiredTowerActions": [
+          "single_migration_runway_lock",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "counterfactualPolicyPriority": 0,
+        "reasonCodes": [
+          "backend_route_before_ui",
+          "api_surface_stabilized_before_frontend",
+          "migration_lock_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_near_miss_preserved"
+        ],
+        "learnedPolicyDeltaRefs": [],
+        "sourceSignals": {
+          "forecastRiskCount": 1,
+          "highRiskCount": 1,
+          "contractRiskCount": 0,
+          "migrationRiskCount": 1,
+          "importGraphEdges": 0,
+          "downstreamDependents": 0,
+          "testOwners": 0,
+          "missingTestRoutes": 2,
+          "schemaOwners": 2,
+          "migrationLocks": 1,
+          "packageExports": 0,
+          "priorIncidents": 0,
+          "learnedPolicyDeltas": 0,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 0,
+          "signalStrength": "simulated"
+        },
+        "execution": {
+          "status": "near_miss",
+          "evidenceRefs": [
+            "codesite:shadow-universe:backend-first:sha256:287484774e35070b3d7ed224804bc9067e5a2a02750ee7bd22e900fed50bad6f",
+            "codesite:shadow-job:codesite-shadow:sha256:0eb447356b245b5af349eaf925323049db913cf01c50f27bdf7ddb139df18b3a"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 20,
+          "outputDigest": "sha256:287484774e35070b3d7ed224804bc9067e5a2a02750ee7bd22e900fed50bad6f"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:backend-first:sha256:287484774e35070b3d7ed224804bc9067e5a2a02750ee7bd22e900fed50bad6f",
+          "codesite:shadow-job:codesite-shadow:sha256:0eb447356b245b5af349eaf925323049db913cf01c50f27bdf7ddb139df18b3a"
+        ]
+      },
+      {
+        "strategy": "frontend-backend-parallel",
+        "result": "review",
+        "predictedCollisionRisk": 0.537,
+        "staleAssumptions": 1,
+        "inspectionCost": 13,
+        "reworkRiskReduction": 0,
+        "confidence": 0.52,
+        "avoidedRisks": [],
+        "unresolvedRisks": [
+          "migration_collision"
+        ],
+        "requiredTowerActions": [
+          "single_migration_runway_lock",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "counterfactualPolicyPriority": 0,
+        "reasonCodes": [
+          "parallelism_crosses_contract_airspace",
+          "requires_extra_assumption_refresh",
+          "migration_lock_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_near_miss_preserved"
+        ],
+        "learnedPolicyDeltaRefs": [],
+        "sourceSignals": {
+          "forecastRiskCount": 1,
+          "highRiskCount": 1,
+          "contractRiskCount": 0,
+          "migrationRiskCount": 1,
+          "importGraphEdges": 0,
+          "downstreamDependents": 0,
+          "testOwners": 0,
+          "missingTestRoutes": 2,
+          "schemaOwners": 2,
+          "migrationLocks": 1,
+          "packageExports": 0,
+          "priorIncidents": 0,
+          "learnedPolicyDeltas": 0,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 0,
+          "signalStrength": "simulated"
+        },
+        "execution": {
+          "status": "near_miss",
+          "evidenceRefs": [
+            "codesite:shadow-universe:frontend-backend-parallel:sha256:8431711efcdc1954344a17e457153f02d5ab17a420faa1cd7cd73bdcaa9242b2",
+            "codesite:shadow-job:codesite-shadow:sha256:0eb447356b245b5af349eaf925323049db913cf01c50f27bdf7ddb139df18b3a"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 20,
+          "outputDigest": "sha256:8431711efcdc1954344a17e457153f02d5ab17a420faa1cd7cd73bdcaa9242b2"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:frontend-backend-parallel:sha256:8431711efcdc1954344a17e457153f02d5ab17a420faa1cd7cd73bdcaa9242b2",
+          "codesite:shadow-job:codesite-shadow:sha256:0eb447356b245b5af349eaf925323049db913cf01c50f27bdf7ddb139df18b3a"
+        ]
+      },
+      {
+        "strategy": "single-fullstack-agent",
+        "result": "passed",
+        "predictedCollisionRisk": 0.126,
+        "staleAssumptions": 0,
+        "inspectionCost": 13,
+        "reworkRiskReduction": 0.56,
+        "confidence": 0.52,
+        "avoidedRisks": [
+          "migration_collision"
+        ],
+        "unresolvedRisks": [],
+        "requiredTowerActions": [
+          "single_migration_runway_lock",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "counterfactualPolicyPriority": 0,
+        "reasonCodes": [
+          "single_writer_reduces_merge_collision",
+          "single_migration_runway_lock",
+          "migration_collision_mitigated",
+          "migration_lock_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_risk_budget_passed"
+        ],
+        "learnedPolicyDeltaRefs": [],
+        "sourceSignals": {
+          "forecastRiskCount": 1,
+          "highRiskCount": 1,
+          "contractRiskCount": 0,
+          "migrationRiskCount": 1,
+          "importGraphEdges": 0,
+          "downstreamDependents": 0,
+          "testOwners": 0,
+          "missingTestRoutes": 2,
+          "schemaOwners": 2,
+          "migrationLocks": 1,
+          "packageExports": 0,
+          "priorIncidents": 0,
+          "learnedPolicyDeltas": 0,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 0,
+          "signalStrength": "simulated"
+        },
+        "execution": {
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:shadow-universe:single-fullstack-agent:sha256:fb50ebe251291bc9917ac893a64063733794ff2bc77449e6b169c32be5fec3d5",
+            "codesite:shadow-job:codesite-shadow:sha256:0eb447356b245b5af349eaf925323049db913cf01c50f27bdf7ddb139df18b3a"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 0,
+          "outputDigest": "sha256:fb50ebe251291bc9917ac893a64063733794ff2bc77449e6b169c32be5fec3d5"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:single-fullstack-agent:sha256:fb50ebe251291bc9917ac893a64063733794ff2bc77449e6b169c32be5fec3d5",
+          "codesite:shadow-job:codesite-shadow:sha256:0eb447356b245b5af349eaf925323049db913cf01c50f27bdf7ddb139df18b3a"
+        ]
+      },
+      {
+        "strategy": "test-first",
+        "result": "passed",
+        "predictedCollisionRisk": 0.177,
+        "staleAssumptions": 0,
+        "inspectionCost": 11,
+        "reworkRiskReduction": 0.38,
+        "confidence": 0.52,
+        "avoidedRisks": [
+          "migration_collision"
+        ],
+        "unresolvedRisks": [],
+        "requiredTowerActions": [
+          "single_migration_runway_lock",
+          "refresh_downstream_assumptions",
+          "run_owned_tests_before_landing"
+        ],
+        "counterfactualPolicyPriority": 0,
+        "reasonCodes": [
+          "test_ownership_before_landing",
+          "inspection_radar_runs_before_mutation",
+          "migration_collision_mitigated",
+          "migration_lock_weighted",
+          "shadow_universe_executed",
+          "shadow_universe_risk_budget_passed"
+        ],
+        "learnedPolicyDeltaRefs": [],
+        "sourceSignals": {
+          "forecastRiskCount": 1,
+          "highRiskCount": 1,
+          "contractRiskCount": 0,
+          "migrationRiskCount": 1,
+          "importGraphEdges": 0,
+          "downstreamDependents": 0,
+          "testOwners": 0,
+          "missingTestRoutes": 2,
+          "schemaOwners": 2,
+          "migrationLocks": 1,
+          "packageExports": 0,
+          "priorIncidents": 0,
+          "learnedPolicyDeltas": 0,
+          "activeLeaseLocks": 0,
+          "inspectionRuns": 0,
+          "signalStrength": "simulated"
+        },
+        "execution": {
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:shadow-universe:test-first:sha256:d8d4dc9edbc27b53fa96814a7b012df31b3c55292e9e896fecc09fdffc72bf5b",
+            "codesite:shadow-job:codesite-shadow:sha256:0eb447356b245b5af349eaf925323049db913cf01c50f27bdf7ddb139df18b3a"
+          ],
+          "command": "codesite-shadow-runner:evaluate-risk-budget",
+          "executionMode": "risk_budget_evaluation",
+          "exitCode": 0,
+          "outputDigest": "sha256:d8d4dc9edbc27b53fa96814a7b012df31b3c55292e9e896fecc09fdffc72bf5b"
+        },
+        "evidenceRefs": [
+          "codesite:shadow-universe:test-first:sha256:d8d4dc9edbc27b53fa96814a7b012df31b3c55292e9e896fecc09fdffc72bf5b",
+          "codesite:shadow-job:codesite-shadow:sha256:0eb447356b245b5af349eaf925323049db913cf01c50f27bdf7ddb139df18b3a"
+        ]
+      }
+    ],
+    "shadowJobRef": "codesite-shadow:sha256:0eb447356b245b5af349eaf925323049db913cf01c50f27bdf7ddb139df18b3a",
+    "baseSnapshot": "repo@sha256:aa00599a1f863c14e4108c62443763335615950af3c45196f46cf25a2f11a9f1",
+    "evidenceRefs": [
+      "codesite:shadow_merge_simulator",
+      "codesite:repo-policy:sha256:4bcbb8480a09ccbf9ce97fd9a34983044bfde175d9a0e64f8301874396437b0e",
+      "codesite:collision-forecast:sha256:a7827ceb27787ed8b6bc879362c4b472ab454d2656a0fa486ddea3fb1f208914",
+      "codesite:shadow-runner:sha256:6a2e258c9ff65de8868a08d754c82c0e93989122ce556006324e5a2ae4da1a8c",
+      "codesite:shadow-universe:schema-first:sha256:ee3b255d271fe8ea9ce26232bb044d7b164fd6a10603e82fa80e31ffe16c6bcb",
+      "codesite:shadow-job:codesite-shadow:sha256:0eb447356b245b5af349eaf925323049db913cf01c50f27bdf7ddb139df18b3a",
+      "codesite:shadow-universe:backend-first:sha256:287484774e35070b3d7ed224804bc9067e5a2a02750ee7bd22e900fed50bad6f",
+      "codesite:shadow-universe:frontend-backend-parallel:sha256:8431711efcdc1954344a17e457153f02d5ab17a420faa1cd7cd73bdcaa9242b2",
+      "codesite:shadow-universe:single-fullstack-agent:sha256:fb50ebe251291bc9917ac893a64063733794ff2bc77449e6b169c32be5fec3d5",
+      "codesite:shadow-universe:test-first:sha256:d8d4dc9edbc27b53fa96814a7b012df31b3c55292e9e896fecc09fdffc72bf5b",
+      "codesite:shadow-runner-input:sha256:0ad583484744f20c297eecf92cbcade5b7041e95bcfaf886336b07b62f985def",
+      "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+      "codesite:shadow-runner-output-artifact:sha256:b9b5ce8bbae7793b05b85f3d9ad579a9a5074c7fc8019400a56137f36822004b",
+      "codesite:shadow-runner-output:sha256:b9b5ce8bbae7793b05b85f3d9ad579a9a5074c7fc8019400a56137f36822004b",
+      "codesite:shadow-runner-result:sha256:5ca2d27d735b5fd8a01e0de74792a7159471050f613319992be103d2f987bd39",
+      "codesite:shadow-runner:sha256:e4b3fc58572b30259cf76f02295a3249016f9df3f4aead8cbf97fa3d4db91130"
+    ],
+    "policyDeltaCandidates": [
+      {
+        "rule": "require_test_owner_for_mutation_route",
+        "affectedRoutes": [
+          "prisma/migrations/202607010001_auth/migration.sql",
+          "prisma/migrations/202607010002_accounts/migration.sql"
+        ],
+        "expectedRiskReduction": 0.18,
+        "confidence": 0.72
+      },
+      {
+        "rule": "single_migration_runway_lock",
+        "affectedRoutes": [
+          "prisma/migrations/**"
+        ],
+        "expectedRiskReduction": 0.24,
+        "confidence": 0.82
+      }
+    ],
+    "shadowExecution": {
+      "status": "completed",
+      "runner": "codesite-shadow-runner",
+      "executionMode": "risk_budget_evaluation",
+      "evidenceRefs": [
+        "codesite:shadow-runner:sha256:6a2e258c9ff65de8868a08d754c82c0e93989122ce556006324e5a2ae4da1a8c",
+        "codesite:shadow-universe:schema-first:sha256:ee3b255d271fe8ea9ce26232bb044d7b164fd6a10603e82fa80e31ffe16c6bcb",
+        "codesite:shadow-job:codesite-shadow:sha256:0eb447356b245b5af349eaf925323049db913cf01c50f27bdf7ddb139df18b3a",
+        "codesite:shadow-universe:backend-first:sha256:287484774e35070b3d7ed224804bc9067e5a2a02750ee7bd22e900fed50bad6f",
+        "codesite:shadow-universe:frontend-backend-parallel:sha256:8431711efcdc1954344a17e457153f02d5ab17a420faa1cd7cd73bdcaa9242b2",
+        "codesite:shadow-universe:single-fullstack-agent:sha256:fb50ebe251291bc9917ac893a64063733794ff2bc77449e6b169c32be5fec3d5",
+        "codesite:shadow-universe:test-first:sha256:d8d4dc9edbc27b53fa96814a7b012df31b3c55292e9e896fecc09fdffc72bf5b",
+        "codesite:shadow-runner-input:sha256:0ad583484744f20c297eecf92cbcade5b7041e95bcfaf886336b07b62f985def",
+        "codesite:shadow-runner-command:sha256:1925d169c498e90c911940c82f357f63841990d7646c59f67385ece151b89ba9",
+        "codesite:shadow-runner-output-artifact:sha256:b9b5ce8bbae7793b05b85f3d9ad579a9a5074c7fc8019400a56137f36822004b",
+        "codesite:shadow-runner-output:sha256:b9b5ce8bbae7793b05b85f3d9ad579a9a5074c7fc8019400a56137f36822004b",
+        "codesite:shadow-runner-result:sha256:5ca2d27d735b5fd8a01e0de74792a7159471050f613319992be103d2f987bd39"
+      ],
+      "universeCount": 5,
+      "digest": "sha256:e4b3fc58572b30259cf76f02295a3249016f9df3f4aead8cbf97fa3d4db91130"
+    },
+    "repoSignals": {
+      "signalStrength": "simulated",
+      "planCount": 2,
+      "activeLeaseCount": 0,
+      "forecastRiskCount": 1,
+      "highRiskCount": 1,
+      "contractRiskCount": 0,
+      "migrationRiskCount": 1,
+      "classAOrBZones": 1,
+      "importGraphEdges": 0,
+      "downstreamDependents": 0,
+      "testOwners": 0,
+      "missingTestRoutes": 2,
+      "schemaOwners": 2,
+      "migrationLocks": 1,
+      "packageExports": 0,
+      "priorIncidents": 0,
+      "learnedPolicyDeltas": 0,
+      "activeLeaseLocks": 0,
+      "inspectionRuns": 0
+    }
+  },
+  "persisted": {
+    "counterfactualRunCount": 1,
+    "eventTypes": [
+      "transponder_update",
+      "flight_plan_filed",
+      "transponder_update",
+      "flight_plan_filed",
+      "transponder_update",
+      "flight_plan_filed",
+      "clearance_requested",
+      "holding_pattern",
+      "tower_instruction",
+      "near_miss",
+      "policy_delta_proposed",
+      "landing_requested",
+      "policy_delta_proposed",
+      "policy_delta_proposed",
+      "policy_delta_proposed",
+      "policy_delta_proposed",
+      "shadow_run",
+      "arbiter_verdict"
+    ]
+  },
+  "browserProof": {
+    "captures": [
+      {
+        "viewport": {
+          "name": "desktop",
+          "width": 1440,
+          "height": 1100
+        },
+        "screenshot": "tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-desktop.png",
+        "consoleErrors": [],
+        "checks": {
+          "viewportWidth": 1440,
+          "documentScrollWidth": 1440,
+          "panelRect": {
+            "x": 16,
+            "y": 541.984375,
+            "width": 1408,
+            "height": 1646.921875
+          },
+          "selectedVisible": true,
+          "hasParallelUniverse": true,
+          "hasSchemaReason": true,
+          "hasTowerAction": true,
+          "hasRepoPolicyEvidence": true,
+          "hasSourceSignals": true,
+          "fitsViewport": true
+        }
+      },
+      {
+        "viewport": {
+          "name": "mobile",
+          "width": 390,
+          "height": 980
+        },
+        "screenshot": "tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-mobile.png",
+        "consoleErrors": [],
+        "checks": {
+          "viewportWidth": 390,
+          "documentScrollWidth": 390,
+          "panelRect": {
+            "x": 16,
+            "y": 406.234375,
+            "width": 358,
+            "height": 4338.046875
+          },
+          "selectedVisible": true,
+          "hasParallelUniverse": true,
+          "hasSchemaReason": true,
+          "hasTowerAction": true,
+          "hasRepoPolicyEvidence": true,
+          "hasSourceSignals": true,
+          "fitsViewport": true
+        }
+      }
+    ]
+  },
+  "assertions": {
+    "schemaSelected": true,
+    "schemaAvoidsSemanticCollision": true,
+    "parallelLeavesSemanticCollision": true,
+    "aliasesNormalized": true,
+    "repoSignalsUsed": true,
+    "counterfactualPersisted": true,
+    "shadowAndArbiterEventsPersisted": true,
+    "evidenceRefsPortable": true,
+    "migrationSelectedSingleRunway": true,
+    "migrationLockActionVisible": true,
+    "migrationSchemaUnresolved": true,
+    "desktopUiProved": true,
+    "mobileUiProved": true
+  },
+  "status": "validated",
+  "git": {
+    "head": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+    "branch": "codex/codesite-atc-full-from-dev-20260630",
+    "statusShort": "M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.html\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.json\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.png\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.html\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.json\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.png\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.html\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.json\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.png\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-latest.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof-summary.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.html\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-publication.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-handover.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-mobile.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-coordination.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-line-inspector.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-proof-section.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui.png\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.png\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.html\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.json\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.png\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.html\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.json\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.html\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.json\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.html\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.json\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.png\n M tmp/codesite-dojo-proof/codesite-metrics-proof.html\n M tmp/codesite-dojo-proof/codesite-metrics-proof.json\n M tmp/codesite-dojo-proof/codesite-metrics-proof.png\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.html\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.json\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.png\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.html\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.json\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.html\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.json\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-desktop-full.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-panel.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-rejected.png\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.json\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-host-block-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-overlay-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-panel.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.html\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.json\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.png\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.html\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.json\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.png\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.html\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.json\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.html\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.json\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.html\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.json\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.png\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.html\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.json\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.png\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.html\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.json\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.png\n?? .synthi/codesite/"
+  },
+  "commands": [
+    {
+      "name": "proofSuiteGenerator:shadowSimulator",
+      "command": "node synthi/scripts/codesite-shadow-simulator-proof.mjs",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "runner": "command"
+      },
+      "outputTail": [
+        "{",
+        "  \"ok\": true,",
+        "  \"jsonPath\": \"tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.json\",",
+        "  \"htmlPath\": \"tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.html\",",
+        "  \"pngPath\": \"tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.png\",",
+        "  \"uiCaptures\": [",
+        "    \"tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-desktop.png\",",
+        "    \"tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-mobile.png\"",
+        "  ],",
+        "  \"assertions\": {",
+        "    \"schemaSelected\": true,",
+        "    \"schemaAvoidsSemanticCollision\": true,",
+        "    \"parallelLeavesSemanticCollision\": true,",
+        "    \"aliasesNormalized\": true,",
+        "    \"repoSignalsUsed\": true,",
+        "    \"counterfactualPersisted\": true,",
+        "    \"shadowAndArbiterEventsPersisted\": true,",
+        "    \"evidenceRefsPortable\": true,",
+        "    \"migrationSelectedSingleRunway\": true,",
+        "    \"migrationLockActionVisible\": true,",
+        "    \"migrationSchemaUnresolved\": true,",
+        "    \"desktopUiProved\": true,",
+        "    \"mobileUiProved\": true",
+        "  }",
+        "}"
+      ]
+    }
+  ],
+  "proofSuite": {
+    "runner": "synthi/scripts/codesite-run-mature-proof-suite.mjs",
+    "stampedAt": "2026-07-06T02:02:56.445Z",
+    "proofFile": "tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.json"
+  },
+  "ok": true
+}

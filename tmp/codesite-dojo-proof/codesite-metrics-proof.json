@@ -1,0 +1,809 @@
+{
+  "schemaVersion": "synthi.codesite.metricsProof.v2",
+  "status": "validated",
+  "generatedAt": "2026-07-06T02:20:13.124Z",
+  "ok": true,
+  "git": {
+    "head": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+    "branch": "codex/codesite-atc-full-from-dev-20260630",
+    "statusShort": "M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.html\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.json\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.png\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.html\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.json\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.png\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.html\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.json\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.png\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-latest.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof-summary.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.html\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-publication.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-handover.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-mobile.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-coordination.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-line-inspector.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-proof-section.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui.png\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.png\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.html\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.json\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.png\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.html\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.json\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.html\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.json\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.html\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.json\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.png\n M tmp/codesite-dojo-proof/codesite-metrics-proof.html\n M tmp/codesite-dojo-proof/codesite-metrics-proof.json\n M tmp/codesite-dojo-proof/codesite-metrics-proof.png\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.html\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.json\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.png\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.html\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.json\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.html\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.json\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-desktop-full.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-panel.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-rejected.png\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.json\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-host-block-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-overlay-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-panel.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.html\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.json\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.png\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.html\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.json\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.png\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.html\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.json\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.html\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.json\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.html\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.json\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.png\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.html\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.json\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.png\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.html\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.json\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.png\n?? .synthi/codesite/"
+  },
+  "thresholds": {
+    "proofBundlesVerifiedOutsideUi": 1,
+    "shadowMergeSimulatorAccuracy": 0.8,
+    "lineProvenanceCoverage": 0.5,
+    "blackBoxCompletenessScore": 0.75,
+    "humanReviewTimeSavedMs": 1,
+    "percentageWritesWithValidClearance": 0.3
+  },
+  "assertions": [
+    {
+      "name": "docker metrics engine emitted CodeSite metrics JSON",
+      "ok": true,
+      "details": {
+        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; node node_modules/vitest/vitest.mjs run --config /repo/synthi/tmp/codesite-proof-runtime/vitest-no-postcss.config.mjs --environment node --pool=threads --maxWorkers=1 --no-file-parallelism /repo/synthi/tmp/codesite-proof-runtime/codesite-metrics-engine-runner.test.js",
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "proofBundlesVerifiedOutsideUi is measured and finite",
+      "ok": true,
+      "details": {
+        "value": 2,
+        "status": "measured"
+      }
+    },
+    {
+      "name": "proofBundlesVerifiedOutsideUi meets release threshold",
+      "ok": true,
+      "details": {
+        "value": 2,
+        "minimum": 1
+      }
+    },
+    {
+      "name": "shadowMergeSimulatorAccuracy is measured and finite",
+      "ok": true,
+      "details": {
+        "value": 1,
+        "status": "measured"
+      }
+    },
+    {
+      "name": "shadowMergeSimulatorAccuracy meets release threshold",
+      "ok": true,
+      "details": {
+        "value": 1,
+        "minimum": 0.8
+      }
+    },
+    {
+      "name": "lineProvenanceCoverage is measured and finite",
+      "ok": true,
+      "details": {
+        "value": 1,
+        "status": "measured"
+      }
+    },
+    {
+      "name": "lineProvenanceCoverage meets release threshold",
+      "ok": true,
+      "details": {
+        "value": 1,
+        "minimum": 0.5
+      }
+    },
+    {
+      "name": "blackBoxCompletenessScore is measured and finite",
+      "ok": true,
+      "details": {
+        "value": 0.855,
+        "status": "measured"
+      }
+    },
+    {
+      "name": "blackBoxCompletenessScore meets release threshold",
+      "ok": true,
+      "details": {
+        "value": 0.855,
+        "minimum": 0.75
+      }
+    },
+    {
+      "name": "humanReviewTimeSavedMs is measured and finite",
+      "ok": true,
+      "details": {
+        "value": 210000,
+        "status": "measured"
+      }
+    },
+    {
+      "name": "humanReviewTimeSavedMs meets release threshold",
+      "ok": true,
+      "details": {
+        "value": 210000,
+        "minimum": 1
+      }
+    },
+    {
+      "name": "percentageWritesWithValidClearance is measured and finite",
+      "ok": true,
+      "details": {
+        "value": 0.3333,
+        "status": "measured"
+      }
+    },
+    {
+      "name": "percentageWritesWithValidClearance meets release threshold",
+      "ok": true,
+      "details": {
+        "value": 0.3333,
+        "minimum": 0.3
+      }
+    },
+    {
+      "name": "dockerMetricsEngine command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; node node_modules/vitest/vitest.mjs run --config /repo/synthi/tmp/codesite-proof-runtime/vitest-no-postcss.config.mjs --environment node --pool=threads --maxWorkers=1 --no-file-parallelism /repo/synthi/tmp/codesite-proof-runtime/codesite-metrics-engine-runner.test.js",
+        "summary": {
+          "runner": "vitest",
+          "pass": 1,
+          "skipped": 0,
+          "tests": 1,
+          "fail": 0
+        },
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "dockerMetricsSuite command exited successfully",
+      "ok": true,
+      "details": {
+        "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; node node_modules/vitest/vitest.mjs run --config /repo/synthi/tmp/codesite-proof-runtime/vitest-no-postcss.config.mjs --environment node --pool=threads --maxWorkers=1 --no-file-parallelism /repo/synthi/src/lib/codesite/__tests__/metrics.test.js",
+        "summary": {
+          "runner": "vitest",
+          "pass": 6,
+          "skipped": 0,
+          "tests": 6,
+          "fail": 0
+        },
+        "exitCode": 0
+      }
+    }
+  ],
+  "commands": [
+    {
+      "name": "dockerMetricsEngine",
+      "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; node node_modules/vitest/vitest.mjs run --config /repo/synthi/tmp/codesite-proof-runtime/vitest-no-postcss.config.mjs --environment node --pool=threads --maxWorkers=1 --no-file-parallelism /repo/synthi/tmp/codesite-proof-runtime/codesite-metrics-engine-runner.test.js",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "runner": "vitest",
+        "pass": 1,
+        "skipped": 0,
+        "tests": 1,
+        "fail": 0
+      },
+      "stdout": "\nadded 961 packages, and audited 964 packages in 7m\n\n265 packages are looking for funding\n  run `npm fund` for details\n\n57 vulnerabilities (44 low, 10 moderate, 2 high, 1 critical)\n\nTo address issues that do not require attention, run:\n  npm audit fix\n\nTo address all issues (including breaking changes), run:\n  npm audit fix --force\n\nRun `npm audit` for details.\n\n\u001b[1m\u001b[30m\u001b[46m RUN \u001b[49m\u001b[39m\u001b[22m \u001b[36mv4.1.9 \u001b[39m\u001b[90m/repo/synthi\u001b[39m\n\n\u001b[90mstdout\u001b[2m | tmp/codesite-proof-runtime/codesite-metrics-engine-runner.test.js\u001b[2m > \u001b[22m\u001b[2memits CodeSite metrics JSON for mature proof thresholds\n\u001b[22m\u001b[39m{\"schemaVersion\":\"synthi.codesite.metrics.v1\",\"projectId\":\"metrics-mature-project\",\"workspaceSlug\":\"codesite-mature-metrics-proof\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\",\"status\":\"measured\",\"sections\":{\"atc\":[{\"key\":\"collisionsPredicted\",\"label\":\"Collisions predicted\",\"unit\":\"count\",\"value\":3,\"sampleSize\":4,\"status\":\"measured\",\"evidenceRefs\":[\"risk-schema\",\"incident-near-miss\",\"sha256:near-miss\",\"incident:near-miss\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\"},{\"key\":\"collisionsAvoided\",\"label\":\"Collisions avoided\",\"unit\":\"count\",\"value\":2,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"decision-hold\",\"shadow-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\"},{\"key\":\"nearMissesReplayed\",\"label\":\"Near-misses replayed\",\"unit\":\"count\",\"value\":1,\"sampleSize\":3,\"status\":\"measured\",\"evidenceRefs\":[\"incident-near-miss\",\"sha256:near-miss\",\"incident:near-miss\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\"},{\"key\":\"noFlyViolationsBlocked\",\"label\":\"No-fly violations blocked\",\"unit\":\"count\",\"value\":1,\"sampleSize\":3,\"status\":\"measured\",\"evidenceRefs\":[\"write-denied-1\",\"codesitefs:block:no-fly\",\"decision-nofly\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\"},{\"key\":\"flightsReroutedByTower\",\"label\":\"Flights rerouted by tower\",\"unit\":\"count\",\"value\":0,\"sampleSize\":0,\"status\":\"measured\",\"evidenceRefs\":[],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\"},{\"key\":\"flightsHeldBeforeSharedZoneConflict\",\"label\":\"Flights held before shared-zone conflict\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"decision-hold\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\"},{\"key\":\"landingsPassedFirstTry\",\"label\":\"Landings passed first try\",\"unit\":\"count\",\"value\":0,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1\",\"inspection:passed\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\"},{\"key\":\"goAroundRate\",\"label\":\"Go-around rate\",\"unit\":\"ratio\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1\",\"inspection:passed\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\",\"detail\":{\"numerator\":1,\"denominator\":1}},{\"key\":\"groundStopEvents\",\"label\":\"Ground-stop events\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"ground-stop-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\"},{\"key\":\"averageTimeToClearanceMs\",\"label\":\"Average time to clearance\",\"unit\":\"duration_ms\",\"value\":300000,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"lease-schema\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\",\"detail\":{\"samples\":1}},{\"key\":\"averageTimeInHoldingMs\",\"label\":\"Average time in holding\",\"unit\":\"duration_ms\",\"value\":145195298,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"plan-schema\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\",\"detail\":{\"samples\":1}}],\"transaction\":[{\"key\":\"staleReadsDetected\",\"label\":\"Stale reads detected\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"transaction-validated-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\"},{\"key\":\"assumptionInvalidationsBeforeWrite\",\"label\":\"Assumption invalidations before write\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"assumption-contract\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\"},{\"key\":\"serializableTransactionAbortRate\",\"label\":\"Serializable transaction abort rate\",\"unit\":\"ratio\",\"value\":0.5,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"txn-abort\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\",\"detail\":{\"numerator\":1,\"denominator\":2}},{\"key\":\"shadowMergeSimulatorAccuracy\",\"label\":\"Shadow merge simulator accuracy\",\"unit\":\"ratio\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"shadow-1\",\"shadow:job:1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\",\"detail\":{\"numerator\":1,\"denominator\":1}},{\"key\":\"codeSiteFsBlockedWrites\",\"label\":\"CodeSiteFS blocked writes\",\"unit\":\"count\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"write-denied-1\",\"codesitefs:block:no-fly\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\"},{\"key\":\"illegalWritesQuarantined\",\"label\":\"Illegal writes quarantined\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"write-quarantine-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\"},{\"key\":\"proofBundlesVerifiedOutsideUi\",\"label\":\"Proof bundles verified outside UI\",\"unit\":\"count\",\"value\":2,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"black-box-verified-1\",\"proof-bundle-verified-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\"},{\"key\":\"lineProvenanceCoverage\",\"label\":\"Lines with causal provenance coverage\",\"unit\":\"ratio\",\"value\":1,\"sampleSize\":4,\"status\":\"measured\",\"evidenceRefs\":[\"line-schema\",\"line:evidence:schema\",\"line-auth\",\"line:evidence:auth\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\",\"detail\":{\"numerator\":2,\"denominator\":2}}],\"quality\":[{\"key\":\"mergeConflictsAvoided\",\"label\":\"Merge conflicts avoided\",\"unit\":\"count\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"shadow-1\",\"shadow:job:1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\"},{\"key\":\"contractDriftIncidents\",\"label\":\"Contract drift incidents\",\"unit\":\"count\",\"value\":0,\"sampleSize\":0,\"status\":\"measured\",\"evidenceRefs\":[],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\"},{\"key\":\"migrationRollbackCoverage\",\"label\":\"Migration rollback coverage\",\"unit\":\"ratio\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1:signal:3\",\"migration:rollback-plan\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\",\"detail\":{\"numerator\":1,\"denominator\":1}},{\"key\":\"securityFindingsBeforeMerge\",\"label\":\"Security findings before merge\",\"unit\":\"count\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1:signal:2\",\"security:finding-before-merge\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\"},{\"key\":\"testsRedAtLanding\",\"label\":\"Tests red at landing\",\"unit\":\"count\",\"value\":1,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"inspection-1:signal:1\",\"test:red-before-landing\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\"},{\"key\":\"postMergeRollbackRate\",\"label\":\"Post-merge rollback rate\",\"unit\":\"ratio\",\"value\":0,\"sampleSize\":0,\"status\":\"measured\",\"evidenceRefs\":[],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\",\"detail\":{\"numerator\":0,\"denominator\":1}}],\"trust\":[{\"key\":\"percentageWritesWithValidClearance\",\"label\":\"Writes with valid clearance\",\"unit\":\"ratio\",\"value\":0.3333,\"sampleSize\":3,\"status\":\"measured\",\"evidenceRefs\":[\"write-attempt-1\",\"write-allowed-1\",\"write:evidence:schema\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\",\"detail\":{\"numerator\":1,\"denominator\":3}},{\"key\":\"blackBoxCompletenessScore\",\"label\":\"Black-box completeness score\",\"unit\":\"ratio\",\"value\":0.855,\"sampleSize\":6,\"status\":\"measured\",\"evidenceRefs\":[\"incident-black-box\",\"sha256:replay\",\"incident:black-box\",\"incident-near-miss\",\"sha256:near-miss\",\"incident:near-miss\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\",\"detail\":{\"numerator\":1.71,\"denominator\":2}},{\"key\":\"humanReviewTimeSavedMs\",\"label\":\"Human review time saved\",\"unit\":\"duration_ms\",\"value\":210000,\"sampleSize\":2,\"status\":\"measured\",\"evidenceRefs\":[\"document-review:review-1\",\"document-review:evidence\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\",\"detail\":{\"samples\":1,\"baselineReviewTimeMs\":300000,\"reviewTimeMs\":90000,\"reviewOverrunMs\":0}},{\"key\":\"pilotLicenseViolationRate\",\"label\":\"Pilot license violation rate\",\"unit\":\"ratio\",\"value\":0,\"sampleSize\":0,\"status\":\"measured\",\"evidenceRefs\":[],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\",\"detail\":{\"numerator\":0,\"denominator\":2}},{\"key\":\"repeatedNearMissesConvertedToAirspaceRules\",\"label\":\"Repeated near-misses converted to airspace rules\",\"unit\":\"count\",\"value\":1,\"sampleSize\":1,\"status\":\"measured\",\"evidenceRefs\":[\"delta-1\"],\"source\":\"codesite_control_plane\",\"generatedAt\":\"2026-07-06T02:19:55.298Z\"}]},\"summary\":{\"collisionsPredicted\":3,\"collisionsAvoided\":2,\"nearMissesReplayed\":1,\"noFlyViolationsBlocked\":1,\"flightsReroutedByTower\":0,\"flightsHeldBeforeSharedZoneConflict\":1,\"landingsPassedFirstTry\":0,\"goAroundRate\":1,\"groundStopEvents\":1,\"averageTimeToClearanceMs\":300000,\"averageTimeInHoldingMs\":145195298,\"staleReadsDetected\":1,\"assumptionInvalidationsBeforeWrite\":1,\"serializableTransactionAbortRate\":0.5,\"shadowMergeSimulatorAccuracy\":1,\"codeSiteFsBlockedWrites\":1,\"illegalWritesQuarantined\":1,\"proofBundlesVerifiedOutsideUi\":2,\"lineProvenanceCoverage\":1,\"mergeConflictsAvoided\":1,\"contractDriftIncidents\":0,\"migrationRollbackCoverage\":1,\"securityFindingsBeforeMerge\":1,\"testsRedAtLanding\":1,\"postMergeRollbackRate\":0,\"percentageWritesWithValidClearance\":0.3333,\"blackBoxCompletenessScore\":0.855,\"humanReviewTimeSavedMs\":210000,\"pilotLicenseViolationRate\":0,\"repeatedNearMissesConvertedToAirspaceRules\":1},\"evidence\":{\"eventTypeCounts\":{\"write_attempted\":1,\"write_allowed\":1,\"write_denied\":1,\"write_quarantined\":1,\"transaction_validated\":1,\"black_box_closed\":1,\"proof_bundle_verified\":1,\"tower_instruction\":1,\"ground_stop\":1},\"transactionStatusCounts\":{\"committed\":1,\"aborted\":1},\"leaseStatusCounts\":{\"active\":1},\"inspectionStatusCounts\":{\"passed\":1},\"policyDecisionCounts\":{\"hold\":1,\"block\":1},\"pilotLicenseStatusCounts\":{\"active\":1},\"reasonCodeCounts\":{\"entered_no_fly_zone\":2,\"stale_read_detected\":1,\"mayday_ground_stop\":1,\"collision_avoidance_hold\":1,\"schema_first_leader_clearance\":1,\"serializable_validation_passed\":1,\"semantic_collision_mitigated\":1,\"document_approved\":1,\"pilot_license_health_active\":1},\"dataSources\":{\"events\":9,\"policyDecisions\":2,\"transactions\":2,\"mutationLeases\":1,\"inspectionRuns\":1,\"incidents\":2,\"proofBundles\":1,\"lineProvenance\":2,\"counterfactualRuns\":1,\"documentReviews\":1,\"assumptions\":1,\"pilotLicenseHealth\":1}}}\n\n \u001b[32m✓\u001b[39m tmp/codesite-proof-runtime/codesite-metrics-engine-runner.test.js \u001b[2m(\u001b[22m\u001b[2m1 test\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 10\u001b[2mms\u001b[22m\u001b[39m\n\n\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[32m1 passed\u001b[39m\u001b[22m\u001b[90m (1)\u001b[39m\n\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[32m1 passed\u001b[39m\u001b[22m\u001b[90m (1)\u001b[39m\n\u001b[2m   Start at \u001b[22m 02:19:48\n\u001b[2m   Duration \u001b[22m 3.03s\u001b[2m (transform 176ms, setup 0ms, import 356ms, tests 10ms, environment 0ms)\u001b[22m\n\n",
+      "outputTail": [
+        "npm warn deprecated xterm-addon-fit@0.8.0: This package is now deprecated. Move to @xterm/addon-fit instead.",
+        "npm warn deprecated level-errors@2.0.1: Superseded by abstract-level (https://github.com/Level/community#faq)",
+        "npm warn deprecated level-concat-iterator@2.0.1: Superseded by abstract-level (https://github.com/Level/community#faq)",
+        "npm warn deprecated deferred-leveldown@5.3.0: Superseded by abstract-level (https://github.com/Level/community#faq)",
+        "npm warn deprecated encoding-down@6.3.0: Superseded by abstract-level (https://github.com/Level/community#faq)",
+        "npm warn deprecated xterm-addon-web-links@0.9.0: This package is now deprecated. Move to @xterm/addon-web-links instead.",
+        "npm warn deprecated levelup@4.4.0: Superseded by abstract-level (https://github.com/Level/community#faq)",
+        "npm warn deprecated level-js@5.0.2: Superseded by browser-level (https://github.com/Level/community#faq)",
+        "npm warn deprecated level-codec@9.0.2: Superseded by level-transcoder (https://github.com/Level/community#faq)",
+        "npm warn deprecated level-packager@5.1.1: Superseded by abstract-level (https://github.com/Level/community#faq)",
+        "npm warn deprecated xterm-addon-webgl@0.16.0: This package is now deprecated. Move to @xterm/addon-webgl instead.",
+        "npm warn deprecated abstract-leveldown@6.2.3: Superseded by abstract-level (https://github.com/Level/community#faq)",
+        "npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead",
+        "npm warn deprecated uuid@8.3.2: uuid@10 and below is no longer supported.  For ESM codebases, update to uuid@latest.  For CommonJS codebases, use uuid@11 (but be aware this version will likely be deprecated in 2028).",
+        "npm warn deprecated uuid@9.0.1: uuid@10 and below is no longer supported.  For ESM codebases, update to uuid@latest.  For CommonJS codebases, use uuid@11 (but be aware this version will likely be deprecated in 2028).",
+        "npm warn deprecated uuid@9.0.1: uuid@10 and below is no longer supported.  For ESM codebases, update to uuid@latest.  For CommonJS codebases, use uuid@11 (but be aware this version will likely be deprecated in 2028).",
+        "npm warn deprecated xterm@5.3.0: This package is now deprecated. Move to @xterm/xterm instead.",
+        "npm warn deprecated leveldown@5.6.0: Superseded by classic-level (https://github.com/Level/community#faq)",
+        "npm warn deprecated next@15.5.4: This version has a security vulnerability. Please upgrade to a patched version. See https://nextjs.org/blog/CVE-2025-66478 for more details.",
+        "npm notice",
+        "npm notice New major version of npm available! 10.9.8 -> 11.18.0",
+        "npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.18.0",
+        "npm notice To update run: npm install -g npm@11.18.0",
+        "npm notice"
+      ]
+    },
+    {
+      "name": "dockerMetricsSuite",
+      "command": "docker run --rm -v /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session:/repo -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc if [ ! -f node_modules/vitest/vitest.mjs ]; then npm ci --ignore-scripts; fi; node node_modules/vitest/vitest.mjs run --config /repo/synthi/tmp/codesite-proof-runtime/vitest-no-postcss.config.mjs --environment node --pool=threads --maxWorkers=1 --no-file-parallelism /repo/synthi/src/lib/codesite/__tests__/metrics.test.js",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "runner": "vitest",
+        "pass": 6,
+        "skipped": 0,
+        "tests": 6,
+        "fail": 0
+      },
+      "stdout": "\n\u001b[1m\u001b[30m\u001b[46m RUN \u001b[49m\u001b[39m\u001b[22m \u001b[36mv4.1.9 \u001b[39m\u001b[90m/repo/synthi\u001b[39m\n\n \u001b[32m✓\u001b[39m src/lib/codesite/__tests__/metrics.test.js \u001b[2m(\u001b[22m\u001b[2m6 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 13\u001b[2mms\u001b[22m\u001b[39m\n\n\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[32m1 passed\u001b[39m\u001b[22m\u001b[90m (1)\u001b[39m\n\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[32m6 passed\u001b[39m\u001b[22m\u001b[90m (6)\u001b[39m\n\u001b[2m   Start at \u001b[22m 02:20:00\n\u001b[2m   Duration \u001b[22m 3.81s\u001b[2m (transform 144ms, setup 0ms, import 322ms, tests 13ms, environment 0ms)\u001b[22m\n\n",
+      "outputTail": [
+        " RUN  v4.1.9 /repo/synthi",
+        " ✓ src/lib/codesite/__tests__/metrics.test.js (6 tests) 13ms",
+        " Test Files  1 passed (1)",
+        "      Tests  6 passed (6)",
+        "   Start at  02:20:00",
+        "   Duration  3.81s (transform 144ms, setup 0ms, import 322ms, tests 13ms, environment 0ms)"
+      ]
+    },
+    {
+      "name": "proofSuiteGenerator:metrics",
+      "command": "node tmp/codesite-dojo-proof/run-mature-metrics-proof.mjs",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "runner": "command"
+      },
+      "outputTail": [
+        "{",
+        "  \"ok\": true,",
+        "  \"jsonPath\": \"/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-metrics-proof.json\",",
+        "  \"htmlPath\": \"/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-metrics-proof.html\",",
+        "  \"pngPath\": \"/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-metrics-proof.png\"",
+        "}"
+      ]
+    }
+  ],
+  "metrics": {
+    "schemaVersion": "synthi.codesite.metrics.v1",
+    "projectId": "metrics-mature-project",
+    "workspaceSlug": "codesite-mature-metrics-proof",
+    "generatedAt": "2026-07-06T02:19:55.298Z",
+    "status": "measured",
+    "sections": {
+      "atc": [
+        {
+          "key": "collisionsPredicted",
+          "label": "Collisions predicted",
+          "unit": "count",
+          "value": 3,
+          "sampleSize": 4,
+          "status": "measured",
+          "evidenceRefs": [
+            "risk-schema",
+            "incident-near-miss",
+            "sha256:near-miss",
+            "incident:near-miss"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z"
+        },
+        {
+          "key": "collisionsAvoided",
+          "label": "Collisions avoided",
+          "unit": "count",
+          "value": 2,
+          "sampleSize": 2,
+          "status": "measured",
+          "evidenceRefs": [
+            "decision-hold",
+            "shadow-1"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z"
+        },
+        {
+          "key": "nearMissesReplayed",
+          "label": "Near-misses replayed",
+          "unit": "count",
+          "value": 1,
+          "sampleSize": 3,
+          "status": "measured",
+          "evidenceRefs": [
+            "incident-near-miss",
+            "sha256:near-miss",
+            "incident:near-miss"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z"
+        },
+        {
+          "key": "noFlyViolationsBlocked",
+          "label": "No-fly violations blocked",
+          "unit": "count",
+          "value": 1,
+          "sampleSize": 3,
+          "status": "measured",
+          "evidenceRefs": [
+            "write-denied-1",
+            "codesitefs:block:no-fly",
+            "decision-nofly"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z"
+        },
+        {
+          "key": "flightsReroutedByTower",
+          "label": "Flights rerouted by tower",
+          "unit": "count",
+          "value": 0,
+          "sampleSize": 0,
+          "status": "measured",
+          "evidenceRefs": [],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z"
+        },
+        {
+          "key": "flightsHeldBeforeSharedZoneConflict",
+          "label": "Flights held before shared-zone conflict",
+          "unit": "count",
+          "value": 1,
+          "sampleSize": 1,
+          "status": "measured",
+          "evidenceRefs": [
+            "decision-hold"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z"
+        },
+        {
+          "key": "landingsPassedFirstTry",
+          "label": "Landings passed first try",
+          "unit": "count",
+          "value": 0,
+          "sampleSize": 2,
+          "status": "measured",
+          "evidenceRefs": [
+            "inspection-1",
+            "inspection:passed"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z"
+        },
+        {
+          "key": "goAroundRate",
+          "label": "Go-around rate",
+          "unit": "ratio",
+          "value": 1,
+          "sampleSize": 2,
+          "status": "measured",
+          "evidenceRefs": [
+            "inspection-1",
+            "inspection:passed"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z",
+          "detail": {
+            "numerator": 1,
+            "denominator": 1
+          }
+        },
+        {
+          "key": "groundStopEvents",
+          "label": "Ground-stop events",
+          "unit": "count",
+          "value": 1,
+          "sampleSize": 1,
+          "status": "measured",
+          "evidenceRefs": [
+            "ground-stop-1"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z"
+        },
+        {
+          "key": "averageTimeToClearanceMs",
+          "label": "Average time to clearance",
+          "unit": "duration_ms",
+          "value": 300000,
+          "sampleSize": 1,
+          "status": "measured",
+          "evidenceRefs": [
+            "lease-schema"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z",
+          "detail": {
+            "samples": 1
+          }
+        },
+        {
+          "key": "averageTimeInHoldingMs",
+          "label": "Average time in holding",
+          "unit": "duration_ms",
+          "value": 145195298,
+          "sampleSize": 1,
+          "status": "measured",
+          "evidenceRefs": [
+            "plan-schema"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z",
+          "detail": {
+            "samples": 1
+          }
+        }
+      ],
+      "transaction": [
+        {
+          "key": "staleReadsDetected",
+          "label": "Stale reads detected",
+          "unit": "count",
+          "value": 1,
+          "sampleSize": 1,
+          "status": "measured",
+          "evidenceRefs": [
+            "transaction-validated-1"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z"
+        },
+        {
+          "key": "assumptionInvalidationsBeforeWrite",
+          "label": "Assumption invalidations before write",
+          "unit": "count",
+          "value": 1,
+          "sampleSize": 1,
+          "status": "measured",
+          "evidenceRefs": [
+            "assumption-contract"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z"
+        },
+        {
+          "key": "serializableTransactionAbortRate",
+          "label": "Serializable transaction abort rate",
+          "unit": "ratio",
+          "value": 0.5,
+          "sampleSize": 1,
+          "status": "measured",
+          "evidenceRefs": [
+            "txn-abort"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z",
+          "detail": {
+            "numerator": 1,
+            "denominator": 2
+          }
+        },
+        {
+          "key": "shadowMergeSimulatorAccuracy",
+          "label": "Shadow merge simulator accuracy",
+          "unit": "ratio",
+          "value": 1,
+          "sampleSize": 2,
+          "status": "measured",
+          "evidenceRefs": [
+            "shadow-1",
+            "shadow:job:1"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z",
+          "detail": {
+            "numerator": 1,
+            "denominator": 1
+          }
+        },
+        {
+          "key": "codeSiteFsBlockedWrites",
+          "label": "CodeSiteFS blocked writes",
+          "unit": "count",
+          "value": 1,
+          "sampleSize": 2,
+          "status": "measured",
+          "evidenceRefs": [
+            "write-denied-1",
+            "codesitefs:block:no-fly"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z"
+        },
+        {
+          "key": "illegalWritesQuarantined",
+          "label": "Illegal writes quarantined",
+          "unit": "count",
+          "value": 1,
+          "sampleSize": 1,
+          "status": "measured",
+          "evidenceRefs": [
+            "write-quarantine-1"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z"
+        },
+        {
+          "key": "proofBundlesVerifiedOutsideUi",
+          "label": "Proof bundles verified outside UI",
+          "unit": "count",
+          "value": 2,
+          "sampleSize": 2,
+          "status": "measured",
+          "evidenceRefs": [
+            "black-box-verified-1",
+            "proof-bundle-verified-1"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z"
+        },
+        {
+          "key": "lineProvenanceCoverage",
+          "label": "Lines with causal provenance coverage",
+          "unit": "ratio",
+          "value": 1,
+          "sampleSize": 4,
+          "status": "measured",
+          "evidenceRefs": [
+            "line-schema",
+            "line:evidence:schema",
+            "line-auth",
+            "line:evidence:auth"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z",
+          "detail": {
+            "numerator": 2,
+            "denominator": 2
+          }
+        }
+      ],
+      "quality": [
+        {
+          "key": "mergeConflictsAvoided",
+          "label": "Merge conflicts avoided",
+          "unit": "count",
+          "value": 1,
+          "sampleSize": 2,
+          "status": "measured",
+          "evidenceRefs": [
+            "shadow-1",
+            "shadow:job:1"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z"
+        },
+        {
+          "key": "contractDriftIncidents",
+          "label": "Contract drift incidents",
+          "unit": "count",
+          "value": 0,
+          "sampleSize": 0,
+          "status": "measured",
+          "evidenceRefs": [],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z"
+        },
+        {
+          "key": "migrationRollbackCoverage",
+          "label": "Migration rollback coverage",
+          "unit": "ratio",
+          "value": 1,
+          "sampleSize": 2,
+          "status": "measured",
+          "evidenceRefs": [
+            "inspection-1:signal:3",
+            "migration:rollback-plan"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z",
+          "detail": {
+            "numerator": 1,
+            "denominator": 1
+          }
+        },
+        {
+          "key": "securityFindingsBeforeMerge",
+          "label": "Security findings before merge",
+          "unit": "count",
+          "value": 1,
+          "sampleSize": 2,
+          "status": "measured",
+          "evidenceRefs": [
+            "inspection-1:signal:2",
+            "security:finding-before-merge"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z"
+        },
+        {
+          "key": "testsRedAtLanding",
+          "label": "Tests red at landing",
+          "unit": "count",
+          "value": 1,
+          "sampleSize": 2,
+          "status": "measured",
+          "evidenceRefs": [
+            "inspection-1:signal:1",
+            "test:red-before-landing"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z"
+        },
+        {
+          "key": "postMergeRollbackRate",
+          "label": "Post-merge rollback rate",
+          "unit": "ratio",
+          "value": 0,
+          "sampleSize": 0,
+          "status": "measured",
+          "evidenceRefs": [],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z",
+          "detail": {
+            "numerator": 0,
+            "denominator": 1
+          }
+        }
+      ],
+      "trust": [
+        {
+          "key": "percentageWritesWithValidClearance",
+          "label": "Writes with valid clearance",
+          "unit": "ratio",
+          "value": 0.3333,
+          "sampleSize": 3,
+          "status": "measured",
+          "evidenceRefs": [
+            "write-attempt-1",
+            "write-allowed-1",
+            "write:evidence:schema"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z",
+          "detail": {
+            "numerator": 1,
+            "denominator": 3
+          }
+        },
+        {
+          "key": "blackBoxCompletenessScore",
+          "label": "Black-box completeness score",
+          "unit": "ratio",
+          "value": 0.855,
+          "sampleSize": 6,
+          "status": "measured",
+          "evidenceRefs": [
+            "incident-black-box",
+            "sha256:replay",
+            "incident:black-box",
+            "incident-near-miss",
+            "sha256:near-miss",
+            "incident:near-miss"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z",
+          "detail": {
+            "numerator": 1.71,
+            "denominator": 2
+          }
+        },
+        {
+          "key": "humanReviewTimeSavedMs",
+          "label": "Human review time saved",
+          "unit": "duration_ms",
+          "value": 210000,
+          "sampleSize": 2,
+          "status": "measured",
+          "evidenceRefs": [
+            "document-review:review-1",
+            "document-review:evidence"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z",
+          "detail": {
+            "samples": 1,
+            "baselineReviewTimeMs": 300000,
+            "reviewTimeMs": 90000,
+            "reviewOverrunMs": 0
+          }
+        },
+        {
+          "key": "pilotLicenseViolationRate",
+          "label": "Pilot license violation rate",
+          "unit": "ratio",
+          "value": 0,
+          "sampleSize": 0,
+          "status": "measured",
+          "evidenceRefs": [],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z",
+          "detail": {
+            "numerator": 0,
+            "denominator": 2
+          }
+        },
+        {
+          "key": "repeatedNearMissesConvertedToAirspaceRules",
+          "label": "Repeated near-misses converted to airspace rules",
+          "unit": "count",
+          "value": 1,
+          "sampleSize": 1,
+          "status": "measured",
+          "evidenceRefs": [
+            "delta-1"
+          ],
+          "source": "codesite_control_plane",
+          "generatedAt": "2026-07-06T02:19:55.298Z"
+        }
+      ]
+    },
+    "summary": {
+      "collisionsPredicted": 3,
+      "collisionsAvoided": 2,
+      "nearMissesReplayed": 1,
+      "noFlyViolationsBlocked": 1,
+      "flightsReroutedByTower": 0,
+      "flightsHeldBeforeSharedZoneConflict": 1,
+      "landingsPassedFirstTry": 0,
+      "goAroundRate": 1,
+      "groundStopEvents": 1,
+      "averageTimeToClearanceMs": 300000,
+      "averageTimeInHoldingMs": 145195298,
+      "staleReadsDetected": 1,
+      "assumptionInvalidationsBeforeWrite": 1,
+      "serializableTransactionAbortRate": 0.5,
+      "shadowMergeSimulatorAccuracy": 1,
+      "codeSiteFsBlockedWrites": 1,
+      "illegalWritesQuarantined": 1,
+      "proofBundlesVerifiedOutsideUi": 2,
+      "lineProvenanceCoverage": 1,
+      "mergeConflictsAvoided": 1,
+      "contractDriftIncidents": 0,
+      "migrationRollbackCoverage": 1,
+      "securityFindingsBeforeMerge": 1,
+      "testsRedAtLanding": 1,
+      "postMergeRollbackRate": 0,
+      "percentageWritesWithValidClearance": 0.3333,
+      "blackBoxCompletenessScore": 0.855,
+      "humanReviewTimeSavedMs": 210000,
+      "pilotLicenseViolationRate": 0,
+      "repeatedNearMissesConvertedToAirspaceRules": 1
+    },
+    "evidence": {
+      "eventTypeCounts": {
+        "write_attempted": 1,
+        "write_allowed": 1,
+        "write_denied": 1,
+        "write_quarantined": 1,
+        "transaction_validated": 1,
+        "black_box_closed": 1,
+        "proof_bundle_verified": 1,
+        "tower_instruction": 1,
+        "ground_stop": 1
+      },
+      "transactionStatusCounts": {
+        "committed": 1,
+        "aborted": 1
+      },
+      "leaseStatusCounts": {
+        "active": 1
+      },
+      "inspectionStatusCounts": {
+        "passed": 1
+      },
+      "policyDecisionCounts": {
+        "hold": 1,
+        "block": 1
+      },
+      "pilotLicenseStatusCounts": {
+        "active": 1
+      },
+      "reasonCodeCounts": {
+        "entered_no_fly_zone": 2,
+        "stale_read_detected": 1,
+        "mayday_ground_stop": 1,
+        "collision_avoidance_hold": 1,
+        "schema_first_leader_clearance": 1,
+        "serializable_validation_passed": 1,
+        "semantic_collision_mitigated": 1,
+        "document_approved": 1,
+        "pilot_license_health_active": 1
+      },
+      "dataSources": {
+        "events": 9,
+        "policyDecisions": 2,
+        "transactions": 2,
+        "mutationLeases": 1,
+        "inspectionRuns": 1,
+        "incidents": 2,
+        "proofBundles": 1,
+        "lineProvenance": 2,
+        "counterfactualRuns": 1,
+        "documentReviews": 1,
+        "assumptions": 1,
+        "pilotLicenseHealth": 1
+      }
+    }
+  },
+  "proofSuite": {
+    "runner": "synthi/scripts/codesite-run-mature-proof-suite.mjs",
+    "stampedAt": "2026-07-06T02:20:13.124Z",
+    "proofFile": "tmp/codesite-dojo-proof/codesite-metrics-proof.json"
+  }
+}

@@ -217,8 +217,8 @@ function ContextMenu({ x, y, items, onClose }) {
   return (
     <div
       ref={ref}
-      className="fixed z-[999] rounded shadow-xl py-1 min-w-[180px] border"
-      style={{ left: x, top: y, background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)' }}
+      className="vt-command-popover fixed z-[999] min-w-[180px] py-1"
+      style={{ left: x, top: y, color: 'var(--text-primary)' }}
     >
       {items.map((item, i) => (
         item.separator ? (

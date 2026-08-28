@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "synthi.codesite.governanceGateProof.v1",
+  "scope": "CodeSite restricted-clearance governance gate",
+  "branch": "codex/codesite-atc-full-from-dev-20260630",
+  "validations": [
+    {
+      "command": "node --input-type=module --check < synthi/src/lib/codesite/controlPlane.js",
+      "status": "passed"
+    },
+    {
+      "command": "node --input-type=module --check < synthi/src/lib/codesite/__tests__/controlPlane.test.js",
+      "status": "passed"
+    },
+    {
+      "command": "docker run --rm -v \"$PWD\":/repo -v codesite-node-modules-root:/repo/node_modules -v codesite-node-modules-synthi:/repo/synthi/node_modules -w /repo/synthi -e DATABASE_URL=postgresql://user:pass@localhost:5432/synthi node:22-bookworm bash -lc 'node -v && npm exec vitest -- src/lib/codesite/__tests__/controlPlane.test.js --run --testTimeout=60000'",
+      "status": "passed",
+      "result": "85 tests passed under Node v22.23.1"
+    },
+    {
+      "command": "npx playwright screenshot --viewport-size=1440,1100 file://.../governance-gate-proof.html tmp/codesite-governance-gate-proof/governance-gate-proof.png",
+      "status": "passed",
+      "result": "PNG image data, 1440 x 1100"
+    },
+    {
+      "command": "npx playwright screenshot --viewport-size=390,900 file://.../governance-gate-proof.html tmp/codesite-governance-gate-proof/governance-gate-proof-mobile.png",
+      "status": "passed",
+      "result": "PNG image data, 390 x 900"
+    }
+  ],
+  "proofArtifacts": [
+    "tmp/codesite-governance-gate-proof/governance-gate-proof.html",
+    "tmp/codesite-governance-gate-proof/governance-gate-proof.json",
+    "tmp/codesite-governance-gate-proof/governance-gate-proof.png",
+    "tmp/codesite-governance-gate-proof/governance-gate-proof-mobile.png"
+  ],
+  "behaviorProven": [
+    "Class A/B routes now require governance evidence in addition to Dojo proof before a MutationLease activates.",
+    "Verified Dojo proof without approved permit/change-order/route revision produces holding status.",
+    "Verified Dojo proof with an issued permit linked to the execution plan route produces active status.",
+    "Governance evidence is stored in lease JSON, policy decision input, policy decision output, and tower event details."
+  ]
+}

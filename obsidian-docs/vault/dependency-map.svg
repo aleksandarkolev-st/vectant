@@ -1,0 +1,92 @@
+<svg width="1180" height="700" viewBox="0 0 1180 700" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+  <defs>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker>
+    <marker id="c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#22d3ee"/></marker>
+    <marker id="o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#fb923c"/></marker>
+    <marker id="v" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#a78bfa"/></marker>
+  </defs>
+  <rect width="1180" height="700" fill="#020617"/>
+  <text x="40" y="46" fill="#e2e8f0" font-size="19" font-weight="bold">Who calls whom — logical dependency map</text>
+  <text x="40" y="68" fill="#64748b" font-size="11">arrow = initiates contact · colors: cyan=frontend · green=control · amber=rust/media · violet=AI/data · orange=agents</text>
+
+  <!-- nodes -->
+  <g>
+    <rect x="60" y="120" width="190" height="64" rx="8" fill="rgba(8,51,68,0.45)" stroke="#22d3ee" stroke-width="1.5"/>
+    <text x="155" y="146" text-anchor="middle" fill="#e2e8f0" font-size="12">Synthi Frontend</text>
+    <text x="155" y="166" text-anchor="middle" fill="#94a3b8" font-size="9">Next.js :3000 · Prisma owner</text>
+  </g>
+  <g>
+    <rect x="380" y="110" width="180" height="56" rx="8" fill="rgba(6,78,59,0.45)" stroke="#34d399" stroke-width="1.5"/>
+    <text x="470" y="134" text-anchor="middle" fill="#e2e8f0" font-size="12">collab-server</text>
+    <text x="470" y="152" text-anchor="middle" fill="#94a3b8" font-size="9">:1234 ws/sse</text>
+  </g>
+  <g>
+    <rect x="380" y="220" width="180" height="56" rx="8" fill="rgba(76,29,149,0.45)" stroke="#a78bfa" stroke-width="1.5"/>
+    <text x="470" y="244" text-anchor="middle" fill="#e2e8f0" font-size="12">y-sweet</text>
+    <text x="470" y="262" text-anchor="middle" fill="#94a3b8" font-size="9">:8180 CRDT</text>
+  </g>
+  <g>
+    <rect x="120" y="330" width="170" height="56" rx="8" fill="rgba(120,53,15,0.35)" stroke="#fbbf24" stroke-width="1.5"/>
+    <text x="205" y="354" text-anchor="middle" fill="#e2e8f0" font-size="12">signaling-server</text>
+    <text x="205" y="372" text-anchor="middle" fill="#94a3b8" font-size="9">:9000 rust</text>
+  </g>
+  <g>
+    <rect x="120" y="450" width="170" height="56" rx="8" fill="rgba(120,53,15,0.35)" stroke="#fbbf24" stroke-width="1.5"/>
+    <text x="205" y="474" text-anchor="middle" fill="#e2e8f0" font-size="12">WebRTC worker</text>
+    <text x="205" y="492" text-anchor="middle" fill="#94a3b8" font-size="9">rust + gstreamer + HIP</text>
+  </g>
+  <g>
+    <rect x="430" y="450" width="170" height="56" rx="8" fill="rgba(76,29,149,0.45)" stroke="#a78bfa" stroke-width="1.5"/>
+    <text x="515" y="474" text-anchor="middle" fill="#e2e8f0" font-size="12">ai-engine</text>
+    <text x="515" y="492" text-anchor="middle" fill="#94a3b8" font-size="9">:8000 ~166 routes</text>
+  </g>
+  <g>
+    <rect x="740" y="450" width="170" height="56" rx="8" fill="rgba(251,146,60,0.3)" stroke="#fb923c" stroke-width="1.5"/>
+    <text x="825" y="474" text-anchor="middle" fill="#e2e8f0" font-size="12">synthi-mcp</text>
+    <text x="825" y="492" text-anchor="middle" fill="#94a3b8" font-size="9">275 tools</text>
+  </g>
+  <g>
+    <rect x="950" y="330" width="180" height="56" rx="8" fill="rgba(30,41,59,0.55)" stroke="#94a3b8" stroke-width="1.5"/>
+    <text x="1040" y="354" text-anchor="middle" fill="#e2e8f0" font-size="12">agent hosts</text>
+    <text x="1040" y="372" text-anchor="middle" fill="#94a3b8" font-size="9">claude/codex/mcp</text>
+  </g>
+  <g>
+    <rect x="640" y="110" width="160" height="56" rx="8" fill="rgba(76,29,149,0.45)" stroke="#a78bfa" stroke-width="1.5"/>
+    <text x="720" y="134" text-anchor="middle" fill="#e2e8f0" font-size="12">ai-gateway</text>
+    <text x="720" y="152" text-anchor="middle" fill="#94a3b8" font-size="9">:7071 WS⇄HTTP</text>
+  </g>
+  <g>
+    <rect x="880" y="110" width="150" height="56" rx="8" fill="rgba(76,29,149,0.45)" stroke="#a78bfa" stroke-width="1.2" stroke-dasharray="4,3"/>
+    <text x="955" y="134" text-anchor="middle" fill="#e2e8f0" font-size="12">postgres/redis</text>
+    <text x="955" y="152" text-anchor="middle" fill="#94a3b8" font-size="9">state tier</text>
+  </g>
+
+  <!-- edges -->
+  <line x1="250" y1="140" x2="378" y2="138" stroke="#22d3ee" stroke-width="1.6" marker-end="url(#c)"/>
+  <line x1="255" y1="172" x2="380" y2="238" stroke="#22d3ee" stroke-width="1.4" opacity=".8" marker-end="url(#c)"/>
+  <line x1="240" y1="184" x2="215" y2="328" stroke="#22d3ee" stroke-width="1.4" opacity=".8" marker-end="url(#c)"/>
+  <line x1="300" y1="176" x2="480" y2="330" stroke="#475569" stroke-width="1.3" stroke-dasharray="5,3" opacity=".7" marker-end="url(#g)"/>
+  <text x="310" y="270" fill="#64748b" font-size="8.5">via gateway (ws)</text>
+  <line x1="470" y1="166" x2="470" y2="218" stroke="#34d399" stroke-width="1.5" marker-end="url(#g)"/>
+  <line x1="560" y1="152" x2="638" y2="142" stroke="#22d3ee" stroke-width="1.3" opacity=".65" marker-end="url(#c)"/>
+  <line x1="800" y1="138" x2="878" y2="140" stroke="#a78bfa" stroke-width="1.3" opacity=".7" marker-end="url(#v)"/>
+  <line x1="275" y1="368" x2="428" y2="462" stroke="#fbbf24" stroke-width="1.6" marker-end="url(#o)"/>
+  <text x="290" y="420" fill="#fdba74" font-size="8.5">POST /refactor/* split·heal·diff_patch</text>
+  <line x1="205" y1="386" x2="205" y2="448" stroke="#fbbf24" stroke-width="1.4" marker-end="url(#o)"/>
+  <line x1="290" y1="360" x2="738" y2="466" stroke="#fb923c" stroke-width="1.4" stroke-dasharray="5,3" marker-end="url(#o)"/>
+  <text x="520" y="392" fill="#fdba74" font-size="8.5">register · presence · TURN minting · agent-token verify</text>
+  <line x1="1035" y1="386" x2="880" y2="452" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#g)"/>
+  <text x="940" y="420" fill="#94a3b8" font-size="8.5">stdio / HTTP bearer</text>
+  <line x1="830" y1="450" x2="600" y2="500" stroke="#fb923c" stroke-width="1.3" stroke-dasharray="5,3" opacity=".8" marker-end="url(#o)"/>
+  <text x="660" y="486" fill="#fdba74" font-size="8.5">(optional) dojo evidence</text>
+  <line x1="742" y1="166" x2="540" y2="448" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#v)"/>
+  <text x="600" y="300" fill="#c4b5fd" font-size="8.5">proxies analysis/self-heal</text>
+  <path d="M 155 186 C 155 260, 350 320, 440 448" fill="none" stroke="#22d3ee" stroke-width="1.2" opacity=".55" stroke-dasharray="4,3" marker-end="url(#c)"/>
+  <text x="130" y="300" fill="#67e8f9" font-size="8.5">webrtc media+DC direct to worker</text>
+
+  <!-- legend note -->
+  <rect x="60" y="580" width="1060" height="80" rx="8" fill="#0f172a" stroke="#1e293b"/>
+  <text x="80" y="606" fill="#e2e8f0" font-size="11">Failure coupling (learned live)</text>
+  <text x="80" y="628" fill="#94a3b8" font-size="10">worker DNS crash-loop ⇒ signaling died first · CSP binds frontend to collab origin · ai-engine outage degrades split/heal but never blocks plain editing</text>
+  <text x="80" y="646" fill="#64748b" font-size="9">startup order: postgres → redis → y-sweet → signaling(+coturn) → collab → frontend+migrate → ai-engine → gateway → mcp</text>
+</svg>

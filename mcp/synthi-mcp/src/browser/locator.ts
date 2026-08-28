@@ -1,6 +1,7 @@
 import type { BrowserElementMetadata, LocatorCandidate } from "./types.js";
 
 const TEST_ID_CONFIDENCE = 0.99;
+const SOURCE_ID_CONFIDENCE = 0.975;
 const ROLE_CONFIDENCE = 0.96;
 const LABEL_CONFIDENCE = 0.94;
 const PLACEHOLDER_CONFIDENCE = 0.9;
@@ -58,7 +59,16 @@ export function rankedLocatorCandidates(element: BrowserElementMetadata | undefi
     });
   }
 
-  if (stableText(element.text)) {
+  if (element.source_id) {
+    candidates.push({
+      kind: "css",
+      locator: `page.locator(${quote(`[data-synthi-source-id="${cssAttributeValue(element.source_id)}"]`)})`,
+      confidence: SOURCE_ID_CONFIDENCE,
+      reason: "source_identity",
+    });
+  }
+
+  if (stableText(element.text) && !isAggregateOptionControl(element) && !isEditableTextElement(element)) {
     candidates.push({
       kind: "text",
       locator: `page.getByText(${quote(element.text!.trim())})`,
@@ -92,6 +102,22 @@ export function bestLocator(element: BrowserElementMetadata | undefined): Locato
   return rankedLocatorCandidates(element)[0];
 }
 
+function isAggregateOptionControl(element: BrowserElementMetadata): boolean {
+  const tag = element.tag?.toLowerCase();
+  const role = element.role?.toLowerCase();
+  return tag === "select" || role === "combobox" || role === "listbox";
+}
+
+function isEditableTextElement(element: BrowserElementMetadata): boolean {
+  const tag = element.tag?.toLowerCase();
+  const role = element.role?.toLowerCase();
+  const type = element.type?.toLowerCase() ?? "";
+  if (element.content_editable === true) return true;
+  if (tag === "textarea") return true;
+  if (tag === "input") return !["button", "submit", "reset", "checkbox", "radio", "file", "hidden"].includes(type);
+  return role === "textbox";
+}
+
 function stableText(text: string | undefined): boolean {
   if (!text) return false;
   const trimmed = text.trim();
@@ -122,4 +148,8 @@ function dedupe(candidates: LocatorCandidate[]): LocatorCandidate[] {
 
 function quote(value: string): string {
   return JSON.stringify(value);
+}
+
+function cssAttributeValue(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
 }

@@ -81,9 +81,7 @@ export default function PresenceList({ slug, maxVisible = 5 }) {
         ))}
         {overflow > 0 && (
           <span
-            className="flex items-center justify-center w-6 h-6 rounded-full
-                       bg-[#1a1b24] text-[10px] font-semibold text-[#9ba2b8]
-                       border border-[#2a2b38] ml-0.5 select-none"
+            className="vt-state-pill ml-0.5 flex h-6 w-6 select-none items-center justify-center rounded-full p-0 text-[10px] font-semibold"
             title={`${overflow} more user${overflow > 1 ? 's' : ''}`}
           >
             +{overflow}
@@ -133,7 +131,7 @@ function Avatar({ user, onContextMenu }) {
       <div
         className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2
                    mb-1.5 px-2 py-0.5 rounded text-[10px] font-medium whitespace-nowrap
-                   bg-[#1a1b24] text-[#e0e2ea] border border-[#2a2b38]
+                   vt-command-popover
                    opacity-0 group-hover:opacity-100 transition-opacity z-50"
       >
         {name}

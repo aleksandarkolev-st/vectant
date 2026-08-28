@@ -14,14 +14,11 @@ import {
 
 /**
  * EmulatorPanel
- * UI-only Android emulator preview panel.
- *
- * IMPORTANT: This does not run Android.
- * It is a fake state machine + visuals designed to be replaced later
- * by a real streaming surface (WebRTC/canvas).
+ * Docked mobile runtime panel. Real sessions are driven by worker events;
+ * without a session, the panel shows a deterministic standby surface.
  */
 export default function EmulatorPanel({
-  title = 'Android Emulator (Preview)',
+  title = 'Mobile Runtime',
   defaultState,
   bootDurationMs = 1400,
   sessionId = null,
@@ -61,7 +58,7 @@ export default function EmulatorPanel({
     [sessionId]
   );
 
-  // Fake boot completion (UI-only mode).
+  // Local standby boot completion.
   // When a real session is active, the worker stream drives state.
   useEffect(() => {
     if (sessionId) return;
@@ -77,7 +74,7 @@ export default function EmulatorPanel({
   useEffect(() => {
     if (!sessionId) return;
     if (!mediaStream) {
-      setWebrtcDiagnostics('Waiting for mediaStream...');
+      setWebrtcDiagnostics('Waiting for media stream');
       return;
     }
     // Check video tracks
@@ -227,7 +224,7 @@ export default function EmulatorPanel({
         }
         const unmuteMatch = line.match(/track onunmute:\s*kind=(\w+)/);
         if (unmuteMatch) {
-          setWebrtcDiagnostics((prev) => `${prev ? prev + ' | ' : ''}${unmuteMatch[1]} unmuted!`);
+          setWebrtcDiagnostics((prev) => `${prev ? prev + ' | ' : ''}${unmuteMatch[1]} unmuted`);
         }
         return;
       }
@@ -367,31 +364,27 @@ export default function EmulatorPanel({
   };
 
   return (
-    <div className="h-full w-full flex flex-col bg-[#0c0c0e]">
+    <div className="vt-panel-frame flex h-full w-full flex-col rounded-none border-0">
       {/* Header */}
-      <div className="h-10 flex items-center justify-between px-3 border-b border-[#1a1a1e] bg-[#09090b]">
+      <div className="vt-panel-header h-10 justify-between px-3">
         <div className="min-w-0">
-          <div className="text-sm text-gray-200 truncate">{title}</div>
-          <div className="text-[11px] text-gray-400 truncate">{headerSubtitle}</div>
+          <div className="truncate text-sm text-[var(--text-primary)]">{title}</div>
+          <div className="truncate text-[11px] text-[var(--text-muted)]">{headerSubtitle}</div>
         </div>
 
-        {/*
-          UI-only: we intentionally do NOT include any real device selection,
-          SDK status, or build controls here.
-        */}
         <div className="flex items-center gap-2">
-          <div className="text-[11px] text-gray-500">
-            {sessionId ? (streamConnected ? 'Connected' : 'Connecting…') : 'UI-only'}
+          <div className="vt-state-pill">
+            {sessionId ? (streamConnected ? 'Connected' : 'Connecting') : 'Standby'}
           </div>
-          {!sessionId ? <div className="text-[11px] text-gray-500">UI-only</div> : null}
+          {!sessionId ? <div className="vt-state-pill">Local</div> : null}
           {typeof onClose === 'function' ? (
             <Button
               type="button"
               variant="outline"
               size="sm"
-              className="h-7 border-[#4b4b4b] bg-[#262626] hover:bg-[#2e2e2e] hover:border-emerald-500 hover:text-emerald-400 text-gray-200 transition-colors"
+              className="th-btn-ghost h-7 border-[var(--border-subtle)]"
               onClick={onClose}
-              aria-label="Close emulator preview"
+              aria-label="Close mobile runtime"
             >
               Close
             </Button>

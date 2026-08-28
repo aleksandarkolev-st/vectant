@@ -1,0 +1,280 @@
+{
+  "schemaVersion": "synthi.codesite.fullWorkflowPublication.v1",
+  "status": "validated",
+  "slug": "codesite-full-workflow-proof-1783302099565",
+  "generatedAt": "2026-07-06T01:47:53.593Z",
+  "runDir": "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565",
+  "proof": "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-full-workflow-proof.json",
+  "proofSha256": "sha256:3746aded2eea6b4a269cfd333e8de0f3bcd358e2b19a28857a88c15a23d1a1fc",
+  "html": "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-full-workflow-proof.html",
+  "screenshot": "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-full-workflow-proof.png",
+  "summaryScreenshot": "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-full-workflow-proof-summary.png",
+  "browserScreenshots": [
+    "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-full-workflow-ui.png",
+    "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-full-workflow-ui-proof-section.png",
+    "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-full-workflow-ui-coordination.png",
+    "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-full-workflow-ui-line-inspector.png",
+    "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-full-workflow-ui-causal-replay-handover.png",
+    "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-full-workflow-ui-mobile.png",
+    "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-full-workflow-ui-causal-replay-mobile.png"
+  ],
+  "assertionCount": 46,
+  "failedAssertions": [],
+  "artifactValidation": {
+    "ok": true,
+    "runStartedAt": "2026-07-06T01:41:39.566Z",
+    "visualArtifacts": [
+      {
+        "path": "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-full-workflow-proof.png",
+        "size": 18555822,
+        "mtime": "2026-07-06T01:47:42.586Z",
+        "sha256": "sha256:ce24dc260e0202adfb7cea09efa82fd0107387590dd3ce1070af567c94c57640",
+        "freshForRun": true,
+        "slugScopedPath": true,
+        "png": {
+          "width": 1280,
+          "height": 91920,
+          "bitDepth": 8,
+          "colorType": 2,
+          "interlace": 0,
+          "supportedPixelScan": true,
+          "nonblank": true,
+          "variedSampleCount": 18281,
+          "sampleCount": 20003
+        },
+        "nonblank": true
+      },
+      {
+        "path": "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-full-workflow-proof-summary.png",
+        "size": 18555822,
+        "mtime": "2026-07-06T01:47:37.040Z",
+        "sha256": "sha256:ce24dc260e0202adfb7cea09efa82fd0107387590dd3ce1070af567c94c57640",
+        "freshForRun": true,
+        "slugScopedPath": true,
+        "png": {
+          "width": 1280,
+          "height": 91920,
+          "bitDepth": 8,
+          "colorType": 2,
+          "interlace": 0,
+          "supportedPixelScan": true,
+          "nonblank": true,
+          "variedSampleCount": 18281,
+          "sampleCount": 20003
+        },
+        "nonblank": true
+      },
+      {
+        "path": "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-full-workflow-ui.png",
+        "size": 400204,
+        "mtime": "2026-07-06T01:47:23.651Z",
+        "sha256": "sha256:2c36bd189f707b5364d29d57b44075277381e5e30687bbc208a4e1f430b5ae36",
+        "freshForRun": true,
+        "slugScopedPath": true,
+        "png": {
+          "width": 1440,
+          "height": 1100,
+          "bitDepth": 8,
+          "colorType": 2,
+          "interlace": 0,
+          "supportedPixelScan": true,
+          "nonblank": true,
+          "variedSampleCount": 18908,
+          "sampleCount": 20051
+        },
+        "nonblank": true
+      },
+      {
+        "path": "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-full-workflow-ui-proof-section.png",
+        "size": 174070,
+        "mtime": "2026-07-06T01:47:24.541Z",
+        "sha256": "sha256:c515b00ecab2b7735ca5ec5a05793693bd71695081e646f6c580d888001db447",
+        "freshForRun": true,
+        "slugScopedPath": true,
+        "png": {
+          "width": 1440,
+          "height": 1100,
+          "bitDepth": 8,
+          "colorType": 2,
+          "interlace": 0,
+          "supportedPixelScan": true,
+          "nonblank": true,
+          "variedSampleCount": 18749,
+          "sampleCount": 20051
+        },
+        "nonblank": true
+      },
+      {
+        "path": "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-full-workflow-ui-coordination.png",
+        "size": 151261,
+        "mtime": "2026-07-06T01:47:25.539Z",
+        "sha256": "sha256:52274211b38a3dd9a59d89759239ca8e9c6cf53d7ad22d50897f2541504fdd2b",
+        "freshForRun": true,
+        "slugScopedPath": true,
+        "png": {
+          "width": 1440,
+          "height": 1100,
+          "bitDepth": 8,
+          "colorType": 2,
+          "interlace": 0,
+          "supportedPixelScan": true,
+          "nonblank": true,
+          "variedSampleCount": 18426,
+          "sampleCount": 20051
+        },
+        "nonblank": true
+      },
+      {
+        "path": "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-full-workflow-ui-line-inspector.png",
+        "size": 126913,
+        "mtime": "2026-07-06T01:47:25.948Z",
+        "sha256": "sha256:ebdc49a5636420e0537fc511c6d766506fe6b06fb277650f9c81823d553db2cc",
+        "freshForRun": true,
+        "slugScopedPath": true,
+        "png": {
+          "width": 639,
+          "height": 848,
+          "bitDepth": 8,
+          "colorType": 2,
+          "interlace": 0,
+          "supportedPixelScan": true,
+          "nonblank": true,
+          "variedSampleCount": 19835,
+          "sampleCount": 20070
+        },
+        "nonblank": true
+      },
+      {
+        "path": "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-full-workflow-ui-causal-replay-handover.png",
+        "size": 282638,
+        "mtime": "2026-07-06T01:47:26.901Z",
+        "sha256": "sha256:d6d1c230138fd7c51088883407cb5936ce9fb1df7ab0f8805856c36c9e96b6fb",
+        "freshForRun": true,
+        "slugScopedPath": true,
+        "png": {
+          "width": 1408,
+          "height": 1436,
+          "bitDepth": 8,
+          "colorType": 2,
+          "interlace": 0,
+          "supportedPixelScan": true,
+          "nonblank": true,
+          "variedSampleCount": 19590,
+          "sampleCount": 20019
+        },
+        "nonblank": true
+      },
+      {
+        "path": "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-full-workflow-ui-mobile.png",
+        "size": 69389,
+        "mtime": "2026-07-06T01:47:27.760Z",
+        "sha256": "sha256:6219dbb1f527b3ea284f8ce0e67aba0149885dcc3e86b85e8fe10e8aa56b7dcb",
+        "freshForRun": true,
+        "slugScopedPath": true,
+        "png": {
+          "width": 390,
+          "height": 900,
+          "bitDepth": 8,
+          "colorType": 2,
+          "interlace": 0,
+          "supportedPixelScan": true,
+          "nonblank": true,
+          "variedSampleCount": 18611,
+          "sampleCount": 20648
+        },
+        "nonblank": true
+      },
+      {
+        "path": "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-full-workflow-ui-causal-replay-mobile.png",
+        "size": 79415,
+        "mtime": "2026-07-06T01:47:28.484Z",
+        "sha256": "sha256:8d110774a0a740d343e4a2bd7ba980dd096cd4de9646116540579775178e5bdb",
+        "freshForRun": true,
+        "slugScopedPath": true,
+        "png": {
+          "width": 390,
+          "height": 900,
+          "bitDepth": 8,
+          "colorType": 2,
+          "interlace": 0,
+          "supportedPixelScan": true,
+          "nonblank": true,
+          "variedSampleCount": 18618,
+          "sampleCount": 20648
+        },
+        "nonblank": true
+      }
+    ],
+    "textArtifacts": [
+      {
+        "path": "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-full-workflow-proof.json",
+        "size": 687660,
+        "mtime": "2026-07-06T01:47:29.580Z",
+        "sha256": "sha256:3746aded2eea6b4a269cfd333e8de0f3bcd358e2b19a28857a88c15a23d1a1fc",
+        "freshForRun": true,
+        "slugScopedPath": true
+      },
+      {
+        "path": "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-full-workflow-proof.html",
+        "size": 357642,
+        "mtime": "2026-07-06T01:47:29.594Z",
+        "sha256": "sha256:cb3ba6855e49dfe44adbf2b39928dd25233ea8279a18113405611733d50105cf",
+        "freshForRun": true,
+        "slugScopedPath": true
+      },
+      {
+        "path": "tmp/codesite-dojo-proof/codesite-full-workflow-git-bundles/codesite-full-workflow-proof-1783302099565/proof-bundle.git.bundle",
+        "size": 4439,
+        "mtime": "2026-07-06T01:47:19.947Z",
+        "sha256": "sha256:e39294e9b6d1cdd086da6d644ca29195e21ed089bbb3cd69c172b5cd4c8aa223",
+        "freshForRun": true,
+        "slugScopedPath": true
+      },
+      {
+        "path": "tmp/codesite-dojo-proof/codesite-full-workflow-git-bundles/codesite-full-workflow-proof-1783302099565/proof-bundle-git-manifest.json",
+        "size": 633,
+        "mtime": "2026-07-06T01:47:20.005Z",
+        "sha256": "sha256:2b228745b37a8f6ff20945c76dd303dae9af24528a354a94f9edf2e6efe67096",
+        "freshForRun": true,
+        "slugScopedPath": true
+      },
+      {
+        "path": "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-runtime-boundary-host-block-attestation.json",
+        "size": 934,
+        "mtime": "2026-07-06T01:43:21.780Z",
+        "sha256": "sha256:d12a9a5b4a22733071d49d71822e87481b66e45d78494f9ec9e35824bd681e45",
+        "freshForRun": true,
+        "slugScopedPath": true
+      },
+      {
+        "path": "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565/codesite-runtime-boundary-overlay-attestation.json",
+        "size": 2382,
+        "mtime": "2026-07-06T01:43:21.784Z",
+        "sha256": "sha256:5bfc28bd647b5f1dd135065c111993ed1bd65e3d2e0334bc080a4bd4b5a4ef1c",
+        "freshForRun": true,
+        "slugScopedPath": true
+      }
+    ],
+    "invalidArtifacts": []
+  },
+  "secretScan": {
+    "ok": true,
+    "scannedFileCount": 166,
+    "scannedRoots": [
+      "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565",
+      "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-full-workflow-proof-1783302099565",
+      "tmp/codesite-dojo-proof/app-artifacts/codesite-full-workflow-proof-1783302099565/.synthi/codesite"
+    ],
+    "findings": []
+  },
+  "publicationSecretScan": {
+    "ok": true,
+    "scannedFileCount": 167,
+    "scannedRoots": [
+      "tmp/codesite-dojo-proof/runs/codesite-full-workflow-proof-1783302099565",
+      "tmp/codesite-dojo-proof/codex-agent-evidence/codesite-full-workflow-proof-1783302099565",
+      "tmp/codesite-dojo-proof/app-artifacts/codesite-full-workflow-proof-1783302099565/.synthi/codesite"
+    ],
+    "findings": []
+  }
+}

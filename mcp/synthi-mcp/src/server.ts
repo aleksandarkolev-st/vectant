@@ -11,6 +11,7 @@ import {
 import { eventLog } from "./events/index.js";
 import { recordToolCall } from "./observability/metrics.js";
 import { enforceQuota } from "./observability/quota.js";
+import { dispatchWarrantTool, enforceWarrantGate, authorizeResourceRead, settleWarrant, metaWarrantIdFromParams, WARRANT_TOOLS } from "./tools/warrant.js";
 import {
   RESOURCES,
   RESOURCE_URIS,
@@ -64,22 +65,71 @@ import { restoreTool } from "./tools/restore.js";
 import { listSnapshotsTool } from "./tools/list_snapshots.js";
 import { answerEscapeHatchTool } from "./tools/answer_escape_hatch.js";
 import { AUTH_TOOLS, dispatchAuthTool } from "./tools/auth.js";
-import { BROWSER_TOOLS, dispatchBrowserTool } from "./tools/browser.js";
+import { BROWSER_TOOLS, browserPrivateWorkflowTools, dispatchBrowserTool } from "./tools/browser.js";
+import { privateWorkflowToolRegistry } from "./browser/private_tool_registry.js";
+import { DOJO_TOOLS, dispatchDojoTool } from "./tools/dojo.js";
 import { SOURCE_TOOLS, dispatchSourceTool } from "./tools/source.js";
 import { SAFETY_TOOLS, dispatchSafetyTool } from "./tools/safety.js";
+import { PROGRAM_TOOLS, dispatchProgramTool } from "./tools/programs.js";
+import { JUPYTER_TOOLS, dispatchJupyterTool } from "./tools/jupyter.js";
+import { FAILURE_DISTILLER_TOOLS, dispatchFailureDistillerTool } from "./tools/failure_distiller.js";
+import { CODESITE_TOOLS, dispatchCodeSiteTool } from "./tools/codesite.js";
+import { EMBODIED_TOOLS, dispatchEmbodied } from "./browser_workflow_bridge/embodied_dispatch.js";
 import type { ToolContext } from "./tools/shared.js";
 import { SNAPSHOT_ID_PATTERN_SOURCE } from "./snapshot/index.js";
+import { isExternalToolName, callExternalTool, type ExternalTools } from "./external/index.js";
+import { createAtomicTaskRouter, toAtomicOrchestratorCompatibleRoute } from "./atomic_task_router.js";
+import { createToolMetadataCatalog } from "./tool_metadata_catalog.js";
+
+export const SYNTHI_ATOMIC_AGENT_INSTRUCTIONS = [
+  "For every non-trivial workspace task, follow the passive instruction documents that your coding-agent host discovers in the opened workspace.",
+  "Decompose larger requests into independently solvable atomic changes.",
+  "For each atomic change, call synthi_route_atomic_task before execution. The router only selects the cheapest capable role, minimum skills, validation need, and a short reason; it must not solve the task.",
+  "Expose an execution agent only the atomic task, minimal repository context, selected skills, and the routed tools. Never provide the full tool catalog or all skill contents.",
+  "When the route requires independent validation, run the smallest appropriate validation agent after execution.",
+].join("\n");
 
 export interface SynthiServerOptions {
   defaultSessionId?: string;
   defaultSignalingUrl: string;
+  externalTools?: ExternalTools;
 }
 
-const TOOLS = [
+/**
+ * The static MCP registrations are also the authoritative human descriptions
+ * for routing metadata. Consumers must take only name + description from this
+ * list; inputSchema stays inside MCP registration and dispatch.
+ */
+export const STATIC_TOOL_DEFINITIONS = [
+  ...EMBODIED_TOOLS,
+  {
+    name: "synthi_route_atomic_task",
+    description: "Plan an atomic Vectant task using metadata only. Returns a bounded role, selected skill metadata, validation decision, reason, and suggested MCP tools.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        description: { type: "string", description: "Atomic task description." },
+        category: { type: "string" },
+        keywords: { type: "array", items: { type: "string" } },
+        toolNames: { type: "array", items: { type: "string" } },
+        risk: { type: "string", enum: ["low", "medium", "high", "critical"] },
+        validation: { type: "string", enum: ["required", "not-required"] },
+        fastPath: { type: "boolean" },
+      },
+      required: ["description"],
+    },
+  },
   ...BROWSER_TOOLS,
+  ...DOJO_TOOLS,
   ...AUTH_TOOLS,
+  ...WARRANT_TOOLS,
   ...SOURCE_TOOLS,
   ...SAFETY_TOOLS,
+  ...PROGRAM_TOOLS,
+  ...JUPYTER_TOOLS,
+  ...FAILURE_DISTILLER_TOOLS,
+  ...CODESITE_TOOLS,
   {
     name: "synthi_attach",
     description:
@@ -162,7 +212,7 @@ const TOOLS = [
   {
     name: "synthi_wait_hmr",
     description:
-      "Block until the preview's HMR pipeline reaches a terminal status (applied / rejected / compile-error / full-reload-required / discarded) or the timeout elapses. Call this immediately after editing source files so the subsequent screenshot reflects the change. Without a requested GPU proof state, an applied GPU HMR response may return proof_pending/gpu_hmr_dev_loop metadata: this is the non-blocking dev-loop status only, not GPU HMR acceptance.",
+      "Block until the preview's HMR pipeline reaches a terminal status (applied / rejected / compile-error / full-reload-required / discarded) or the timeout elapses. Call this immediately after editing source files so the subsequent screenshot reflects the change.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1260,14 +1310,42 @@ const TOOLS = [
 ] as const;
 
 export function createSynthiServer(options: SynthiServerOptions): Server {
+  // Every static MCP tool contributes its authoritative summary. Private and
+  // connected tools join it dynamically, so the routing catalog is complete
+  // for this exact server instance while schemas remain in registration only.
+  const routeAtomicTask = (input: Parameters<ReturnType<typeof createAtomicTaskRouter>["route"]>[0]) => {
+    const dynamicEntries = [
+      ...STATIC_TOOL_DEFINITIONS.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+      })),
+      ...browserPrivateWorkflowTools().map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        groups: ["private-workflow"],
+        keywords: [tool.name, tool.description],
+      })),
+      ...(options.externalTools?.descriptors ?? []).map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        groups: ["external-tool"],
+        keywords: [tool.name, tool.description],
+      })),
+    ];
+    return createAtomicTaskRouter({
+      catalog: createToolMetadataCatalog({ dynamicEntries }),
+    }).route(input);
+  };
+
   const server = new Server(
     {
       name: "synthi-mcp",
       version: "0.1.0",
     },
     {
+      instructions: SYNTHI_ATOMIC_AGENT_INSTRUCTIONS,
       capabilities: {
-        tools: {},
+        tools: { listChanged: true },
         resources: { subscribe: true, listChanged: false },
       },
     }
@@ -1280,12 +1358,29 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
       : {}),
   };
 
+  privateWorkflowToolRegistry.onListChanged(() => {
+    void server.notification({
+      method: "notifications/tools/list_changed",
+      params: {},
+    }).catch(() => {
+      // Disconnected clients can discover private tools on the next tools/list call.
+    });
+  });
+
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: TOOLS.map((t) => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: t.inputSchema,
-    })),
+    tools: [
+      ...[...STATIC_TOOL_DEFINITIONS, ...browserPrivateWorkflowTools()].map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+      })),
+      // External MCP tools proxied through the hub (Slice 1b), advertised as ext_<i>.
+      ...(options.externalTools?.descriptors ?? []).map((d) => ({
+        name: d.name,
+        description: d.description,
+        inputSchema: d.inputSchema as Record<string, unknown>,
+      })),
+    ],
   }));
 
   // ---------------------------------------------------------------------
@@ -1304,6 +1399,15 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
 
   server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
     const uri = req.params.uri;
+    // Patch J3: security-event telemetry is warrant/admin-key gated in
+    // warn/enforce modes; off mode (and non-event resources) pass through.
+    const resourceError = authorizeResourceRead(uri, req.params);
+    if (resourceError) {
+      return {
+        contents: [{ type: "text" as const, text: JSON.stringify(resourceError) }],
+        isError: true,
+      };
+    }
     const contents = await readResource(uri);
     if (!contents) throw new Error(`unknown_resource: ${uri}`);
     const out: Record<string, unknown> = { uri: contents.uri, mimeType: contents.mimeType };
@@ -1348,121 +1452,121 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
     }
   });
 
-  async function dispatchTool(
-    toolName: string,
-    args: unknown,
-    signal: AbortSignal | undefined
-  ): Promise<CallToolResult> {
-    const browserResponse = await dispatchBrowserTool(toolName, args);
-    if (browserResponse) return browserResponse as CallToolResult;
-    const authResponse = await dispatchAuthTool(toolName, args);
-    if (authResponse) return authResponse as CallToolResult;
-    const sourceResponse = await dispatchSourceTool(toolName, args);
-    if (sourceResponse) return sourceResponse as CallToolResult;
-    const safetyResponse = await dispatchSafetyTool(toolName, args);
-    if (safetyResponse) return safetyResponse as CallToolResult;
-    switch (toolName) {
-      case "synthi_attach":
-        return (await attachTool(args, ctx)) as CallToolResult;
-      case "synthi_screenshot":
-        return (await screenshotTool(args)) as CallToolResult;
-      case "synthi_wait_hmr":
-        return (await waitHmrTool(args)) as CallToolResult;
-      case "synthi_click":
-        return (await clickTool(args)) as CallToolResult;
-      case "synthi_type":
-        return (await typeTool(args)) as CallToolResult;
-      case "synthi_locate":
-        return (await locateTool(args, signal ? { signal } : undefined)) as CallToolResult;
-      case "synthi_detach":
-        return (await detachTool(args)) as CallToolResult;
-      case "synthi_health":
-        return (await healthTool(args)) as CallToolResult;
-      case "synthi_reconnect":
-        return (await reconnectTool(args)) as CallToolResult;
-      case "synthi_get_event_log":
-        return (await getEventLogTool(args)) as CallToolResult;
-      case "synthi_get_source_state":
-        return (await getSourceStateTool(args)) as CallToolResult;
-      case "synthi_wait":
-        return (await waitTool(args)) as CallToolResult;
-      case "synthi_mouse":
-        return (await mouseTool(args)) as CallToolResult;
-      case "synthi_keyboard":
-        return (await keyboardTool(args)) as CallToolResult;
-      case "synthi_get_usage":
-        return (await getUsageTool(args)) as CallToolResult;
-      case "synthi_set_quality":
-        return (await setQualityTool(args)) as CallToolResult;
-      case "synthi_checkpoint":
-        return (await checkpointTool(args)) as CallToolResult;
-      case "synthi_acknowledge_disruption":
-        return (await acknowledgeDisruptionTool(args)) as CallToolResult;
-      case "synthi_get_crash_info":
-        return (await getCrashInfoTool(args)) as CallToolResult;
-      case "synthi_reset_guest":
-        return (await resetGuestTool(args)) as CallToolResult;
-      case "synthi_verify":
-        return (await verifyTool(args)) as CallToolResult;
-      case "synthi_compile":
-        return (await compileTool(args)) as CallToolResult;
-      case "synthi_report_source_state":
-        return (await reportSourceStateTool(args)) as CallToolResult;
-      case "synthi_dispatch_input":
-        return (await dispatchInputTool(args)) as CallToolResult;
-      case "synthi_describe":
-        return (await describeTool(args, signal ? { signal } : undefined)) as CallToolResult;
-      case "synthi_acquire_input":
-        return (await acquireInputTool(args)) as CallToolResult;
-      case "synthi_force_release_input":
-        return (await forceReleaseInputTool(args)) as CallToolResult;
-      case "synthi_renew_input":
-        return (await renewInputTool(args)) as CallToolResult;
-      case "synthi_release_input":
-        return (await releaseInputTool(args)) as CallToolResult;
-      case "synthi_request_human":
-        return (await requestHumanTool(args)) as CallToolResult;
-      case "synthi_annotate_and_ask":
-        return (await annotateAndAskTool(args)) as CallToolResult;
-      case "synthi_recent_human_actions":
-        return (await recentHumanActionsTool(args)) as CallToolResult;
-      case "synthi_query":
-        return (await queryTool(args)) as CallToolResult;
-      case "synthi_act":
-        return (await actTool(args)) as CallToolResult;
-      case "synthi_click_text":
-        return (await clickTextTool(args)) as CallToolResult;
-      case "synthi_fill_form":
-        return (await fillFormTool(args)) as CallToolResult;
-      case "synthi_get_labels":
-        return (await getLabelsTool(args)) as CallToolResult;
-      case "synthi_get_process_state":
-        return (await getProcessStateTool(args)) as CallToolResult;
-      case "synthi_get_metrics":
-        return (await getMetricsTool(args)) as CallToolResult;
-      case "synthi_get_audio_level":
-        return (await getAudioLevelTool(args)) as CallToolResult;
-      case "synthi_wait_audio_event":
-        return (await waitAudioEventTool(args)) as CallToolResult;
-      case "synthi_snapshot":
-        return (await snapshotTool(args)) as CallToolResult;
-      case "synthi_restore":
-        return (await restoreTool(args)) as CallToolResult;
-      case "synthi_list_snapshots":
-        return (await listSnapshotsTool(args)) as CallToolResult;
-      case "synthi_answer_escape_hatch":
-        return (await answerEscapeHatchTool(args)) as CallToolResult;
-      default:
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({ error: "unknown_tool", tool: toolName }),
-            },
-          ],
-          isError: true,
-        };
-    }
+async function dispatchTool(
+  toolName: string,
+  args: unknown,
+  signal: AbortSignal | undefined
+): Promise<CallToolResult> {
+  const browserResponse = await dispatchBrowserTool(toolName, args);
+  if (browserResponse) return browserResponse as CallToolResult;
+
+  const dojoResponse = await dispatchDojoTool(toolName, args);
+  if (dojoResponse) return dojoResponse as CallToolResult;
+
+  const authResponse = await dispatchAuthTool(toolName, args);
+  if (authResponse) return authResponse as CallToolResult;
+
+  const sourceResponse = await dispatchSourceTool(toolName, args);
+  if (sourceResponse) return sourceResponse as CallToolResult;
+
+  const safetyResponse = await dispatchSafetyTool(toolName, args);
+  if (safetyResponse) return safetyResponse as CallToolResult;
+
+  const programResponse = await dispatchProgramTool(toolName, args);
+  if (programResponse) return programResponse as CallToolResult;
+
+  const jupyterResponse = await dispatchJupyterTool(toolName, args);
+  if (jupyterResponse) return jupyterResponse as CallToolResult;
+
+  const failureDistillerResponse = await dispatchFailureDistillerTool(toolName, args);
+  if (failureDistillerResponse) return failureDistillerResponse as CallToolResult;
+
+  const codeSiteResponse = await dispatchCodeSiteTool(toolName, args);
+  if (codeSiteResponse) return codeSiteResponse as CallToolResult;
+
+  const embodiedResponse = await dispatchEmbodied(toolName, args);
+  if (embodiedResponse) return embodiedResponse as CallToolResult;
+
+  // Tool dispatch table — replaces a ~45-case `switch (toolName)` with an object
+  // lookup for easier maintenance (adding a tool is one entry). Handlers capture
+  // args/ctx/signal from the enclosing scope; only locate/describe use signal.
+  const handlers: Record<string, () => Promise<CallToolResult>> = {
+    synthi_route_atomic_task: async () => {
+      if (!args || typeof args !== "object" || typeof (args as Record<string, unknown>).description !== "string") {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: "invalid_arguments", message: "description is required" }) }], isError: true };
+      }
+      const route = toAtomicOrchestratorCompatibleRoute(routeAtomicTask(args as never));
+      return { content: [{ type: "text" as const, text: JSON.stringify(route) }] };
+    },
+    synthi_attach: async () => (await attachTool(args, ctx)) as CallToolResult,
+    synthi_screenshot: async () => (await screenshotTool(args)) as CallToolResult,
+    synthi_wait_hmr: async () => (await waitHmrTool(args)) as CallToolResult,
+    synthi_click: async () => (await clickTool(args)) as CallToolResult,
+    synthi_type: async () => (await typeTool(args)) as CallToolResult,
+    synthi_locate: async () => (await locateTool(args, signal ? { signal } : undefined)) as CallToolResult,
+    synthi_detach: async () => (await detachTool(args)) as CallToolResult,
+    synthi_health: async () => (await healthTool(args)) as CallToolResult,
+    synthi_reconnect: async () => (await reconnectTool(args)) as CallToolResult,
+    synthi_get_event_log: async () => (await getEventLogTool(args)) as CallToolResult,
+    synthi_get_source_state: async () => (await getSourceStateTool(args)) as CallToolResult,
+    synthi_wait: async () => (await waitTool(args)) as CallToolResult,
+    synthi_mouse: async () => (await mouseTool(args)) as CallToolResult,
+    synthi_keyboard: async () => (await keyboardTool(args)) as CallToolResult,
+    synthi_get_usage: async () => (await getUsageTool(args)) as CallToolResult,
+    synthi_set_quality: async () => (await setQualityTool(args)) as CallToolResult,
+    synthi_checkpoint: async () => (await checkpointTool(args)) as CallToolResult,
+    synthi_acknowledge_disruption: async () => (await acknowledgeDisruptionTool(args)) as CallToolResult,
+    synthi_get_crash_info: async () => (await getCrashInfoTool(args)) as CallToolResult,
+    synthi_reset_guest: async () => (await resetGuestTool(args)) as CallToolResult,
+    synthi_verify: async () => (await verifyTool(args)) as CallToolResult,
+    synthi_compile: async () => (await compileTool(args)) as CallToolResult,
+    synthi_report_source_state: async () => (await reportSourceStateTool(args)) as CallToolResult,
+    synthi_dispatch_input: async () => (await dispatchInputTool(args)) as CallToolResult,
+    synthi_describe: async () => (await describeTool(args, signal ? { signal } : undefined)) as CallToolResult,
+    synthi_acquire_input: async () => (await acquireInputTool(args)) as CallToolResult,
+    synthi_force_release_input: async () => (await forceReleaseInputTool(args)) as CallToolResult,
+    synthi_renew_input: async () => (await renewInputTool(args)) as CallToolResult,
+    synthi_release_input: async () => (await releaseInputTool(args)) as CallToolResult,
+    synthi_request_human: async () => (await requestHumanTool(args)) as CallToolResult,
+    synthi_annotate_and_ask: async () => (await annotateAndAskTool(args)) as CallToolResult,
+    synthi_recent_human_actions: async () => (await recentHumanActionsTool(args)) as CallToolResult,
+    synthi_query: async () => (await queryTool(args)) as CallToolResult,
+    synthi_act: async () => (await actTool(args)) as CallToolResult,
+    synthi_click_text: async () => (await clickTextTool(args)) as CallToolResult,
+    synthi_fill_form: async () => (await fillFormTool(args)) as CallToolResult,
+    synthi_get_labels: async () => (await getLabelsTool(args)) as CallToolResult,
+    synthi_get_process_state: async () => (await getProcessStateTool(args)) as CallToolResult,
+    synthi_get_metrics: async () => (await getMetricsTool(args)) as CallToolResult,
+    synthi_get_audio_level: async () => (await getAudioLevelTool(args)) as CallToolResult,
+    synthi_wait_audio_event: async () => (await waitAudioEventTool(args)) as CallToolResult,
+    synthi_snapshot: async () => (await snapshotTool(args)) as CallToolResult,
+    synthi_restore: async () => (await restoreTool(args)) as CallToolResult,
+    synthi_list_snapshots: async () => (await listSnapshotsTool(args)) as CallToolResult,
+    synthi_answer_escape_hatch: async () => (await answerEscapeHatchTool(args)) as CallToolResult,
+    synthi_warrant_issue: async () => (await dispatchWarrantTool("synthi_warrant_issue", args)) as CallToolResult,
+    synthi_warrant_attenuate: async () => (await dispatchWarrantTool("synthi_warrant_attenuate", args)) as CallToolResult,
+    synthi_warrant_check: async () => (await dispatchWarrantTool("synthi_warrant_check", args)) as CallToolResult,
+    synthi_warrant_revoke: async () => (await dispatchWarrantTool("synthi_warrant_revoke", args)) as CallToolResult,
+    synthi_warrant_list: async () => (await dispatchWarrantTool("synthi_warrant_list", args)) as CallToolResult,
+    synthi_warrant_trust: async () => (await dispatchWarrantTool("synthi_warrant_trust", args)) as CallToolResult,
+    synthi_warrant_bind_trust: async () => (await dispatchWarrantTool("synthi_warrant_bind_trust", args)) as CallToolResult,
+    synthi_warrant_policy_register: async () => (await dispatchWarrantTool("synthi_warrant_policy_register", args)) as CallToolResult,
+    synthi_warrant_unbind: async () => (await dispatchWarrantTool("synthi_warrant_unbind", args)) as CallToolResult,
+    synthi_warrant_renew: async () => (await dispatchWarrantTool("synthi_warrant_renew", args)) as CallToolResult,
+  };
+
+  const handler = handlers[toolName];
+  if (handler) return handler();
+
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: JSON.stringify({ error: "unknown_tool", tool: toolName }),
+      },
+    ],
+    isError: true,
+  };
   }
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra): Promise<CallToolResult> => {
@@ -1481,7 +1585,46 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
         isError: true,
       };
     }
-    const response = await dispatchTool(toolName, args, signal);
+    // Agent-warrant gate (WI_WARRANTS_SPEC Patch B). off=default|warn|enforce;
+    // combined check+charge pre-dispatch, mirroring the quota gate above.
+    const warrantError = enforceWarrantGate(toolName, request.params);
+    if (warrantError) {
+      recordToolCall(toolName, "error");
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(warrantError) }],
+        isError: true,
+      };
+    }
+    // External MCP tools (ext_<i>) are proxied through the hub (Slice 1b),
+    // sourced from the same connection registry the in-app AI uses.
+    if (isExternalToolName(toolName)) {
+      let result: CallToolResult;
+      try {
+        result = await callExternalTool(
+          toolName,
+          (args ?? {}) as Record<string, unknown>,
+          options.externalTools?.aliasMap ?? {},
+        ) as CallToolResult;
+      } catch (err) {
+        // Patch J1 settle: a dispatch that THREW never produced a response,
+        // so its reservation is refunded. Structured isError responses are
+        // settled below with the same rollback semantics.
+        settleWarrant(toolName, metaWarrantIdFromParams(request.params), false);
+        throw err;
+      }
+      settleWarrant(toolName, metaWarrantIdFromParams(request.params), !result.isError);
+      recordToolCall(toolName, result.isError ? "error" : "ok");
+      return result;
+    }
+    let response: CallToolResult;
+    try {
+      response = await dispatchTool(toolName, args, signal);
+    } catch (err) {
+      // Patch J1 settle: same refund-on-failed-dispatch semantics as above.
+      settleWarrant(toolName, metaWarrantIdFromParams(request.params), false);
+      throw err;
+    }
+    settleWarrant(toolName, metaWarrantIdFromParams(request.params), !response.isError);
     // Record the outcome for Prometheus. Most tools return structured error
     // payloads via `isError: true` rather than throwing — respect that.
     recordToolCall(toolName, response.isError ? "error" : "ok");

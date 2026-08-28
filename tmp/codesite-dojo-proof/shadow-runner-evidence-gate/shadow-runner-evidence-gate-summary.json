@@ -1,0 +1,48 @@
+{
+  "title": "CodeSite Shadow Runner Evidence Gate Proof",
+  "generatedAt": "2026-07-04T19:56:52.931Z",
+  "branch": "codex/codesite-atc-full-from-dev-20260630",
+  "gitHead": "14d9bef007ae944339ce4a25a2d68eaca2dff87c",
+  "success": true,
+  "totals": {
+    "suites": "2/2",
+    "tests": "96/96",
+    "failed": 0,
+    "pending": 0
+  },
+  "command": "node /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/node_modules/vitest/vitest.mjs run synthi/src/lib/codesite/__tests__/controlPlane.test.js --config tmp/codesite-dojo-proof/vitest.codesite-no-postcss.config.mjs --environment node",
+  "keyAssertions": [
+    {
+      "title": "CodeSite control plane transaction validation blocks simulator fallback when explicit shadow runner evidence is required",
+      "status": "passed",
+      "durationMs": 2.7712050080299377
+    },
+    {
+      "title": "CodeSite control plane transaction validation honors env-required shadow runner evidence and records failed runner evidence",
+      "status": "passed",
+      "durationMs": 106.37016600370407
+    },
+    {
+      "title": "CodeSite control plane transaction validation executes configured shadow runner and records execution-backed counterfactual evidence",
+      "status": "passed",
+      "durationMs": 191.9400190114975
+    },
+    {
+      "title": "CodeSite control plane transaction validation executes real shadow-universe repo commands in isolated worktrees",
+      "status": "passed",
+      "durationMs": 1433.9904289841652
+    },
+    {
+      "title": "CodeSite control plane transaction validation blocks shadow runner absolute command paths that only match an allowed basename",
+      "status": "passed",
+      "durationMs": 659.9720839858055
+    },
+    {
+      "title": "CodeSite control plane transaction validation keeps inline shadow repo commands disabled by default",
+      "status": "passed",
+      "durationMs": 307.44390401244164
+    }
+  ],
+  "diffStat": ".../lib/codesite/__tests__/controlPlane.test.js    | 173 +++++++++++++++++++-\n synthi/src/lib/codesite/controlPlane.js            | 182 ++++++++++++++++++++-\n 2 files changed, 350 insertions(+), 5 deletions(-)",
+  "scope": "shadow merge strict mode blocks simulator fallback unless completed external runner evidence exists"
+}

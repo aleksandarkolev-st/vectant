@@ -9,11 +9,17 @@
  *    this endpoint executes them directly.
  */
 import { NextResponse } from 'next/server';
+import { resolveActor } from '@/lib/integrations/session';
 import { pendingCommandApprovals, deferredCommandsMap } from '../route.js';
 import { executeTool } from '../toolDefinitions.js';
 
 export async function POST(request) {
     try {
+        const actor = await resolveActor();
+        if (!actor) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
+
         const body = await request.json();
         const { id, approved } = body || {};
 
@@ -24,6 +30,12 @@ export async function POST(request) {
         // ── Case 1: Live command (tool loop is blocked waiting) ──
         const pending = pendingCommandApprovals.get(id);
         if (pending) {
+            if (
+                Object.prototype.hasOwnProperty.call(pending, 'userId') &&
+                String(pending.userId) !== String(actor.userId)
+            ) {
+                return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+            }
             pending.resolve(Boolean(approved));
             pendingCommandApprovals.delete(id);
             return NextResponse.json({ ok: true, approved: Boolean(approved) });
@@ -32,6 +44,12 @@ export async function POST(request) {
         // ── Case 2: Deferred command (git write, execute on approval) ──
         const deferred = deferredCommandsMap.get(id);
         if (deferred) {
+            if (
+                Object.prototype.hasOwnProperty.call(deferred, 'userId') &&
+                String(deferred.userId) !== String(actor.userId)
+            ) {
+                return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+            }
             deferredCommandsMap.delete(id);
             if (!approved) {
                 return NextResponse.json({ ok: true, approved: false, deferred: true });
@@ -48,6 +66,11 @@ export async function POST(request) {
                             { path: file.path, content: file.content },
                             deferred.workspacePath,
                             AbortSignal.timeout(10000),
+                            {
+                                userId: deferred.userId || null,
+                                runtimeScope: deferred.runtimeScope || '',
+                                filesystemUserId: deferred.filesystemUserId || deferred.userId || null,
+                            },
                         );
                         filesWritten++;
                     } catch (writeErr) {
@@ -63,6 +86,11 @@ export async function POST(request) {
                     { command: deferred.command },
                     deferred.workspacePath,
                     AbortSignal.timeout(35000),
+                    {
+                        userId: deferred.userId || null,
+                        runtimeScope: deferred.runtimeScope || '',
+                        filesystemUserId: deferred.filesystemUserId || deferred.userId || null,
+                    },
                 );
                 return NextResponse.json({
                     ok: true,

@@ -37,6 +37,13 @@ load_dotenv()  # Load once at import
 
 def _provider_failure_reason_from_text(value: Any) -> str:
     return provider_failure_reason(value)
+def _validate_gemini_key(api_key: Optional[str]) -> str:
+    key = api_key or os.getenv("GEMINI_API_KEY")
+    if not key:
+        raise ValueError("GEMINI_API_KEY is not set in environment variables.")
+    if key.startswith("sk-"):
+        raise ValueError("Refusing to send an OpenAI-format key to the Gemini provider")
+    return key
 
 
 def _env_float(name: str, default: float) -> float:
@@ -195,9 +202,10 @@ def _live_model_check_enabled() -> bool:
 
 
 def _list_live_models(api_key: Optional[str]) -> tuple[Sequence[Any], Optional[str]]:
-    key = api_key or os.getenv("GEMINI_API_KEY")
-    if not key:
-        return [], "missing_api_key"
+    try:
+        key = _validate_gemini_key(api_key)
+    except ValueError as exc:
+        return [], f"{type(exc).__name__}: {exc}"
     now = time.monotonic()
     cached = _MODEL_LIST_CACHE.get(key)
     if cached and now - cached[0] <= _MODEL_LIVE_CHECK_TTL_SECONDS:
@@ -386,9 +394,7 @@ class GeminiProvider(AiProvider):
         return self.generation_config
 
     def _get_client(self, api_key: Optional[str], model_name: str) -> genai.GenerativeModel:
-        key = api_key or os.getenv("GEMINI_API_KEY")
-        if not key:
-            raise ValueError("GEMINI_API_KEY is not set in environment variables.")
+        key = _validate_gemini_key(api_key)
 
         cache_key = f"{key}:{model_name}"
         if cache_key not in self._clients:
@@ -409,8 +415,9 @@ class GeminiProvider(AiProvider):
         if env_model and _normalize_model_name(env_model).lower() != _normalize_model_name(requested_model).lower():
             return _normalize_model_name(env_model)
 
-        key = api_key or os.getenv("GEMINI_API_KEY")
-        if not key:
+        try:
+            key = _validate_gemini_key(api_key)
+        except ValueError:
             return None
         genai.configure(api_key=key)
         return _select_fallback_model_name(requested_model, list(genai.list_models()))

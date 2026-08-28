@@ -1,5 +1,16 @@
 import { NextResponse } from 'next/server';
+import { getServerSession } from 'next-auth';
+import { authOptions } from '@/app/auth';
 import { withInternalAiAuth } from '@/lib/internalAiAuth';
+import { requireRuntimeWorkspaceAccess } from '@/lib/workspaceAccess';
+import {
+    isSupportedAgentType,
+    narrowAuthoritativeIds,
+} from '@/lib/agent-routing/agent-execution-policy';
+import { loadSelectedSkillInstructions } from '@/lib/agent-routing/selective-skill-loader';
+import { routePipelineAgentTask } from '@/lib/agent-routing/agent-pipeline-routing';
+import { validateIndependentAgentResult } from '@/lib/agent-routing/independent-agent-validator';
+import { limitAgentContext } from '@/lib/agent-routing/agent-context-budget';
 
 /**
  * Agent API Route — executes a single agent step on the backend.
@@ -27,6 +38,102 @@ const GEMINI_BASE =
 
 const DEFAULT_GEMINI_MODEL = process.env.SYNTHI_AI_MODEL || process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
 
+async function requireAgentSession() {
+    try {
+        const session = await getServerSession(authOptions);
+        const userId = session?.user?.id || session?.user?.email || null;
+        if (!userId) {
+            return { ok: false, status: 401, error: 'Authentication required' };
+        }
+        return { ok: true, session, userId };
+    } catch (error) {
+        console.error('[Agent API] Session check failed:', error?.message || error);
+        return { ok: false, status: 401, error: 'Authentication required' };
+    }
+}
+
+async function authorizeAgentWorkspace(workspacePath) {
+    const slug = String(workspacePath || '').trim();
+    if (!slug) {
+        return { ok: true, workspacePath: '' };
+    }
+
+    const access = await requireRuntimeWorkspaceAccess(slug);
+    if (!access.ok) {
+        return { ok: false, status: access.status || 403, error: access.error || 'Workspace access denied' };
+    }
+
+    return {
+        ok: true,
+        workspacePath: access.workspace?.slug || slug,
+    };
+}
+
+function requestedIds(values) {
+    const list = Array.isArray(values) ? values : [];
+    return list.map((value) => typeof value === 'string' ? value : value?.id);
+}
+
+function narrowAuthoritativeSkills(authoritativeSkills, selectedSkills, { requestProvided = false } = {}) {
+    const selection = narrowAuthoritativeIds(
+        authoritativeSkills.map((skill) => skill.id),
+        requestedIds(selectedSkills),
+        { requestProvided },
+    );
+    const selectedIds = new Set(selection.selectedIds);
+    return {
+        ...selection,
+        selectedSkills: authoritativeSkills.filter((skill) => selectedIds.has(skill.id)),
+    };
+}
+
+function compactValidationResult(value, { unavailable = false } = {}) {
+    const rejectedToolIds = [...new Set((Array.isArray(value?.rejectedToolIds) ? value.rejectedToolIds : [])
+        .map((id) => String(id || '').trim().toLowerCase())
+        .filter(Boolean))]
+        .slice(0, 16);
+    const reason = String(value?.reason || (unavailable
+        ? 'Independent validator unavailable.'
+        : 'Independent validation rejected the result.'))
+        .slice(0, 240);
+
+    return {
+        ok: value?.ok === true && !unavailable,
+        status: unavailable ? 'unavailable' : (value?.status === 'validated' ? 'validated' : 'rejected'),
+        validator: 'independent',
+        reason,
+        toolCallCount: Number.isFinite(value?.toolCallCount)
+            ? Math.max(0, Math.floor(value.toolCallCount))
+            : 0,
+        rejectedToolIds,
+    };
+}
+
+async function runIndependentValidation({ result, routing }) {
+    try {
+        const value = await validateIndependentAgentResult({ result, routing });
+        return compactValidationResult(value);
+    } catch (error) {
+        console.error('[Agent API] Independent validator unavailable:', error?.message || error);
+        return compactValidationResult({
+            reason: 'Independent validator unavailable.',
+            toolCallCount: Array.isArray(result?.toolCalls) ? result.toolCalls.length : 0,
+        }, { unavailable: true });
+    }
+}
+
+function traceAgentRouting({ atomicTask, routerRole, skills, tools, validator, loadedSkillIds = [], validation }) {
+    console.info('[Agent API] routed atomic task', {
+        atomicTask: { ...atomicTask, description: atomicTask.description.slice(0, 500) },
+        routerRole,
+        skills: skills.map((skill) => skill.id),
+        tools,
+        validator,
+        loadedSkillIds,
+        validation,
+    });
+}
+
 // ── File Operations ─────────────────────────────────────────────────
 
 const encodeFilePath = (filePath = '') =>
@@ -41,7 +148,7 @@ const fetchCollabFileContent = async (slug, filePath, signal) => {
     try {
         const safePath = encodeFilePath(filePath);
         const url = `${COLLAB_BASE}/file-content/${encodeURIComponent(slug)}/${safePath}`;
-        const res = await fetch(url, { method: 'GET', signal });
+        const res = await fetch(url, { method: 'GET', headers: withInternalAiAuth(), signal });
         if (!res.ok) return null;
         return await res.text();
     } catch (e) {
@@ -53,7 +160,7 @@ const fetchRepoFileList = async (slug, signal) => {
     if (!slug) return [];
     try {
         const url = `${COLLAB_BASE}/git/${encodeURIComponent(slug)}/files-meta`;
-        const res = await fetch(url, { method: 'GET', signal });
+        const res = await fetch(url, { method: 'GET', headers: withInternalAiAuth(), signal });
         if (!res.ok) return [];
         const data = await res.json();
         return Array.isArray(data?.files) ? data.files : [];
@@ -172,30 +279,34 @@ function detectLanguage(filePath = '') {
 async function executeAgent({ agentType, instruction, context, tools, workspacePath, activeFilePath, activeFileContent, signal }) {
     const toolResults = [];
     let output = '';
+    const permittedTools = new Set(tools || []);
+    const canUse = (toolId) => permittedTools.has(toolId);
 
     // Execute tools based on agent type
     switch (agentType) {
         case 'reader': {
             // Extract file paths from instruction
             const pathMatches = instruction.match(/\b([\w/.-]+\.\w{1,6})\b/g) || [];
-            for (const path of pathMatches.slice(0, 5)) {
-                const result = await toolReadFile({ workspacePath, filePath: path, signal });
-                toolResults.push({ tool: 'read_file', args: { path }, ...result });
-                if (result.success) {
-                    output += `\nFILE: ${path}\n\`\`\`\n${result.content}\n\`\`\`\n`;
+            if (canUse('read_file')) {
+                for (const path of pathMatches.slice(0, 5)) {
+                    const result = await toolReadFile({ workspacePath, filePath: path, signal });
+                    toolResults.push({ tool: 'read_file', args: { path }, ...result });
+                    if (result.success) {
+                        output += `\nFILE: ${path}\n\`\`\`\n${result.content}\n\`\`\`\n`;
+                    }
                 }
             }
 
             // If no files were found from regex, read the active file + list workspace
             if (!toolResults.some((r) => r.success)) {
                 // Always include the active file if available
-                if (activeFilePath && activeFileContent) {
+                if (canUse('read_file') && activeFilePath && activeFileContent) {
                     const truncContent = activeFileContent.length > 12000
                         ? activeFileContent.slice(0, 12000) + '\n... [truncated]'
                         : activeFileContent;
                     output += `\nFILE: ${activeFilePath} (active file)\n\`\`\`\n${truncContent}\n\`\`\`\n`;
                     toolResults.push({ tool: 'read_file', args: { path: activeFilePath }, success: true, size: activeFileContent.length });
-                } else if (activeFilePath) {
+                } else if (canUse('read_file') && activeFilePath) {
                     // Try fetching active file from collab server
                     const activeResult = await toolReadFile({ workspacePath, filePath: activeFilePath, signal });
                     toolResults.push({ tool: 'read_file', args: { path: activeFilePath }, ...activeResult });
@@ -205,11 +316,15 @@ async function executeAgent({ agentType, instruction, context, tools, workspaceP
                 }
 
                 // List workspace to find sibling/related files
-                const dirResult = await toolListDirectory({ workspacePath, signal });
-                toolResults.push({ tool: 'list_directory', ...dirResult });
+                const dirResult = canUse('list_directory')
+                    ? await toolListDirectory({ workspacePath, signal })
+                    : { success: false, files: [], count: 0 };
+                if (canUse('list_directory')) {
+                    toolResults.push({ tool: 'list_directory', ...dirResult });
+                }
 
                 // Try to read sibling files in the same directory as active file
-                if (activeFilePath) {
+                if (canUse('read_file') && activeFilePath) {
                     const activeDir = activeFilePath.includes('/') ? activeFilePath.split('/').slice(0, -1).join('/') : '';
                     const siblings = dirResult.files
                         .filter((f) => {
@@ -226,14 +341,20 @@ async function executeAgent({ agentType, instruction, context, tools, workspaceP
                     }
                 }
 
-                if (!output.trim()) {
+                if (!output.trim() && canUse('list_directory')) {
                     output = `Available files:\n${dirResult.files.join('\n')}`;
+                } else if (!output.trim()) {
+                    output = 'No permitted reader tools were selected.';
                 }
             }
             break;
         }
 
         case 'searcher': {
+            if (!canUse('grep_search')) {
+                output = 'The requested search tool is not permitted.';
+                break;
+            }
             const searchResult = await toolGrepSearch({ workspacePath, query: instruction, signal });
             toolResults.push({ tool: 'grep_search', args: { query: instruction }, ...searchResult });
 
@@ -242,7 +363,7 @@ async function executeAgent({ agentType, instruction, context, tools, workspaceP
                 // Also read the top source files
                 const topSources = (searchResult.sources || []).slice(0, 3);
                 for (const source of topSources) {
-                    if (source.file) {
+                    if (canUse('read_file') && source.file) {
                         const fileResult = await toolReadFile({
                             workspacePath,
                             filePath: source.file,
@@ -261,6 +382,10 @@ async function executeAgent({ agentType, instruction, context, tools, workspaceP
         }
 
         case 'analyzer': {
+            if (!canUse('get_diagnostics')) {
+                output = 'The requested diagnostics tool is not permitted.';
+                break;
+            }
             // Analyze the active file or a specified file
             const targetPath = activeFilePath;
             const targetContent = activeFileContent || '';
@@ -297,13 +422,18 @@ async function executeAgent({ agentType, instruction, context, tools, workspaceP
 
         case 'planner': {
             // List workspace structure for planning
-            const dirResult = await toolListDirectory({ workspacePath, signal });
-            toolResults.push({ tool: 'list_directory', ...dirResult });
-
-            output = `Workspace structure (${dirResult.count} files):\n${dirResult.files.slice(0, 30).join('\n')}`;
+            const dirResult = canUse('list_directory')
+                ? await toolListDirectory({ workspacePath, signal })
+                : { success: false, files: [], count: 0 };
+            if (canUse('list_directory')) {
+                toolResults.push({ tool: 'list_directory', ...dirResult });
+                output = `Workspace structure (${dirResult.count} files):\n${dirResult.files.slice(0, 30).join('\n')}`;
+            } else {
+                output = 'Workspace listing is not permitted.';
+            }
 
             // Include active file content so the planner can see actual code
-            if (activeFilePath && activeFileContent) {
+            if (canUse('read_file') && activeFilePath && activeFileContent) {
                 const planTrunc = activeFileContent.length > 8000
                     ? activeFileContent.slice(0, 8000) + '\n... [truncated]'
                     : activeFileContent;
@@ -348,6 +478,11 @@ async function executeAgent({ agentType, instruction, context, tools, workspaceP
 // ── Route Handler ───────────────────────────────────────────────────
 
 export async function POST(request) {
+    const sessionAccess = await requireAgentSession();
+    if (!sessionAccess.ok) {
+        return NextResponse.json({ error: sessionAccess.error }, { status: sessionAccess.status });
+    }
+
     let body;
     try {
         body = await request.json();
@@ -359,7 +494,10 @@ export async function POST(request) {
         agentType = '',
         instruction = '',
         context = '',
-        tools = [],
+        tools,
+        selectedTools,
+        selectedSkills,
+        atomicTask,
         workspacePath = '',
         activeFilePath = '',
         activeFileContent = '',
@@ -372,19 +510,90 @@ export async function POST(request) {
         );
     }
 
+    if (!isSupportedAgentType(agentType)) {
+        return NextResponse.json({ error: 'Unsupported agent type' }, { status: 400 });
+    }
+
+    // The browser may describe a previous routing pass, but server-side
+    // routing is the only authority. Client selections can only narrow the
+    // freshly routed IDs; omitted fields retain the routed result, never the
+    // broad static per-agent policy.
+    const authoritativeRoute = routePipelineAgentTask({
+        id: atomicTask?.id,
+        agentType,
+        instruction,
+    });
+    const skillSelection = narrowAuthoritativeSkills(
+        authoritativeRoute.selectedSkills,
+        selectedSkills,
+        { requestProvided: Array.isArray(selectedSkills) },
+    );
+    const requestedTools = Array.isArray(selectedTools) ? selectedTools : tools;
+    const toolSelection = narrowAuthoritativeIds(
+        authoritativeRoute.selectedToolIds,
+        requestedTools,
+        { requestProvided: Array.isArray(selectedTools) || Array.isArray(tools) },
+    );
+    const routing = {
+        atomicTask: authoritativeRoute.atomicTask,
+        routerRole: authoritativeRoute.routerRole,
+        skills: skillSelection.selectedSkills,
+        tools: toolSelection.selectedIds,
+        validator: authoritativeRoute.validator,
+        trace: {
+            ...authoritativeRoute.trace,
+            skills: skillSelection.selectedSkills.map((skill) => skill.id),
+            tools: toolSelection.selectedIds,
+            clientNarrowing: {
+                rejectedSkillIds: skillSelection.rejectedIds,
+                rejectedToolIds: toolSelection.rejectedIds,
+            },
+        },
+    };
     try {
+        const workspaceAccess = await authorizeAgentWorkspace(workspacePath);
+        if (!workspaceAccess.ok) {
+            return NextResponse.json({ error: workspaceAccess.error }, { status: workspaceAccess.status });
+        }
+
+        // Skill bodies remain server-only and are loaded only after the
+        // metadata router selected known IDs. They are intentionally not sent
+        // back to the browser or used as a replacement for tool policy.
+        const loadedSkills = await loadSelectedSkillInstructions(
+            routing.skills.map((skill) => skill.id),
+        );
+
         const result = await executeAgent({
             agentType,
             instruction,
-            context,
-            tools,
-            workspacePath,
+            context: limitAgentContext(context),
+            tools: routing.tools,
+            workspacePath: workspaceAccess.workspacePath,
             activeFilePath,
             activeFileContent,
             signal: request.signal,
         });
 
-        return NextResponse.json(result);
+        const validation = routing.validator === 'independent'
+            ? await runIndependentValidation({ result, routing })
+            : null;
+        routing.trace.validation = validation;
+        traceAgentRouting({
+            ...routing,
+            loadedSkillIds: loadedSkills.instructions.map((skill) => skill.id),
+            validation,
+        });
+
+        if (validation && !validation.ok) {
+            const status = validation.status === 'unavailable' ? 503 : 422;
+            return NextResponse.json({
+                error: validation.reason,
+                validation,
+                routing,
+            }, { status });
+        }
+
+        return NextResponse.json({ ...result, routing, validation });
     } catch (e) {
         console.error(`[Agent API] Error executing ${agentType}:`, e.message);
         return NextResponse.json(

@@ -1,0 +1,538 @@
+'use client';
+
+import { useCallback, useEffect, useState } from 'react';
+import { useDispatch, useSelector } from 'react-redux';
+import { toast } from 'sonner';
+import {
+  fetchProgramSessions,
+  restartProgramSession,
+  stopProgramSession,
+  deleteProgramSession,
+  fetchInstalledPrograms,
+  installWorkspaceProgram,
+  launchInstalledProgram,
+  submitForReview,
+  fetchMySubmissions,
+  unpublishProgram,
+  generateManifest,
+  saveWorkspaceManifest,
+  fetchMarketplace,
+  installPublishedProgram,
+  checkoutProgram,
+  scaffoldProgram,
+  fetchDetectedProgram,
+  launchDetectedProgram,
+} from './programsClient';
+import { SCAFFOLDABLE_PACKAGE_IDS } from '@/lib/programs/scaffoldTemplates';
+import { isActiveProgramSession, isTerminalRuntimeType } from './programSessionSections';
+import {
+  activateTabAction,
+  openTab,
+  openFloatingPanel,
+  bringFloatToFrontAction,
+  selectNodes,
+  selectTabs,
+  selectFloating,
+  setFocusedTabGroup,
+} from '@/components/docking-wm/state/layout-slice';
+import { IDE_PANEL } from '@/components/docking-wm/panels/panel-types';
+import { setShowTerminal } from '@/redux/uiSlice';
+import { PROGRAM_STYLE } from './programTokens';
+import LibraryView from './library/LibraryView';
+import StoreView from './store/StoreView';
+import MyAppsView from './myapps/MyAppsView';
+import FirstPublishTutorial from './FirstPublishTutorial';
+import GenerateManifestDialog from './GenerateManifestDialog';
+import ConfirmDialog from './ConfirmDialog';
+import { useConfirmDialog } from '@/components/ui/useConfirmDialog';
+
+/** Non-terminal review states — while any app is here, the My Apps tab polls. */
+const IN_FLIGHT_STATES = ['submitted', 'scanning', 'ai_review', 'approved', 'rehosting'];
+
+function sessionLabel(session) {
+  if (!session?.id) {
+    return 'Program session';
+  }
+  return `Session ${String(session.id).slice(0, 8)}`;
+}
+
+function findProgramSessionTab(nodes, tabs, programSessionId) {
+  for (const [groupId, node] of Object.entries(nodes || {})) {
+    if (node?.type !== 'tabgroup') continue;
+    for (const tabId of node.tabs || []) {
+      const tab = tabs?.[tabId];
+      if (tab?.panelType === IDE_PANEL.PROGRAM_SESSION && tab?.data?.programSessionId === programSessionId) {
+        return { groupId, tabId, tab };
+      }
+    }
+  }
+  return null;
+}
+
+function findProgramSessionFloat(floating, tabs, programSessionId) {
+  for (const fw of Object.values(floating || {})) {
+    const tab = tabs?.[fw.tabId];
+    if (tab?.panelType === IDE_PANEL.PROGRAM_SESSION && tab?.data?.programSessionId === programSessionId) {
+      return fw;
+    }
+  }
+  return null;
+}
+
+function findEditorGroupId(nodes, tabs) {
+  for (const [groupId, node] of Object.entries(nodes || {})) {
+    if (node?.type !== 'tabgroup') continue;
+    if ((node.tabs || []).some((tabId) => tabs?.[tabId]?.panelType === IDE_PANEL.EDITOR)) {
+      return groupId;
+    }
+  }
+  return Object.entries(nodes || {}).find(([, node]) => node?.type === 'tabgroup')?.[0] || null;
+}
+
+export default function ProgramsPanel() {
+  const dispatch = useDispatch();
+  const workspaceSlug = useSelector((state) => state.workspace?.slug || null);
+  const workspaceRole = useSelector((state) => state.workspace?.role || null);
+  const nodes = useSelector(selectNodes);
+  const tabs = useSelector(selectTabs);
+  const floating = useSelector(selectFloating);
+
+  const [view, setView] = useState('library');
+  const [sessions, setSessions] = useState([]);
+  const [installs, setInstalls] = useState([]);
+  const [marketplace, setMarketplace] = useState([]);
+  const [marketQuery, setMarketQuery] = useState('');
+  const [detected, setDetected] = useState(null);
+  const [submissions, setSubmissions] = useState([]);
+  const [showTutorial, setShowTutorial] = useState(false);
+  const [genManifest, setGenManifest] = useState(null); // { manifest, errors } | null
+  const [loading, setLoading] = useState(true);
+  const [consent, setConsent] = useState(null); // { requested, published? }
+  const [busy, setBusy] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState(null);
+  const { confirm, confirmDialog } = useConfirmDialog();
+
+  // Members get a read-only view; owner/admin (or unknown role — the API still
+  // enforces) can launch / install. 'member' is the only role denied here.
+  const canManage = workspaceRole !== 'member';
+
+  const load = useCallback(async () => {
+    if (!workspaceSlug) {
+      setSessions([]);
+      setInstalls([]);
+      setMarketplace([]);
+      setSubmissions([]);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const [nextSessions, nextInstalls, nextMarket, nextDetected, nextSubmissions] = await Promise.all([
+        fetchProgramSessions(workspaceSlug),
+        fetchInstalledPrograms(workspaceSlug).catch(() => []),
+        fetchMarketplace(workspaceSlug, marketQuery).catch(() => []),
+        fetchDetectedProgram(workspaceSlug).catch(() => null),
+        fetchMySubmissions(workspaceSlug).catch(() => []),
+      ]);
+      setSessions(nextSessions);
+      setInstalls(nextInstalls);
+      setMarketplace(Array.isArray(nextMarket) ? nextMarket : []);
+      setDetected(nextDetected || null);
+      setSubmissions(Array.isArray(nextSubmissions) ? nextSubmissions : []);
+    } catch (error) {
+      toast.error(error.message || 'Failed to load programs');
+    } finally {
+      setLoading(false);
+    }
+  }, [workspaceSlug, marketQuery]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // While the My Apps tab is open and an app is mid-pipeline, poll for status so
+  // the autonomous pipeline's progress shows live without a manual refresh.
+  useEffect(() => {
+    if (view !== 'myapps') return undefined;
+    if (!submissions.some((s) => IN_FLIGHT_STATES.includes(s.reviewState))) return undefined;
+    const id = setInterval(() => { load(); }, 4000);
+    return () => clearInterval(id);
+  }, [view, submissions, load]);
+
+  const openProgramSession = useCallback((session, { label = null, command = null } = {}) => {
+    if (!session?.id) return;
+
+    // CLI/TUI programs run in the REAL integrated terminal (a terminal tab bound
+    // to the session PTY), not a ProgramSessionPanel.
+    if (isTerminalRuntimeType(session.runtimeType)) {
+      dispatch(setShowTerminal(true));
+      window.dispatchEvent(new CustomEvent('terminal-session-open', {
+        detail: { sessionId: session.id, command: command || null, label: label || sessionLabel(session) },
+      }));
+      return;
+    }
+
+    const existing = findProgramSessionTab(nodes, tabs, session.id);
+    if (existing) {
+      dispatch(setFocusedTabGroup(existing.groupId));
+      dispatch(activateTabAction({ tabId: existing.tabId }));
+      return;
+    }
+
+    const existingFloat = findProgramSessionFloat(floating, tabs, session.id);
+    if (existingFloat) {
+      dispatch(bringFloatToFrontAction({ floatId: existingFloat.id }));
+      return;
+    }
+
+    const data = {
+      programSessionId: session.id,
+      workspaceSlug,
+      title: sessionLabel(session),
+    };
+
+    // GUI dev-tool sessions pop up as a FLOATING, movable/dockable window.
+    if (session.webGui) {
+      dispatch(openFloatingPanel({
+        panelType: IDE_PANEL.PROGRAM_SESSION,
+        title: sessionLabel(session),
+        data,
+      }));
+      return;
+    }
+
+    const targetTabGroupId = findEditorGroupId(nodes, tabs);
+    if (!targetTabGroupId) return;
+
+    dispatch(openTab({
+      panelType: IDE_PANEL.PROGRAM_SESSION,
+      title: sessionLabel(session),
+      targetTabGroupId,
+      data,
+    }));
+    dispatch(setFocusedTabGroup(targetTabGroupId));
+  }, [dispatch, nodes, tabs, floating, workspaceSlug]);
+
+  const handleStop = useCallback(async (session) => {
+    if (!workspaceSlug || !session?.id) return;
+    try {
+      await stopProgramSession(workspaceSlug, session.id);
+      toast.success(`${sessionLabel(session)} stopped`);
+      await load();
+    } catch (error) {
+      toast.error(error.message || 'Failed to stop program');
+    }
+  }, [load, workspaceSlug]);
+
+  const handleRestart = useCallback(async (session) => {
+    if (!workspaceSlug || !session?.id) return;
+    try {
+      await restartProgramSession(workspaceSlug, session.id);
+      toast.success(`${sessionLabel(session)} restarted`);
+      await load();
+    } catch (error) {
+      toast.error(error.message || 'Failed to restart program');
+    }
+  }, [load, workspaceSlug]);
+
+  const doRemove = useCallback(async (session) => {
+    if (!workspaceSlug || !session?.id) return;
+    setRemoveTarget(null);
+    try {
+      await deleteProgramSession(workspaceSlug, session.id);
+      toast.success(`${sessionLabel(session)} removed`);
+      await load();
+    } catch (error) {
+      toast.error(error.message || 'Failed to remove session');
+    }
+  }, [load, workspaceSlug]);
+
+  // A running session needs confirmation (removing it stops + deletes it); an
+  // idle one (stopped/crashed) is just a record, so drop it straight away.
+  const handleRemove = useCallback((session) => {
+    if (!session?.id) return;
+    if (isActiveProgramSession(session)) {
+      setRemoveTarget(session);
+    } else {
+      doRemove(session);
+    }
+  }, [doRemove]);
+
+  const handleLaunchInstall = useCallback(async (install) => {
+    if (!workspaceSlug || !install?.id) return;
+    // One instance per program: if it already has a live session, focus that one
+    // instead of spawning another. (sessions are reconciled, so a dead/zombie
+    // session won't match and the program can still be relaunched.)
+    const existing = sessions.find((s) => s.installId === install.id && isActiveProgramSession(s));
+    if (existing) {
+      openProgramSession(existing, { label: install.packageId });
+      return;
+    }
+    try {
+      const result = await launchInstalledProgram(workspaceSlug, install.id);
+      toast.success('Program launched');
+      if (result?.session) {
+        openProgramSession(result.session, { label: install.packageId });
+      }
+      await load();
+    } catch (error) {
+      toast.error(error.message || 'Failed to launch program');
+    }
+  }, [sessions, load, openProgramSession, workspaceSlug]);
+
+  const handleScaffold = useCallback(async (install) => {
+    if (!workspaceSlug || !install?.id) return;
+    const name = install.packageId?.split('/').pop() || 'starter';
+    const allowed = await confirm({
+      title: `Scaffold ${name}?`,
+      message: 'Starter files will be added to this workspace. Existing files are skipped.',
+      confirmLabel: 'Scaffold',
+      tone: 'warning',
+    });
+    if (!allowed) return;
+    try {
+      const result = await scaffoldProgram(workspaceSlug, install.packageId);
+      toast.success(`Scaffolded ${result?.written?.length || 0} file(s)` + (result?.skipped?.length ? `, skipped ${result.skipped.length}` : ''));
+      await handleLaunchInstall(install);
+    } catch (error) {
+      toast.error(error.body?.message || error.message || 'Failed to scaffold');
+    }
+  }, [confirm, handleLaunchInstall, workspaceSlug]);
+
+  const handleLaunchDetected = useCallback(async () => {
+    if (!workspaceSlug) return;
+    try {
+      const result = await launchDetectedProgram(workspaceSlug);
+      toast.success('Detected program launched');
+      if (result?.session) {
+        openProgramSession(result.session);
+      }
+      await load();
+    } catch (error) {
+      toast.error(error.message || 'Failed to launch detected program');
+    }
+  }, [load, openProgramSession, workspaceSlug]);
+
+  const handlePublish = useCallback(async () => {
+    if (!workspaceSlug) return;
+    // Container/GUI apps publish a pre-built image; web/CLI apps need none. Collect
+    // the optional image ref; a blank entry submits with no image, a cancel aborts.
+    let sourceImageRef;
+    try {
+      const ref = window.prompt('Container/GUI apps: paste the image reference to publish (leave blank for web/CLI apps).', '');
+      if (ref === null) return;
+      sourceImageRef = ref.trim() || undefined;
+    } catch { sourceImageRef = undefined; }
+    try {
+      const { submission } = await submitForReview(workspaceSlug, { sourceImageRef });
+      toast.success(submission?.reviewState === 'submitted' ? 'Submitted for review' : `Submission: ${submission?.reviewState || 'received'}`);
+      setView('myapps');
+      await load();
+    } catch (error) {
+      if (error?.status === 422) toast.error(error.body?.message || 'Invalid manifest');
+      else if (error?.status === 404) toast.error('No vectant.programs.json or devcontainer.json found in this workspace.');
+      else if (error?.status === 403) toast.error('You are not allowed to publish.');
+      else toast.error(error.body?.message || error.message || 'Failed to submit');
+    }
+  }, [load, workspaceSlug]);
+
+  // My Apps: "Submit update" sends the publisher back to the Store submit flow;
+  // "Unpublish" takes a live app down (confirmed).
+  const handleSubmitUpdate = useCallback(() => { setView('store'); }, []);
+  const handleUnpublish = useCallback(async (packageId) => {
+    if (!workspaceSlug || !packageId) return;
+    if (!window.confirm(`Unpublish ${packageId}? It will be removed from the marketplace.`)) return;
+    try {
+      await unpublishProgram(workspaceSlug, packageId);
+      toast.success('Unpublished');
+      await load();
+    } catch (error) {
+      toast.error(error.body?.message || error.message || 'Failed to unpublish');
+    }
+  }, [load, workspaceSlug]);
+
+  // AI manifest authoring: generate a draft → open the preview dialog → Save writes it.
+  const handleGenerate = useCallback(async () => {
+    if (!workspaceSlug) return;
+    const toastId = toast.loading('Generating vectant.programs.json…');
+    try {
+      const { manifest, errors } = await generateManifest(workspaceSlug);
+      toast.dismiss(toastId);
+      setGenManifest({ manifest, errors: errors || null });
+    } catch (error) {
+      toast.dismiss(toastId);
+      if (error?.status === 502) toast.error('AI generation is unavailable right now.');
+      else if (error?.status === 404) toast.error('No workspace files to base a manifest on.');
+      else toast.error(error.body?.message || error.message || 'Failed to generate manifest');
+    }
+  }, [workspaceSlug]);
+
+  const handleSaveManifest = useCallback(async (manifest) => {
+    if (!workspaceSlug) return;
+    try {
+      await saveWorkspaceManifest(workspaceSlug, manifest);
+      toast.success('Saved vectant.programs.json to your workspace');
+      setGenManifest(null);
+    } catch (error) {
+      if (error?.status === 422) toast.error(error.body?.message || 'Manifest is invalid');
+      else toast.error(error.body?.message || error.message || 'Failed to save manifest');
+    }
+  }, [workspaceSlug]);
+
+  const handleInstallManifest = useCallback(async (grantScopes) => {
+    if (!workspaceSlug) return;
+    setBusy(true);
+    try {
+      await installWorkspaceProgram(workspaceSlug, grantScopes ? { grantScopes } : {});
+      toast.success('Program installed');
+      setConsent(null);
+      await load();
+    } catch (error) {
+      if (error?.status === 409) {
+        setConsent({ requested: error.body?.requested || [] });
+      } else if (error?.status === 404) {
+        toast.error('No vectant.programs.json or devcontainer.json found in this workspace.');
+      } else if (error?.status === 422) {
+        toast.error(error.body?.message || 'Invalid manifest');
+      } else {
+        toast.error(error.message || 'Failed to install program');
+      }
+    } finally {
+      setBusy(false);
+    }
+  }, [load, workspaceSlug]);
+
+  const handleInstallPublished = useCallback(async (item, grantScopes) => {
+    if (!workspaceSlug || !item?.packageId) return;
+    setBusy(true);
+    try {
+      await installPublishedProgram(workspaceSlug, item.packageId, item.latestVersion, grantScopes);
+      toast.success(`Installed ${item.packageId}`);
+      setConsent(null);
+      await load();
+    } catch (error) {
+      if (error?.status === 409) setConsent({ requested: error.body?.requested || [], published: item });
+      else toast.error(error.body?.message || error.message || 'Failed to install');
+    } finally {
+      setBusy(false);
+    }
+  }, [load, workspaceSlug]);
+
+  // Buy a paid app: hand off to the external checkout (opens the payments page);
+  // if the caller already owns it (or it's free) proceed straight to install.
+  const handleBuy = useCallback(async (item) => {
+    if (!workspaceSlug || !item?.packageId) return;
+    setBusy(true);
+    try {
+      const res = await checkoutProgram(workspaceSlug, item.packageId);
+      if (res?.checkoutUrl) {
+        if (typeof window !== 'undefined') window.open(res.checkoutUrl, '_blank', 'noopener');
+        toast.success('Opening checkout — after payment, install the app.');
+      } else {
+        await handleInstallPublished(item);
+      }
+    } catch (error) {
+      toast.error(error?.body?.error === 'billing_unconfigured' ? 'Payments are not configured.' : (error?.message || 'Checkout failed'));
+    } finally {
+      setBusy(false);
+    }
+  }, [workspaceSlug, handleInstallPublished]);
+
+  const onApprove = useCallback((_item, scopes) => (
+    consent?.published ? handleInstallPublished(consent.published, scopes) : handleInstallManifest(scopes)
+  ), [consent, handleInstallManifest, handleInstallPublished]);
+
+  // Synthetic detail subject for a manifest-install consent (no published item).
+  const consentItem = consent
+    ? (consent.published || { packageId: '__manifest__', displayName: 'Workspace program', latestVersion: '', verified: false })
+    : null;
+
+  const tabBtn = (id, label) => (
+    <button
+      type="button"
+      data-testid={`tab-${id}`}
+      onClick={() => { setView(id); if (id === 'store') setShowTutorial(true); }}
+      style={{ fontSize: 11, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', color: view === id ? 'var(--text-primary)' : 'var(--text-secondary)', background: view === id ? 'var(--bg-elevated, #16161c)' : 'transparent' }}
+    >{label}</button>
+  );
+
+  return (
+    <div className="flex flex-col h-full min-h-0" style={{ ...PROGRAM_STYLE.panelShell, borderRadius: '0' }}>
+      {canManage ? (
+        <div data-testid="programs-tabs" className="flex items-center gap-1" style={{ padding: '4px 8px', borderBottom: '1px solid var(--border-subtle)' }}>
+          {tabBtn('library', 'Library')}
+          {tabBtn('store', 'Store')}
+          {tabBtn('myapps', 'My Apps')}
+        </div>
+      ) : null}
+
+      {view === 'library' ? (
+        <LibraryView
+          canManage={canManage}
+          slug={workspaceSlug}
+          sessions={sessions}
+          installs={installs}
+          detected={detected}
+          loading={loading}
+          scaffoldableIds={SCAFFOLDABLE_PACKAGE_IDS}
+          onOpenStore={() => setView('store')}
+          onRefresh={load}
+          onOpenSession={openProgramSession}
+          onStop={handleStop}
+          onRestart={handleRestart}
+          onRemove={handleRemove}
+          onLaunchInstall={handleLaunchInstall}
+          onScaffold={handleScaffold}
+          onLaunchDetected={handleLaunchDetected}
+        />
+      ) : view === 'myapps' ? (
+        <MyAppsView
+          submissions={submissions}
+          onSubmitUpdate={handleSubmitUpdate}
+          onUnpublish={handleUnpublish}
+          onRefresh={load}
+        />
+      ) : (
+        <StoreView
+          canManage={canManage}
+          marketplace={marketplace}
+          query={marketQuery}
+          onQueryChange={setMarketQuery}
+          onBack={() => { setView('library'); setConsent(null); }}
+          onInstallManifest={() => handleInstallManifest()}
+          onPublish={handlePublish}
+          onGenerate={handleGenerate}
+          onInstallPublished={(item) => handleInstallPublished(item)}
+          onBuy={(item) => handleBuy(item)}
+          requestedScopes={consent?.requested || []}
+          consentItem={consentItem}
+          busy={busy}
+          onApprove={onApprove}
+        />
+      )}
+
+      <FirstPublishTutorial userId={workspaceSlug || 'anon'} open={showTutorial} onClose={() => setShowTutorial(false)} />
+
+      <GenerateManifestDialog
+        open={!!genManifest}
+        manifest={genManifest?.manifest}
+        errors={genManifest?.errors}
+        onCancel={() => setGenManifest(null)}
+        onSave={handleSaveManifest}
+      />
+
+      {removeTarget ? (
+        <ConfirmDialog
+          title="Remove this running program?"
+          message={`${sessionLabel(removeTarget)} is still running. Removing it stops the session and deletes it — this can't be undone.`}
+          confirmLabel="Stop & remove"
+          cancelLabel="Cancel"
+          onConfirm={() => doRemove(removeTarget)}
+          onCancel={() => setRemoveTarget(null)}
+        />
+      ) : null}
+      {confirmDialog}
+    </div>
+  );
+}

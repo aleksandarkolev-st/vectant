@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { withInternalAiAuth } from '@/lib/internalAiAuth';
+import { resolveActor } from '@/lib/integrations/session';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -8,6 +9,9 @@ const AI_ENGINE_BASE =
     process.env.CODE_INTEL_URL || process.env.AI_ENGINE_URL || 'http://localhost:8000';
 
 export async function POST(request) {
+    const actor = await resolveActor();
+    if (!actor) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
     let body = {};
     try {
         body = await request.json();

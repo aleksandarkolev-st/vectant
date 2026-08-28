@@ -1,0 +1,71 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Opt-in overlay for Agent Dojo enterprise release-gate candidates.
+# The default k8s/ base remains beta-compatible and is not changed by this
+# overlay unless Cloud Build or an operator explicitly renders this directory.
+namespace: synthi
+
+resources:
+  - ../../namespace.yaml
+  - ../../configmap.yaml
+  - ../../spawner-rbac.yaml
+  - ../../ai-engine.yaml
+  - ../../ai-gateway.yaml
+  - ../../y-sweet.yaml
+  - ../../collab-server.yaml
+  - ../../signaling-server.yaml
+  - ../../frontend.yaml
+  - ../../worker.yaml
+  - ../../preview-certificate.yaml
+  - ../../ingress.yaml
+  - ../../network-policies.yaml
+  - ../../pod-disruption-budgets.yaml
+  - ../../external-secrets.yaml
+  - dojo-release-external-secrets.yaml
+  - dojo-mcp-host.yaml
+
+patches:
+  - path: dojo-release-config.yaml
+  - path: redis-secret-env.patch.yaml
+  - target:
+      group: networking.k8s.io
+      version: v1
+      kind: Ingress
+      name: synthi-ingress
+    path: dojo-mcp-ingress.patch.yaml
+  - target:
+      kind: ConfigMap
+      name: synthi-config
+    patch: |-
+      - op: remove
+        path: /data/REDIS_URL
+  - target:
+      group: networking.k8s.io
+      version: v1
+      kind: NetworkPolicy
+      name: allow-to-redis
+    patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-to-redis
+  - target:
+      group: networking.k8s.io
+      version: v1
+      kind: NetworkPolicy
+      name: allow-to-postgres
+    patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-to-postgres
+
+labels:
+  - includeSelectors: false
+    includeTemplates: true
+    pairs:
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: synthi-ide

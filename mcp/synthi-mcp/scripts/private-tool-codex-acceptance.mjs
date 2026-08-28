@@ -1,0 +1,667 @@
+#!/usr/bin/env node
+/*
+ * Prove a real Codex agent can discover and call a saved Synthi workflow as an
+ * MCP private tool. The harness uses a temporary Codex home copied from an
+ * existing auth home, writes only temporary MCP config, and removes it at exit.
+ */
+
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { chromium } from "playwright-core";
+import {
+  assertPrivateToolStoreConformance,
+  assertRuntimeEndpointConformance,
+  normalizeOptionalText,
+  parseBooleanFlag,
+  parseJsonObjectArgument,
+  parseNonNegativeInteger,
+  privateToolStoreConformance,
+  privateToolStoreCustodyExpectation,
+  privateToolStoreCustodyEvidence,
+  resolvePrivateToolStoreSpec,
+  runtimeEndpointConformance,
+} from "./private-tool-acceptance-conformance.mjs";
+import {
+  CODEX_ACCEPTANCE_DISABLED_FEATURES,
+  DEFAULT_CODEX_ACCEPTANCE_MODEL,
+  buildCodexAcceptancePrompt,
+  buildCodexConfigToml,
+  buildCodexProcessEnv,
+  codexMcpCommandConformance,
+  codexExecArgs,
+  extractCodexMcpEvidence,
+  findPageForVisualProof,
+  findPageWithText,
+  resolveCodexMcpServerCommandSpec,
+  selectCdpTargetsToClose,
+  visualProofScreenshotOptions,
+} from "./lib/private-tool-codex-acceptance-helpers.mjs";
+
+export {
+  parseBooleanFlag,
+  parseJsonObjectArgument,
+  privateToolStoreConformance,
+  privateToolStoreCustodyExpectation,
+  privateToolStoreCustodyEvidence,
+  resolvePrivateToolStoreSpec,
+  runtimeEndpointConformance,
+};
+export {
+  CODEX_ACCEPTANCE_DISABLED_FEATURES,
+  DEFAULT_CODEX_ACCEPTANCE_MODEL,
+  buildCodexAcceptancePrompt,
+  buildCodexConfigToml,
+  buildCodexProcessEnv,
+  codexMcpCommandConformance,
+  codexExecArgs,
+  extractCodexMcpEvidence,
+  findPageForVisualProof,
+  findPageWithText,
+  resolveCodexMcpServerCommandSpec,
+  selectCdpTargetsToClose,
+  visualProofScreenshotOptions,
+} from "./lib/private-tool-codex-acceptance-helpers.mjs";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const MCP_ROOT = path.resolve(__dirname, "..");
+const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
+const DIST_INDEX = path.join(MCP_ROOT, "dist", "index.js");
+const PRIVATE_TOOL_CODEX_ACCEPTANCE_SCHEMA_VERSION = "synthi.dojo.privateToolCodexAcceptance.v1";
+
+const args = parseArgs(process.argv.slice(2));
+const CFG = {
+  cdpUrl: args["cdp-url"] || process.env.SYNTHI_HOSTED_BROWSER_CDP_URL || "",
+  targetUrl: args["target-url"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL || "",
+  codexBin: args["codex-bin"] || process.env.CODEX_BIN || "codex",
+  codexAuthHome: args["codex-auth-home"] || process.env.SYNTHI_CODEX_AUTH_HOME || process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
+  codexModel: args["codex-model"] || process.env.SYNTHI_CODEX_ACCEPTANCE_MODEL || process.env.CODEX_MODEL || DEFAULT_CODEX_ACCEPTANCE_MODEL,
+  codexReasoning: args["codex-reasoning"] || process.env.SYNTHI_CODEX_ACCEPTANCE_REASONING || "low",
+  workspaceId: args["workspace-id"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_WORKSPACE_ID || "",
+  outDir: path.resolve(args["out-dir"] || process.env.SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_OUT_DIR || path.join(REPO_ROOT, "tmp", "private-tool-codex-acceptance")),
+  timeoutMs: Number(args["timeout-ms"] || process.env.SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_TIMEOUT_MS || 120_000),
+  requireNonLoopbackRuntime: parseBooleanFlag(args["require-non-loopback-runtime"]
+    ?? process.env.SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_REQUIRE_NON_LOOPBACK_RUNTIME
+    ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_REQUIRE_NON_LOOPBACK_RUNTIME),
+  requireExternalPrivateToolStore: parseBooleanFlag(args["require-external-private-tool-store"]
+    ?? process.env.SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_REQUIRE_EXTERNAL_PRIVATE_TOOL_STORE
+    ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_REQUIRE_EXTERNAL_PRIVATE_TOOL_STORE),
+  requireCustomMcpCommand: parseBooleanFlag(args["require-custom-mcp-command"]
+    ?? process.env.SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_REQUIRE_CUSTOM_MCP_COMMAND
+    ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_REQUIRE_CUSTOM_MCP_COMMAND),
+  toolName: args["tool-name"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TOOL_NAME || "",
+  toolArgs: parseJsonObjectArgument(args["tool-args-json"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TOOL_ARGS_JSON ?? "{}", "tool_args"),
+  expectedText: normalizeOptionalText(args["expected-text"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_TEXT),
+  expectedStepsMin: parseNonNegativeInteger(args["expected-steps-min"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_STEPS_MIN ?? "1", "expected_steps_min"),
+  hostedSessionTtlMs: parseNonNegativeInteger(args["hosted-session-ttl-ms"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_HOSTED_SESSION_TTL_MS ?? "900000", "hosted_session_ttl_ms"),
+  expectedPrivateToolStoreKeySha256: args["expected-private-tool-store-key-sha256"]
+    || process.env.SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256
+    || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256
+    || "",
+  expectedPrivateToolStoreScope: args["expected-private-tool-store-scope"]
+    || process.env.SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE
+    || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE
+    || "",
+  mcpCommand: resolveCodexMcpServerCommandSpec({
+    args,
+    env: process.env,
+    defaultCommand: "node",
+    defaultArgs: [DIST_INDEX],
+    defaultCwd: MCP_ROOT,
+  }),
+};
+
+function log(kind, message) {
+  const tag = kind === "ok" ? "[ok]" : kind === "fail" ? "[fail]" : "[info]";
+  console.log(`${tag} ${message}`);
+}
+
+async function main() {
+  if (!existsSync(DIST_INDEX)) {
+    throw new Error(`dist entrypoint missing: ${DIST_INDEX}. Run npm run build first.`);
+  }
+  if (!CFG.cdpUrl.trim()) {
+    throw new Error("hosted_cdp_url_required: pass --cdp-url or set SYNTHI_HOSTED_BROWSER_CDP_URL");
+  }
+  const runtimeConformance = assertRuntimeEndpointConformance({
+    cdpUrl: CFG.cdpUrl,
+    requireNonLoopbackRuntime: CFG.requireNonLoopbackRuntime,
+  });
+  const mcpCommandConformance = assertCodexMcpCommandConformance({
+    commandSpec: CFG.mcpCommand,
+    requireCustomCommand: CFG.requireCustomMcpCommand,
+  });
+  const authPath = path.join(CFG.codexAuthHome, "auth.json");
+  if (!existsSync(authPath)) {
+    throw new Error(`codex_auth_missing: ${authPath}`);
+  }
+
+  await mkdir(CFG.outDir, { recursive: true });
+  const artifactDir = await mkdtemp(path.join(os.tmpdir(), "synthi-private-tool-codex-"));
+  const codexHome = path.join(artifactDir, "codex-home");
+  const codexWorkdir = path.join(artifactDir, "codex-workspace");
+  const privateToolStore = resolvePrivateToolStoreSpec({
+    args,
+    env: process.env,
+    defaultFile: path.join(artifactDir, "private-tools.enc.json"),
+    defaultKey: `codex-acceptance-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    defaultScope: `codex-acceptance-${process.pid}`,
+  });
+  const expectedPrivateToolStore = privateToolStoreCustodyExpectation({
+    storeSpec: privateToolStore,
+    expectedScope: CFG.expectedPrivateToolStoreScope,
+    expectedKeySha256: CFG.expectedPrivateToolStoreKeySha256,
+  });
+  const privateToolStoreConformance = assertPrivateToolStoreConformance({
+    storeSpec: privateToolStore,
+    requireExternalStore: CFG.requireExternalPrivateToolStore,
+  });
+  const privateToolStoreCustody = privateToolStoreCustodyEvidence({
+    storeSpec: privateToolStore,
+    expectedScope: expectedPrivateToolStore.scope,
+  });
+  if (privateToolStore.external && !CFG.targetUrl.trim()) {
+    throw new Error("target_url_required_for_external_private_tool_store: pass --target-url or set SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL");
+  }
+  const fixture = privateToolStore.external || CFG.targetUrl ? null : await startFixtureServer();
+  const targetUrl = CFG.targetUrl || fixture.url;
+  const expectedText = CFG.expectedText ?? (privateToolStore.external ? "" : "Details opened");
+  const workspaceId = CFG.workspaceId || `codex-private-tool-acceptance-${process.pid}`;
+  const transcript = {
+    schema_version: PRIVATE_TOOL_CODEX_ACCEPTANCE_SCHEMA_VERSION,
+    generated_at: new Date().toISOString(),
+    ok: true,
+    cdp_url: redactCdpUrl(CFG.cdpUrl),
+    target_url: targetUrl,
+    workspace_id: workspaceId,
+    product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
+    conformance: {
+      require_non_loopback_runtime: runtimeConformance.require_non_loopback_runtime,
+      non_loopback_runtime: runtimeConformance.non_loopback_runtime,
+      runtime_host_class: runtimeConformance.runtime_host_class,
+      require_external_private_tool_store: privateToolStoreConformance.require_external_private_tool_store,
+      external_private_tool_store: privateToolStoreConformance.external_private_tool_store,
+      external_private_tool_store_location_ok: privateToolStoreConformance.external_private_tool_store_location_ok,
+      external_private_tool_store_location_class: privateToolStoreConformance.external_private_tool_store_location_class,
+      external_private_tool_store_location_reasons: privateToolStoreConformance.external_private_tool_store_location_reasons,
+      require_custom_mcp_command: mcpCommandConformance.require_custom_mcp_command,
+      custom_mcp_command: mcpCommandConformance.custom_mcp_command,
+      explicit_mcp_command: mcpCommandConformance.explicit_mcp_command,
+      explicit_mcp_args: mcpCommandConformance.explicit_mcp_args,
+      explicit_mcp_cwd: mcpCommandConformance.explicit_mcp_cwd,
+      explicit_mcp_command_spec: mcpCommandConformance.explicit_mcp_command_spec,
+    },
+    mcp_server: {
+      command: CFG.mcpCommand.command,
+      cwd: CFG.mcpCommand.cwd,
+      args_count: CFG.mcpCommand.args.length,
+      explicit_command: CFG.mcpCommand.explicit_command,
+      explicit_args: CFG.mcpCommand.explicit_args,
+      explicit_cwd: CFG.mcpCommand.explicit_cwd,
+      default_repo_dist: CFG.mcpCommand.default_repo_dist,
+    },
+    private_tool_store: {
+      external: privateToolStore.external,
+      file: privateToolStore.file,
+      scope: privateToolStore.scope,
+      key_present: privateToolStoreCustody.key_present,
+      key_fingerprint_alg: privateToolStoreCustody.key_fingerprint_alg,
+      key_sha256: privateToolStoreCustody.key_sha256,
+      expected_scope: privateToolStoreCustody.expected_scope,
+      scope_matches_expected: privateToolStoreCustody.scope_matches_expected,
+    },
+    expected_private_tool_store: expectedPrivateToolStore,
+    acceptance: {
+      requested_tool_name: CFG.toolName || null,
+      tool_args_keys: Object.keys(CFG.toolArgs).sort(),
+      expected_steps_min: CFG.expectedStepsMin,
+      expected_text_required: Boolean(expectedText),
+    },
+    codex_model: CFG.codexModel,
+    steps: [],
+  };
+
+  try {
+    await mkdir(codexWorkdir, { recursive: true });
+    await prepareCodexHome({
+      codexHome,
+      authPath,
+      storeFile: privateToolStore.file,
+      storeKey: privateToolStore.key,
+      storeScope: privateToolStore.scope,
+      targetUrl,
+      workspaceId,
+    });
+    const seeded = privateToolStore.external
+      ? null
+      : await seedPrivateWorkflowStore({
+        storeFile: privateToolStore.file,
+        storeKey: privateToolStore.key,
+        storeScope: privateToolStore.scope,
+        targetUrl,
+      });
+    if (seeded) {
+      transcript.seeded = seeded;
+      log("ok", `seed private workflow store - tool=${seeded.tool_name}`);
+    } else {
+      log("ok", `use existing private workflow store - scope=${privateToolStore.scope}`);
+    }
+
+    await pruneExistingCdpPageTargets(CFG.cdpUrl);
+    const requestedToolName = CFG.toolName || seeded?.tool_name || "";
+    const codexRun = await runCodexAgent({
+      codexHome,
+      codexWorkdir,
+      targetUrl,
+      toolName: requestedToolName,
+      toolArgs: CFG.toolArgs,
+    });
+    transcript.codex = codexRun.summary;
+    await writeFile(path.join(CFG.outDir, "codex-jsonl.log"), codexRun.stdout);
+    await writeFile(path.join(CFG.outDir, "codex-stderr.log"), codexRun.stderr);
+    await writeFile(path.join(CFG.outDir, "codex-final-message.txt"), codexRun.finalMessage);
+    assert.equal(codexRun.exitCode, 0, `codex exited with ${codexRun.exitCode}: ${codexRun.stderr.slice(0, 1000)}`);
+    assert(codexRun.finalMessage.includes("WORKFLOW_DONE"), `Codex did not report workflow completion: ${codexRun.finalMessage}`);
+    const calledToolName = codexRun.evidence.private_tool_called_name;
+    assert(calledToolName, "Codex JSONL did not include a completed synthi_app_* private workflow tool call");
+    if (requestedToolName) {
+      assert.equal(calledToolName, requestedToolName, `Codex called ${calledToolName} instead of requested private tool ${requestedToolName}`);
+    }
+    assert(codexRun.finalMessage.includes(calledToolName), `Codex final message did not name discovered private tool ${calledToolName}`);
+    assert(codexRun.evidence.hosted_attach_call, "Codex JSONL did not include a completed hosted browser attach MCP call");
+    assert.equal(codexRun.evidence.local_attach_call, false, "Codex used local CDP attach instead of hosted workspace attach");
+    assert(codexRun.evidence.private_tool_call, `Codex JSONL did not include a completed MCP call to ${calledToolName}`);
+    assert(codexRun.evidence.private_tool_result_ok, `Codex private workflow tool did not return ok=true for ${calledToolName}`);
+    assert(codexRun.evidence.private_tool_steps_run >= CFG.expectedStepsMin, `Codex private workflow tool ran too few steps: expected at least ${CFG.expectedStepsMin}, got ${codexRun.evidence.private_tool_steps_run}`);
+    assert(codexRun.evidence.consent_call, "Codex JSONL did not include a completed screenshot consent MCP call");
+    assert(codexRun.evidence.open_call, "Codex JSONL did not include a completed browser open MCP call");
+    assert.equal(codexRun.evidence.command_execution_count, 0, `Codex used shell commands instead of MCP-only workflow acceptance: ${JSON.stringify(codexRun.evidence.command_executions)}`);
+    transcript.steps.push({ name: "codex discovered and called private MCP tool", ok: true, tool_name: calledToolName });
+    log("ok", `codex reported private workflow tool - ${calledToolName}`);
+
+    const visual = await captureVisualProof({ targetUrl, expectedText });
+    transcript.steps.push({
+      name: "visual proof snapshot",
+      ok: true,
+      screenshot_path: visual.screenshotPath,
+      screenshot_bytes: visual.screenshotBytes,
+      screenshot_sha256: visual.screenshotSha256,
+      text: visual.text,
+      url: visual.url,
+      match: visual.match,
+      expected_text: expectedText || null,
+    });
+    if (expectedText) {
+      assert(visual.text.includes(expectedText), `browser did not show workflow effect: ${visual.text}`);
+    }
+    log("ok", `visual proof snapshot - ${visual.screenshotPath}`);
+
+    const transcriptPath = path.join(CFG.outDir, "codex-private-tool-acceptance.json");
+    await writeFile(transcriptPath, JSON.stringify(transcript, null, 2));
+    log("ok", `Codex private-tool acceptance passed - transcript=${transcriptPath}`);
+  } finally {
+    await rm(artifactDir, { recursive: true, force: true }).catch(() => undefined);
+    if (fixture) await fixture.close().catch(() => undefined);
+  }
+}
+
+async function prepareCodexHome({ codexHome, authPath, storeFile, storeKey, storeScope, targetUrl, workspaceId }) {
+  await mkdir(codexHome, { recursive: true });
+  await copyFile(authPath, path.join(codexHome, "auth.json"));
+  const configText = buildCodexConfigToml({
+    codexReasoning: CFG.codexReasoning,
+    codexModel: CFG.codexModel,
+    distIndex: DIST_INDEX,
+    mcpCommandSpec: CFG.mcpCommand,
+    storeFile,
+    storeKey,
+    storeScope,
+    cdpUrl: CFG.cdpUrl,
+    targetUrl,
+    workspaceId,
+    hostedSessionTtlMs: CFG.hostedSessionTtlMs,
+  });
+  await writeFile(path.join(codexHome, "config.toml"), configText);
+}
+
+function assertCodexMcpCommandConformance({ commandSpec, requireCustomCommand }) {
+  const conformance = codexMcpCommandConformance({ commandSpec, requireCustomCommand });
+  if (!conformance.ok) {
+    throw new Error("custom_mcp_command_required: pass --mcp-command with --mcp-args-json and --mcp-cwd, or set SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND, SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON, and SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD before using this harness as a deployed-host conformance gate");
+  }
+  return conformance;
+}
+
+async function runCodexAgent({ codexHome, codexWorkdir, targetUrl, toolName, toolArgs }) {
+  const prompt = buildCodexAcceptancePrompt({ targetUrl, requestedToolName: toolName, toolArgs });
+  const proc = spawn(CFG.codexBin, codexExecArgs({
+    codexWorkdir,
+    prompt,
+  }), {
+    cwd: codexWorkdir,
+    env: buildCodexProcessEnv({ baseEnv: process.env, codexHome }),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const output = await collectProcess(proc, CFG.timeoutMs);
+  const events = parseCodexJsonl(output.stdout);
+  const finalMessage = events
+    .filter((event) => event?.type === "item.completed" && event.item?.type === "agent_message")
+    .map((event) => String(event.item?.text ?? ""))
+    .at(-1) ?? "";
+  const sawPrivateToolName = toolName ? output.stdout.includes(toolName) : false;
+  const evidence = extractCodexMcpEvidence({ events, toolName, targetUrl });
+  return {
+    exitCode: output.code,
+    stdout: output.stdout,
+    stderr: output.stderr,
+    events,
+    finalMessage,
+    sawPrivateToolName,
+    evidence,
+    summary: {
+      exit_code: output.code,
+      event_count: events.length,
+      final_message: finalMessage,
+      saw_private_tool_name: sawPrivateToolName,
+      mcp_evidence: evidence,
+    },
+  };
+}
+
+async function captureVisualProof({ targetUrl, expectedText }) {
+  const browser = await chromium.connectOverCDP(CFG.cdpUrl);
+  try {
+    const deadline = Date.now() + CFG.timeoutMs;
+    while (Date.now() < deadline) {
+      const pages = browser.contexts().flatMap((context) => context.pages());
+      const match = expectedText
+        ? await findPageWithText({ pages, targetUrl, expectedText })
+        : await findPageForVisualProof({ pages, targetUrl });
+      if (match) {
+        const screenshotPath = path.join(CFG.outDir, "after-codex-private-tool-call.png");
+        await match.page.screenshot(visualProofScreenshotOptions({ path: screenshotPath, timeoutMs: CFG.timeoutMs }));
+        const screenshotBytes = await readFile(screenshotPath);
+        if (!isPngBytes(screenshotBytes)) throw new Error("visual_proof_screenshot_not_png");
+        return {
+          screenshotPath,
+          screenshotBytes: screenshotBytes.length,
+          screenshotSha256: sha256(screenshotBytes),
+          text: match.text,
+          url: match.url,
+          match: match.match,
+        };
+      }
+      await sleep(500);
+    }
+    throw new Error("visual_proof_timeout");
+  } finally {
+    await browser.close().catch(() => undefined);
+  }
+}
+
+function isPngBytes(bytes) {
+  return Buffer.isBuffer(bytes)
+    && bytes.length >= 8
+    && bytes[0] === 0x89
+    && bytes[1] === 0x50
+    && bytes[2] === 0x4e
+    && bytes[3] === 0x47
+    && bytes[4] === 0x0d
+    && bytes[5] === 0x0a
+    && bytes[6] === 0x1a
+    && bytes[7] === 0x0a;
+}
+
+function sha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+async function seedPrivateWorkflowStore({ storeFile, storeKey, storeScope, targetUrl }) {
+  const [
+    { compileWorkflowContract },
+    { generatePrivateWorkflowToolManifest },
+    { EncryptedFilePrivateWorkflowToolStore, PrivateWorkflowToolRegistry },
+    { sourceIdentityRegistry },
+  ] = await Promise.all([
+    importDist("browser/workflow.js"),
+    importDist("browser/private_tool_manifest.js"),
+    importDist("browser/private_tool_registry.js"),
+    importDist("browser/source_identity.js"),
+  ]);
+
+  const sourceToken = "codex_open_details";
+  sourceIdentityRegistry.register({
+    workspaceId: "codex-private-tool-acceptance",
+    filePath: "src/WorkflowFixture.tsx",
+    adapter: "codex-acceptance",
+    transformVersion: "codex_acceptance_v1",
+    tokens: [{ token: sourceToken, file: "src/WorkflowFixture.tsx", tag: "button", line: 1, column: 1 }],
+  });
+
+  const origin = new URL(targetUrl).origin;
+  const events = [{
+    event_id: "open_details",
+    trace_id: "codex_private_tool_acceptance_trace",
+    trace_version: 1,
+    event_seq: 1,
+    ts: Date.now(),
+    tab_id: "codex_acceptance_tab",
+    origin,
+    url: targetUrl,
+    kind: "human_action",
+    action: "click",
+    detail: {
+      element: { role: "button", name: "Open details", source_id: sourceToken },
+    },
+    locator_candidates: [
+      { kind: "role", locator: 'page.getByRole("button", { name: "Open details" })', confidence: 0.99, reason: "role" },
+    ],
+  }];
+  const workflow = compileWorkflowContract(events);
+  const manifest = generatePrivateWorkflowToolManifest(workflow.contract);
+  assert.equal(manifest.status, "available", "seeded workflow manifest should be available");
+  const artifact = {
+    workflow_id: workflow.contract.workflowId,
+    workflow,
+    events,
+    saved_at: Date.now(),
+  };
+  const store = new EncryptedFilePrivateWorkflowToolStore({
+    file_path: storeFile,
+    key: storeKey,
+    scope_id: storeScope,
+  });
+  store.clear();
+  const registry = new PrivateWorkflowToolRegistry(store);
+  const published = registry.publish(manifest, { workflowArtifact: artifact });
+  assert.equal(published.ok, true, published.error || "private workflow publish failed");
+  return {
+    workflow_id: artifact.workflow_id,
+    tool_name: published.registration.tool_name,
+    store_scope: storeScope,
+  };
+}
+
+async function startFixtureServer() {
+  const server = http.createServer((req, res) => {
+    if (req.url === "/favicon.ico") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(`<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Synthi Codex private tool acceptance</title>
+    <style>
+      body { font-family: Inter, system-ui, sans-serif; margin: 48px; background: #f7f7f4; color: #171717; }
+      main { display: grid; gap: 18px; max-width: 560px; }
+      button { width: max-content; height: 42px; border: 0; background: #202020; color: white; padding: 0 16px; font: inherit; cursor: pointer; }
+      output { min-height: 24px; color: #17663a; font-weight: 700; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Codex private workflow acceptance</h1>
+      <p>The Codex agent must discover and call the saved Synthi workflow tool.</p>
+      <button type="button" data-synthi-source-id="codex_open_details">Open details</button>
+      <output aria-live="polite">Waiting for workflow</output>
+    </main>
+    <script>
+      document.querySelector("button").addEventListener("click", () => {
+        document.querySelector("output").textContent = "Details opened";
+      });
+    </script>
+  </body>
+</html>`);
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert(address && typeof address === "object", "fixture server did not bind a TCP port");
+  return {
+    url: `http://127.0.0.1:${address.port}/`,
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
+}
+
+async function pruneExistingCdpPageTargets(cdpUrl) {
+  const baseUrl = cdpHttpBaseUrl(cdpUrl);
+  if (!baseUrl) return;
+  try {
+    const response = await fetchWithTimeout(`${baseUrl}/json/list`, { timeoutMs: Math.min(CFG.timeoutMs, 10_000) });
+    if (!response.ok) return;
+    const targets = await response.json();
+    if (!Array.isArray(targets)) return;
+    await Promise.all(selectCdpTargetsToClose(targets)
+      .map((target) => fetchWithTimeout(`${baseUrl}/json/close/${encodeURIComponent(target.id)}`, {
+        timeoutMs: Math.min(CFG.timeoutMs, 10_000),
+      }).catch(() => undefined)));
+  } catch {
+    // Target pruning is a harness optimization; attach reports the real failure if CDP is unavailable.
+  }
+}
+
+function cdpHttpBaseUrl(cdpUrl) {
+  try {
+    const parsed = new URL(cdpUrl);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") return parsed.origin;
+    if (parsed.protocol === "ws:" || parsed.protocol === "wss:") {
+      parsed.protocol = parsed.protocol === "ws:" ? "http:" : "https:";
+      parsed.pathname = "";
+      parsed.search = "";
+      parsed.hash = "";
+      return parsed.origin;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function fetchWithTimeout(url, { timeoutMs }) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function parseCodexJsonl(stdout) {
+  return stdout.split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+function collectProcess(proc, timeoutMs) {
+  let stdout = "";
+  let stderr = "";
+  proc.stdout.on("data", (chunk) => { stdout += String(chunk); });
+  proc.stderr.on("data", (chunk) => {
+    const text = String(chunk);
+    stderr += text;
+    process.stderr.write(text);
+  });
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      proc.kill("SIGTERM");
+      reject(new Error(`process_timeout:${timeoutMs}`));
+    }, timeoutMs);
+    proc.once("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    proc.once("exit", (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal, stdout, stderr });
+    });
+  });
+}
+
+function parseArgs(argv) {
+  const parsed = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    const item = argv[i];
+    if (!item.startsWith("--")) continue;
+    const key = item.slice(2);
+    const next = argv[i + 1];
+    if (!next || next.startsWith("--")) {
+      parsed[key] = "1";
+      continue;
+    }
+    parsed[key] = next;
+    i += 1;
+  }
+  return parsed;
+}
+
+function importDist(relativePath) {
+  return import(pathToFileURL(path.join(MCP_ROOT, "dist", relativePath)).href);
+}
+
+function redactCdpUrl(value) {
+  try {
+    const parsed = new URL(value);
+    if (parsed.username) parsed.username = "redacted";
+    if (parsed.password) parsed.password = "redacted";
+    return parsed.toString();
+  } catch {
+    return "invalid";
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+if (isDirectRun()) {
+  main().catch((err) => {
+    log("fail", err instanceof Error ? err.stack || err.message : String(err));
+    process.exit(1);
+  });
+}
+
+function isDirectRun() {
+  return process.argv[1] && path.resolve(process.argv[1]) === __filename;
+}

@@ -9,9 +9,9 @@
  */
 
 import { NextResponse } from 'next/server';
+import { isAllowedOpenVsxUrl } from './validateTargetUrl.js';
 
 const OPEN_VSX_BASE = 'https://open-vsx.org/api';
-const OPEN_VSX_ORIGIN = 'https://open-vsx.org';
 const REQUEST_TIMEOUT = 15000;   // 15s for JSON API calls
 const VSIX_DL_TIMEOUT = 120000;  // 120s for large VSIX binary downloads
 
@@ -23,7 +23,7 @@ export async function GET(request) {
     // ── action=proxy: proxy an arbitrary open-vsx.org URL (JSON/text) ──
     if (action === 'proxy') {
       const targetUrl = searchParams.get('url');
-      if (!targetUrl || !targetUrl.startsWith(OPEN_VSX_ORIGIN)) {
+      if (!isAllowedOpenVsxUrl(targetUrl)) {
         return NextResponse.json(
           { error: 'url parameter must be an open-vsx.org URL' },
           { status: 400 }

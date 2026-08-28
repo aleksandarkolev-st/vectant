@@ -82,7 +82,7 @@ function EditorTabStripImpl() {
     const container = tabsContainerRef.current;
     if (!container) return;
 
-    const tabButtons = Array.from(container.querySelectorAll(':scope > button'));
+    const tabButtons = Array.from(container.querySelectorAll(':scope > [data-editor-tab="true"]'));
     const firstTab = tabButtons[0];
     const lastTab = tabButtons[tabButtons.length - 1];
 
@@ -337,7 +337,7 @@ function EditorTabStripImpl() {
             const attrib = showPaneAttribution ? getPanesForFile(layout, file.path) : [];
 
             return (
-              <button
+              <div
                 key={file.path}
                 ref={(element) => {
                   tabRefs.current[file.path] = element;
@@ -345,8 +345,16 @@ function EditorTabStripImpl() {
                     activeTabRef.current = element;
                   }
                 }}
-                type="button"
+                data-editor-tab="true"
+                role="tab"
+                tabIndex={isActive ? 0 : -1}
                 onClick={() => handleSelect(file)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleSelect(file);
+                  }
+                }}
                 onMouseEnter={() => setHoveredTabPath(file.path)}
                 onMouseLeave={() => {
                   setHoveredTabPath((current) => (current === file.path ? null : current));
@@ -358,18 +366,13 @@ function EditorTabStripImpl() {
                   }
                 }}
                 title={file.path}
-                className="relative shrink-0 flex h-full items-center gap-1.5 px-2.5 text-[12px] cursor-pointer"
+                aria-selected={isActive ? 'true' : 'false'}
+                className="vt-editor-tab relative shrink-0 flex h-full items-center gap-1.5 px-2.5 text-[12px] cursor-pointer"
                 style={{
                   color: isActive || isHovered
                     ? 'var(--dock-tab-active-fg, var(--text-primary))'
                     : 'var(--dock-tab-fg, var(--text-muted))',
                   fontWeight: isActive ? 600 : 400,
-                  background: isActive
-                    ? 'var(--dock-tab-active-bg, color-mix(in srgb, var(--bg-elevated) 60%, transparent))'
-                    : isHovered
-                      ? 'rgba(255, 255, 255, 0.04)'
-                      : 'transparent',
-                  transition: 'background-color 0.1s, color 0.1s',
                 }}
               >
                 <span className="text-base leading-none flex-shrink-0">{icon}</span>
@@ -418,7 +421,7 @@ function EditorTabStripImpl() {
                 {attrib.length > 0 && (
                   <span
                     aria-hidden="true"
-                    className="pointer-events-none absolute bottom-0 left-2.5 right-2.5 h-[2px] flex rounded-t-full overflow-hidden"
+                    className="pointer-events-none absolute bottom-0 left-2.5 right-2.5 h-[2px] flex rounded-none overflow-hidden"
                   >
                     {attrib.map((p) => (
                       <span
@@ -429,13 +432,13 @@ function EditorTabStripImpl() {
                     ))}
                   </span>
                 )}
-              </button>
+              </div>
             );
           })}
 
           <span
             aria-hidden="true"
-            className="pointer-events-none absolute bottom-0 h-[2px] rounded-t-full"
+            className="pointer-events-none absolute bottom-0 h-[2px] rounded-none"
             style={{
               left: tabIndicator.left,
               width: tabIndicator.width,

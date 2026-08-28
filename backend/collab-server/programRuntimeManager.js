@@ -1,0 +1,965 @@
+'use strict';
+
+const crypto = require('crypto');
+
+const DEFAULT_HEADLESS_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_IDLE_TTL_MS = 10 * 60 * 1000;
+const DEFAULT_OUTPUT_CAP = 50_000;
+
+const BLOCKED_ENV_KEYS = new Set([
+  'DATABASE_URL',
+  'DIRECT_URL',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+  'GCS_BUCKET',
+  'KUBERNETES_SERVICE_HOST',
+  'KUBERNETES_PORT',
+  'REDIS_URL',
+  'POSTGRES_URL',
+  'POSTGRES_PRISMA_URL',
+  'POSTGRES_URL_NON_POOLING',
+  'PRISMA_DATABASE_URL',
+  // DOCKER_HOST stays fully key-blocked: a program must never be able to point
+  // Docker at an arbitrary endpoint (host socket OR a TCP daemon API). Container
+  // programs get the correct in-pod socket by INHERITING the runtime container's
+  // own pod-level DOCKER_HOST env (the rootful dockerd's /var/run/docker.sock —
+  // NOT rootless; lesson #31), so it never passes through this per-program scrub.
+  'DOCKER_HOST',
+  'DOCKER_SOCKET',
+  'DOCKER_CERT_PATH',
+  'YSWEET_AUTH_KEY',
+  'NEXTAUTH_SECRET',
+  'AUTH_SECRET',
+]);
+
+const BLOCKED_ENV_PREFIXES = [
+  'DATABASE_',
+  'GCP_',
+  'GOOGLE_',
+  'KUBERNETES_',
+  'K8S_',
+  'POSTGRES_',
+  'REDIS_',
+  'PRISMA_',
+  'YSWEET_',
+  'NEXTAUTH_',
+  'SYNTHI_PLATFORM_',
+  'SYNTHI_DB_',
+  'SYNTHI_GCS_',
+];
+
+const BLOCKED_ENV_KEY_PATTERNS = [
+  /(^|_)API_?KEY$/,
+  /(^|_)KEY$/,
+  /(^|_)TOKEN$/,
+  /(^|_)SECRET$/,
+  /(^|_)PASSWORD$/,
+  /(^|_)PASSWD$/,
+  /(^|_)CREDENTIAL$/,
+  /(^|_)CREDENTIALS$/,
+  /(^|_)AUTH_TOKEN$/,
+  /^OPENAI_/,
+  /^ANTHROPIC_/,
+  /^GEMINI_/,
+  /^SERPER_/,
+  /^AI_BACKEND_/,
+  /^CODE_INTEL_/,
+];
+
+const BLOCKED_ENV_VALUE_FRAGMENTS = [
+  '/var/run/docker.sock',
+  '\\\\.\\pipe\\docker_engine',
+];
+
+// Stream auto-login: the KasmVNC Basic-auth user is the gui-base default
+// (KASM_VNC_USER → vectant); single source of truth for both the injected
+// credential and the proxy header.
+const KASM_STREAM_USER = 'vectant';
+const KASM_PASSWORD_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+
+/** Per-session random KasmVNC password: 24 chars of [A-Za-z0-9], unbiased. */
+function generateKasmStreamPassword(length = 24) {
+  let out = '';
+  for (let i = 0; i < length; i += 1) {
+    out += KASM_PASSWORD_ALPHABET[crypto.randomInt(KASM_PASSWORD_ALPHABET.length)];
+  }
+  return out;
+}
+
+function toPublicManagedSession(record) {
+  if (!record) {
+    return null;
+  }
+
+  const {
+    runtime,
+    idleTimer,
+    healthTimer,
+    health,
+    runtimeDataDisposable,
+    runtimeExitDisposable,
+    launchRequest,
+    codesiteContext,
+    kasmAuth, // per-session KasmVNC secret — never expose to the API/browser
+    ...publicRecord
+  } = record;
+
+  return {
+    ...publicRecord,
+    activePorts: [...publicRecord.activePorts],
+  };
+}
+
+function normalizePorts(value) {
+  const ports = Array.isArray(value) ? value : [];
+  return [...new Set(ports.filter((port) => Number.isInteger(port) && port > 0))].sort((left, right) => left - right);
+}
+
+// dockerd's TLS API port — the per-workspace daemon inside the Sysbox runtime
+// pod always listens here. It's infra, never a user program's "app port".
+const DOCKERD_TLS_PORT = 2376;
+const DEFAULT_PREVIEW_SIDECAR_PORT = 18080;
+
+function parseInfraPortList(raw) {
+  if (typeof raw !== 'string' || raw.trim() === '') return null;
+  const ports = raw
+    .split(',')
+    .map((part) => Number.parseInt(part.trim(), 10))
+    .filter((port) => Number.isInteger(port) && port > 0);
+  return ports.length ? ports : null;
+}
+
+// Runtime-pod infra ports to exclude from program port attribution. Env-driven
+// (RUNTIME_INFRA_PORTS, comma-separated) so it tracks the runtime image as it
+// evolves; defaults to dockerd's 2376 + the preview sidecar port.
+function resolveRuntimeInfraPorts(env = process.env) {
+  const configured = parseInfraPortList(env.RUNTIME_INFRA_PORTS);
+  if (configured) return configured;
+  const sidecarPort = Number.parseInt(env.SYNTHI_PREVIEW_SIDECAR_PORT, 10);
+  return [DOCKERD_TLS_PORT, Number.isInteger(sidecarPort) && sidecarPort > 0 ? sidecarPort : DEFAULT_PREVIEW_SIDECAR_PORT];
+}
+
+const RUNNING_STATES = ['starting', 'running', 'unhealthy'];
+
+function samePorts(a = [], b = []) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * Attribute a globally-detected port set to managed sessions.
+ *   1. Each running session claims its declared ports that are currently live.
+ *   2. Any still-unclaimed live port is given to the single running session that
+ *      declared NO ports (the auto-binding dev-server case); ambiguous → dropped.
+ * @returns {Map<string, number[]>} sessionId → attributed ports (sorted, deduped)
+ */
+function attributeSessionPorts({ sessions = [], detectedPorts = [] } = {}) {
+  const detected = new Set(normalizePorts(detectedPorts));
+  const running = sessions.filter((s) => RUNNING_STATES.includes(s.state));
+  const result = new Map();
+  const claimed = new Set();
+
+  for (const session of running) {
+    const declared = normalizePorts(session.declaredPorts || []);
+    const live = declared.filter((port) => detected.has(port));
+    result.set(session.sessionId, live);
+    live.forEach((port) => claimed.add(port));
+  }
+
+  const undeclaredLive = [...detected].filter((port) => !claimed.has(port));
+  const noDeclared = running.filter((s) => normalizePorts(s.declaredPorts || []).length === 0);
+  if (undeclaredLive.length && noDeclared.length === 1) {
+    const target = noDeclared[0].sessionId;
+    result.set(target, normalizePorts([...(result.get(target) || []), ...undeclaredLive]));
+  }
+
+  return result;
+}
+
+/**
+ * Choose the primary web port for the App surface from a session's attributed
+ * ports: null when there are none, else the first declared port that is live,
+ * else the lowest attributed port. Port ownership is already decided by
+ * attributeSessionPorts, so no runtime-type gate is applied here.
+ */
+function selectWebPort({ declaredPorts = [] } = {}, attributedPorts = []) {
+  const ports = normalizePorts(attributedPorts);
+  if (!ports.length) return null;
+  const declaredLive = normalizePorts(declaredPorts).find((port) => ports.includes(port));
+  return declaredLive ?? ports[0];
+}
+
+function cloneEvent(event) {
+  return {
+    ...event,
+    data: event.data == null ? null : { ...event.data },
+  };
+}
+
+function buildManagedRuntimeEnv(baseEnv = process.env, overrides = {}) {
+  const merged = {
+    ...(baseEnv || {}),
+    ...(overrides || {}),
+  };
+
+  for (const key of Object.keys(merged)) {
+    const upperKey = key.toUpperCase();
+    const value = merged[key];
+    if (
+      BLOCKED_ENV_KEYS.has(upperKey) ||
+      BLOCKED_ENV_PREFIXES.some((prefix) => upperKey.startsWith(prefix)) ||
+      BLOCKED_ENV_KEY_PATTERNS.some((pattern) => pattern.test(upperKey))
+    ) {
+      delete merged[key];
+      continue;
+    }
+
+    if (
+      typeof value === 'string' &&
+      BLOCKED_ENV_VALUE_FRAGMENTS.some((fragment) => value.toLowerCase().includes(fragment.toLowerCase()))
+    ) {
+      delete merged[key];
+    }
+  }
+
+  return merged;
+}
+
+/**
+ * Compose an install/launch recipe into one shell command.
+ *
+ * `cd "<workingDir>" && <install[0]> && ... && <launch>` — real recipe
+ * semantics: a failed install step short-circuits the `&&` chain before launch
+ * and exits non-zero, which the existing exit handler marks as `crashed`.
+ */
+function composeProgramCommand({ install = [], launch, workingDir = '' } = {}) {
+  const parts = [];
+  if (workingDir) {
+    parts.push(`cd "${String(workingDir).replace(/"/g, '\\"')}"`);
+  }
+  for (const step of Array.isArray(install) ? install : []) {
+    if (typeof step === 'string' && step.trim()) {
+      parts.push(step.trim());
+    }
+  }
+  const launchCmd = String(launch || '').trim();
+  if (launchCmd) {
+    parts.push(launchCmd);
+  }
+  return parts.join(' && ');
+}
+
+const HEALTH_MIN_INTERVAL_MS = 2000;
+const HEALTH_DEFAULT_INTERVAL_MS = 10_000;
+
+function clampHealthInterval(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return HEALTH_DEFAULT_INTERVAL_MS;
+  return Math.max(HEALTH_MIN_INTERVAL_MS, ms);
+}
+
+/** Coerce a manifest health target to a PATH only — never an absolute URL/host. */
+function healthPath(target) {
+  let path = String(target || '/').trim();
+  path = path.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, ''); // strip scheme://host if present
+  if (!path.startsWith('/')) path = `/${path}`;
+  return path;
+}
+
+function defaultHttpProbe(url) {
+  return new Promise((resolve) => {
+    try {
+      const req = require('http').get(url, (res) => {
+        res.resume();
+        resolve({ ok: res.statusCode >= 200 && res.statusCode < 400, status: res.statusCode });
+      });
+      req.setTimeout(2000, () => { req.destroy(); resolve({ ok: false, status: 0 }); });
+      req.on('error', () => resolve({ ok: false, status: 0 }));
+    } catch (_) {
+      resolve({ ok: false, status: 0 });
+    }
+  });
+}
+
+function createProgramRuntimeManager(options = {}) {
+  const {
+    activeSessions,
+    headlessTtlMs = DEFAULT_HEADLESS_TTL_MS,
+    idleTtlMs = DEFAULT_IDLE_TTL_MS,
+    outputCap = DEFAULT_OUTPUT_CAP,
+    setTimeoutFn = setTimeout,
+    clearTimeoutFn = clearTimeout,
+    logger = console,
+    now = () => Date.now(),
+    launchRuntime = null,
+    getActivePorts = () => [],
+    baseEnv = process.env,
+    infraPorts = resolveRuntimeInfraPorts(baseEnv),
+    probeHost = process.env.PROXY_TARGET_HOST || '127.0.0.1',
+    httpProbe = defaultHttpProbe,
+    setIntervalFn = setInterval,
+    clearIntervalFn = clearInterval,
+    onSessionEvent = null,
+  } = options;
+  const managedSessions = new Map();
+  const infraPortSet = new Set(normalizePorts(infraPorts));
+
+  if (!activeSessions || typeof activeSessions.get !== 'function' || typeof activeSessions.delete !== 'function') {
+    throw new TypeError('activeSessions map is required');
+  }
+
+  function clearManagedIdleTimer(record) {
+    if (record?.idleTimer) {
+      clearTimeoutFn(record.idleTimer);
+      record.idleTimer = null;
+    }
+  }
+
+  function appendManagedSessionEvent(record, type, data = null) {
+    const event = {
+      type,
+      createdAt: now(),
+      data: data == null ? null : { ...data },
+    };
+
+    record.events.push(event);
+    try {
+      if (typeof onSessionEvent === 'function') {
+        onSessionEvent({
+          type: event.type,
+          createdAt: new Date(event.createdAt).toISOString(),
+          data: event.data,
+          session: {
+            sessionId: record.sessionId,
+            workspaceSlug: record.workspaceSlug,
+            userId: record.userId,
+            state: record.state,
+            exitCode: record.exitCode,
+            stopReason: record.stopReason,
+            healthState: record.healthState,
+            activePorts: normalizePorts(record.activePorts),
+            projectId: record.codesiteContext?.projectId || null,
+          },
+        });
+      }
+    } catch (hookError) {
+      logger?.warn?.('codesite_runtime_event_hook_failed', {
+        sessionId: record?.sessionId,
+        type,
+        error: hookError?.message || String(hookError),
+      });
+    }
+    return cloneEvent(event);
+  }
+
+  function disposeManagedRuntimeListeners(record) {
+    try { record?.runtimeDataDisposable?.dispose?.(); } catch (_) {}
+    try { record?.runtimeExitDisposable?.dispose?.(); } catch (_) {}
+    if (record) {
+      record.runtimeDataDisposable = null;
+      record.runtimeExitDisposable = null;
+    }
+  }
+
+  function finalizeRuntimeQuarantine(record, reason) {
+    const finalize = record?.runtime?.finalizeCodeSiteQuarantine;
+    if (typeof finalize !== 'function') return;
+    Promise.resolve(finalize({ reason, sessionId: record.sessionId })).catch((error) => {
+      logger.warn('codesite_runtime_quarantine_finalize_failed', {
+        sessionId: record.sessionId,
+        reason,
+        error: error?.message || String(error),
+      });
+    });
+  }
+
+  function scheduleManagedIdleTimer(sessionId) {
+    const idleTimer = setTimeoutFn(async () => {
+      const record = managedSessions.get(sessionId);
+      if (!record) {
+        return;
+      }
+
+      const idleForMs = now() - record.lastActivityAt;
+      if (!['starting', 'running', 'unhealthy'].includes(record.state)) {
+        return;
+      }
+      if (idleForMs < idleTtlMs) {
+        clearManagedIdleTimer(record);
+        record.idleTimer = scheduleManagedIdleTimer(sessionId);
+        return;
+      }
+
+      await stopManagedSession(sessionId, { reason: 'idle_cull' });
+    }, idleTtlMs);
+
+    if (typeof idleTimer?.unref === 'function') {
+      idleTimer.unref();
+    }
+
+    return idleTimer;
+  }
+
+  function rescheduleManagedIdleTimer(record) {
+    clearManagedIdleTimer(record);
+    record.idleTimer = scheduleManagedIdleTimer(record.sessionId);
+  }
+
+  function attachManagedRuntimeListeners(record) {
+    const ptyProcess = record?.runtime?.ptyProcess;
+    if (!ptyProcess) {
+      return;
+    }
+
+    record.runtimeDataDisposable = ptyProcess.onData?.((chunk) => {
+      appendManagedSessionOutput(record.sessionId, chunk);
+    }) || null;
+
+    record.runtimeExitDisposable = ptyProcess.onExit?.((payload = {}) => {
+      finalizeManagedSessionExit(record.sessionId, payload.exitCode ?? null);
+    }) || null;
+  }
+
+  function finalizeManagedSessionExit(sessionId, exitCode = null) {
+    const record = managedSessions.get(sessionId);
+    if (!record) {
+      return null;
+    }
+
+    clearManagedIdleTimer(record);
+    clearManagedHealthTimer(record);
+    disposeManagedRuntimeListeners(record);
+    finalizeRuntimeQuarantine(record, 'process_exit');
+    record.runtime = null;
+    record.exitCode = exitCode;
+    record.lastActivityAt = now();
+
+    if (record.stopReason) {
+      record.state = 'stopped';
+    } else if ((exitCode ?? 0) === 0) {
+      record.state = 'stopped';
+      record.stopReason = 'process_exit';
+    } else {
+      record.state = 'crashed';
+      record.stopReason = 'process_exit';
+    }
+
+    appendManagedSessionEvent(record, 'state_changed', {
+      state: record.state,
+      exitCode: record.exitCode,
+      stopReason: record.stopReason,
+    });
+
+    return toPublicManagedSession(record);
+  }
+
+  function appendManagedSessionOutput(sessionId, chunk) {
+    const record = managedSessions.get(sessionId);
+    if (!record) {
+      return null;
+    }
+
+    const text = String(chunk || '');
+    if (!text) {
+      return toPublicManagedSession(record);
+    }
+
+    const previousState = record.state;
+    record.state = 'running';
+    record.lastActivityAt = now();
+    record.lastOutputAt = record.lastActivityAt;
+    record.output = `${record.output}${text}`;
+    if (record.output.length > outputCap) {
+      const alreadyTruncated = record.outputTruncated;
+      record.output = record.output.slice(-outputCap);
+      record.outputTruncated = true;
+      if (!alreadyTruncated) {
+        appendManagedSessionEvent(record, 'output_truncated', {
+          outputCap,
+        });
+      }
+    }
+    if (previousState !== 'running') {
+      appendManagedSessionEvent(record, 'state_changed', { state: 'running' });
+    }
+    rescheduleManagedIdleTimer(record);
+
+    return toPublicManagedSession(record);
+  }
+
+  function createHeadlessSessionLifecycle(sessionId, { ptyProcess, bufferDisposable } = {}) {
+    if (!sessionId) {
+      throw new TypeError('sessionId is required');
+    }
+    if (!ptyProcess || typeof ptyProcess.kill !== 'function') {
+      throw new TypeError('ptyProcess.kill is required');
+    }
+
+    let bufferingStopped = false;
+    const stopBuffering = () => {
+      if (bufferingStopped) {
+        return;
+      }
+      bufferingStopped = true;
+      try { bufferDisposable?.dispose?.(); } catch (_) {}
+    };
+
+    const orphanTimer = setTimeoutFn(() => {
+      const session = activeSessions.get(sessionId);
+      if (!session || !session.headless) {
+        return;
+      }
+
+      logger.warn(
+        `[Terminal] Headless session ${sessionId} orphaned for ${headlessTtlMs}ms - killing PTY`
+      );
+      stopBuffering();
+      try { ptyProcess.kill(); } catch (_) {}
+      activeSessions.delete(sessionId);
+    }, headlessTtlMs);
+
+    if (typeof orphanTimer?.unref === 'function') {
+      orphanTimer.unref();
+    }
+
+    return {
+      stopBuffering,
+      orphanTimer,
+    };
+  }
+
+  function promoteHeadlessSession(session) {
+    if (!session) {
+      return session;
+    }
+
+    if (session.orphanTimer) {
+      clearTimeoutFn(session.orphanTimer);
+    }
+    if (typeof session.stopBuffering === 'function') {
+      session.stopBuffering();
+    }
+
+    return session;
+  }
+
+  async function launchManagedSession({
+    sessionId,
+    workspaceSlug,
+    userId = '',
+    command,
+    env = {},
+    runtimeType = 'cli',
+    webGui = false,
+    title = null,
+    metadata = null,
+    codesiteContext = null,
+    activeWorkspacePath = '',
+    ports = [],
+    health = null,
+  } = {}) {
+    if (typeof launchRuntime !== 'function') {
+      throw new TypeError('launchRuntime is required');
+    }
+
+    const trimmedCommand = String(command || '').trim();
+    if (!sessionId) {
+      throw new TypeError('sessionId is required');
+    }
+    if (!workspaceSlug) {
+      throw new TypeError('workspaceSlug is required');
+    }
+    if (!trimmedCommand) {
+      throw new TypeError('command is required');
+    }
+
+    const currentTime = now();
+    const safeEnv = buildManagedRuntimeEnv(baseEnv, env);
+    // Stream auto-login: webGui container programs (KasmVNC desktop tier) get a
+    // unique random password per launch, injected via env-passthrough — the
+    // recipe declares `-e KASM_PASSWORD`, which reads this value from the exec
+    // env (hybrid) / exported shell env (pod). Regenerated on every launch, so
+    // restartManagedSession rotates it; gone when the record is dropped.
+    const isWebGuiContainer = webGui === true && runtimeType === 'container';
+    let kasmAuth = null;
+    if (isWebGuiContainer) {
+      const password = generateKasmStreamPassword();
+      safeEnv.KASM_PASSWORD = password;
+      kasmAuth = { user: KASM_STREAM_USER, password };
+    }
+    // Phase 2 surfaces *declared* manifest ports immediately (Phase 3 adds
+    // live auto-detection via refreshManagedSessionPorts).
+    const declaredPorts = normalizePorts(ports);
+
+    const existing = managedSessions.get(sessionId);
+    if (existing?.runtime) {
+      await stopManagedSession(sessionId, { reason: 'restart', state: 'starting' });
+    }
+
+    const runtime = await launchRuntime({
+      sessionId,
+      workspaceSlug,
+      userId,
+      command: trimmedCommand,
+      env: safeEnv,
+      runtimeType,
+      title,
+      metadata,
+      codesiteContext,
+      activeWorkspacePath,
+    });
+
+    const record = {
+      sessionId,
+      workspaceSlug,
+      userId,
+      runtimeType,
+      webGui: webGui === true,
+      kasmAuth,
+      title: title || trimmedCommand,
+      state: 'starting',
+      startedAt: currentTime,
+      lastActivityAt: currentTime,
+      lastOutputAt: null,
+      output: '',
+      outputTruncated: false,
+      activePorts: declaredPorts,
+      webPort: selectWebPort({ declaredPorts }, declaredPorts),
+      declaredPorts,
+      health: health && typeof health === 'object' ? health : null,
+      healthState: 'unknown',
+      healthTimer: null,
+      exitCode: null,
+      stopReason: null,
+      metadata,
+      codesiteContext,
+      activeWorkspacePath,
+      commandPreview: trimmedCommand,
+      events: [],
+      launchRequest: {
+        sessionId,
+        workspaceSlug,
+        userId,
+        command: trimmedCommand,
+        env,
+        runtimeType,
+        webGui: webGui === true,
+        title,
+        metadata,
+        codesiteContext,
+        activeWorkspacePath,
+        ports: declaredPorts,
+        health: health && typeof health === 'object' ? health : null,
+      },
+      runtime,
+      // Sysbox path (Slice 1): the runtime handle carries the workspace runtime
+      // scope; stamp it so pod-detected ports attribute here and the frontend
+      // builds /runtime/<scope>/port/N. null on the headless/hybrid paths.
+      runtimeScope: runtime?.runtimeScope || null,
+      runtimeDataDisposable: null,
+      runtimeExitDisposable: null,
+      idleTimer: null,
+    };
+
+    managedSessions.set(sessionId, record);
+    attachManagedRuntimeListeners(record);
+    record.idleTimer = scheduleManagedIdleTimer(sessionId);
+    scheduleManagedHealthCheck(record);
+    appendManagedSessionEvent(record, 'launched', {
+      workspaceSlug,
+      runtimeType,
+      title: record.title,
+    });
+
+    return toPublicManagedSession(record);
+  }
+
+  /**
+   * Launch a managed session from a NormalizedProgramConfig recipe: compose the
+   * install + launch commands, carry declared env (scrubbed) + declared ports.
+   */
+  async function launchManagedProgram({ sessionId, workspaceSlug, userId = '', config, title = null, metadata = null, codesiteContext = null } = {}) {
+    if (!config || typeof config !== 'object') {
+      throw new TypeError('config is required');
+    }
+    const command = composeProgramCommand(config);
+    return launchManagedSession({
+      sessionId,
+      workspaceSlug,
+      userId,
+      command,
+      env: config.env || {},
+      runtimeType: config.runtimeType || 'cli',
+      webGui: config.webGui === true,
+      title: title || config.displayName || config.packageId || null,
+      ports: Array.isArray(config.ports) ? config.ports : [],
+      health: config.health || null,
+      metadata: metadata || {
+        packageId: config.packageId || null,
+        version: config.version || null,
+        source: config.source || null,
+      },
+      codesiteContext,
+    });
+  }
+
+  async function stopManagedSession(sessionId, { reason = 'user_stop', state = 'stopped' } = {}) {
+    const record = managedSessions.get(sessionId);
+    if (!record) {
+      return null;
+    }
+
+    clearManagedIdleTimer(record);
+    clearManagedHealthTimer(record);
+    disposeManagedRuntimeListeners(record);
+
+    const runtime = record.runtime;
+    record.runtime = null;
+    record.state = state;
+    record.stopReason = reason;
+    record.lastActivityAt = now();
+
+    try { await Promise.resolve(runtime?.stop?.()); } catch (_) {}
+    try { runtime?.ptyProcess?.kill?.(); } catch (_) {}
+    if (typeof runtime?.finalizeCodeSiteQuarantine === 'function') {
+      await Promise.resolve(runtime.finalizeCodeSiteQuarantine({ reason, sessionId })).catch((error) => {
+        logger.warn('codesite_runtime_quarantine_finalize_failed', {
+          sessionId,
+          reason,
+          error: error?.message || String(error),
+        });
+      });
+    }
+
+    appendManagedSessionEvent(record, 'state_changed', {
+      state: record.state,
+      stopReason: record.stopReason,
+    });
+
+    return toPublicManagedSession(record);
+  }
+
+  async function restartManagedSession(sessionId) {
+    const record = managedSessions.get(sessionId);
+    if (!record?.launchRequest) {
+      return null;
+    }
+
+    return launchManagedSession(record.launchRequest);
+  }
+
+  /**
+   * Re-attribute a globally-detected port set across all managed sessions and
+   * update each session's activePorts/webPort, emitting `ports_updated` only on
+   * an actual change. Returns the public snapshots that changed.
+   */
+  function recomputeManagedPorts(detectedPorts) {
+    const sessions = [...managedSessions.values()].map((record) => ({
+      sessionId: record.sessionId,
+      state: record.state,
+      declaredPorts: record.declaredPorts || [],
+    }));
+    const attribution = attributeSessionPorts({ sessions, detectedPorts });
+    const updated = [];
+
+    for (const [sessionId, ports] of attribution) {
+      const record = managedSessions.get(sessionId);
+      if (!record) {
+        continue;
+      }
+      const nextWebPort = selectWebPort({ declaredPorts: record.declaredPorts || [] }, ports);
+      if (samePorts(record.activePorts, ports) && record.webPort === nextWebPort) {
+        continue;
+      }
+      record.activePorts = ports;
+      record.webPort = nextWebPort;
+      record.lastActivityAt = now();
+      appendManagedSessionEvent(record, 'ports_updated', {
+        activePorts: [...ports],
+        webPort: nextWebPort,
+      });
+      updated.push(toPublicManagedSession(record));
+    }
+
+    return updated;
+  }
+
+  /**
+   * Slice-1 (real programs): attribute ports detected INSIDE a Sysbox runtime pod
+   * across only the managed sessions stamped with that `runtimeScope`. The global
+   * localhost scanner can't see into a pod, and a pod's ports belong to one
+   * workspace — so attribution is scoped, never global. Emits `ports_updated` only
+   * on an actual change; returns the changed public snapshots.
+   */
+  function recomputeRuntimeScopePorts(runtimeScope, detectedPorts) {
+    if (!runtimeScope) return [];
+    // Strip runtime infra ports (e.g. dockerd 2376) before attribution so they
+    // never surface as a program's app port. See resolveRuntimeInfraPorts.
+    const appPorts = (Array.isArray(detectedPorts) ? detectedPorts : []).filter((port) => !infraPortSet.has(port));
+    const scoped = [...managedSessions.values()].filter((record) => record.runtimeScope === runtimeScope);
+    const attribution = attributeSessionPorts({
+      sessions: scoped.map((record) => ({
+        sessionId: record.sessionId,
+        state: record.state,
+        declaredPorts: record.declaredPorts || [],
+      })),
+      detectedPorts: appPorts,
+    });
+    const updated = [];
+
+    for (const [sessionId, ports] of attribution) {
+      const record = managedSessions.get(sessionId);
+      if (!record) {
+        continue;
+      }
+      const nextWebPort = selectWebPort({ declaredPorts: record.declaredPorts || [] }, ports);
+      if (samePorts(record.activePorts, ports) && record.webPort === nextWebPort) {
+        continue;
+      }
+      record.activePorts = ports;
+      record.webPort = nextWebPort;
+      record.lastActivityAt = now();
+      appendManagedSessionEvent(record, 'ports_updated', {
+        activePorts: [...ports],
+        webPort: nextWebPort,
+      });
+      updated.push(toPublicManagedSession(record));
+    }
+
+    return updated;
+  }
+
+  async function refreshManagedSessionPorts(sessionId) {
+    const detected = normalizePorts(await Promise.resolve(getActivePorts()));
+    recomputeManagedPorts(detected);
+    return getManagedSession(sessionId);
+  }
+
+  function clearManagedHealthTimer(record) {
+    if (record?.healthTimer) {
+      clearIntervalFn(record.healthTimer);
+      record.healthTimer = null;
+    }
+  }
+
+  /**
+   * Run one HTTP health probe against the session's OWN web port. The manifest
+   * health target is treated as a path only (`healthPath` strips any scheme/host),
+   * so a manifest can never aim the probe at an arbitrary host (SSRF guard).
+   */
+  async function probeManagedSessionHealth(sessionId) {
+    const record = managedSessions.get(sessionId);
+    if (!record) {
+      return null;
+    }
+    if (!record.health || record.health.type !== 'http' || !record.webPort || !RUNNING_STATES.includes(record.state)) {
+      return toPublicManagedSession(record);
+    }
+
+    const url = `http://${probeHost}:${record.webPort}${healthPath(record.health.target)}`;
+    let ok = false;
+    try {
+      const result = await httpProbe(url);
+      ok = !!result && result.ok === true;
+    } catch (_) {
+      ok = false;
+    }
+
+    const nextState = ok ? 'ok' : 'unhealthy';
+    if (record.healthState !== nextState) {
+      record.healthState = nextState;
+      appendManagedSessionEvent(record, 'health_changed', { healthState: nextState });
+    }
+    return toPublicManagedSession(record);
+  }
+
+  function scheduleManagedHealthCheck(record) {
+    if (!record?.health || record.health.type !== 'http') {
+      return;
+    }
+    clearManagedHealthTimer(record);
+    const interval = clampHealthInterval(record.health.intervalMs);
+    const timer = setIntervalFn(() => {
+      probeManagedSessionHealth(record.sessionId).catch(() => {});
+    }, interval);
+    if (typeof timer?.unref === 'function') {
+      timer.unref();
+    }
+    record.healthTimer = timer;
+  }
+
+  function getManagedSession(sessionId) {
+    return toPublicManagedSession(managedSessions.get(sessionId));
+  }
+
+  /**
+   * Stream auto-login lookup for the container port proxy. Return the in-memory
+   * KasmVNC credential of the RUNNING webGui session whose workspaceSlug === slug
+   * and whose declared/active ports include `port`; else null. Returns a copy so
+   * callers can't mutate the stored secret.
+   */
+  function resolveStreamAuth(slug, port) {
+    if (!slug || !Number.isInteger(port)) return null;
+    for (const record of managedSessions.values()) {
+      if (!record.kasmAuth) continue;
+      if (record.workspaceSlug !== slug) continue;
+      if (!RUNNING_STATES.includes(record.state)) continue;
+      const ports = new Set([...(record.declaredPorts || []), ...(record.activePorts || [])]);
+      if (!ports.has(port)) continue;
+      return { ...record.kasmAuth };
+    }
+    return null;
+  }
+
+  function getManagedRuntime(sessionId) {
+    return managedSessions.get(sessionId)?.runtime || null;
+  }
+
+  function listManagedSessions() {
+    return [...managedSessions.values()].map(toPublicManagedSession);
+  }
+
+  function listManagedSessionEvents(sessionId) {
+    const record = managedSessions.get(sessionId);
+    if (!record) {
+      return [];
+    }
+
+    return record.events.map(cloneEvent);
+  }
+
+  return {
+    buildManagedRuntimeEnv,
+    createHeadlessSessionLifecycle,
+    finalizeManagedSessionExit,
+    getManagedRuntime,
+    getManagedSession,
+    launchManagedSession,
+    launchManagedProgram,
+    listManagedSessionEvents,
+    listManagedSessions,
+    probeManagedSessionHealth,
+    recomputeManagedPorts,
+    recomputeRuntimeScopePorts,
+    refreshManagedSessionPorts,
+    resolveStreamAuth,
+    restartManagedSession,
+    stopManagedSession,
+    promoteHeadlessSession,
+  };
+}
+
+module.exports = {
+  createProgramRuntimeManager,
+  DEFAULT_HEADLESS_TTL_MS,
+  DEFAULT_IDLE_TTL_MS,
+  DEFAULT_OUTPUT_CAP,
+  buildManagedRuntimeEnv,
+  composeProgramCommand,
+  attributeSessionPorts,
+  selectWebPort,
+  samePorts,
+  healthPath,
+  clampHealthInterval,
+};

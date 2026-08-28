@@ -29,6 +29,8 @@
  */
 
 import { useCallback, useRef, useState } from 'react';
+import { limitAgentContext } from '@/lib/agent-routing/agent-context-budget';
+import { routePipelineAgentTask } from '@/lib/agent-routing/agent-pipeline-routing';
 
 // ── Agent Definitions ───────────────────────────────────────────────
 
@@ -39,6 +41,7 @@ import { useCallback, useRef, useState } from 'react';
 export const AGENT_REGISTRY = {
     reader: {
         name: 'File Reader',
+        role: 'research',
         description: 'Reads file contents from the workspace to gather context',
         icon: '📄',
         tools: ['read_file', 'list_directory'],
@@ -46,6 +49,7 @@ export const AGENT_REGISTRY = {
     },
     searcher: {
         name: 'Code Searcher',
+        role: 'research',
         description: 'Searches across the codebase for relevant symbols, patterns, and references',
         icon: '🔍',
         tools: ['grep_search', 'find_references', 'find_definition'],
@@ -53,6 +57,7 @@ export const AGENT_REGISTRY = {
     },
     analyzer: {
         name: 'Error Analyzer',
+        role: 'debugging',
         description: 'Analyzes errors, diagnostics, and runtime issues',
         icon: '🐛',
         tools: ['get_diagnostics', 'analyze_error', 'check_types'],
@@ -60,6 +65,7 @@ export const AGENT_REGISTRY = {
     },
     planner: {
         name: 'Change Planner',
+        role: 'implementation',
         description: 'Plans multi-file changes and determines the order of modifications',
         icon: '📋',
         tools: ['plan_changes', 'dependency_analysis'],
@@ -67,6 +73,7 @@ export const AGENT_REGISTRY = {
     },
     executor: {
         name: 'Code Writer',
+        role: 'implementation',
         description: 'Generates and applies code changes based on the plan',
         icon: '✏️',
         tools: ['write_code', 'apply_diff'],
@@ -109,19 +116,30 @@ const createPipelineRun = (id, mode, prompt) => ({
     error: null,
 });
 
-const createAgentStep = (agentType, instruction, index) => ({
-    id: `step-${Date.now()}-${index}`,
-    agentType,
-    agentName: AGENT_REGISTRY[agentType]?.name || agentType,
-    instruction,
-    status: STEP_STATUS.PENDING,
-    output: null,
-    toolCalls: [],
-    startedAt: null,
-    completedAt: null,
-    tokens: 0,
-    error: null,
-});
+const createAgentStep = (agentType, instruction, index) => {
+    const id = `step-${Date.now()}-${index}`;
+    const routing = routePipelineAgentTask({ id, agentType, instruction });
+
+    return {
+        id,
+        agentType,
+        agentName: AGENT_REGISTRY[agentType]?.name || agentType,
+        instruction,
+        atomicTask: routing.atomicTask,
+        routerRole: routing.routerRole,
+        selectedSkills: routing.selectedSkills,
+        selectedTools: routing.selectedToolIds,
+        validator: routing.validator,
+        routingTrace: routing.trace,
+        status: STEP_STATUS.PENDING,
+        output: null,
+        toolCalls: [],
+        startedAt: null,
+        completedAt: null,
+        tokens: 0,
+        error: null,
+    };
+};
 
 // ── Hook ────────────────────────────────────────────────────────────
 
@@ -315,8 +333,12 @@ export const useAgentPipeline = ({
                     body: JSON.stringify({
                         agentType: step.agentType,
                         instruction: step.instruction,
-                        context: accumulatedContext,
-                        tools: AGENT_REGISTRY[step.agentType]?.tools || [],
+                        context: limitAgentContext(accumulatedContext),
+                        atomicTask: step.atomicTask,
+                        routerRole: step.routerRole,
+                        selectedSkills: step.selectedSkills,
+                        selectedTools: step.selectedTools,
+                        validator: step.validator,
                         workspacePath: workspaceSlug || null,
                         activeFilePath: activeFile?.path || null,
                         activeFileContent: step.agentType === 'reader' ? null : readCurrentCode(),
@@ -361,6 +383,7 @@ export const useAgentPipeline = ({
     const executeLocalAgentStep = useCallback(
         async (step, accumulatedContext, signal) => {
             const startTime = Date.now();
+            const limitedContext = limitAgentContext(accumulatedContext);
 
             try {
                 const liveCurrentCode = readCurrentCode();
@@ -513,8 +536,8 @@ export const useAgentPipeline = ({
                         }
 
                         // Include prior agent context
-                        if (accumulatedContext) {
-                            output += `\n\nPrior agent context:\n${accumulatedContext.slice(0, 4000)}`;
+                        if (limitedContext) {
+                            output += `\n\nPrior agent context:\n${limitedContext.slice(-4000)}`;
                         }
 
                         // Remind the model it can create new files
@@ -537,8 +560,8 @@ export const useAgentPipeline = ({
                                 `Active file (${execActivePath}):\n\`\`\`\n${liveCurrentCode.slice(0, 6000)}\n\`\`\``
                             );
                         }
-                        if (accumulatedContext) {
-                            execParts.push(`Gathered context from prior agents:\n${accumulatedContext.slice(0, 6000)}`);
+                        if (limitedContext) {
+                            execParts.push(`Gathered context from prior agents:\n${limitedContext.slice(-6000)}`);
                         }
                         execParts.push(`Instruction: ${step.instruction}`);
                         execParts.push(`IMPORTANT: If the instruction requires creating NEW files, output each new file as a separate FILE: block with the appropriate path. Do NOT merge new file content into existing files.`);
@@ -687,7 +710,9 @@ export const useAgentPipeline = ({
                     completedResults.push(result);
 
                     if (result.status === STEP_STATUS.COMPLETED && result.output) {
-                        accumulatedContext += `\n\n--- ${result.agentName} Result ---\n${result.output}`;
+                        accumulatedContext = limitAgentContext(
+                            `${accumulatedContext}\n\n--- ${result.agentName} Result ---\n${result.output}`,
+                        );
                     }
 
                     run.steps = [...plan.steps];

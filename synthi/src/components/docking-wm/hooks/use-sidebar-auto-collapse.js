@@ -22,6 +22,7 @@ import {
 import { IDE_PANEL } from '../panels/panel-types';
 
 const ACTIVITY_BAR_HOVER_EVENT = 'synthi:activitybar-hover';
+const SIDEBAR_PANEL_REVEAL_EVENT = 'synthi:sidebar-panel-reveal';
 const SIDEBAR_HINT_SEEN_EVENT = 'synthi:sidebar-hover-hint-seen';
 const SIDEBAR_HINT_SEEN_KEY = 'synthi:sidebar-hover-hint-seen';
 const DOCK_LAYOUT_RESIZE_EVENT = 'synthi:dock-layout-resize';
@@ -54,9 +55,11 @@ const SIDEBAR_PANEL_TYPES = new Set([
   IDE_PANEL.EXTENSION_VIEW,
   IDE_PANEL.CHAT,
   IDE_PANEL.AGENT_WORKFLOWS,
+  IDE_PANEL.CODESITE,
   IDE_PANEL.SETTINGS,
   IDE_PANEL.PULL_REQUESTS,
   IDE_PANEL.AI_HEALING,
+  IDE_PANEL.FAILURE_DISTILLER,
   IDE_PANEL.THEME_EDITOR,
 ]);
 
@@ -69,7 +72,7 @@ function tabsAreSidebar(tabs) {
   return tabs.every((tab) => SIDEBAR_PANEL_TYPES.has(tab?.panelType));
 }
 
-export function useSidebarAutoCollapse({ tabs, isFocused, activeTabId, sidebarEdge }) {
+export function useSidebarAutoCollapse({ tabs, isFocused, activeTabId, sidebarEdge, nodeId }) {
   const enabled = useSelector(selectSidebarAutoCollapseEnabled);
   const delay = useSelector(selectSidebarAutoCollapseDelay);
   const pinnedPanelTypes = useSelector(selectPinnedSidebarPanelTypes);
@@ -173,6 +176,14 @@ export function useSidebarAutoCollapse({ tabs, isFocused, activeTabId, sidebarEd
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
 
+    const revealForActivityBarClick = (event) => {
+      if (!enabled || !isSideEdgeSidebar) return;
+      const detail = event.detail || {};
+      if (detail.groupId && detail.groupId !== nodeId) return;
+      if (detail.panelType && detail.panelType !== activeTab?.panelType) return;
+      revealViaCursor();
+    };
+
     const handleActivityBarHover = (event) => {
       const hovered = Boolean(event.detail?.hovered);
       setActivityBarHovered(hovered);
@@ -181,11 +192,13 @@ export function useSidebarAutoCollapse({ tabs, isFocused, activeTabId, sidebarEd
       }
     };
 
+    window.addEventListener(SIDEBAR_PANEL_REVEAL_EVENT, revealForActivityBarClick);
     window.addEventListener(ACTIVITY_BAR_HOVER_EVENT, handleActivityBarHover);
     return () => {
+      window.removeEventListener(SIDEBAR_PANEL_REVEAL_EVENT, revealForActivityBarClick);
       window.removeEventListener(ACTIVITY_BAR_HOVER_EVENT, handleActivityBarHover);
     };
-  }, [enabled, isLeftSidebar, revealViaCursor]);
+  }, [activeTab?.panelType, enabled, isLeftSidebar, isSideEdgeSidebar, nodeId, revealViaCursor]);
 
   const onMouseEnter = useCallback(() => {
     if (!enabled || !isSidebar) return;

@@ -41,12 +41,10 @@ export const EditorPaneHeader = memo(function EditorPaneHeader({ paneId, filePat
 
   return (
     <div
-      className="flex items-center gap-1.5 px-2 shrink-0 text-[11px] select-none overflow-hidden"
+      className="vt-editor-pane-header flex items-center gap-1.5 px-2 shrink-0 text-[11px] select-none overflow-hidden"
       style={{
         height: 'var(--editor-pane-header-h)',
-        borderBottom: '1px solid var(--border-subtle)',
         color: 'var(--text-muted)',
-        background: 'var(--bg-editor)',
       }}
     >
       <span

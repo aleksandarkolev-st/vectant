@@ -21,7 +21,7 @@ services:
   redis:
     image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
     ports:
-      - "127.0.0.1:6379:6379"
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -35,7 +35,7 @@ services:
       dockerfile: Dockerfile
     image: synthi-y-sweet
     ports:
-      - "127.0.0.1:8180:8080"
+      - "127.0.0.1:${YSWEET_HOST_PORT:-8180}:8080"
     volumes:
       - ysweet-data:/data
     restart: unless-stopped
@@ -48,18 +48,57 @@ services:
       timeout: 3s
       retries: 12
 
+  # Build the image that collab-server launches dynamically for each workspace.
+  # This service exits immediately: it makes the image part of a normal
+  # `docker compose up --build`, without a separately run Docker build.
+  runtime-image:
+    build:
+      context: ./backend/runtime-image
+      dockerfile: Dockerfile
+    image: vectant-runtime:local
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["exit 0"]
+    restart: "no"
+
   # ── Core Services ──────────────────────────────────────────────────────────
+
+  frontend-migrate:
+    build:
+      context: .
+      dockerfile: synthi/Dockerfile
+      target: builder
+      args:
+        NEXT_PUBLIC_COLLAB_SERVER_URL: "/collab"
+        COLLAB_PROXY_TARGET: "http://collab-server:1234"
+        NEXT_PUBLIC_YSWEET_URL: "http://localhost:${YSWEET_HOST_PORT:-8180}"
+        NEXT_PUBLIC_COLLAB_PORT: "${COLLAB_HOST_PORT:-1234}"
+        NEXT_PUBLIC_COMPILE_SIGNAL_URL: "ws://localhost:${SIGNALING_HOST_PORT:-9000}"
+        NEXT_PUBLIC_GATEWAY_WS_URL: "ws://localhost:${AI_GATEWAY_HOST_PORT:-7071}/ws"
+        NEXT_PUBLIC_CODE_INTEL_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
+        NEXT_PUBLIC_AI_ENGINE_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
+        NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS: "${NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS:-}"
+    working_dir: /app/synthi
+    command: ["npx", "prisma", "migrate", "deploy"]
+    environment:
+      DATABASE_URL: "postgresql://synthi:password@postgres:5432/synthi"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
   frontend:
     build:
-      context: ./synthi
-      dockerfile: Dockerfile
+      # npm-workspace build: root context so synthi can resolve the
+      # @synthi/mcp-hub workspace package (see synthi/Dockerfile).
+      context: .
+      dockerfile: synthi/Dockerfile
       args:
-        NEXT_PUBLIC_COLLAB_SERVER_URL: "http://localhost:1234"
-        NEXT_PUBLIC_YSWEET_URL: "http://localhost:8180"
-        NEXT_PUBLIC_COLLAB_PORT: "1234"
-        NEXT_PUBLIC_COMPILE_SIGNAL_URL: "ws://localhost:9000"
-        NEXT_PUBLIC_GATEWAY_WS_URL: "ws://localhost:7070/ws"
+        NEXT_PUBLIC_COLLAB_SERVER_URL: "/collab"
+        COLLAB_PROXY_TARGET: "http://collab-server:1234"
+        NEXT_PUBLIC_YSWEET_URL: "http://localhost:${YSWEET_HOST_PORT:-8180}"
+        NEXT_PUBLIC_COLLAB_PORT: "${COLLAB_HOST_PORT:-1234}"
+        NEXT_PUBLIC_COMPILE_SIGNAL_URL: "ws://localhost:${SIGNALING_HOST_PORT:-9000}"
+        NEXT_PUBLIC_GATEWAY_WS_URL: "ws://localhost:${AI_GATEWAY_HOST_PORT:-7071}/ws"
         NEXT_PUBLIC_CODE_INTEL_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
         NEXT_PUBLIC_AI_ENGINE_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
         NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS: "${NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS:-}"
@@ -69,11 +108,55 @@ services:
         # Browser-side code-intel / provenance hooks call the ai-engine via a
         # public host URL, not the compose-network hostname. Default to 8081
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${FRONTEND_HOST_PORT:-3000}:3000"
+    volumes:
+      # Read-only workspace mirror for server-side CodeSite snapshot validation.
+      # Runtime mutation surfaces still use managed overlays/quarantine paths.
+      - .:/workspace:ro
+      # Writable shadow-merge scratch space. The executable runner copies the
+      # repo checkout here before applying patches (source stays untouched);
+      # the allowed root covers both the read-only mirror and this scratch.
+      # Ownership is fixed at startup because named volumes inherit the image
+      # directory's owner only on first mount, and nextjs (uid 1001) needs it.
+      - codesite-shadow-scratch:/workspace-shadow
+      # Writable CodeSite artifact projection root. Release proofs verify these
+      # files from tmp/codesite-dojo-proof/app-artifacts/<workspace-slug>/...
+      - ./tmp/codesite-dojo-proof/app-artifacts:/codesite-app-artifacts
+      # Shared GPU-HMR artifact CAS used by frontend, MCP, and worker.
+      - ./mcp/synthi-mcp/.gpu-hmr-shared-cas:/var/lib/synthi/artifact-cas
     environment:
       # Non-secret local defaults. Auth, OAuth, DB, GCP, and AI credentials
       # are loaded from the gitignored .env.local file.
-      NEXTAUTH_URL: "http://localhost:3000/"
+      NEXTAUTH_URL: "http://localhost:${FRONTEND_HOST_PORT:-3000}/"
+      SYNTHI_APP_INTERNAL_URL: "http://frontend:3000"
+      # Shared secret that authenticates the collab-server's server-to-server
+      # CodeSite control-plane probe (requireCodesiteAccess accepts it as an
+      # internal-service token). MUST match the collab-server value below.
+      # Production must inject a real secret via SYNTHI_CODESITE_TOKEN.
+      SYNTHI_CODESITE_TOKEN: "${SYNTHI_CODESITE_TOKEN:-local-compose-codesite-token}"
+      # Authenticates frontend transaction activity publishes to collab-server.
+      # This is deliberately a distinct, required secret: do not reuse the
+      # control-plane token above or fall back to a checked-in development value.
+      COLLAB_INTERNAL_TOKEN: "${COLLAB_INTERNAL_TOKEN:?Set COLLAB_INTERNAL_TOKEN in .env.local before starting the shared-session stack}"
+      # Permit the local Docker frontend to reach a Jupyter server exposed on
+      # the host or private LAN. Public servers still require HTTPS.
+      JUPYTER_ALLOW_DOCKER_HOST: "${JUPYTER_ALLOW_DOCKER_HOST:-1}"
+      JUPYTER_ALLOW_PRIVATE_HTTP: "${JUPYTER_ALLOW_PRIVATE_HTTP:-1}"
+      # Local-compose auth secret used by NextAuth. Production deployments must
+      # provide AUTH_SECRET/NEXTAUTH_SECRET through their secret manager.
+      AUTH_SECRET: "${AUTH_SECRET:-local-compose-auth-secret}"
+      NEXTAUTH_SECRET: "${NEXTAUTH_SECRET:-local-compose-auth-secret}"
+      # Local Compose must use the database service, never a host .env URL.
+      DATABASE_URL: "postgresql://synthi:password@postgres:5432/synthi"
+      SYNTHI_CODESITE_ARTIFACT_ROOT: "/codesite-app-artifacts"
+      # Mature CodeSite shadow proofs execute isolated repo-command universes.
+      # The runner reads from the read-only /workspace mirror and copies each
+      # universe to /tmp before applying patches or running checks. Repo
+      # checkouts for executed merges live under the writable scratch volume,
+      # which is also the runner's single contained allowed root.
+      SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON: '["node","/workspace/synthi/scripts/codesite-shadow-runner.mjs"]'
+      SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_ROOT: "/workspace-shadow"
+      SYNTHI_CODESITE_SHADOW_RUNNER_ALLOW_INLINE_COMMANDS: "1"
       # GCP / Storage metadata
       GCP_PROJECT_ID: "overview-synti"
       GCS_BUCKET_NAME: "synthi-cloud-storage"
@@ -85,7 +168,7 @@ services:
       LOCAL_TURN_USERNAME: "synthi"
       LOCAL_TURN_CREDENTIAL: "synthi"
       # Public URLs
-      NEXT_PUBLIC_GATEWAY_WS_URL: "ws://localhost:7070/ws"
+      NEXT_PUBLIC_GATEWAY_WS_URL: "ws://localhost:${AI_GATEWAY_HOST_PORT:-7071}/ws"
       # Inside the compose network the ai-engine is reachable as `ai-engine:8000`,
       # not localhost. Used by RAG fast-context, NEP edit-impact, shadow flows, agent.
       CODE_INTEL_URL: "http://ai-engine:8000"
@@ -94,31 +177,78 @@ services:
       NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS: "${NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS:-}"
       SYNTHI_GPU_HMR_CAS_ROOT: "/var/lib/synthi/artifact-cas"
       SYNTHI_GPU_HMR_SHARED_CAS_MOUNTS_JSON: '[{"role":"frontend","root":"/var/lib/synthi/artifact-cas"},{"role":"mcp","root":"/var/lib/synthi/artifact-cas"},{"role":"worker","root":"/var/lib/synthi/artifact-cas"}]'
-    volumes:
-      - ./mcp/synthi-mcp/.gpu-hmr-shared-cas:/var/lib/synthi/artifact-cas
+      # Server-side (API routes) reach the collab-server by its compose hostname,
+      # not localhost. Without this, program manifest discovery / install / launch
+      # / publish fall back to localhost:1234 inside this container and fail.
+      COLLAB_SERVER_URL: "http://collab-server:1234"
+      # Match collab-server's gate so the default marketplace seed ships the
+      # Dev Container as a real `container` program (not managed commands).
+      ENABLE_CONTAINER_RUNTIME: "1"
+      # Optional proof-authority material. Local proof runs pass ephemeral
+      # Ed25519 keys through *_FILE vars mounted from /workspace/tmp so proof
+      # bundles can be verified with pinned public authorities without storing
+      # private keys in the repository or image.
+      SYNTHI_CODESITE_PROOF_AUTHORITY_KEY_ID: "${SYNTHI_CODESITE_PROOF_AUTHORITY_KEY_ID:-}"
+      SYNTHI_CODESITE_PROOF_AUTHORITY_NAME: "${SYNTHI_CODESITE_PROOF_AUTHORITY_NAME:-}"
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET: "${SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET:-}"
+      SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET_FILE: "${SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET_FILE:-}"
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM: "${SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM:-}"
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM_FILE: "${SYNTHI_CODESITE_PROOF_AUTHORITY_PRIVATE_KEY_PEM_FILE:-}"
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM: "${SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM:-}"
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM_FILE: "${SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEY_PEM_FILE:-}"
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON: "${SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON:-}"
+      SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON_FILE: "${SYNTHI_CODESITE_PROOF_AUTHORITY_PUBLIC_KEYS_JSON_FILE:-}"
+      SYNTHI_CODESITE_PROOF_REQUIRE_TRUSTED_AUTHORITY: "${SYNTHI_CODESITE_PROOF_REQUIRE_TRUSTED_AUTHORITY:-}"
     depends_on:
+      frontend-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       y-sweet:
         condition: service_healthy
       ai-engine:
         condition: service_started
+      collab-server:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/workspace/__codesite_readiness__/codesite/readiness',{headers:{authorization:'Bearer '+process.env.SYNTHI_CODESITE_TOKEN}}).then((response)=>process.exit(response.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
 
   collab-server:
     build:
       context: ./backend/collab-server
       dockerfile: Dockerfile
     ports:
-      - "127.0.0.1:1234:1234"
+      - "127.0.0.1:${COLLAB_HOST_PORT:-1234}:1234"
     environment:
       COLLAB_PORT: "1234"
+      # Terminal gateway tokens are signed by the frontend. The collab server
+      # must verify them with the same secret or every terminal WebSocket is
+      # rejected after a runtime repair succeeds.
+      AUTH_SECRET: "${AUTH_SECRET:-local-compose-auth-secret}"
+      NEXTAUTH_SECRET: "${NEXTAUTH_SECRET:-local-compose-auth-secret}"
       SPAWNER_MODE: "local"
+      SYNTHI_WORKSPACE_AUTH_BYPASS: "${NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS:-}"
       # Local TURN (returned to worker via /turn-credentials)
       LOCAL_TURN_URL: "turn:coturn:3478"
       LOCAL_TURN_USERNAME: "synthi"
       LOCAL_TURN_CREDENTIAL: "synthi"
       # Networking
-      CORS_ORIGIN: "http://localhost:3000"
+      CORS_ORIGIN: "http://localhost:${FRONTEND_HOST_PORT:-3000}"
+      SYNTHI_APP_INTERNAL_URL: "http://frontend:3000"
+      # Explicit CodeSite authority endpoint. Runtime filesystem hydration must
+      # verify transaction state against this route; generic app-origin settings
+      # are intentionally not treated as a CodeSite authority.
+      SYNTHI_CODESITE_API_BASE_URL: "http://frontend:3000/api/workspace/{workspace_slug}/codesite"
+      # Sent as `Authorization: Bearer` on the CodeSite control-plane probe to
+      # the frontend (see controlPlaneHeaders). MUST match the frontend value.
+      SYNTHI_CODESITE_TOKEN: "${SYNTHI_CODESITE_TOKEN:-local-compose-codesite-token}"
+      # Must match the frontend's COLLAB_INTERNAL_TOKEN. The activity endpoint
+      # fails closed when this secret is absent or does not match.
+      COLLAB_INTERNAL_TOKEN: "${COLLAB_INTERNAL_TOKEN:?Set COLLAB_INTERNAL_TOKEN in .env.local before starting the shared-session stack}"
       CODE_INTEL_URL: "http://ai-engine:8000"
       YSWEET_URL: "http://y-sweet:8080"
       YSWEET_AUTH_KEY: dev-secret
@@ -129,12 +259,49 @@ services:
       # Storage (Local dev uses filesystem instead of GCS)
       REPOS_DIR: /data/repos
       REPO_CACHE_DIR: /data/repos
+      # Canonical passive-instruction payloads are Vectant-private runtime
+      # metadata.  The collab image runs unprivileged, so this must live on
+      # the writable persistent data volume rather than under /app.
+      WORKSPACE_INSTRUCTION_METADATA_DIR: /data/workspace-instruction-metadata
       # Database
       CLOUD_SQL_INSTANCE: "" # Not used in local dev
       # Dev specific
       GCS_SYNC_ON_FLUSH: "false"
+      # Native Docker (hybrid Phase 1): run `container`-type programs in a
+      # per-workspace rootless-Docker runtime container. Requires the host
+      # docker socket mount below so collab-server can manage those containers.
+      ENABLE_CONTAINER_RUNTIME: "1"
+      RUNTIME_IMAGE: "vectant-runtime:local"
+      # Workspace-prep (auto dependency install) and the local worker spawner
+      # default WORKER_IMAGE to `synthi-worker:local`, which doesn't exist in this
+      # dev stack — compose builds the worker as `synthi-ide-worker:latest`. Point
+      # them at the real local tag so prep doesn't try to pull from Docker Hub
+      # (which 404s: "pull access denied for synthi-worker").
+      WORKER_IMAGE: "synthi-ide-worker:latest"
+      # collab-server runs as a container here, so the per-workspace runtime
+      # container must reach repo files via the SHARED collab-data named volume
+      # (a host-path bind would resolve on the host and be empty). Value is the
+      # explicitly named volume used by this Compose stack.
+      WORKSPACE_DATA_VOLUME: "vectant-ade_collab-data"
+      # The rootless per-workspace runtime uses gid 1000. The collab process
+      # joins that group so both trusted local actors can edit only the same
+      # setgid workspace tree without opening it to every container user.
+      SYNTHI_RUNTIME_SHARED_GID: "${SYNTHI_RUNTIME_SHARED_GID:-1000}"
+      SYNTHI_RUNTIME_WORKSPACE_UMASK: "${SYNTHI_RUNTIME_WORKSPACE_UMASK:-0002}"
+      # Runtime and worker containers must join this stack's explicit network.
+      WORKER_NETWORK: "vectant-ade_default"
     volumes:
       - collab-data:/data
+      # Used ONLY by collab-server to manage per-workspace runtime containers.
+      # Never mounted into a runtime container or exposed to program env.
+      - /var/run/docker.sock:/var/run/docker.sock
+    # collab-server runs as the non-root `synthi` user, but the bind-mounted
+    # docker socket is owned by root:root (mode 660), so dockerode would get
+    # EACCES. Grant the socket's group. On Docker Desktop the socket is gid 0;
+    # on a native Linux host set DOCKER_SOCKET_GID to the host `docker` group.
+    group_add:
+      - "${DOCKER_SOCKET_GID:-0}"
+      - "${SYNTHI_RUNTIME_SHARED_GID:-1000}"
     depends_on:
       redis:
         condition: service_healthy
@@ -142,13 +309,21 @@ services:
         condition: service_healthy
       ai-engine:
         condition: service_started
+      runtime-image:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:1234/codesite/readiness').then((response)=>process.exit(response.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
 
   signaling-server:
     build:
       context: ./backend/synthi-webrtc-compiler/signaling-server
       dockerfile: Dockerfile
     ports:
-      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:${SIGNALING_HOST_PORT:-9000}:9000"
     environment:
       SIGNALING_PORT: "9000"
       REDIS_URL: "redis://redis:6379"
@@ -169,7 +344,7 @@ services:
     ports:
       # Keep container port 8000 stable for inter-service traffic, but avoid
       # assuming the Windows host can also bind 8000.
-      - "${AI_ENGINE_HOST_PORT:-8081}:8000"
+      - "127.0.0.1:${AI_ENGINE_HOST_PORT:-8081}:8000"
     # ai-engine needs access to the same workspace files collab-server
     # writes. Without this mount, /code-intel/edit-impact can't index any
     # workspace and returns empty candidates — NEP loses the entire cross-
@@ -178,33 +353,74 @@ services:
     # 500'd on every workspace load with "Read-only file system".
     volumes:
       - collab-data:/data
+      # Failure Distiller launches only its hardened, network-disabled
+      # capsules through the host OCI daemon. The engine itself receives no
+      # workspace bind beyond collab-data; individual runs bind each active
+      # workspace read-only and drop all capabilities in ContainerExecutor.
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      # Docker Desktop exposes its Linux socket as root:root (0660).
+      - "0"
     environment:
-      SYNTHI_AI_MODEL: "gemini-3-flash-preview-preview"
+      SYNTHI_AI_MODEL: "gemini-3.1-flash-lite-preview"
       SYNTHI_GEMINI_MODEL: "${SYNTHI_GEMINI_MODEL:-}"
       SYNTHI_AI_ENGINE_WORKERS: "${SYNTHI_AI_ENGINE_WORKERS:-1}"
       AI_ENGINE_AUTH_DISABLED: "${AI_ENGINE_AUTH_DISABLED:-true}"
-      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
-      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
-      OPENAI_API_KEY: "dummy"
+      # GEMINI_API_KEY / GOOGLE_API_KEY are supplied via the env_file (.env.local)
+      # above. Do NOT redeclare them here as "${VAR:-}" — an empty interpolated
+      # value in `environment:` overrides the env_file and silently strips the
+      # key, which makes the embedder raise "Embedding API key is not configured"
+      # and every /code-intel/* call 500. The same applies to OPENAI_API_KEY /
+      # OPENAI_BASE_URL (OpenAI-compatible split provider): keep them only in
+      # .env.local.
+      # A disposable agent container, not this control-plane process, performs
+      # authorized live edits. It receives no Docker socket or host mounts.
+      SYNTHI_AGENT_RUNNER_IMAGE: "vectant-agent-runner:local"
+      SYNTHI_AGENT_RUNNER_NETWORK: "vectant-ade_agent-egress"
+      SYNTHI_AGENT_WORKSPACE_VOLUME: "vectant-ade_collab-data"
+      SYNTHI_AGENT_WORKSPACE_VOLUME_ROOT: "/data"
+      # Provisioned out-of-band from the runtime's secret manager; never
+      # copied from ai-engine's process environment into an agent container.
+      SYNTHI_AGENT_CREDENTIALS_VOLUME: "vectant-ade_agent-credentials"
       # Tell resolve_workspace_path() where to find slug-rooted repos.
       # The collab-data named volume is shared with collab-server (which
       # writes); we don't need depends_on because the volume is created
       # independently of service startup order — and adding one would cycle
       # against collab-server's existing depends_on: ai-engine.
       SYNTHI_REPOS_PATH: "/data/repos"
+      # The local dev image is pinned and must be present before a capsule is
+      # accepted; ContainerExecutor also invokes Docker with --pull=never.
+      VECTANT_FAILURE_DISTILLER_ALLOWED_IMAGES: "${VECTANT_FAILURE_DISTILLER_ALLOWED_IMAGES:-python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a}"
+      VECTANT_FAILURE_DISTILLER_WORKSPACE_VOLUME: "vectant-ade_collab-data"
+    depends_on:
+      # The image-builder exits successfully only after the pinned agent
+      # harness image is available to the Docker daemon.
+      agent-runner-image:
+        condition: service_completed_successfully
+
+  agent-runner-image:
+    build:
+      context: ./ai-backend/agent-runner
+      dockerfile: Dockerfile
+    image: vectant-agent-runner:local
+    command: ["/bin/true"]
+    restart: "no"
+    networks:
+      - agent-egress
 
   ai-gateway:
     build:
       context: ./ai-backend/gateway
       dockerfile: Dockerfile
     ports:
-      - "127.0.0.1:7070:7070"
+      - "127.0.0.1:${AI_GATEWAY_HOST_PORT:-7071}:7070"
     environment:
       GATEWAY_PORT: "7070"
       GATEWAY_WS_PATH: "/ws"
       BACKEND_URL: "http://ai-engine:8000"
       GATEWAY_CLUSTER: "false"
       GATEWAY_AUTH_DISABLED: "true"
+      GATEWAY_AUTH_ALLOW_INSECURE_LOCAL: "true"
     depends_on:
       - ai-engine
 
@@ -240,20 +456,23 @@ services:
   # block (403 Forbidden IP on CREATE_PERMISSION for --external-ip).
   mcp:
     build:
-      context: ./mcp/synthi-mcp
-      dockerfile: Dockerfile
+      # Root context so the MCP package can resolve packages/mcp-hub, matching
+      # the Cloud Build image layout.
+      context: .
+      dockerfile: mcp/synthi-mcp/Dockerfile
     ports:
       # Expose Prometheus /metrics to the host so live-test.mjs can scrape
       # http://127.0.0.1:9464/metrics without a second `docker exec`.
-      - "127.0.0.1:9464:9464"
+      - "127.0.0.1:${MCP_METRICS_HOST_PORT:-9464}:9464"
+    depends_on:
+      - signaling-server
+      - worker
     environment:
+      AI_BACKEND_URL: "http://ai-engine:8000"
       SYNTHI_GPU_HMR_CAS_ROOT: "/var/lib/synthi/artifact-cas"
       SYNTHI_GPU_HMR_SHARED_CAS_MOUNTS_JSON: '[{"role":"frontend","root":"/var/lib/synthi/artifact-cas"},{"role":"mcp","root":"/var/lib/synthi/artifact-cas"},{"role":"worker","root":"/var/lib/synthi/artifact-cas"}]'
     volumes:
       - ./mcp/synthi-mcp/.gpu-hmr-shared-cas:/var/lib/synthi/artifact-cas
-    depends_on:
-      - signaling-server
-      - worker
     restart: unless-stopped
 
   worker:
@@ -261,7 +480,10 @@ services:
       context: ./backend/synthi-webrtc-compiler/worker
       dockerfile: Dockerfile
       args:
-        WORKER_CARGO_FEATURES: "gpu-hmr"
+        # The base compose stack must run on ordinary local/CI hosts. GPU
+        # toolchains and devices are enabled by the AMD/NVIDIA overlays.
+        WORKER_CARGO_FEATURES: "${WORKER_CARGO_FEATURES:-gpu-hmr}"
+        INSTALL_ROCM: "${INSTALL_ROCM:-false}"
     # If the worker process dies (e.g. an unhandled panic, or an X11 IO
     # handler trip during reset tear-down) we want the container to come
     # back up automatically, the same way every other service in this
@@ -290,20 +512,16 @@ services:
       # Turn on debug_log! output so the new force-key-unit + candidate
       # buffer log lines are visible during this debugging session.
       SYNTHI_WORKER_VERBOSE: "1"
-      # Build-time gpu-hmr enables the Rust modules; this runtime flag keeps
-      # the local stack explicit for harnesses and diagnostics.
-      SYNTHI_GPU_HMR: "1"
-      # Docker Desktop / WSL2 ROCm path. ROCDXG tells the HSA runtime to use
-      # the /dev/dxg device exposed by Windows instead of native /dev/kfd.
-      HSA_ENABLE_DXG_DETECTION: "1"
+      SYNTHI_VSCODE_VERBOSE: "1"
+      # GPU overlays opt into device-backed HMR. The base stack stays host-only
+      # so Docker health/proof gates do not depend on /dev/dxg or nvidia-smi.
+      SYNTHI_GPU_HMR: "${SYNTHI_GPU_HMR:-0}"
+      HSA_ENABLE_DXG_DETECTION: "${HSA_ENABLE_DXG_DETECTION:-}"
       SYNTHI_GPU_HMR_CAS_ROOT: "/var/lib/synthi/artifact-cas"
       SYNTHI_GPU_HMR_SHARED_CAS_MOUNTS_JSON: '[{"role":"frontend","root":"/var/lib/synthi/artifact-cas"},{"role":"mcp","root":"/var/lib/synthi/artifact-cas"},{"role":"worker","root":"/var/lib/synthi/artifact-cas"}]'
-    devices:
-      - "/dev/dxg:/dev/dxg"
     volumes:
       - collab-data:/data:ro
       - ./mcp/synthi-mcp/.gpu-hmr-shared-cas:/var/lib/synthi/artifact-cas
-      - /usr/lib/wsl/lib/libdxcore.so:/usr/lib/libdxcore.so:ro
     cap_drop:
       - ALL
     security_opt:
@@ -318,3 +536,8 @@ volumes:
   ysweet-data:
   postgres-data:
   collab-data:
+  codesite-shadow-scratch:
+  agent-credentials:
+
+networks:
+  agent-egress:

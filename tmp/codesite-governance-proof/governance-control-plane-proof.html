@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CodeSite Governance Control Plane Proof</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #08090a;
+        --panel: #101316;
+        --panel-2: #171b20;
+        --line: #28313a;
+        --text: #f1f5f9;
+        --muted: #91a0ad;
+        --green: #4ade80;
+        --amber: #fbbf24;
+        --blue: #60a5fa;
+        --red: #f87171;
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at 18% 18%, rgba(96, 165, 250, 0.18), transparent 34rem),
+          radial-gradient(circle at 82% 12%, rgba(74, 222, 128, 0.13), transparent 30rem),
+          linear-gradient(135deg, #08090a, #111417 48%, #070809);
+        color: var(--text);
+      }
+
+      main {
+        width: min(1180px, calc(100vw - 48px));
+        margin: 0 auto;
+        padding: 44px 0;
+      }
+
+      header {
+        display: grid;
+        grid-template-columns: 1.35fr 0.65fr;
+        gap: 24px;
+        align-items: end;
+        margin-bottom: 28px;
+      }
+
+      h1 {
+        margin: 0;
+        max-width: 880px;
+        font-size: clamp(36px, 5vw, 72px);
+        line-height: 0.98;
+        letter-spacing: 0;
+      }
+
+      .subtitle {
+        margin: 16px 0 0;
+        max-width: 640px;
+        color: var(--muted);
+        font-size: 17px;
+        line-height: 1.55;
+      }
+
+      .stamp {
+        justify-self: end;
+        border: 1px solid var(--line);
+        background: rgba(16, 19, 22, 0.78);
+        padding: 18px;
+        border-radius: 18px;
+        min-width: 250px;
+      }
+
+      .stamp strong {
+        display: block;
+        font-size: 13px;
+        color: var(--green);
+        margin-bottom: 8px;
+      }
+
+      .stamp code {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 0.95fr 1.05fr;
+        gap: 20px;
+      }
+
+      section {
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        background: linear-gradient(180deg, rgba(23, 27, 32, 0.94), rgba(12, 15, 18, 0.94));
+        box-shadow: 0 18px 60px rgba(0, 0, 0, 0.34);
+        overflow: hidden;
+      }
+
+      .section-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 18px;
+        padding: 18px 20px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.025);
+      }
+
+      .section-head h2 {
+        margin: 0;
+        font-size: 18px;
+        letter-spacing: 0;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        min-height: 28px;
+        padding: 4px 11px;
+        border-radius: 999px;
+        border: 1px solid rgba(74, 222, 128, 0.34);
+        color: var(--green);
+        background: rgba(74, 222, 128, 0.1);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .flow {
+        padding: 22px;
+        display: grid;
+        gap: 14px;
+      }
+
+      .flow-row {
+        display: grid;
+        grid-template-columns: 150px 1fr;
+        gap: 14px;
+        align-items: center;
+      }
+
+      .node {
+        min-height: 76px;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: rgba(8, 9, 10, 0.55);
+        padding: 14px;
+      }
+
+      .node b {
+        display: block;
+        font-size: 14px;
+        margin-bottom: 8px;
+      }
+
+      .node span {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.4;
+      }
+
+      .node.accent { border-color: rgba(96, 165, 250, 0.45); }
+      .node.hold { border-color: rgba(251, 191, 36, 0.5); }
+      .node.ok { border-color: rgba(74, 222, 128, 0.5); }
+
+      .label {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+      }
+
+      .checks {
+        padding: 20px;
+        display: grid;
+        gap: 12px;
+      }
+
+      .check {
+        display: grid;
+        grid-template-columns: 28px 1fr auto;
+        gap: 12px;
+        align-items: center;
+        padding: 12px;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.035);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+      }
+
+      .dot {
+        width: 13px;
+        height: 13px;
+        border-radius: 999px;
+        box-shadow: 0 0 24px currentColor;
+      }
+
+      .dot.ok { color: var(--green); background: var(--green); }
+      .dot.warn { color: var(--amber); background: var(--amber); }
+
+      .check b {
+        display: block;
+        font-size: 14px;
+        margin-bottom: 4px;
+      }
+
+      .check span {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .status {
+        color: var(--muted);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+      }
+
+      .wide {
+        grid-column: 1 / -1;
+      }
+
+      .ledger {
+        padding: 20px;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 14px;
+      }
+
+      .metric {
+        min-height: 96px;
+        padding: 16px;
+        border-radius: 16px;
+        border: 1px solid var(--line);
+        background: rgba(8, 9, 10, 0.48);
+      }
+
+      .metric strong {
+        display: block;
+        font-size: 28px;
+        margin-bottom: 8px;
+      }
+
+      .metric span {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      footer {
+        margin-top: 20px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
+      @media (max-width: 860px) {
+        main { width: min(100vw - 28px, 720px); padding: 24px 0; }
+        header, .grid, .ledger { grid-template-columns: 1fr; }
+        .stamp { justify-self: stretch; }
+        .flow-row { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Governance layer is wired into the control plane.</h1>
+          <p class="subtitle">
+            This visual proof was captured before the governance commit. It records the generic permit,
+            document-review, and route-revision paths added for CodeSite construction/legal coordination.
+          </p>
+        </div>
+        <aside class="stamp">
+          <strong>Patch validation snapshot</strong>
+          <code>branch: codex/codesite-atc-full-from-dev-20260630
+scope: schema + API + control-plane tests
+proof dir: tmp/codesite-governance-proof</code>
+        </aside>
+      </header>
+
+      <div class="grid">
+        <section>
+          <div class="section-head">
+            <h2>Workflow Proven</h2>
+            <span class="pill">generic, not scenario-coded</span>
+          </div>
+          <div class="flow">
+            <div class="flow-row">
+              <div class="label">Permit</div>
+              <div class="node ok">
+                <b>CodeSitePermit</b>
+                <span>Links project, execution plan, mutation lease, document, allowed paths, affected zones, approval, and evidence refs.</span>
+              </div>
+            </div>
+            <div class="flow-row">
+              <div class="label">Review</div>
+              <div class="node accent">
+                <b>CodeSiteDocumentReview</b>
+                <span>Records reviewer decision, reason codes, measured review time, baseline review time, evidence, and document lifecycle status.</span>
+              </div>
+            </div>
+            <div class="flow-row">
+              <div class="label">Reroute</div>
+              <div class="node hold">
+                <b>CodeSiteRouteRevision</b>
+                <span>Proposes a change order, captures prior/proposed route, affected clearances, approval, application, and lease hold/revoke decisions.</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <div class="section-head">
+            <h2>Validation</h2>
+            <span class="pill">pre-commit</span>
+          </div>
+          <div class="checks">
+            <div class="check">
+              <i class="dot ok"></i>
+              <div><b>Control-plane syntax</b><span>Node module syntax check passed for `controlPlane.js`.</span></div>
+              <div class="status">passed</div>
+            </div>
+            <div class="check">
+              <i class="dot ok"></i>
+              <div><b>Next route syntax</b><span>Node module syntax check passed for CodeSite API route handler.</span></div>
+              <div class="status">passed</div>
+            </div>
+            <div class="check">
+              <i class="dot ok"></i>
+              <div><b>Prisma schema</b><span>`DATABASE_URL=postgresql://user:pass@localhost:5432/synthi npx prisma validate` passed.</span></div>
+              <div class="status">passed</div>
+            </div>
+            <div class="check">
+              <i class="dot ok"></i>
+              <div><b>Whitespace diff</b><span>`git diff --check` passed with no whitespace errors.</span></div>
+              <div class="status">passed</div>
+            </div>
+            <div class="check">
+              <i class="dot warn"></i>
+              <div><b>Local Vitest</b><span>Blocked by Node 18.19.1 missing `node:util.styleText`; Docker/Node 22 proof still required before final release.</span></div>
+              <div class="status">blocked locally</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="wide">
+          <div class="section-head">
+            <h2>Behavioral Surface Added</h2>
+            <span class="pill">plan section 16 / route deconfliction</span>
+          </div>
+          <div class="ledger">
+            <div class="metric"><strong>3</strong><span>new durable governance models: permit, document review, route revision.</span></div>
+            <div class="metric"><strong>7</strong><span>new generic service endpoints across permits, reviews, route proposal, approval, and apply.</span></div>
+            <div class="metric"><strong>4</strong><span>focused unit workflows added for permit, review timing, reroute, and clearance holds.</span></div>
+            <div class="metric"><strong>0</strong><span>scenario-specific path or signup constants added to production implementation.</span></div>
+          </div>
+        </section>
+      </div>
+
+      <footer>
+        Visual proof is intentionally an ignored artifact. Production validation continues with Docker-backed Vitest,
+        full app screenshots, and the complex multi-agent workflow proof before the whole CodeSite plan is called complete.
+      </footer>
+    </main>
+  </body>
+</html>

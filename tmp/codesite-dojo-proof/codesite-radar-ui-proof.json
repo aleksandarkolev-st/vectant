@@ -1,0 +1,434 @@
+{
+  "schemaVersion": "synthi.codesite.radarUiProof.v1",
+  "generatedAt": "2026-07-06T02:11:55.316Z",
+  "route": "/workspace/codesite-radar-adapter-proof-1783303587121/codesite",
+  "slug": "codesite-radar-adapter-proof-1783303587121",
+  "projectId": "cmr17duur00cvob4t45xujhu4",
+  "controlSummary": {
+    "towerState": "active",
+    "activeFlights": [
+      {
+        "callsign": "SCHEMA-01",
+        "status": "preflight",
+        "route": [
+          "packages/schemas/checkout/**",
+          "api/checkout/**"
+        ]
+      },
+      {
+        "callsign": "API-02",
+        "status": "holding",
+        "route": [
+          "api/checkout/**"
+        ]
+      },
+      {
+        "callsign": "TEST-03",
+        "status": "holding",
+        "route": [
+          "tests/checkout/**"
+        ]
+      }
+    ],
+    "riskLevel": "high",
+    "risks": [
+      {
+        "risk": "contract_collision",
+        "severity": "high",
+        "aircraft": [
+          "API-02",
+          "SCHEMA-01"
+        ],
+        "conflictZone": "api/checkout/**",
+        "overlaps": [
+          [
+            "api/checkout/**",
+            "api/checkout/**"
+          ]
+        ],
+        "recommendedResolution": {
+          "action": "schema_first",
+          "steps": [
+            "Put SCHEMA-01 in holding",
+            "Put API-02 in holding",
+            "Issue schema clearance first",
+            "Reissue downstream clearances after contract landing"
+          ]
+        }
+      }
+    ],
+    "inspectionRuns": [
+      {
+        "callsign": "INSPECT-77",
+        "status": "requested",
+        "changedPaths": [
+          "api/checkout/route.js",
+          "packages/schemas/checkout/order.ts"
+        ]
+      }
+    ]
+  },
+  "eventTypes": [
+    "transponder_update",
+    "flight_plan_filed",
+    "transponder_update",
+    "flight_plan_filed",
+    "transponder_update",
+    "flight_plan_filed",
+    "tower_instruction",
+    "landing_requested"
+  ],
+  "browserProof": {
+    "generatedAt": "2026-07-06T02:11:55.202Z",
+    "appUrl": "http://127.0.0.1:3100",
+    "route": "/workspace/codesite-radar-adapter-proof-1783303587121/codesite",
+    "captures": [
+      {
+        "viewport": {
+          "name": "desktop",
+          "width": 1440,
+          "height": 980
+        },
+        "screenshot": "tmp/codesite-dojo-proof/codesite-radar-ui-desktop.png",
+        "consoleErrors": [],
+        "checks": {
+          "radarRect": {
+            "x": 33,
+            "y": 454,
+            "width": 719.828125,
+            "height": 772.65625
+          },
+          "svgRect": {
+            "x": 43,
+            "y": 464,
+            "width": 331.03125,
+            "height": 752.65625
+          },
+          "tracePoints": "58.03,58.92 37.47,61.28 36.04,66.63 58.65,75.12 76.65,66.65 45.58,13.98 21.42,79.60",
+          "holdingPatterns": 3,
+          "riskCones": 3,
+          "flightBlips": 3,
+          "hasLandingQueue": true,
+          "hasRiskLabel": true,
+          "laneRects": [
+            {
+              "width": 360.796875,
+              "height": 118,
+              "text": "Critical controlled airspaceClass Aapi/auth/**billing/**db/migrations/**infra/prod/**+3SCHEMA-01API-02UI-03",
+              "pathChips": [
+                {
+                  "text": "api/auth/**",
+                  "width": 80.234375,
+                  "height": 22
+                },
+                {
+                  "text": "billing/**",
+                  "width": 74.21875,
+                  "height": 22
+                },
+                {
+                  "text": "db/migrations/**",
+                  "width": 110.328125,
+                  "height": 22
+                },
+                {
+                  "text": "infra/prod/**",
+                  "width": 92.28125,
+                  "height": 22
+                }
+              ]
+            },
+            {
+              "width": 360.796875,
+              "height": 167.328125,
+              "text": "Shared contract airspaceClass Bpackages/schemas/**openapi/**packages/*/src/index.tssynthi/prisma/**+1SCHEMA-01API-02UI-03",
+              "pathChips": [
+                {
+                  "text": "packages/schemas/**",
+                  "width": 122.796875,
+                  "height": 38
+                },
+                {
+                  "text": "openapi/**",
+                  "width": 74.21875,
+                  "height": 22
+                },
+                {
+                  "text": "packages/*/src/index.ts",
+                  "width": 122.796875,
+                  "height": 38
+                },
+                {
+                  "text": "synthi/prisma/**",
+                  "width": 110.328125,
+                  "height": 22
+                }
+              ]
+            },
+            {
+              "width": 360.796875,
+              "height": 151.328125,
+              "text": "Feature implementation airspaceClass Capps/web/**components/**synthi/src/app/**synthi/src/components/**+1UI-03",
+              "pathChips": [
+                {
+                  "text": "apps/web/**",
+                  "width": 80.234375,
+                  "height": 22
+                },
+                {
+                  "text": "components/**",
+                  "width": 92.28125,
+                  "height": 22
+                },
+                {
+                  "text": "synthi/src/app/**",
+                  "width": 116.359375,
+                  "height": 22
+                },
+                {
+                  "text": "synthi/src/components/**",
+                  "width": 122.796875,
+                  "height": 38
+                }
+              ]
+            },
+            {
+              "width": 360.796875,
+              "height": 98,
+              "text": "Low-risk support airspaceClass Ddocs/**tests/****/__tests__/****/*.test.js+4SCHEMA-01API-02UI-03",
+              "pathChips": [
+                {
+                  "text": "docs/**",
+                  "width": 56.15625,
+                  "height": 22
+                },
+                {
+                  "text": "tests/**",
+                  "width": 62.171875,
+                  "height": 22
+                },
+                {
+                  "text": "**/__tests__/**",
+                  "width": 104.3125,
+                  "height": 22
+                },
+                {
+                  "text": "**/*.test.js",
+                  "width": 86.25,
+                  "height": 22
+                }
+              ]
+            }
+          ],
+          "visibleText": "CodeSite\ncodesite-radar-adapter-proof-1783303587121\nactive\nCodeSite project\nRadar adapter proof\nRefresh\nExport\nactive\nlive\nhigh\nRadar adapter proof\n\nRun every mature radar adapter against a safe proof workspace with schema-first multi-agent traffic\n\nFlights\n3\nactive\nRequired\n0\nlow\nPermits\n0\nholding\nReroutes\n0\nactive\nTOWER\nactive\nLive instruction stream\nCOLLISION\nhigh\n3 forecasted risks\nCLEARANCE\n0\n0 docs / 0 reroutes\nMAYDAY\n0\nNo ground stop\nRUNWAYS\n0\nNo occupied write runway\nPROOF\n0\nEvidence handoff ready\nAirspace Map\n10\nSCHEMA-01\nAPI-02\nUI-03\nRisk cone\nReplay trace\nHolding pattern\n3 flights tracked\n3 active risk cones\nCritical controlled airspace\nClass A\napi/auth/**\nbilling/**\ndb/migrations/**\ninfra/prod/**\n+3\nSCHEMA-01\nAPI-02\nUI-03\nShared contract airspace\nClass B\npackages/schemas/**\nopenapi/**\npackages/*/src/index.ts\nsynthi/prisma/**\n+1\nSCHEMA-01\nAPI-02\nUI-03\nFeature implementation airspace\nClass C\napps/web/**\ncomponents/**\nsynthi/src/app/**\nsynthi/src/components/**\n+1\nUI-03\nLow-risk support airspace\nClass D\ndocs/**\ntests/**\n**/__tests__/**\n**/*.test.js\n+4\nSCHEMA-01\nAPI-02\nUI-03\nLanding queue\n1\nRADAR-STACK-01\ncompleted\nPriority traffic\n3\nSCHEMA-01\npackages/schemas/auth/**, openapi/auth.yaml\nrisk\nAPI-02\npackages/schemas/auth/**, api/auth/**\nrisk\nUI-03\ncomponents/auth/**, packages/schemas/auth/**\nrisk\nNo-fly zones\n**/.env\n**/.env.*\nsecrets/**\n**/*secret*\n+3\nRadar layers\nclearance\ntransaction\ninspection\nproof\nFlights\n3\nLeases\n0\nTransactions\n0\nRequired\n0\nlow\nRisk\nhigh\nhigh\nPermits\n0\nidle\nDocuments\n0\nactive\nReroutes\n0\nidle\nTower Feed\nlive\nTower stream\nEventSource live\nlive\nEvents\n5\nactive\nInstructions\n1\nBlocks\n0\nholding\nTime\nInstruction\nActor\n02:06 AM\ninspection.resultinspection.result\nRADAR-STACK-01\n02:06 AM\nradar.resultradar.result\nRADAR-STACK-01\n02:06 AM\nlanding.requestedlanding.requested\nRADAR-STACK-01\n02:06 AM\nTower filed 3 initial flight plans.Tower instruction\nhuman\n02:06 AM\nHold SCHEMA-01: IFR pilot license health is required for Class B mutation airspace.holding.pattern\nSCHEMA-01\nGovernance Console\n0/0/0\nRestricted work permit\nIssue governance evidence for Class A/B paths before clearance.\n0\nPermit title\nRoute scope\nIssue permit\nDocuments\n0 open\nNo RFIs or change orders filed\nRoute revisions\n0\nPropose reroute\nMayday and ground stop recovery\nResume only after replay, inspection, and recovery evidence.\n0 open\nSuccess Metrics\nmeasured\nRelease SLO posture\nMeasured outcomes tied to CodeSite artifacts, not screen-only claims.\n30 signals\nCollisions avoided"
+        }
+      },
+      {
+        "viewport": {
+          "name": "mobile",
+          "width": 390,
+          "height": 920
+        },
+        "screenshot": "tmp/codesite-dojo-proof/codesite-radar-ui-mobile.png",
+        "consoleErrors": [],
+        "checks": {
+          "radarRect": {
+            "x": 27,
+            "y": 831,
+            "width": 336,
+            "height": 1050.3125
+          },
+          "svgRect": {
+            "x": 37,
+            "y": 841,
+            "width": 316,
+            "height": 270
+          },
+          "tracePoints": "58.03,58.92 37.47,61.28 36.04,66.63 58.65,75.12 76.65,66.65 45.58,13.98 21.42,79.60",
+          "holdingPatterns": 3,
+          "riskCones": 3,
+          "flightBlips": 3,
+          "hasLandingQueue": true,
+          "hasRiskLabel": true,
+          "laneRects": [
+            {
+              "width": 318,
+              "height": 133.078125,
+              "text": "Critical controlled airspaceClass Aapi/auth/**billing/**db/migrations/**infra/prod/**+3SCHEMA-01API-02UI-03",
+              "pathChips": [
+                {
+                  "text": "api/auth/**",
+                  "width": 80.234375,
+                  "height": 22
+                },
+                {
+                  "text": "billing/**",
+                  "width": 74.21875,
+                  "height": 22
+                },
+                {
+                  "text": "db/migrations/**",
+                  "width": 110.328125,
+                  "height": 22
+                },
+                {
+                  "text": "infra/prod/**",
+                  "width": 92.28125,
+                  "height": 22
+                }
+              ]
+            },
+            {
+              "width": 318,
+              "height": 133.078125,
+              "text": "Shared contract airspaceClass Bpackages/schemas/**openapi/**packages/*/src/index.tssynthi/prisma/**+1SCHEMA-01API-02UI-03",
+              "pathChips": [
+                {
+                  "text": "packages/schemas/**",
+                  "width": 128.390625,
+                  "height": 22
+                },
+                {
+                  "text": "openapi/**",
+                  "width": 74.21875,
+                  "height": 22
+                },
+                {
+                  "text": "packages/*/src/index.ts",
+                  "width": 152.484375,
+                  "height": 22
+                },
+                {
+                  "text": "synthi/prisma/**",
+                  "width": 110.328125,
+                  "height": 22
+                }
+              ]
+            },
+            {
+              "width": 318,
+              "height": 133.078125,
+              "text": "Feature implementation airspaceClass Capps/web/**components/**synthi/src/app/**synthi/src/components/**+1UI-03",
+              "pathChips": [
+                {
+                  "text": "apps/web/**",
+                  "width": 80.234375,
+                  "height": 22
+                },
+                {
+                  "text": "components/**",
+                  "width": 92.28125,
+                  "height": 22
+                },
+                {
+                  "text": "synthi/src/app/**",
+                  "width": 116.359375,
+                  "height": 22
+                },
+                {
+                  "text": "synthi/src/components/**",
+                  "width": 158.5,
+                  "height": 22
+                }
+              ]
+            },
+            {
+              "width": 318,
+              "height": 133.078125,
+              "text": "Low-risk support airspaceClass Ddocs/**tests/****/__tests__/****/*.test.js+4SCHEMA-01API-02UI-03",
+              "pathChips": [
+                {
+                  "text": "docs/**",
+                  "width": 56.15625,
+                  "height": 22
+                },
+                {
+                  "text": "tests/**",
+                  "width": 62.171875,
+                  "height": 22
+                },
+                {
+                  "text": "**/__tests__/**",
+                  "width": 104.3125,
+                  "height": 22
+                },
+                {
+                  "text": "**/*.test.js",
+                  "width": 86.25,
+                  "height": 22
+                }
+              ]
+            }
+          ],
+          "visibleText": "CodeSite\ncodesite-radar-adapter-proof-1783303587121\nactive\nCodeSite project\nRadar adapter proof\nRefresh\nExport\nRadar\nTower\nGovernance\nMetrics\nSimulator\nQuarantine\nReplay\nLineage\nRunway\nSection\nRadar\nAnimated section jump active\nactive\nlive\nhigh\nRadar adapter proof\n\nRun every mature radar adapter against a safe proof workspace with schema-first multi-agent traffic\n\nFlights\n3\nactive\nRequired\n0\nlow\nPermits\n0\nholding\nReroutes\n0\nactive\nTOWER\nactive\nCOLLISION\nhigh\nCLEARANCE\n0\nMAYDAY\n0\nRUNWAYS\n0\nPROOF\n0\nAirspace Map\n10\nSCHEMA-01\nAPI-02\nUI-03\nRisk cone\nReplay trace\nHolding pattern\n3 flights tracked\n3 active risk cones\nCritical controlled airspace\nClass A\napi/auth/**\nbilling/**\ndb/migrations/**\ninfra/prod/**\n+3\nSCHEMA-01\nAPI-02\nUI-03\nShared contract airspace\nClass B\npackages/schemas/**\nopenapi/**\npackages/*/src/index.ts\nsynthi/prisma/**\n+1\nSCHEMA-01\nAPI-02\nUI-03\nFeature implementation airspace\nClass C\napps/web/**\ncomponents/**\nsynthi/src/app/**\nsynthi/src/components/**\n+1\nUI-03\nLow-risk support airspace\nClass D\ndocs/**\ntests/**\n**/__tests__/**\n**/*.test.js\n+4\nSCHEMA-01\nAPI-02\nUI-03\nLanding queue\n1\nRADAR-STACK-01\ncompleted\nPriority traffic\n3\nSCHEMA-01\npackages/schemas/auth/**, openapi/auth.yaml\nrisk\nAPI-02\npackages/schemas/auth/**, api/auth/**\nrisk\nUI-03\ncomponents/auth/**, packages/schemas/auth/**\nrisk\nNo-fly zones\n**/.env\n**/.env.*\nsecrets/**\n**/*secret*\n+3\nRadar layers\nclearance\ntransaction\ninspection\nproof\nFlights\n3\nLeases\n0\nTransactions\n0\nRequired\n0\nlow\nRisk\nhigh\nhigh\nPermits\n0\nidle\nDocuments\n0\nactive\nReroutes\n0\nidle\nTower Feed\nlive\nTower stream\nEventSource live\nlive\nEvents\n5\nactive\nInstructions\n1\nBlocks\n0\nholding\nTime\nInstruction\nActor\n02:06 AM\ninspection.resultinspection.result\nRADAR-STACK-01\n02:06 AM\nradar.resultradar.result\nRADAR-STACK-01\n02:06 AM\nlanding.requestedlanding.requested\nRADAR-STACK-01\n02:06 AM\nTower filed 3 initial flight plans.Tower instruction\nhuman\n02:06 AM\nHold SCHEMA-01: IFR pilot license health is required for Class B mutation airspace.holding.pattern\nSCHEMA-01\nGovernance Console\n0/0/0\nRestricted work permit\nIssue governance evidence for Class A/B paths before clearance.\n0\nPermit title\nRoute scope\nIssue permit\nDocuments\n0 open\nNo RFIs or change orders filed\nRoute revisions\n0\nPropose reroute\nMayday and ground stop recovery\nResume only after replay, inspection, and recovery evidence.\n0 open\nSuccess Metrics\nmeasured\nRelease SLO posture\nMeasured outcomes tied to CodeSite artifacts, not screen-only claims.\n30 signals\nCollisions avoided\n0\ntower "
+        }
+      }
+    ]
+  },
+  "appUrl": "http://127.0.0.1:3100",
+  "adapterProofPath": "tmp/codesite-dojo-proof/codesite-radar-adapter-proof.json",
+  "status": "validated",
+  "git": {
+    "head": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+    "branch": "codex/codesite-atc-full-from-dev-20260630",
+    "statusShort": "M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.html\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.json\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.png\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.html\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.json\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.png\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.html\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.json\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.png\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-latest.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof-summary.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.html\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-publication.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-handover.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-mobile.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-coordination.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-line-inspector.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-proof-section.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui.png\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.png\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.html\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.json\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.png\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.html\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.json\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.html\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.json\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.html\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.json\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.png\n M tmp/codesite-dojo-proof/codesite-metrics-proof.html\n M tmp/codesite-dojo-proof/codesite-metrics-proof.json\n M tmp/codesite-dojo-proof/codesite-metrics-proof.png\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.html\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.json\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.png\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.html\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.json\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.html\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.json\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-desktop-full.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-panel.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-rejected.png\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.json\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-host-block-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-overlay-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-panel.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.html\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.json\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.png\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.html\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.json\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.png\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.html\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.json\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.html\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.json\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.html\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.json\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.png\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.html\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.json\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.png\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.html\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.json\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.png\n?? .synthi/codesite/"
+  },
+  "commands": [
+    {
+      "name": "proofSuiteGenerator:radarUi",
+      "command": "node tmp/codesite-dojo-proof/run-radar-ui-proof.mjs",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "runner": "command"
+      },
+      "outputTail": [
+        "      ],",
+        "      \"pathChipWidths\": [",
+        "        [",
+        "          80.234375,",
+        "          74.21875,",
+        "          110.328125,",
+        "          92.28125",
+        "        ],",
+        "        [",
+        "          128.390625,",
+        "          74.21875,",
+        "          152.484375,",
+        "          110.328125",
+        "        ],",
+        "        [",
+        "          80.234375,",
+        "          92.28125,",
+        "          116.359375,",
+        "          158.5",
+        "        ],",
+        "        [",
+        "          56.15625,",
+        "          62.171875,",
+        "          104.3125,",
+        "          86.25",
+        "        ]",
+        "      ]",
+        "    }",
+        "  ]",
+        "}"
+      ]
+    }
+  ],
+  "proofSuite": {
+    "runner": "synthi/scripts/codesite-run-mature-proof-suite.mjs",
+    "stampedAt": "2026-07-06T02:11:55.316Z",
+    "proofFile": "tmp/codesite-dojo-proof/codesite-radar-ui-proof.json"
+  },
+  "assertions": {
+    "proofWillBeWritten": true,
+    "proofCommandsPassed": true,
+    "proofGitBound": true
+  },
+  "ok": true
+}

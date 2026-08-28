@@ -38,14 +38,14 @@ spec:
         app.kubernetes.io/part-of: synthi-ide
     spec:
       securityContext:
-        #runAsNonRoot: true
-        fsGroup: 1001
+        runAsUser: 0
+        runAsGroup: 0
       nodeSelector:
-        cloud.google.com/gke-nodepool: core-pool
+        cloud.google.com/gke-nodepool: default-pool
       serviceAccountName: collab-server-sa
       containers:
         - name: collab
-          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-collab-server:workspacepoolfix-20260402112432
+          image: europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-collab-server:build-tag-required
           ports:
             - containerPort: 1235
               name: app
@@ -53,8 +53,178 @@ spec:
             # ── Networking ──────────────────────────────────────────────────
             - name: COLLAB_PORT
               value: "1235"
-            - name: SYNTHI_APP_URL
-              value: "http://frontend:3000"
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=2048"
+            - name: SYNTHI_PUBLIC_APP_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PUBLIC_APP_URL
+            - name: SYNTHI_APP_INTERNAL_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_APP_INTERNAL_URL
+            - name: SYNTHI_PREVIEW_TARGET_TEMPLATE
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_TARGET_TEMPLATE
+            - name: SYNTHI_PREVIEW_PUBLIC_PREFIX
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_PUBLIC_PREFIX
+            - name: SYNTHI_PREVIEW_PUBLIC_DOMAIN
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_PUBLIC_DOMAIN
+            - name: SYNTHI_PREVIEW_PUBLIC_PROTOCOL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_PUBLIC_PROTOCOL
+            - name: SYNTHI_PREVIEW_SIDECAR_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_SIDECAR_PORT
+            - name: SYNTHI_PREVIEW_SIDECAR_PREFIX
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_SIDECAR_PREFIX
+            - name: SYNTHI_PREVIEW_SIDECAR_TIMEOUT_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_SIDECAR_TIMEOUT_MS
+            - name: SYNTHI_PREVIEW_PORT_PROBE_TIMEOUT_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_PORT_PROBE_TIMEOUT_MS
+            - name: SYNTHI_PREVIEW_SIDECAR_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_SIDECAR_IMAGE
+            - name: SYNTHI_BROWSER_WORKFLOW_BRIDGE_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_BROWSER_WORKFLOW_BRIDGE_IMAGE
+            - name: SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT
+            - name: SYNTHI_HOSTED_BROWSER_CDP_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_HOSTED_BROWSER_CDP_PORT
+            - name: SYNTHI_HOSTED_BROWSER_VIEW_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_HOSTED_BROWSER_VIEW_PORT
+            - name: SYNTHI_HOSTED_BROWSER_VNC_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_HOSTED_BROWSER_VNC_PORT
+            - name: SYNTHI_BROWSER_EXTERNAL_OPEN_BODY_LIMIT_BYTES
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_BROWSER_EXTERNAL_OPEN_BODY_LIMIT_BYTES
+            - name: SYNTHI_BROWSER_EXTERNAL_OPEN_TIMEOUT_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_BROWSER_EXTERNAL_OPEN_TIMEOUT_MS
+            - name: SYNTHI_PREVIEW_SCAN_PORTS
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_SCAN_PORTS
+            - name: SYNTHI_PREVIEW_EXCLUDE_PORTS
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_EXCLUDE_PORTS
+            - name: SYNTHI_TERMINAL_PORT_POOL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_TERMINAL_PORT_POOL
+            - name: SYNTHI_TERMINAL_BACKEND
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_TERMINAL_BACKEND
+            - name: SYNTHI_NO_JAIL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_NO_JAIL
+            - name: SYNTHI_TERMINAL_SCOPE_PORTS
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_TERMINAL_SCOPE_PORTS
+            - name: SYNTHI_PREVIEW_BIND_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_BIND_HOST
+            - name: SYNTHI_RUNTIME_CALLBACK_BODY_LIMIT_BYTES
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_RUNTIME_CALLBACK_BODY_LIMIT_BYTES
+            - name: SYNTHI_RUNTIME_CALLBACK_RESPONSE_LIMIT_BYTES
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_RUNTIME_CALLBACK_RESPONSE_LIMIT_BYTES
+            - name: SYNTHI_RUNTIME_CALLBACK_BODY_PREVIEW_CHARS
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_RUNTIME_CALLBACK_BODY_PREVIEW_CHARS
+            - name: SYNTHI_RUNTIME_CALLBACK_TIMEOUT_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_RUNTIME_CALLBACK_TIMEOUT_MS
+            - name: WORKSPACE_DATA_PVC
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: WORKSPACE_DATA_PVC
+            - name: WORKSPACE_DATA_MOUNT
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: WORKSPACE_DATA_MOUNT
+            - name: WORKSPACE_REPOS_PATH
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: WORKSPACE_REPOS_PATH
+            - name: WORKSPACE_PREP_PVC_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: WORKSPACE_DATA_PVC
+            - name: WORKSPACE_PREP_MOUNT_PATH
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: WORKSPACE_DATA_MOUNT
             - name: CORS_ORIGIN
               valueFrom:
                 configMapKeyRef:
@@ -70,6 +240,61 @@ spec:
                 secretKeyRef:
                   name: synthi-secrets
                   key: AI_BACKEND_AUTH_TOKEN
+            - name: SYNTHI_RUNTIME_ID_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: SYNTHI_RUNTIME_ID_SECRET
+            - name: SYNTHI_TOKEN_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: SYNTHI_TOKEN_ENCRYPTION_KEY
+            # ── CodeSite control-plane authority ─────────────────────────
+            - name: SYNTHI_CODESITE_API_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_CODESITE_API_BASE_URL
+            # ── Workspace runtime backend ────────────────────────────────
+            # The Docker-based workspace runtime talks to /var/run/docker.sock,
+            # which does not exist in a k8s pod. It defaults ON in code, so it
+            # MUST be disabled here or every ensure-runtime call fails with
+            # ENOENT and the editor reports "Runtime unavailable". Workspace
+            # runtimes come from the k8s spawner instead.
+            - name: ENABLE_CODESITE_DOCKER_RUNTIME
+              value: "0"
+            # ── CodeSite internal-service token ──────────────────────────
+            # Presented when consulting the CodeSite control plane; the
+            # frontend validates the same value.
+            - name: SYNTHI_CODESITE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: SYNTHI_CODESITE_TOKEN
+                  optional: true
+            # Validates frontend transaction open/close activity publishes.
+            # Keep this distinct from SYNTHI_CODESITE_TOKEN.
+            - name: COLLAB_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: COLLAB_INTERNAL_TOKEN
+            # ── Collab gateway JWT verification ──────────────────────────
+            # The frontend SIGNS terminal/exec gateway tokens with AUTH_SECRET;
+            # this server VERIFIES them. Without it every terminal WebSocket
+            # upgrade is refused with 503 gateway_auth_unconfigured. NOT optional:
+            # a missing secret fails closed and silently breaks all terminals.
+            - name: AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: AUTH_SECRET
+            - name: NEXTAUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: NEXTAUTH_SECRET
             # ── Y-Sweet CRDT server ──────────────────────────────────────
             - name: YSWEET_URL
               valueFrom:
@@ -87,6 +312,8 @@ spec:
               value: /data/repos
             - name: REPO_CACHE_DIR
               value: /data/repos
+            - name: REPO_CACHE_DELETE_ON_EVICT
+              value: "false"
             # ── GCS ─────────────────────────────────────────────────────────
             - name: GCP_PROJECT_ID
               valueFrom:
@@ -103,16 +330,6 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: GCS_WORKSPACE_PREFIX
-            - name: GCP_CLIENT_EMAIL
-              valueFrom:
-                secretKeyRef:
-                  name: synthi-secrets
-                  key: GCP_CLIENT_EMAIL
-            - name: GCP_PRIVATE_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: synthi-secrets
-                  key: GCP_PRIVATE_KEY
             # ── Feature flags ───────────────────────────────────────────────
             - name: GCS_SYNC_ON_FLUSH
               valueFrom:
@@ -135,11 +352,13 @@ spec:
                 secretKeyRef:
                   name: synthi-secrets
                   key: CLOUDFLARE_TURN_TOKEN_ID
+                  optional: true
             - name: CLOUDFLARE_TURN_API_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: synthi-secrets
                   key: CLOUDFLARE_TURN_API_TOKEN
+                  optional: true
             - name: TURN_CREDENTIAL_TTL
               valueFrom:
                 configMapKeyRef:
@@ -179,24 +398,37 @@ spec:
                   name: synthi-config
                   key: WORKSPACE_NODE_TAINT_EFFECT
             - name: IDLE_TIMEOUT_MS
-              value: "180000"   # 3 min
+              value: "300000"   # 5 min
             - name: MAX_WORKSPACE_PODS
-              value: "50"
+              value: "10"
             - name: POD_READY_TIMEOUT_MS
-              value: "120000"   # 2 min
+              value: "300000"   # 5 min
             - name: SPAWNER_CLEANUP_ON_SHUTDOWN
               value: "false"
+            - name: REDIS_URL
+              value: redis://redis.synthi.svc.cluster.local:6379
           volumeMounts:
             - name: collab-data
               mountPath: /data
           resources:
             requests:
-              cpu: 200m
-              memory: 256Mi
-            limits:
-              cpu: "1"
+              cpu: 500m
               memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 3Gi
           readinessProbe:
+            # NOT /codesite/readiness: that check round-trips through the
+            # frontend's activity-bridge probe, which calls back into this
+            # pod via the collab-server ClusterIP Service. Gating pod
+            # readiness on it is a deadlock the first time this container
+            # starts with zero existing ready replicas (Recreate strategy,
+            # or a fresh cluster) -- the Service has no endpoints to route
+            # that internal call to until this probe passes, and this probe
+            # can't pass until the Service has endpoints. Use the
+            # self-contained status endpoint instead; /codesite/readiness
+            # remains available as a deep cross-service diagnostic, just not
+            # as the Kubernetes readiness gate.
             httpGet:
               path: /debug/status
               port: 1235
@@ -262,30 +494,6 @@ spec:
               port: 1234
             initialDelaySeconds: 5
             periodSeconds: 10
-        # ── Cloud SQL Auth Proxy sidecar ───────────────────────────────────
-        # Available for future workspace/user metadata queries against the
-        # shared PostgreSQL database.  The collab server can connect to
-        # 127.0.0.1:5432 when DB access is needed.
-        - name: cloud-sql-proxy
-          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1@sha256:5cf206e6b9609aaa666db20c6c6632521985a5412ebbe4835e83d39bc76501e9
-          args:
-            - "--port=5432"
-            - "$(CLOUD_SQL_INSTANCE)"
-          env:
-            - name: CLOUD_SQL_INSTANCE
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: CLOUD_SQL_INSTANCE
-          securityContext:
-            #runAsNonRoot: true
-          resources:
-            requests:
-              cpu: 50m
-              memory: 64Mi
-            limits:
-              cpu: 200m
-              memory: 128Mi
       volumes:
         - name: collab-data
           persistentVolumeClaim:
@@ -300,10 +508,15 @@ metadata:
     app: collab-server
     app.kubernetes.io/part-of: synthi-ide
 spec:
-  accessModes: ["ReadWriteOnce"]
+  # Runtime pods and the collab server both mount /data/repos. In GKE this
+  # must be RWX storage when pods can schedule on different node pools.
+  # Closed beta uses standard-rwx because this project has no enterprise
+  # multishare quota in europe-west10.
+  storageClassName: standard-rwx
+  accessModes: ["ReadWriteMany"]
   resources:
     requests:
-      storage: 10Gi    # repo cache only — LevelDB no longer used
+      storage: 100Gi    # shared runtime filesystem pool for closed beta
 ---
 apiVersion: v1
 kind: Service
@@ -314,11 +527,33 @@ metadata:
     app: collab-server
     app.kubernetes.io/part-of: synthi-ide
   annotations:
-    cloud.google.com/neg: '{"exposed_ports":{"1234":{"name":"collab-server-alb-neg"}}}'
+    cloud.google.com/backend-config: '{"ports":{"1234":"collab-backend-config"}}'
+    cloud.google.com/neg: '{"ingress": true}'
 spec:
+  type: NodePort
   selector:
     app: collab-server
   ports:
     - port: 1234
       targetPort: 1234
       name: http-ws
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: collab-preview
+  namespace: synthi
+  labels:
+    app: collab-server
+    app.kubernetes.io/part-of: synthi-ide
+  annotations:
+    cloud.google.com/backend-config: '{"ports":{"1234":"preview-backend-config"}}'
+    cloud.google.com/neg: '{"ingress": true}'
+spec:
+  type: NodePort
+  selector:
+    app: collab-server
+  ports:
+    - port: 1234
+      targetPort: 1234
+      name: preview-http

@@ -1,13 +1,25 @@
-import { browserBroker } from "../browser/broker.js";
+import { authCheckpointManager, type AuthBrowserStorageState, type AuthReadiness, type AuthStorageArtifactMetadata } from "../browser/auth.js";
+import { browserBroker, type BrowserRuntimeAttachment, type BrowserWorkflowArtifact } from "../browser/broker.js";
 import { browserBridgeServer } from "../browser/bridge_server.js";
+import { browserWorkflowDeploymentReadiness } from "../browser/deployment_readiness.js";
+import { buildDojoSkill, dojoSkillRegistry } from "../browser/dojo.js";
 import { attachHostedBrowserRuntime, resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
-import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_manifest.js";
+import { generatePrivateWorkflowToolManifest, type PrivateWorkflowToolManifestV7 } from "../browser/private_tool_manifest.js";
+import {
+  privateWorkflowToolParameterArgNames,
+  privateWorkflowToolDefinition,
+  privateWorkflowToolRegistry,
+  type PrivateWorkflowToolRegistration,
+} from "../browser/private_tool_registry.js";
 import { isBrowserPreviewUrlAllowed, resolveBrowserPreviewTarget } from "../browser/preview_target.js";
 import { browserPlaywrightAdapter, type BrowserWorkflowOverlayResponse } from "../browser/playwright_adapter.js";
 import {
   classifyWorkflowReplayBlock,
   classifyWorkflowReplayFailure,
   normalizeReplayMode,
+  type AuthDurabilityV7,
+  type FailureClassV7,
+  type WorkflowContractV7,
   type WorkflowReplayModeV7,
   type WorkflowStepContractV7,
 } from "../browser/workflow.js";
@@ -19,19 +31,63 @@ import {
 } from "../browser/project_runner.js";
 import { BROWSER_ACTION_KINDS } from "../browser/types.js";
 import type { BrowserActionKind, BrowserTraceEvent } from "../browser/types.js";
+import {
+  createDojoExecutionPolicyGate,
+  type DojoExecutionPolicyDecision,
+  type DojoPublishedSkillBinding,
+  type DojoTenantContext,
+} from "../dojo/mcp/execution_policy_gate.js";
+import { resolveDojoEnforcementConfig } from "../dojo/config/enforcement.js";
+import { createDojoControlPlaneStoresFromEnv } from "../dojo/store/control_plane_resolver.js";
+import type { DojoPublishedWorkflowBinding } from "../dojo/store/published_workflow_index.js";
 import { eventLog } from "../events/index.js";
+import { ADVERTISED_TOOLS } from "../tool_registry.js";
+import { dispatchSafetyTool } from "./safety.js";
 import { errorFromException, errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
+
+const DOJO_ARTIFACT_EXECUTION_MODE_ENV = "SYNTHI_DOJO_ARTIFACT_EXECUTION_MODE";
+const DOJO_ARTIFACT_ALLOWED_EXECUTION_MODES = ["practice", "test", "ci"] as const;
+
+export interface DojoValidatedBrowserWorkflowContext {
+  proof_capsule_id: string;
+  skill_id: string;
+  requested_action: string;
+  run_id?: string;
+  validated_graph_inputs?: Record<string, unknown>;
+  tenant_id?: string;
+  workspace_id?: string;
+  runtime_session_id?: string;
+  runtime_action_url?: string;
+  runtime_authorization_evidence_record_ids?: string[];
+  verified_runtime_attachment?: BrowserRuntimeAttachment | null;
+  now?: string;
+}
+
+export interface DojoPrivateWorkflowToolHydration {
+  manifest: PrivateWorkflowToolManifestV7;
+  workflow_artifact?: BrowserWorkflowArtifact;
+}
+
+export type DojoPrivateWorkflowToolReadiness =
+  | { ok: true; registration: PrivateWorkflowToolRegistration; workflow_artifact: BrowserWorkflowArtifact }
+  | { ok: false; error: ToolResponse };
+
+export type DojoBrowserRuntimeBindingValidation =
+  | { ok: true; binding?: Record<string, unknown> }
+  | { ok: false; blocked_by: string[]; error: ToolResponse };
 
 browserPlaywrightAdapter.setTeachEventSink((event) => {
   if (event.action === "navigate") {
     browserBroker.handleOriginChange(event.tab_id, event.url, event.detail);
     return;
   }
-  browserBroker.recordHumanAction(event);
+  const result = browserBroker.recordHumanAction(event);
+  if (!result.ok) browserBroker.recordTeachRecordingIssue(result.error, event, "hosted-playwright-adapter");
 });
 
 browserPlaywrightAdapter.setTeachEventAnnotationSink((event) => {
-  browserBroker.annotateLatestHumanAction(event);
+  const result = browserBroker.annotateLatestHumanAction(event);
+  if (!result.ok) browserBroker.recordTeachRecordingIssue(result.error, event, "hosted-playwright-annotation");
 });
 
 browserPlaywrightAdapter.setWorkflowOverlayActionSink(async (request) => {
@@ -95,8 +151,71 @@ export async function browserWorkflowOverlayAction(input: {
   }
 
   if (input.action === "teach") {
-    const response = browserBeginTeachTool({
-      tab_id: input.tab_id,
+    const targetUrl = httpUrlOpt(input.page_url ?? input.url);
+    if (!targetUrl) {
+      return {
+        ok: false,
+        status: "error",
+        label: "Teach failed",
+        detail: "The current page is not an HTTP preview URL.",
+        recording: browserBroker.teachState().active,
+        observed: false,
+        stepCount: browserBroker.compiledWorkflow().card.stepCount,
+        error: "invalid_preview_url",
+      };
+    }
+    if (!isBrowserPreviewUrlAllowed(targetUrl, { workspace_url: runtime.workspace_url ?? undefined })) {
+      return {
+        ok: false,
+        status: "error",
+        label: "Teach blocked",
+        detail: "The current page does not match this workspace's preview policy.",
+        recording: browserBroker.teachState().active,
+        observed: false,
+        stepCount: browserBroker.compiledWorkflow().card.stepCount,
+        error: "preview_target_not_allowed",
+      };
+    }
+    const targetInput = {
+      workspace_url: runtime.workspace_url ?? input.page_url,
+      preferred_url: targetUrl,
+      preview_url: targetUrl,
+    };
+    const allTabs = await browserPlaywrightAdapter.listTabs();
+    const target = resolveBrowserPreviewTarget(allTabs, targetInput, process.env);
+    if (!target.ok) {
+      return {
+        ok: false,
+        status: "error",
+        label: "Teach failed",
+        detail: target.reason,
+        recording: browserBroker.teachState().active,
+        observed: false,
+        stepCount: browserBroker.compiledWorkflow().card.stepCount,
+        error: target.error,
+      };
+    }
+    browserBroker.requestConsent(target.tab.url, "granted", "workspace_preview_teach_user_gesture", {
+      screenshot: true,
+      diagnostics: false,
+    });
+    browserBroker.registerTabs(allTabs);
+    const selected = browserBroker.selectTab(target.tab.tab_id);
+    if (!selected) {
+      return {
+        ok: false,
+        status: "error",
+        label: "Teach failed",
+        detail: "The current preview tab is not authorized for workflow teaching.",
+        recording: browserBroker.teachState().active,
+        observed: false,
+        stepCount: browserBroker.compiledWorkflow().card.stepCount,
+        error: "tab_not_authorized",
+      };
+    }
+    await browserPlaywrightAdapter.selectTab(target.tab.tab_id);
+    const response = await browserBeginTeachTool({
+      tab_id: selected?.tab_id ?? input.tab_id,
       goal: `Teach workflow for ${runtime.workspace_id || "current workspace"}`,
     });
     if (response.isError) return workflowOverlayError("Teach failed", response);
@@ -170,6 +289,10 @@ function humanActionLabel(action: string): string {
       return "Dragged";
     case "scroll":
       return "Scrolled";
+    case "copy":
+      return "Copied";
+    case "cut":
+      return "Cut";
     case "hover":
       return "Hovered";
     case "navigate":
@@ -214,6 +337,7 @@ function workflowOverlayError(label: string, response: ToolResponse): BrowserWor
 
 export const BROWSER_TOOL_NAMES = [
   "synthi_browser_attach_current_workspace",
+  "synthi_browser_revoke_hosted_runtime_session",
   "synthi_browser_observe",
   "synthi_browser_observe_preview",
   "synthi_browser_begin_teach",
@@ -222,6 +346,7 @@ export const BROWSER_TOOL_NAMES = [
   "synthi_browser_list_tabs",
   "synthi_browser_select_tab",
   "synthi_browser_open",
+  "synthi_browser_close_tab",
   "synthi_browser_request_consent",
   "synthi_browser_get_consent",
   "synthi_browser_revoke_consent",
@@ -237,6 +362,9 @@ export const BROWSER_TOOL_NAMES = [
   "synthi_browser_compile_workflow",
   "synthi_browser_generate_script",
   "synthi_browser_generate_private_tool_manifest",
+  "synthi_browser_publish_private_tool",
+  "synthi_browser_get_private_tool_manifest",
+  "synthi_browser_capture_auth_checkpoint_storage",
   "synthi_browser_run_workflow",
   "synthi_browser_explain_failure",
   "synthi_browser_acquire_lease",
@@ -249,6 +377,7 @@ export const BROWSER_TOOL_NAMES = [
   "synthi_browser_run_project",
   "synthi_browser_project_status",
   "synthi_browser_stop_project",
+  "synthi_browser_get_deployment_readiness",
 ] as const;
 
 export const BROWSER_TOOLS = [
@@ -259,10 +388,25 @@ export const BROWSER_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
+        tenant_id: { type: "string", description: "Optional tenant scope. Defaults to SYNTHI_TENANT_ID." },
         workspace_id: { type: "string", description: "Optional workspace scope. Defaults to SYNTHI_WORKSPACE_ID or the active/default workspace." },
+        actor_id: { type: "string", description: "Optional actor scope for runtime audit. Defaults to SYNTHI_AGENT_ID or SYNTHI_ACTOR_ID." },
         workspace_url: { type: "string", description: "Optional workspace URL to open in the hosted runtime. Defaults to SYNTHI_WORKSPACE_URL or SYNTHI_HOSTED_BROWSER_WORKSPACE_URL." },
         runtime_id: { type: "string", description: "Optional hosted runtime id for diagnostics." },
+        runtime_session_id: { type: "string", description: "Optional runtime session id. Defaults to a generated short-lived hosted session id." },
         open_workspace: { type: "boolean", description: "Open the workspace URL in the hosted runtime after attach. Defaults true when a workspace URL is known." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_browser_revoke_hosted_runtime_session",
+    description:
+      "Revoke the current Synthi-hosted browser runtime session. Revocation clears active leases and blocks subsequent browser actions or snapshots until a new hosted session is attached.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reason: { type: "string", description: "Operator or policy reason for revocation. Defaults to operator_revoked." },
       },
       required: [],
     },
@@ -287,6 +431,7 @@ export const BROWSER_TOOLS = [
         workspace_url: { type: "string", description: "Current workspace URL. Used to avoid observing the IDE tab and to derive local-dev loopback preview policy." },
         preferred_url: { type: "string", description: "Optional exact preview URL to prefer when the host already knows it." },
         preview_url: { type: "string", description: "Optional workspace preview URL from the cloud preview/tunnel service." },
+        user_gesture: { type: "boolean", description: "True when the operator explicitly requested Observe from the UI, allowing screenshot consent for the selected preview origin." },
         allowed_preview_origins: {
           type: "array",
           items: { type: "string" },
@@ -361,6 +506,15 @@ export const BROWSER_TOOLS = [
       type: "object",
       properties: { url: { type: "string" } },
       required: ["url"],
+    },
+  },
+  {
+    name: "synthi_browser_close_tab",
+    description: "Close a browser tab previously opened or authorized by Synthi. Use this to clean up agent-owned preview tabs after workflow execution.",
+    inputSchema: {
+      type: "object",
+      properties: { tab_id: { type: "string" } },
+      required: ["tab_id"],
     },
   },
   {
@@ -482,7 +636,7 @@ export const BROWSER_TOOLS = [
       type: "object",
       properties: {
         workflow_id: { type: "string", description: "Optional saved workflow id returned by compile/end teach. When supplied, generation uses that immutable artifact." },
-        mode: { type: "string", enum: ["sameSession", "prefixOnly", "coldSession"], description: "Use prefixOnly or coldSession to stop before the first mutation boundary." },
+        mode: { type: "string", enum: ["sameSession", "prefixOnly", "coldSession", "ciIsolated"], description: "Use prefixOnly/coldSession to stop before mutation boundaries, or ciIsolated to emit a full mutation script guarded by ALLOW_WORKFLOW_MUTATION=1." },
       },
       required: [],
     },
@@ -500,6 +654,49 @@ export const BROWSER_TOOLS = [
     },
   },
   {
+    name: "synthi_browser_publish_private_tool",
+    description:
+      "Register the generated private app-specific workflow tool with this MCP process so agents can discover and call it directly. Blocked manifests are not published; mutation workflows default to prefix-only replay until explicitly confirmed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflow_id: { type: "string", description: "Optional saved workflow id returned by compile/end teach. Defaults to the current compiled workflow." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "synthi_browser_list_private_tools",
+    description:
+      "List published private app-specific workflow tools registered with this MCP process. Use this to discover exact synthi_app_* tool names, run modes, parameters, auth policy, and mutation policy before calling a saved workflow.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "synthi_browser_get_private_tool_manifest",
+    description:
+      "Return the redacted registered manifest and MCP schema for a published private app-specific workflow tool by tool_name. Lets agents inspect run modes, parameters, auth durability, mutation policy, and blockers without a script path.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tool_name: { type: "string", description: "Published private workflow tool name from tools/list, for example synthi_app_save_runbook." },
+      },
+      required: ["tool_name"],
+    },
+  },
+  {
+    name: "synthi_browser_capture_auth_checkpoint_storage",
+    description:
+      "Capture browser cookies, localStorage, and sessionStorage for an approved auth checkpoint from the Synthi-hosted browser. Stores raw values broker-side only and returns counts, never auth values.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        checkpoint_id: { type: "string", description: "Auth checkpoint id returned by synthi_auth_finish_checkpoint_enrollment." },
+        tab_id: { type: "string", description: "Optional authorized tab to capture from. Defaults to the selected tab." },
+      },
+      required: ["checkpoint_id"],
+    },
+  },
+  {
     name: "synthi_browser_run_workflow",
     description:
       "Replay the compiled workflow under a control lease. coldSession is the default and stops before the first mutation boundary in a fresh context.",
@@ -512,7 +709,7 @@ export const BROWSER_TOOLS = [
         mode: { type: "string", enum: ["sameSession", "prefixOnly", "coldSession"], default: "coldSession" },
         parameters: {
           type: "object",
-          description: "Workflow parameters keyed by contract parameter name. File-drop steps expect file path strings here.",
+          description: "Workflow parameters keyed by contract parameter name. File-drop steps expect file path strings; clipboard paste, clipboard drop, and native prompt steps expect caller-provided text values.",
           additionalProperties: { type: "string" },
         },
       },
@@ -646,19 +843,41 @@ export const BROWSER_TOOLS = [
       required: ["run_id"],
     },
   },
+  {
+    name: "synthi_browser_get_deployment_readiness",
+    description:
+      "Return a redacted production readiness report for browser workflow deployment wiring: hosted runtime, workflow bridge, private workflow store, auth checkpoint store, workspace scope, and local-CDP leakage.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        mode: { type: "string", enum: ["production", "development"], default: "production" },
+        workspace_id: { type: "string", description: "Optional workspace scope for replay-isolation profile diagnostics." },
+        require_workflow_bridge: { type: "boolean", description: "Whether browser-injected Observe/Teach controls must be configured. Defaults true." },
+      },
+      required: [],
+    },
+  },
 ] as const;
+
+export function browserPrivateWorkflowTools(): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> {
+  return privateWorkflowToolRegistry.list().map(privateWorkflowToolDefinition);
+}
 
 export async function dispatchBrowserTool(toolName: string, args: unknown): Promise<ToolResponse | null> {
   try {
+    const privateTool = privateWorkflowToolRegistry.get(toolName);
+    if (privateTool) return await browserDirectPrivateWorkflowTool(toolName, args, privateTool);
     switch (toolName) {
       case "synthi_browser_attach_current_workspace":
         return await browserAttachCurrentWorkspaceTool(args);
+      case "synthi_browser_revoke_hosted_runtime_session":
+        return browserRevokeHostedRuntimeSessionTool(args);
       case "synthi_browser_observe":
         return await browserSnapshotTool(args);
       case "synthi_browser_observe_preview":
-        return await browserObservePreviewTool(args);
+        return await browserObservePreviewTool(args, { userGesture: boolOpt(obj(args)["user_gesture"]) });
       case "synthi_browser_begin_teach":
-        return browserBeginTeachTool(args);
+        return await browserBeginTeachTool(args);
       case "synthi_browser_end_teach":
         return browserEndTeachTool(args);
       case "synthi_browser_attach":
@@ -669,6 +888,8 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
         return await browserSelectTabTool(args);
       case "synthi_browser_open":
         return await browserOpenTool(args);
+      case "synthi_browser_close_tab":
+        return await browserCloseTabTool(args);
       case "synthi_browser_request_consent":
         return browserRequestConsentTool(args);
       case "synthi_browser_get_consent":
@@ -678,7 +899,7 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
       case "synthi_browser_snapshot":
         return await browserSnapshotTool(args);
       case "synthi_browser_start_teach":
-        return browserStartTeachTool(args);
+        return await browserStartTeachTool(args);
       case "synthi_browser_stop_teach":
         return browserStopTeachTool(args);
       case "synthi_browser_get_trace":
@@ -696,9 +917,17 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
       case "synthi_browser_compile_workflow":
         return jsonResponse({ ok: true, workflow: browserBroker.compiledWorkflow() });
       case "synthi_browser_generate_script":
-        return browserGenerateScriptTool(args);
+        return await browserGenerateScriptTool(args);
       case "synthi_browser_generate_private_tool_manifest":
         return browserGeneratePrivateToolManifestTool(args);
+      case "synthi_browser_publish_private_tool":
+        return browserPublishPrivateToolTool(args);
+      case "synthi_browser_list_private_tools":
+        return browserListPrivateToolsTool();
+      case "synthi_browser_get_private_tool_manifest":
+        return browserGetPrivateToolManifestTool(args);
+      case "synthi_browser_capture_auth_checkpoint_storage":
+        return await browserCaptureAuthCheckpointStorageTool(args);
       case "synthi_browser_run_workflow":
         return await browserRunWorkflowTool(args);
       case "synthi_browser_explain_failure":
@@ -723,6 +952,8 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
         return browserProjectStatusTool(args);
       case "synthi_browser_stop_project":
         return await browserStopProjectTool(args);
+      case "synthi_browser_get_deployment_readiness":
+        return browserDeploymentReadinessTool(args);
       default:
         return null;
     }
@@ -731,13 +962,169 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
   }
 }
 
+export async function dispatchBrowserPrivateWorkflowToolAfterDojoProof(
+  toolName: string,
+  args: unknown,
+  dojoContext: DojoValidatedBrowserWorkflowContext,
+  hydration?: DojoPrivateWorkflowToolHydration
+): Promise<ToolResponse> {
+  const readiness = ensureBrowserPrivateWorkflowToolForDojoProof(toolName, hydration);
+  if (!readiness.ok) return readiness.error;
+  return await browserRunPublishedPrivateTool(toolName, args, dojoContext);
+}
+
+export function ensureBrowserPrivateWorkflowToolForDojoProof(
+  toolName: string,
+  hydration?: DojoPrivateWorkflowToolHydration
+): DojoPrivateWorkflowToolReadiness {
+  let registration = privateWorkflowToolRegistry.get(toolName);
+  if (!registration && hydration) {
+    const hydrated = hydrateDojoPrivateWorkflowTool(toolName, hydration);
+    if (!hydrated.ok) return hydrated;
+    registration = hydrated.registration;
+  }
+  if (!registration) {
+    return { ok: false, error: errorResponse("private_workflow_tool_not_found", { tool_name: toolName }) };
+  }
+  if (registration.workflow_id !== registration.manifest.workflow_id) {
+    return {
+      ok: false,
+      error: errorResponse("private_workflow_registration_mismatch", {
+        tool_name: toolName,
+        workflow_id: registration.workflow_id,
+        manifest_workflow_id: registration.manifest.workflow_id,
+      }),
+    };
+  }
+  if (registration.manifest.status === "blocked") {
+    return {
+      ok: false,
+      error: errorResponse("private_workflow_tool_blocked", {
+        tool_name: toolName,
+        workflow_id: registration.manifest.workflow_id,
+        blockers: registration.manifest.safety.blockers,
+      }),
+    };
+  }
+  let artifact = browserBroker.workflowArtifact(registration.workflow_id);
+  if (!artifact.ok && registration.workflow_artifact) {
+    artifact = browserBroker.registerWorkflowArtifact(registration.workflow_artifact);
+  }
+  if (!artifact.ok) {
+    return {
+      ok: false,
+      error: errorResponse(artifact.error, {
+        tool_name: toolName,
+        workflow_id: registration.workflow_id,
+        hydration_source: hydration ? "dojo_durable_skill" : "private_workflow_registry",
+      }),
+    };
+  }
+  return { ok: true, registration, workflow_artifact: artifact.artifact };
+}
+
+function hydrateDojoPrivateWorkflowTool(
+  toolName: string,
+  hydration: DojoPrivateWorkflowToolHydration
+): DojoPrivateWorkflowToolReadiness {
+  if (hydration.manifest.tool_name !== toolName) {
+    return {
+      ok: false,
+      error: errorResponse("private_workflow_tool_hydration_mismatch", {
+        tool_name: toolName,
+        hydrated_tool_name: hydration.manifest.tool_name,
+        workflow_id: hydration.manifest.workflow_id,
+      }),
+    };
+  }
+  let workflowArtifact = hydration.workflow_artifact;
+  if (!workflowArtifact) {
+    const brokerArtifact = browserBroker.workflowArtifact(hydration.manifest.workflow_id);
+    if (brokerArtifact.ok) workflowArtifact = brokerArtifact.artifact;
+  }
+  if (!workflowArtifact) {
+    return {
+      ok: false,
+      error: errorResponse("private_workflow_artifact_not_found", {
+        tool_name: toolName,
+        workflow_id: hydration.manifest.workflow_id,
+        hydration_source: "dojo_durable_skill",
+      }),
+    };
+  }
+  const published = privateWorkflowToolRegistry.publish(hydration.manifest, {
+    reservedToolNames: ADVERTISED_TOOLS,
+    workflowArtifact,
+  });
+  if (!published.ok) {
+    return {
+      ok: false,
+      error: errorResponse(published.error, {
+        tool_name: published.tool_name,
+        workflow_id: hydration.manifest.workflow_id,
+        hydration_source: "dojo_durable_skill",
+      }),
+    };
+  }
+  return {
+    ok: true,
+    registration: published.registration,
+    workflow_artifact: workflowArtifact,
+  };
+}
+
+async function browserDirectPrivateWorkflowTool(
+  toolName: string,
+  args: unknown,
+  registration: PrivateWorkflowToolRegistration
+): Promise<ToolResponse> {
+  const binding = await dojoBindingForPrivateTool(args, toolName, registration.workflow_id);
+  const gate = createDojoExecutionPolicyGate({
+    resolvePublishedSkill: () => binding ?? ({ status: "unpublished" }),
+  });
+  const decision = await gate.evaluate({
+    tenant: dojoTenantContext(args, registration.workflow_id),
+    entrypoint: "private_tool",
+    workflow_id: registration.workflow_id,
+    tool_name: toolName,
+    requested_action: "run_workflow",
+  });
+
+  if (binding?.status === "published") return browserDirectPrivateToolRequiresDojoProof(toolName, registration.workflow_id, decision);
+  if (!decision.ok) {
+    return errorResponse("dojo_execution_policy_blocked", {
+      tool_name: toolName,
+      workflow_id: registration.workflow_id,
+      requested_action: "run_workflow",
+      blocked_by: decision.blocked_by,
+      dojo_execution_policy: decision,
+    });
+  }
+  return await browserRunPublishedPrivateTool(toolName, args);
+}
+
+function browserDeploymentReadinessTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  return jsonResponse({
+    ok: true,
+    readiness: browserWorkflowDeploymentReadiness({
+      mode: a["mode"] === "development" ? "development" : "production",
+      workspace_id: stringOpt(a["workspace_id"]),
+      require_workflow_bridge: boolOpt(a["require_workflow_bridge"]),
+    }),
+  });
+}
+
 async function browserAttachCurrentWorkspaceTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
   const result = await attachHostedBrowserRuntime(
     {
+      tenant_id: stringOpt(a["tenant_id"]),
       workspace_id: stringOpt(a["workspace_id"]),
+      actor_id: stringOpt(a["actor_id"]),
       workspace_url: stringOpt(a["workspace_url"]),
       runtime_id: stringOpt(a["runtime_id"]),
+      runtime_session_id: stringOpt(a["runtime_session_id"]),
       open_workspace: boolOpt(a["open_workspace"]),
     },
     browserPlaywrightAdapter,
@@ -749,8 +1136,11 @@ async function browserAttachCurrentWorkspaceTool(args: unknown): Promise<ToolRes
       low_level_local_dev_tool: "synthi_browser_attach",
       readiness: resolveHostedBrowserRuntime({
         workspace_id: stringOpt(a["workspace_id"]),
+        tenant_id: stringOpt(a["tenant_id"]),
+        actor_id: stringOpt(a["actor_id"]),
         workspace_url: stringOpt(a["workspace_url"]),
         runtime_id: stringOpt(a["runtime_id"]),
+        runtime_session_id: stringOpt(a["runtime_session_id"]),
       }),
     });
   }
@@ -763,6 +1153,56 @@ async function browserAttachCurrentWorkspaceTool(args: unknown): Promise<ToolRes
     consent_required_for: result.consent_required_for,
     permission_tiers: result.permission_tiers,
   });
+}
+
+function browserRevokeHostedRuntimeSessionTool(args: unknown): ToolResponse {
+  const reason = stringOpt(obj(args)["reason"]) ?? "operator_revoked";
+  const revoked = browserBroker.revokeRuntimeAttachment(reason);
+  if (!revoked.revoked) {
+    return errorResponse("hosted_runtime_not_attached", {
+      runtime: revoked.runtime,
+      required_tool: "synthi_browser_attach_current_workspace",
+    });
+  }
+  return jsonResponse({
+    ok: true,
+    revoked: true,
+    runtime: revoked.runtime,
+  });
+}
+
+async function ensureHostedBrowserRuntimeAttachedForPreview(input: {
+  workspace_id?: string;
+  workspace_url?: string;
+  runtime_id?: string;
+}): Promise<ToolResponse | null> {
+  const runtime = browserBroker.runtimeAttachment();
+  if (runtime?.kind === "hosted") return null;
+
+  const result = await attachHostedBrowserRuntime(
+    {
+      workspace_id: input.workspace_id,
+      workspace_url: input.workspace_url,
+      runtime_id: input.runtime_id,
+      open_workspace: false,
+    },
+    browserPlaywrightAdapter,
+    browserBroker
+  );
+
+  if (!result.ok) {
+    return errorResponse(result.error, {
+      runtime: result.runtime,
+      readiness: resolveHostedBrowserRuntime({
+        workspace_id: input.workspace_id,
+        workspace_url: input.workspace_url,
+        runtime_id: input.runtime_id,
+      }),
+      required_action: "attach_hosted_browser_runtime",
+    });
+  }
+
+  return null;
 }
 
 async function browserAttachTool(args: unknown): Promise<ToolResponse> {
@@ -806,28 +1246,80 @@ async function browserListTabsTool(): Promise<ToolResponse> {
 async function browserObservePreviewTool(args: unknown, options: { userGesture?: boolean } = {}): Promise<ToolResponse> {
   const a = obj(args);
   const input = {
+    workspace_id: stringOpt(a["workspace_id"]),
     workspace_url: stringOpt(a["workspace_url"]),
+    runtime_id: stringOpt(a["runtime_id"]),
     preferred_url: stringOpt(a["preferred_url"]),
     preview_url: stringOpt(a["preview_url"]),
     allowed_preview_origins: stringArrayOpt(a["allowed_preview_origins"]),
     allowed_preview_host_suffixes: stringArrayOpt(a["allowed_preview_host_suffixes"]),
   };
+
+  const attachError = await ensureHostedBrowserRuntimeAttachedForPreview({
+    workspace_id: input.workspace_id,
+    workspace_url: input.workspace_url,
+    runtime_id: input.runtime_id,
+  });
+  if (attachError) return attachError;
+
   const previewUrl = httpUrlOpt(
     input.preferred_url ??
     input.preview_url ??
     process.env["SYNTHI_WORKSPACE_PREVIEW_URL"] ??
     process.env["SYNTHI_PREVIEW_URL"]
   );
-  if (previewUrl) await browserPlaywrightAdapter.openOrNavigate(previewUrl);
-  let allTabs = await browserPlaywrightAdapter.listTabs();
+  let openedPreviewTab = null;
+  if (previewUrl) {
+    try {
+      openedPreviewTab = await browserPlaywrightAdapter.openOrNavigate(previewUrl);
+    } catch (err) {
+      return errorResponse("preview_open_failed", {
+        preview_url: previewUrl,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  let allTabs;
+  try {
+    allTabs = await browserPlaywrightAdapter.listTabs();
+  } catch (err) {
+    return errorResponse("preview_open_failed", {
+      preview_url: previewUrl ?? null,
+      reason: err instanceof Error ? err.message : String(err),
+    });
+  }
   let target = resolveBrowserPreviewTarget(
     allTabs,
     input,
     process.env
   );
+  if (!target.ok && openedPreviewTab) {
+    const openedTarget = resolveBrowserPreviewTarget(
+      [openedPreviewTab],
+      {
+        ...input,
+        preferred_url: input.preferred_url ?? previewUrl,
+        preview_url: input.preview_url ?? previewUrl,
+      },
+      process.env
+    );
+    if (openedTarget.ok) {
+      target = openedTarget;
+      if (!allTabs.some((tab) => tab.tab_id === openedPreviewTab.tab_id)) {
+        allTabs = [...allTabs, openedPreviewTab];
+      }
+    }
+  }
   if (!target.ok && previewUrl) {
-    await browserPlaywrightAdapter.open(previewUrl);
-    allTabs = await browserPlaywrightAdapter.listTabs();
+    try {
+      await browserPlaywrightAdapter.open(previewUrl);
+      allTabs = await browserPlaywrightAdapter.listTabs();
+    } catch (err) {
+      return errorResponse("preview_open_failed", {
+        preview_url: previewUrl,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    }
     target = resolveBrowserPreviewTarget(
       allTabs,
       {
@@ -862,8 +1354,32 @@ async function browserObservePreviewTool(args: unknown, options: { userGesture?:
   const tabs = browserBroker.registerTabs(allTabs);
   const brokerTab = browserBroker.selectTab(target.tab.tab_id);
   if (!brokerTab) return errorResponse("tab_not_authorized", { tab_id: target.tab.tab_id });
-  await browserPlaywrightAdapter.selectTab(target.tab.tab_id);
-  const snapshot = await browserPlaywrightAdapter.snapshot(target.tab.tab_id);
+  try {
+    await browserPlaywrightAdapter.selectTab(target.tab.tab_id);
+  } catch (err) {
+    return errorResponse("preview_open_failed", {
+      tab_id: target.tab.tab_id,
+      preview_url: target.tab.url,
+      reason: err instanceof Error ? err.message : String(err),
+    });
+  }
+  const overlay = await browserPlaywrightAdapter.refreshWorkflowOverlay(target.tab.tab_id);
+  if (!overlay.ok) {
+    return errorResponse(overlay.error, {
+      tab_id: target.tab.tab_id,
+      preview_url: target.tab.url,
+    });
+  }
+  let snapshot;
+  try {
+    snapshot = await browserPlaywrightAdapter.snapshot(target.tab.tab_id);
+  } catch (err) {
+    return errorResponse("preview_snapshot_failed", {
+      tab_id: target.tab.tab_id,
+      preview_url: target.tab.url,
+      reason: err instanceof Error ? err.message : String(err),
+    });
+  }
   const gated = browserBroker.snapshot(snapshot);
   if (!gated.ok) return errorResponse(gated.error);
   return jsonResponse({
@@ -876,6 +1392,7 @@ async function browserObservePreviewTool(args: unknown, options: { userGesture?:
       reason: target.reason,
     },
     snapshot: gated.snapshot,
+    workflow_overlay: overlay,
     tabs,
     hidden_tabs: allTabs.length - tabs.length,
   });
@@ -907,10 +1424,34 @@ async function browserSelectTabTool(args: unknown): Promise<ToolResponse> {
 async function browserOpenTool(args: unknown): Promise<ToolResponse> {
   const url = requiredString(obj(args), "url");
   if (!consentGranted(url)) return errorResponse("origin_consent_required", { url });
+  const dojoHostedRuntimeGate = rawHostedRuntimeMutationGateForProduction({
+    tool_name: "synthi_browser_open",
+    url,
+    mutation_kind: "open_tab",
+    error_code: "dojo_hosted_runtime_direct_tab_mutation_blocked",
+  });
+  if (dojoHostedRuntimeGate) return dojoHostedRuntimeGate;
   const tab = await browserPlaywrightAdapter.open(url);
   const tabs = browserBroker.registerTabs(await browserPlaywrightAdapter.listTabs());
   browserBroker.selectTab(tab.tab_id);
   return jsonResponse({ ok: true, tab, tabs });
+}
+
+async function browserCloseTabTool(args: unknown): Promise<ToolResponse> {
+  const tabId = requiredString(obj(args), "tab_id");
+  const brokerTab = browserBroker.selectTab(tabId);
+  if (!brokerTab) return errorResponse("tab_not_authorized", { tab_id: tabId });
+  const dojoHostedRuntimeGate = rawHostedRuntimeMutationGateForProduction({
+    tool_name: "synthi_browser_close_tab",
+    tab_id: tabId,
+    url: brokerTab.url,
+    mutation_kind: "close_tab",
+    error_code: "dojo_hosted_runtime_direct_tab_mutation_blocked",
+  });
+  if (dojoHostedRuntimeGate) return dojoHostedRuntimeGate;
+  const closed = await browserPlaywrightAdapter.closeTab(tabId);
+  const forgotten = browserBroker.forgetTab(tabId);
+  return jsonResponse({ ok: true, closed, forgotten: forgotten.forgotten });
 }
 
 function browserRequestConsentTool(args: unknown): ToolResponse {
@@ -945,16 +1486,21 @@ async function browserSnapshotTool(args: unknown): Promise<ToolResponse> {
   return jsonResponse({ ok: true, snapshot: gated.snapshot });
 }
 
-function browserStartTeachTool(args: unknown): ToolResponse {
+async function browserStartTeachTool(args: unknown): Promise<ToolResponse> {
   const tab = requireAuthorizedTab(stringOpt(obj(args)["tab_id"]));
   const result = browserBroker.startTeachMode(tab.tab_id);
   if (!result.ok) return errorResponse(result.error);
+  const capture = await browserPlaywrightAdapter.refreshTeachCapture(result.tab.tab_id);
+  if (!capture.ok) {
+    browserBroker.stopTeachMode("teach_capture_install_failed");
+    return errorResponse(capture.error);
+  }
   return jsonResponse({ ok: true, teach: browserBroker.teachState(), tab: result.tab, origin: result.origin });
 }
 
-function browserBeginTeachTool(args: unknown): ToolResponse {
+async function browserBeginTeachTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
-  const result = browserStartTeachTool(args);
+  const result = await browserStartTeachTool(args);
   if (result.isError) return result;
   return jsonResponse({
     ...(result.structuredContent ?? {}),
@@ -990,23 +1536,213 @@ function browserEndTeachTool(args: unknown): ToolResponse {
   });
 }
 
-function browserGenerateScriptTool(args: unknown): ToolResponse {
+async function browserGenerateScriptTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
-  const mode = normalizeReplayMode(a["mode"]);
+  const mode = a["mode"] === undefined ? undefined : normalizeReplayMode(a["mode"]);
   const result = browserBroker.generatedScriptFor(stringOpt(a["workflow_id"]), mode);
   if (!result.ok) return errorResponse(result.error, result.workflow_id ? { workflow_id: result.workflow_id } : undefined);
-  return jsonResponse({ ok: true, ...result.generated, workflow_id: result.artifact.workflow_id });
+  const artifactExecutionPolicy = await dojoArtifactExecutionPolicyForWorkflow(args, result.artifact.workflow_id);
+  const generated = artifactExecutionPolicy
+    ? {
+        ...result.generated,
+        code: addDojoPracticeArtifactGuard(result.generated.code),
+        warnings: [
+          ...result.generated.warnings,
+          "Dojo-published workflow artifacts are practice/test-only under production enforcement; use synthi_dojo_run_with_proof_capsule for production execution.",
+        ],
+      }
+    : result.generated;
+  return jsonResponse({
+    ok: true,
+    ...generated,
+    workflow_id: result.artifact.workflow_id,
+    ...(artifactExecutionPolicy ? { artifact_execution_policy: artifactExecutionPolicy } : {}),
+  });
 }
 
 function browserGeneratePrivateToolManifestTool(args: unknown): ToolResponse {
   const workflowId = stringOpt(obj(args)["workflow_id"]);
   const artifact = browserBroker.workflowArtifact(workflowId);
   if (!artifact.ok) return errorResponse(artifact.error, artifact.workflow_id ? { workflow_id: artifact.workflow_id } : undefined);
-  const manifest = generatePrivateWorkflowToolManifest(artifact.artifact.workflow.contract);
+  const manifest = manifestWithLiveAuthReadiness(generatePrivateWorkflowToolManifest(artifact.artifact.workflow.contract), artifact.artifact.workflow.contract);
   return jsonResponse({
     ok: manifest.status !== "blocked",
     workflow_id: artifact.artifact.workflow_id,
     manifest,
+  });
+}
+
+function browserPublishPrivateToolTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  const enforcement = resolveDojoEnforcementConfig();
+  if (enforcement.production_enforcement) {
+    return errorResponse("dojo_private_tool_publish_requires_dojo", {
+      ok: false,
+      enforcement_mode: enforcement.enforcement_mode,
+      required_tool: "synthi_dojo_publish_skill",
+      blocked_by: ["raw_private_tool_publish_blocked"],
+    });
+  }
+  const workflowId = stringOpt(a["workflow_id"]);
+  const artifact = browserBroker.workflowArtifact(workflowId);
+  if (!artifact.ok) return errorResponse(artifact.error, artifact.workflow_id ? { workflow_id: artifact.workflow_id } : undefined);
+  const manifest = manifestWithLiveAuthReadiness(generatePrivateWorkflowToolManifest(artifact.artifact.workflow.contract), artifact.artifact.workflow.contract);
+  const published = privateWorkflowToolRegistry.publish(manifest, {
+    reservedToolNames: ADVERTISED_TOOLS,
+    workflowArtifact: artifact.artifact,
+  });
+  if (!published.ok) {
+    return errorResponse(published.error, {
+      workflow_id: artifact.artifact.workflow_id,
+      tool_name: published.tool_name,
+      manifest,
+    });
+  }
+  const dojoSkill = dojoSkillRegistry.publish(buildDojoSkill(artifact.artifact.workflow.contract, {
+    workspace_id: stringOpt(a["workspace_id"]),
+    private_tool_manifest: published.registration.manifest,
+    published_tool_name: published.registration.tool_name,
+  }));
+  return jsonResponse({
+    ok: true,
+    workflow_id: artifact.artifact.workflow_id,
+    tool_name: published.registration.tool_name,
+    registered_at: published.registration.registered_at,
+    manifest,
+    tool: privateWorkflowToolDefinition(published.registration),
+    dojo_skill: {
+      skill_id: dojoSkill.skill_id,
+      workflow_id: dojoSkill.workflow_id,
+      published_tool_name: dojoSkill.published_tool_name ?? null,
+      license_id: dojoSkill.permission_license.license_id,
+      proof_required: dojoSkill.skill_passport.proof_required,
+    },
+  });
+}
+
+function browserListPrivateToolsTool(): ToolResponse {
+  const tools = privateWorkflowToolRegistry.list().map((registration) => {
+    const artifact = browserBroker.workflowArtifact(registration.workflow_id);
+    const contract = artifact.ok
+      ? artifact.artifact.workflow.contract
+      : registration.workflow_artifact?.workflow.contract;
+    const manifest = contract
+      ? manifestWithLiveAuthReadiness(registration.manifest, contract)
+      : registration.manifest;
+    const liveRegistration = { ...registration, manifest };
+    const definition = privateWorkflowToolDefinition(liveRegistration);
+    return {
+      tool_name: registration.tool_name,
+      workflow_id: registration.workflow_id,
+      title: manifest.title,
+      description: manifest.description,
+      status: manifest.status,
+      registered_at: registration.registered_at,
+      target_origins: manifest.target_origins,
+      run_modes: privateWorkflowAllowedRunModes(manifest),
+      default_run_mode: privateWorkflowDefaultReplayMode(manifest),
+      parameters: manifest.parameters.map((parameter) => ({
+        name: parameter.name,
+        required: parameter.required,
+        value_shape: parameter.value_shape,
+        redacted: parameter.redacted,
+      })),
+      auth: {
+        durability: manifest.auth.durability,
+        unattended_ready: manifest.auth.unattended_ready,
+        required: manifest.auth.required,
+      },
+      mutation: {
+        mode: manifest.mutation.mode,
+        requires_confirmation: manifest.mutation.requires_confirmation,
+        requires_ci_isolation: manifest.mutation.requires_ci_isolation,
+      },
+      safety: {
+        blockers: manifest.safety.blockers,
+        limitations: manifest.safety.limitations,
+      },
+      tool: {
+        name: definition.name,
+        description: definition.description,
+        inputSchema: definition.inputSchema,
+      },
+    };
+  });
+  return jsonResponse({
+    ok: true,
+    count: tools.length,
+    tools,
+    product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
+  });
+}
+
+function browserGetPrivateToolManifestTool(args: unknown): ToolResponse {
+  const toolName = requiredString(obj(args), "tool_name");
+  const registration = privateWorkflowToolRegistry.get(toolName);
+  if (!registration) return errorResponse("private_workflow_tool_not_found", { tool_name: toolName });
+  let manifest = registration.manifest;
+  let artifact = browserBroker.workflowArtifact(registration.workflow_id);
+  if (!artifact.ok && registration.workflow_artifact) {
+    artifact = browserBroker.registerWorkflowArtifact(registration.workflow_artifact);
+  }
+  if (artifact.ok) {
+    manifest = manifestWithLiveAuthReadiness(registration.manifest, artifact.artifact.workflow.contract);
+  }
+  const liveRegistration = { ...registration, manifest };
+  return jsonResponse({
+    ok: true,
+    tool_name: registration.tool_name,
+    workflow_id: registration.workflow_id,
+    registered_at: registration.registered_at,
+    manifest,
+    tool: privateWorkflowToolDefinition(liveRegistration),
+  });
+}
+
+async function browserCaptureAuthCheckpointStorageTool(args: unknown): Promise<ToolResponse> {
+  const a = obj(args);
+  const checkpointId = requiredString(a, "checkpoint_id");
+  const checkpoint = authCheckpointManager.list().find((candidate) => candidate.checkpoint_id === checkpointId);
+  if (!checkpoint) return errorResponse("auth_checkpoint_not_found", { checkpoint_id: checkpointId });
+  if (checkpoint.status !== "valid") {
+    return errorResponse(`auth_checkpoint_${checkpoint.status}`, {
+      checkpoint_id: checkpointId,
+      status: checkpoint.status,
+    });
+  }
+  const runtime = browserBroker.runtimeAttachment();
+  if (runtime?.kind !== "hosted") {
+    return errorResponse("hosted_runtime_required", {
+      product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
+    });
+  }
+  const tab = requireAuthorizedTab(stringOpt(a["tab_id"]));
+  const allowedOrigins = [checkpoint.app_origin, ...checkpoint.idp_origins];
+  const tabOrigin = originForUrl(tab.url);
+  if (!tabOrigin || !allowedOrigins.includes(tabOrigin)) {
+    return errorResponse("auth_checkpoint_tab_origin_mismatch", {
+      checkpoint_id: checkpointId,
+      tab_origin: tabOrigin,
+      allowed_origins: allowedOrigins,
+    });
+  }
+  const storageState = await browserPlaywrightAdapter.captureAuthStorageState(tab.tab_id, allowedOrigins);
+  const saved = authCheckpointManager.saveStorageArtifact({
+    checkpoint_id: checkpointId,
+    storage_state: storageState,
+  });
+  if (!saved.ok) return errorResponse(saved.error, { checkpoint_id: checkpointId });
+  const teachAuthCheckpoint = browserBroker.activateAuthCheckpointForTeach({
+    app_origin: saved.checkpoint.app_origin,
+    idp_origins: saved.checkpoint.idp_origins,
+    checkpoint_id: checkpointId,
+  });
+  return jsonResponse({
+    ok: true,
+    checkpoint_id: checkpointId,
+    storage_artifact: publicStorageArtifactMetadata(saved.storage_artifact),
+    auth_readiness: authCheckpointManager.readiness(saved.checkpoint.app_origin, false),
+    teach_auth_checkpoint: teachAuthCheckpoint,
   });
 }
 
@@ -1033,12 +1769,14 @@ function browserTraceStatusTool(): ToolResponse {
       origins,
       tabs,
       teach: browserBroker.teachState(),
+      teach_auth_checkpoints: browserBroker.teachAuthCheckpointScopes(),
       workflow_id: workflow.contract.workflowId,
       workflow_state: workflow.card.state,
       unresolved_count: workflow.card.unresolvedCount,
       limitations: workflow.contract.limitations,
       lane0: workflow.contract.lane0,
       teach_question_answers_count: browserBroker.teachQuestionAnswers().length,
+      recording_issues: browserBroker.recordingIssueSnapshot(),
     },
   });
 }
@@ -1096,6 +1834,7 @@ function browserUnresolvedStepsTool(): ToolResponse {
       label: step.label,
       action: step.action.kind,
       target: step.action.target ?? null,
+      target_context: step.targetContext ?? null,
       locator_confidence: step.locatorPlan.confidence,
       source_status: step.sourcePlan.status,
       limitations: step.limitations,
@@ -1134,6 +1873,7 @@ function failureStepContext(step: WorkflowStepContractV7): Record<string, unknow
     step_id: step.stepId,
     label: step.label,
     action: step.action.kind,
+    target_context: step.targetContext ?? null,
     locator_confidence: step.locatorPlan.confidence,
     source_status: step.sourcePlan.status,
     limitations: step.limitations,
@@ -1148,6 +1888,35 @@ function suggestedFailureTool(step: WorkflowStepContractV7): string {
     return "synthi_browser_get_unresolved_steps";
   }
   return "synthi_browser_compile_workflow";
+}
+
+function classifyBrokerValidationFailure(error: string): FailureClassV7 {
+  if (error === "browser_lease_required") return "unsafeEnvironment";
+  return classifyWorkflowReplayFailure(new Error(error));
+}
+
+function validateWorkflowReplayAction(input: {
+  lease_id: string;
+  action: BrowserActionKind;
+  tab_id: string;
+  selector?: string;
+  value?: string;
+  url: string;
+  event: BrowserTraceEvent;
+}): { ok: true } | { ok: false; error: string } {
+  const actionValidation = browserBroker.validateAction({
+    lease_id: input.lease_id,
+    action: input.action,
+    tab_id: input.tab_id,
+    selector: input.selector,
+    value: input.value,
+    url: input.url,
+  });
+  if (!actionValidation.ok) return actionValidation;
+  return browserBroker.validateReplayTarget({
+    url: input.url,
+    detail: input.event.detail,
+  });
 }
 
 function browserAcquireLeaseTool(args: unknown): ToolResponse {
@@ -1166,20 +1935,57 @@ function browserReleaseLeaseTool(args: unknown): ToolResponse {
   return jsonResponse({ ok: true, ...result });
 }
 
-async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
+async function browserRunWorkflowTool(
+  args: unknown,
+  dojoContext?: DojoValidatedBrowserWorkflowContext
+): Promise<ToolResponse> {
   const a = obj(args);
   const tab = requireAuthorizedTab(stringOpt(a["tab_id"]));
   const leaseId = requiredString(a, "lease_id");
   const mode = normalizeReplayMode(a["mode"] ?? "coldSession");
+  if (mode === "ciIsolated") {
+    return errorResponse("ci_isolated_replay_requires_safety_tool", {
+      required_tool: "synthi_safety_run_ci_isolated_replay",
+    });
+  }
   const parameters = stringParameters(a["parameters"]);
   const replay = browserBroker.workflowReplayPlanFor(stringOpt(a["workflow_id"]), mode);
   if (!replay.ok) return errorResponse(replay.error, replay.workflow_id ? { workflow_id: replay.workflow_id } : undefined);
+  const dojoGate = await browserWorkflowReplayDojoGate(args, replay.artifact.workflow_id, dojoContext);
+  if (dojoGate) return dojoGate;
+  const dojoRuntimeBinding = dojoContext
+    ? validateBrowserRuntimeAttachmentForDojoProof(args, dojoContext)
+    : { ok: true as const, binding: undefined };
+  if (!dojoRuntimeBinding.ok) return dojoRuntimeBinding.error;
+  const coldAuthStorage = mode === "coldSession" && replay.artifact.workflow.contract.authPlan.required
+    ? await authStorageStateForColdReplay(replay.artifact.workflow.contract)
+    : { ok: true as const, storageState: undefined };
+  if (!coldAuthStorage.ok) {
+    return errorResponse("workflow_auth_not_ready", {
+      workflow_id: replay.artifact.workflow_id,
+      ...coldAuthStorage.detail,
+    });
+  }
+  if (mode !== "coldSession") {
+    const authGate = replayAuthGate(replay.artifact.workflow.contract, mode);
+    if (!authGate.ok) {
+      return errorResponse("workflow_auth_not_ready", {
+        workflow_id: replay.artifact.workflow_id,
+        ...authGate.detail,
+      });
+    }
+  }
   const plan = replay.plan;
   if (plan.status === "blocked") {
     return jsonResponse({ ok: false, workflow_id: replay.artifact.workflow_id, replay: { ...plan, failure_class: classifyWorkflowReplayBlock(plan) } });
   }
 
-  const replayTab = mode === "coldSession" ? await openColdReplayTab(plan.events[0]?.url ?? tab.url) : tab;
+  const valueRefByStepId = new Map(
+    replay.artifact.workflow.contract.steps
+      .filter((step) => step.action.valueRef)
+      .map((step) => [step.stepId, step.action.valueRef as string])
+  );
+  const replayTab = mode === "coldSession" ? await openColdReplayTab(plan.events[0]?.url ?? tab.url, coldAuthStorage.storageState) : tab;
   const replayTabByTraceTab = new Map<string, string>();
   for (const event of plan.events) {
     if (event.tab_id) replayTabByTraceTab.set(event.tab_id, replayTab.tab_id);
@@ -1206,13 +2012,14 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
           },
         });
       }
-      const validation = browserBroker.validateAction({
+      const validation = validateWorkflowReplayAction({
         lease_id: leaseId,
         action,
         tab_id: targetTabId,
         selector,
         value: filePath,
         url: event.url,
+        event,
       });
       if (!validation.ok) {
         return jsonResponse({
@@ -1222,7 +2029,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
             status: "failed",
             steps_run: stepsRun,
             failed_step_id: event.event_id,
-            failure_class: validation.error === "browser_lease_required" ? "unsafeEnvironment" : "unknown",
+            failure_class: classifyBrokerValidationFailure(validation.error),
             error: validation.error,
           },
         });
@@ -1264,13 +2071,14 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
           },
         });
       }
-      const validation = browserBroker.validateAction({
+      const validation = validateWorkflowReplayAction({
         lease_id: leaseId,
         action,
         tab_id: targetTabId,
         selector,
         value: pasteText,
         url: event.url,
+        event,
       });
       if (!validation.ok) {
         return jsonResponse({
@@ -1280,7 +2088,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
             status: "failed",
             steps_run: stepsRun,
             failed_step_id: event.event_id,
-            failure_class: validation.error === "browser_lease_required" ? "unsafeEnvironment" : "unknown",
+            failure_class: classifyBrokerValidationFailure(validation.error),
             error: validation.error,
           },
         });
@@ -1304,14 +2112,85 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
       }
       continue;
     }
-    const value = replayValueForEvent(event, action);
-    const validation = browserBroker.validateAction({
+    if (isClipboardDropEvent(event)) {
+      const dropText = clipboardDropTextFor(event, parameters);
+      if (dropText === undefined) {
+        return jsonResponse({
+          ok: false,
+          replay: {
+            ...plan,
+            status: "failed",
+            steps_run: stepsRun,
+            failed_step_id: event.event_id,
+            failure_class: "testDataMissing",
+            error: `missing_clipboard_drop_parameter:${clipboardDropParameterName(event)}`,
+          },
+        });
+      }
+      const validation = validateWorkflowReplayAction({
+        lease_id: leaseId,
+        action,
+        tab_id: targetTabId,
+        selector,
+        value: dropText,
+        url: event.url,
+        event,
+      });
+      if (!validation.ok) {
+        return jsonResponse({
+          ok: false,
+          replay: {
+            ...plan,
+            status: "failed",
+            steps_run: stepsRun,
+            failed_step_id: event.event_id,
+            failure_class: classifyBrokerValidationFailure(validation.error),
+            error: validation.error,
+          },
+        });
+      }
+      try {
+        const result = await browserPlaywrightAdapter.replayActionEvent(targetTabId, event, action, selector, dropText);
+        rememberReplayPopupTab(replayTabByTraceTab, event, result.detail);
+        stepsRun += 1;
+      } catch (err) {
+        return jsonResponse({
+          ok: false,
+          replay: {
+            ...plan,
+            status: "failed",
+            steps_run: stepsRun,
+            failed_step_id: event.event_id,
+            failure_class: classifyWorkflowReplayFailure(err, event),
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+      }
+      continue;
+    }
+    const value = replayValueForEvent(event, action, parameters, valueRefByStepId);
+    const dialogPromptValue = dialogPromptValueFor(event, parameters);
+    if (isAcceptedPromptDialogEvent(event) && dialogPromptValue === undefined) {
+      return jsonResponse({
+        ok: false,
+        replay: {
+          ...plan,
+          status: "failed",
+          steps_run: stepsRun,
+          failed_step_id: event.event_id,
+          failure_class: "testDataMissing",
+          error: `missing_dialog_prompt_parameter:${dialogPromptParameterName(event)}`,
+        },
+      });
+    }
+    const validation = validateWorkflowReplayAction({
       lease_id: leaseId,
       action,
       tab_id: targetTabId,
       selector,
       value,
-      url: action === "navigate" ? value : event.url,
+      url: action === "navigate" && value ? value : event.url,
+      event,
     });
     if (!validation.ok) {
       return jsonResponse({
@@ -1321,13 +2200,15 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
           status: "failed",
           steps_run: stepsRun,
           failed_step_id: event.event_id,
-          failure_class: validation.error === "browser_lease_required" ? "unsafeEnvironment" : "unknown",
+          failure_class: classifyBrokerValidationFailure(validation.error),
           error: validation.error,
         },
       });
     }
     try {
-      const result = await browserPlaywrightAdapter.replayActionEvent(targetTabId, event, action, selector, value);
+      const result = dialogPromptValue !== undefined
+        ? await browserPlaywrightAdapter.replayActionEvent(targetTabId, event, action, selector, value, { dialogPromptValue })
+        : await browserPlaywrightAdapter.replayActionEvent(targetTabId, event, action, selector, value);
       rememberReplayPopupTab(replayTabByTraceTab, event, result.detail);
       stepsRun += 1;
     } catch (err) {
@@ -1344,6 +2225,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
       });
     }
   }
+  const replayTabRefreshError = await refreshReplayTabsForSnapshotAccess();
 
   return jsonResponse({
     ok: true,
@@ -1353,15 +2235,1018 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
       status: plan.status,
       steps_run: stepsRun,
       tab_id: replayTab.tab_id,
+      replay_tab_ids: replayTabIds(replayTabByTraceTab, replayTab.tab_id),
+      trace_tab_map: Object.fromEntries(replayTabByTraceTab),
+      replay_targets: replayTargetsForPlan(plan.events, replayTabByTraceTab, replayTab.tab_id),
       stopped_before_step_id: plan.stoppedBeforeStepId ?? null,
+      ...(dojoRuntimeBinding.binding ? { browser_runtime_binding: dojoRuntimeBinding.binding } : {}),
+      ...(replayTabRefreshError ? { replay_tab_refresh_error: replayTabRefreshError } : {}),
     },
   });
 }
 
-async function openColdReplayTab(url: string): Promise<{ tab_id: string; url: string }> {
+async function browserRunPublishedPrivateTool(
+  toolName: string,
+  args: unknown,
+  dojoContext?: DojoValidatedBrowserWorkflowContext
+): Promise<ToolResponse> {
+  const registration = privateWorkflowToolRegistry.get(toolName);
+  if (!registration) return errorResponse("private_workflow_tool_not_found", { tool_name: toolName });
+  const manifest = registration.manifest;
+  if (manifest.status === "blocked") {
+    return errorResponse("private_workflow_tool_blocked", {
+      tool_name: toolName,
+      workflow_id: manifest.workflow_id,
+      blockers: manifest.safety.blockers,
+    });
+  }
+  let artifact = browserBroker.workflowArtifact(registration.workflow_id);
+  if (!artifact.ok && registration.workflow_artifact) {
+    artifact = browserBroker.registerWorkflowArtifact(registration.workflow_artifact);
+  }
+  if (!artifact.ok) {
+    return errorResponse(artifact.error, {
+      tool_name: toolName,
+      workflow_id: registration.workflow_id,
+    });
+  }
+  const liveManifest = manifestWithLiveAuthReadiness(manifest, artifact.artifact.workflow.contract);
+  if (liveManifest.status === "blocked") {
+    return errorResponse("private_workflow_tool_auth_not_ready", {
+      tool_name: toolName,
+      workflow_id: manifest.workflow_id,
+      auth: liveManifest.auth,
+      notes: liveManifest.safety.notes,
+    });
+  }
+
+  const effectiveManifest = liveManifest;
+  const a = obj(args);
+  const parameters: Record<string, string> = {};
+  const missingParameters: string[] = [];
+  const parameterArgNames = privateWorkflowToolParameterArgNames(effectiveManifest);
+  for (const parameter of effectiveManifest.parameters) {
+    const argName = parameterArgNames.get(parameter.name) ?? parameter.name;
+    const value = stringOpt(a[argName]);
+    if (value === undefined) {
+      if (parameter.required) missingParameters.push(argName);
+      continue;
+    }
+    parameters[parameter.name] = value;
+  }
+  if (missingParameters.length > 0) {
+    return errorResponse("private_workflow_missing_parameters", {
+      tool_name: toolName,
+      workflow_id: effectiveManifest.workflow_id,
+      missing_parameters: missingParameters,
+    });
+  }
+
+  const requestedModeResult = privateWorkflowRunMode(a["run_mode"]);
+  if (!requestedModeResult.ok) {
+    return errorResponse("private_workflow_invalid_run_mode", {
+      tool_name: toolName,
+      workflow_id: effectiveManifest.workflow_id,
+      received_run_mode: typeof a["run_mode"] === "string" ? a["run_mode"] : typeof a["run_mode"],
+      allowed_run_modes: privateWorkflowAllowedRunModes(effectiveManifest),
+    });
+  }
+  const requestedMode = requestedModeResult.mode;
+  const confirmMutation = boolOpt(a["confirm_mutation"]) === true;
+  if (requestedMode === "ciOnly") {
+    const authGate = replayAuthGate(artifact.artifact.workflow.contract, "ciIsolated");
+    if (!authGate.ok) {
+      return errorResponse("private_workflow_tool_auth_not_ready", {
+        tool_name: toolName,
+        workflow_id: manifest.workflow_id,
+        ...authGate.detail,
+      });
+    }
+    const response = await dispatchSafetyTool("synthi_safety_run_ci_isolated_replay", {
+      workspace_id: stringOpt(a["workspace_id"]),
+      workflow_id: registration.workflow_id,
+      parameters,
+      timeout_ms: numberOpt(a["timeout_ms"]),
+      artifact_root: stringOpt(a["artifact_root"]),
+    });
+    if (!response) return errorResponse("ci_isolated_replay_tool_unavailable", { tool_name: toolName });
+    const structuredContent = {
+      ...(response.structuredContent ?? {}),
+      private_tool: {
+        tool_name: toolName,
+        workflow_id: registration.workflow_id,
+        run_mode: "ciOnly",
+        mutation_confirmed: false,
+      },
+    };
+    return {
+      ...response,
+      content: [{ type: "text", text: JSON.stringify(structuredContent) }],
+      structuredContent,
+    };
+  }
+  const mode: WorkflowReplayModeV7 = requestedMode === "confirmBeforeCommit"
+    ? "sameSession"
+    : requestedMode ??
+    privateWorkflowDefaultReplayMode(effectiveManifest);
+
+  const mutationConfirmationToken = privateWorkflowMutationConfirmationToken(toolName, effectiveManifest);
+  const mutationConfirmation = stringOpt(a["mutation_confirmation"]);
+  if (
+    effectiveManifest.mutation.requires_confirmation &&
+    mode === "sameSession" &&
+    (!confirmMutation || mutationConfirmation !== mutationConfirmationToken)
+  ) {
+    return errorResponse("mutation_confirmation_required", {
+      tool_name: toolName,
+      workflow_id: effectiveManifest.workflow_id,
+      first_mutation_step_id: effectiveManifest.mutation.first_mutation_step_id,
+      safe_run_modes: ["prefixOnly", "coldSession", "ciOnly"],
+      confirmation_field: "confirm_mutation",
+      confirmation_token_field: "mutation_confirmation",
+      confirmation_token: mutationConfirmationToken,
+    });
+  }
+
+  const missingConsents = missingPrivateWorkflowTargetConsents(effectiveManifest, artifact.artifact.workflow.contract);
+  if (missingConsents.length > 0) {
+    return errorResponse("workflow_origin_consent_required", {
+      tool_name: toolName,
+      workflow_id: effectiveManifest.workflow_id,
+      failure_class: "originConsentMissing",
+      required_tool: "synthi_browser_request_consent",
+      missing_origins: missingConsents,
+      notes: [
+        "Grant exact-origin consent for each missing origin before replaying this private workflow tool.",
+        "Screenshot consent is required only when the taught target needed screenshot access.",
+      ],
+    });
+  }
+
+  const hostedRuntimeGate = privateWorkflowHostedRuntimeGate(toolName, effectiveManifest, a, dojoContext);
+  if (hostedRuntimeGate) return hostedRuntimeGate;
+  const dojoReplayTarget = await ensureDojoBrowserReplayTargetForProof(a, dojoContext);
+  if (!dojoReplayTarget.ok) return dojoReplayTarget.error;
+
+  const lease = browserBroker.acquireLease(
+    process.env["SYNTHI_AGENT_ID"] ?? "private_workflow_tool",
+    numberOpt(a["lease_ms"]) ?? 15_000,
+    `private_tool:${toolName}`
+  );
+  try {
+    let response: ToolResponse;
+    try {
+      response = await browserRunWorkflowTool({
+        lease_id: lease.lease_id,
+        workflow_id: registration.workflow_id,
+        mode,
+        parameters,
+        ...dojoTenantReplayArgs(a),
+        ...dojoValidatedReplayContextArgsForBrowserWorkflow(dojoContext),
+        ...(dojoReplayTarget.tab_id ? { tab_id: dojoReplayTarget.tab_id } : {}),
+      }, dojoContext);
+    } catch (err) {
+      response = errorFromException("private_workflow_replay_failed", err);
+    }
+    const structuredContent = {
+      ...(response.structuredContent ?? {}),
+      private_tool: {
+        tool_name: toolName,
+        workflow_id: registration.workflow_id,
+        run_mode: mode,
+        mutation_confirmed: confirmMutation,
+      },
+    };
+    return {
+      ...response,
+      content: [{ type: "text", text: JSON.stringify(structuredContent) }],
+      structuredContent,
+    };
+  } finally {
+    browserBroker.releaseLease(lease.lease_id, `private_tool:${toolName}:complete`);
+  }
+}
+
+type DojoBrowserReplayTarget =
+  | { ok: true; tab_id?: string }
+  | { ok: false; error: ToolResponse };
+
+async function ensureDojoBrowserReplayTargetForProof(
+  args: Record<string, unknown>,
+  dojoContext?: DojoValidatedBrowserWorkflowContext
+): Promise<DojoBrowserReplayTarget> {
+  const requestedTabId = stringOpt(args["tab_id"]);
+  if (requestedTabId && browserBroker.selectTab(requestedTabId)) {
+    return { ok: true, tab_id: requestedTabId };
+  }
+
+  const runtime = dojoContext?.verified_runtime_attachment;
+  if (!dojoContext || runtime?.kind !== "hosted") {
+    return requestedTabId ? { ok: true, tab_id: requestedTabId } : { ok: true };
+  }
+
+  const targetUrl = dojoRuntimeReplayTargetUrl(args, dojoContext);
+  const selected = browserBroker.selectedTab();
+  if (selected && browserReplayTabMatchesRuntimeTarget(selected.url, targetUrl)) {
+    return { ok: true, tab_id: selected.tab_id };
+  }
+
+  if (!targetUrl) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_hosted_runtime_replay_target_required", {
+        skill_id: dojoContext.skill_id,
+        proof_capsule_id: dojoContext.proof_capsule_id,
+        runtime_session_id: dojoContext.runtime_session_id ?? runtime.session_id ?? null,
+        required_field: "runtime_action_url",
+      }),
+    };
+  }
+
+  let attachment: Awaited<ReturnType<typeof attachHostedBrowserRuntime>>;
+  try {
+    attachment = await attachHostedBrowserRuntime(
+      {
+        tenant_id: dojoContext.tenant_id ?? runtime.tenant_id ?? stringOpt(args["tenant_id"]),
+        workspace_id: dojoContext.workspace_id ?? runtime.workspace_id ?? stringOpt(args["workspace_id"]),
+        actor_id: runtime.actor_id ?? stringOpt(args["actor_id"]),
+        workspace_url: targetUrl,
+        runtime_id: runtime.runtime_id ?? stringOpt(args["runtime_id"]),
+        runtime_session_id: dojoContext.runtime_session_id ?? runtime.session_id ?? stringOpt(args["runtime_session_id"]),
+        origin_allowlist: runtime.origin_allowlist,
+        local_network_allowed: runtime.egress_policy?.local_network_allowed,
+        redact_screenshots: runtime.redaction_policy?.screenshots,
+        open_workspace: true,
+      },
+      browserPlaywrightAdapter,
+      browserBroker
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      error: errorFromException("dojo_hosted_runtime_browser_attach_failed", err),
+    };
+  }
+
+  if (!attachment.ok) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_hosted_runtime_browser_attach_failed", {
+        skill_id: dojoContext.skill_id,
+        proof_capsule_id: dojoContext.proof_capsule_id,
+        runtime_session_id: dojoContext.runtime_session_id ?? runtime.session_id ?? null,
+        target_origin: originForUrl(targetUrl),
+        attachment_error: attachment.error,
+        runtime: attachment.runtime,
+      }),
+    };
+  }
+
+  const tab = selectDojoRuntimeReplayTab(attachment.tabs, targetUrl);
+  if (!tab) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_hosted_runtime_browser_tab_not_authorized", {
+        skill_id: dojoContext.skill_id,
+        proof_capsule_id: dojoContext.proof_capsule_id,
+        runtime_session_id: dojoContext.runtime_session_id ?? runtime.session_id ?? null,
+        target_origin: originForUrl(targetUrl),
+        authorized_tab_count: attachment.tabs.length,
+        consent: browserBroker.getConsent(targetUrl)[0],
+        required_tool: "synthi_browser_request_consent",
+      }),
+    };
+  }
+
+  const selectedTab = browserBroker.selectTab(tab.tab_id);
+  if (!selectedTab) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_hosted_runtime_browser_tab_not_authorized", {
+        skill_id: dojoContext.skill_id,
+        proof_capsule_id: dojoContext.proof_capsule_id,
+        runtime_session_id: dojoContext.runtime_session_id ?? runtime.session_id ?? null,
+        target_origin: originForUrl(targetUrl),
+        tab_id: tab.tab_id,
+      }),
+    };
+  }
+
+  try {
+    await browserPlaywrightAdapter.selectTab(tab.tab_id);
+  } catch (err) {
+    return {
+      ok: false,
+      error: errorFromException("dojo_hosted_runtime_browser_select_failed", err),
+    };
+  }
+
+  return { ok: true, tab_id: selectedTab.tab_id };
+}
+
+function dojoRuntimeReplayTargetUrl(
+  args: Record<string, unknown>,
+  dojoContext: DojoValidatedBrowserWorkflowContext
+): string | undefined {
+  return stringOpt(args["runtime_action_url"])
+    ?? dojoContext.runtime_action_url
+    ?? stringOpt(dojoContext.verified_runtime_attachment?.workspace_url);
+}
+
+function browserReplayTabMatchesRuntimeTarget(tabUrl: string, targetUrl?: string): boolean {
+  if (!targetUrl) return true;
+  return originForUrl(tabUrl) === originForUrl(targetUrl);
+}
+
+function selectDojoRuntimeReplayTab(tabs: Array<{ tab_id: string; url: string }>, targetUrl: string): { tab_id: string; url: string } | null {
+  const targetOrigin = originForUrl(targetUrl);
+  return tabs.find((tab) => tab.url === targetUrl)
+    ?? tabs.find((tab) => originForUrl(tab.url) === targetOrigin)
+    ?? null;
+}
+
+function browserDirectPrivateToolRequiresDojoProof(
+  toolName: string,
+  workflowId: string,
+  decision?: DojoExecutionPolicyDecision
+): ToolResponse {
+  return errorResponse("dojo_proof_capsule_required", {
+    tool_name: toolName,
+    workflow_id: workflowId,
+    required_tool: "synthi_dojo_run_with_proof_capsule",
+    issue_capsule_tool: "synthi_dojo_issue_proof_capsule",
+    requested_action: "run_workflow",
+    blocked_by: decision?.blocked_by?.length ? decision.blocked_by : ["direct_private_workflow_tool_call"],
+    dojo_execution_policy: decision ?? null,
+    product_path: "agent_to_dojo_license_kernel_to_proof_validator_to_private_workflow_tool",
+    notes: [
+      "Private workflow tools are backing capabilities for Dojo skills.",
+      "Issue a proof-carrying skill capsule, then call synthi_dojo_run_with_proof_capsule with tool_args for this workflow.",
+    ],
+  });
+}
+
+async function dojoBindingForPrivateTool(
+  args: unknown,
+  toolName: string,
+  workflowId: string
+): Promise<DojoPublishedSkillBinding | null> {
+  const resolution = await resolveDojoPublishedWorkflowBinding(args, { workflow_id: workflowId, tool_name: toolName });
+  return policyBindingForResolution(resolution, toolName);
+}
+
+async function dojoArtifactExecutionPolicyForWorkflow(args: unknown, workflowId: string): Promise<Record<string, unknown> | null> {
+  const enforcement = resolveDojoEnforcementConfig();
+  if (!enforcement.production_enforcement) return null;
+  const resolution = await resolveDojoPublishedWorkflowBinding(args, { workflow_id: workflowId });
+  if (resolution.status === "unpublished") return null;
+  const binding = resolution.status === "published" ? resolution.binding : null;
+  return {
+    status: "practice_only",
+    enforcement_mode: enforcement.enforcement_mode,
+    source: resolution.source,
+    workflow_id: binding?.workflow_id ?? workflowId,
+    skill_id: binding?.skill_id ?? null,
+    tool_names: binding?.tool_names ?? [],
+    required_tool: "synthi_dojo_run_with_proof_capsule",
+    execution_mode_env: DOJO_ARTIFACT_EXECUTION_MODE_ENV,
+    allowed_execution_modes: [...DOJO_ARTIFACT_ALLOWED_EXECUTION_MODES],
+    blocked_by: resolution.status === "unknown"
+      ? ["dojo_published_workflow_mapping_unknown", ...resolution.blocked_by]
+      : ["dojo_published_workflow_artifact_not_for_production"],
+  };
+}
+
+function addDojoPracticeArtifactGuard(code: string): string {
+  const testStart = "test('replayed browser workflow', async ({ page }) => {";
+  const guard = [
+    `  const synthiDojoArtifactMode = process.env[${JSON.stringify(DOJO_ARTIFACT_EXECUTION_MODE_ENV)}];`,
+    `  const synthiDojoAllowedArtifactModes = new Set(${JSON.stringify(DOJO_ARTIFACT_ALLOWED_EXECUTION_MODES)});`,
+    "  test.skip(",
+    "    !synthiDojoArtifactMode || !synthiDojoAllowedArtifactModes.has(synthiDojoArtifactMode),",
+    "    'Dojo-published workflow artifacts are practice/test-only. Use synthi_dojo_run_with_proof_capsule for production execution.'",
+    "  );",
+    "",
+  ].join("\n");
+  if (!code.includes(testStart)) return `${guard}\n${code}`;
+  return code.replace(`${testStart}\n`, `${testStart}\n${guard}`);
+}
+
+function dojoTenantContext(args: unknown, workflowId: string): DojoTenantContext {
+  const a = obj(args);
+  const workspaceId =
+    stringOpt(a["workspace_id"]) ??
+    process.env["SYNTHI_WORKSPACE_ID"]?.trim() ??
+    workflowId;
+  const tenantId =
+    stringOpt(a["tenant_id"]) ??
+    process.env["SYNTHI_TENANT_ID"]?.trim() ??
+    workspaceId.split(":")[0] ??
+    "default";
+  return {
+    tenant_id: tenantId,
+    organization_id: stringOpt(a["organization_id"]) ?? process.env["SYNTHI_ORGANIZATION_ID"]?.trim() ?? tenantId,
+    workspace_id: workspaceId,
+    actor_id: stringOpt(a["actor_id"]) ?? process.env["SYNTHI_AGENT_ID"]?.trim() ?? "private_workflow_tool_caller",
+    actor_type: a["actor_type"] === "human" || a["actor_type"] === "service" ? a["actor_type"] : "agent",
+    roles: stringArrayOpt(a["roles"]) ?? ["agent"],
+    request_id: stringOpt(a["request_id"]) ?? `req_${workflowId}`,
+    correlation_id: stringOpt(a["correlation_id"]) ?? `corr_${workflowId}`,
+    ...(stringOpt(a["data_region"]) ? { data_region: stringOpt(a["data_region"]) } : {}),
+  };
+}
+
+async function browserWorkflowReplayDojoGate(
+  args: unknown,
+  workflowId: string,
+  dojoContext?: DojoValidatedBrowserWorkflowContext
+): Promise<ToolResponse | null> {
+  const resolution = await resolveDojoPublishedWorkflowBinding(args, { workflow_id: workflowId });
+  const binding = policyBindingForResolution(resolution);
+  const gate = createDojoExecutionPolicyGate({
+    resolvePublishedSkill: () => binding
+      ? binding
+      : { status: "unpublished", workflow_id: workflowId },
+  });
+  const decision = await gate.evaluate({
+    tenant: dojoTenantContext(args, workflowId),
+    entrypoint: "browser_workflow",
+    workflow_id: workflowId,
+    requested_action: "run_workflow",
+    proof_capsule_id: dojoContext?.proof_capsule_id,
+    validated_dojo_execution_context: Boolean(dojoContext?.proof_capsule_id),
+  });
+  if (decision.ok) return null;
+  return errorResponse(binding?.status === "published" ? "dojo_proof_capsule_required" : "dojo_execution_policy_blocked", {
+    workflow_id: workflowId,
+    requested_action: "run_workflow",
+    required_tool: "synthi_dojo_run_with_proof_capsule",
+    issue_capsule_tool: "synthi_dojo_issue_proof_capsule",
+    blocked_by: decision.blocked_by,
+    dojo_execution_policy: decision,
+    dojo_binding_resolution: bindingResolutionSummary(resolution),
+  });
+}
+
+export function validateBrowserRuntimeAttachmentForDojoProof(
+  args: unknown,
+  dojoContext: DojoValidatedBrowserWorkflowContext
+): DojoBrowserRuntimeBindingValidation {
+  const enforcement = resolveDojoEnforcementConfig();
+  if (!enforcement.production_enforcement) {
+    return {
+      ok: true,
+      binding: {
+        enforcement_mode: enforcement.enforcement_mode,
+        status: "not_required",
+      },
+    };
+  }
+
+  const blockedBy: string[] = [];
+  if (!dojoContext.runtime_session_id) blockedBy.push("runtime_session_context_missing");
+
+  const runtime = dojoContext.verified_runtime_attachment ?? browserBroker.runtimeAttachment();
+  if (!runtime) {
+    blockedBy.push("runtime_attachment_missing");
+  } else if (runtime.kind !== "hosted") {
+    blockedBy.push("runtime_attachment_not_hosted");
+  }
+
+  if (runtime?.kind === "hosted") {
+    if (dojoContext.runtime_session_id && runtime.session_id !== dojoContext.runtime_session_id) {
+      blockedBy.push("runtime_session_attachment_mismatch");
+    }
+    if (dojoContext.tenant_id && runtime.tenant_id !== dojoContext.tenant_id) {
+      blockedBy.push("runtime_tenant_mismatch");
+    }
+    if (dojoContext.workspace_id && runtime.workspace_id !== dojoContext.workspace_id) {
+      blockedBy.push("runtime_workspace_mismatch");
+    }
+    if (runtime.revoked_at) blockedBy.push("runtime_session_revoked");
+
+    const nowMs = dojoRuntimeBindingNowMs(args, dojoContext);
+    if (typeof runtime.expires_at === "number" && runtime.expires_at <= nowMs) {
+      blockedBy.push("runtime_session_expired");
+    }
+
+    const actionOrigin = originForUrl(dojoContext.runtime_action_url);
+    if (actionOrigin && Array.isArray(runtime.origin_allowlist) && runtime.origin_allowlist.length > 0) {
+      const allowedOrigins = new Set(runtime.origin_allowlist.map((origin) => originForUrl(origin) ?? origin));
+      if (!allowedOrigins.has(actionOrigin)) blockedBy.push("runtime_action_origin_not_allowed");
+    }
+  }
+
+  const binding = {
+    enforcement_mode: enforcement.enforcement_mode,
+    proof_capsule_id: dojoContext.proof_capsule_id,
+    skill_id: dojoContext.skill_id,
+    requested_action: dojoContext.requested_action,
+    run_id: dojoContext.run_id ?? null,
+    expected_runtime_session_id: dojoContext.runtime_session_id ?? null,
+    attached_runtime_session_id: runtime?.session_id ?? null,
+    attached_runtime_kind: runtime?.kind ?? null,
+    tenant_id: dojoContext.tenant_id ?? null,
+    attached_tenant_id: runtime?.tenant_id ?? null,
+    workspace_id: dojoContext.workspace_id ?? null,
+    attached_workspace_id: runtime?.workspace_id ?? null,
+    runtime_action_origin: originForUrl(dojoContext.runtime_action_url),
+    runtime_authorization_evidence_record_ids: dojoContext.runtime_authorization_evidence_record_ids ?? [],
+  };
+
+  if (blockedBy.length === 0) {
+    return {
+      ok: true,
+      binding: {
+        ...binding,
+        status: "bound",
+      },
+    };
+  }
+
+  return {
+    ok: false,
+    blocked_by: [...new Set(blockedBy)],
+    error: errorResponse("dojo_hosted_runtime_binding_failed", {
+      ok: false,
+      proof_not_consumed: true,
+      blocked_by: [...new Set(blockedBy)],
+      browser_runtime_binding: {
+        ...binding,
+        status: "blocked",
+      },
+    }),
+  };
+}
+
+function dojoRuntimeBindingNowMs(args: unknown, dojoContext: DojoValidatedBrowserWorkflowContext): number {
+  const rawNow = dojoContext.now ?? stringOpt(obj(args)["now"]);
+  if (rawNow) {
+    const parsed = Date.parse(rawNow);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Date.now();
+}
+
+function dojoTenantReplayArgs(args: Record<string, unknown>): Record<string, unknown> {
+  const replayArgs: Record<string, unknown> = {};
+  for (const key of [
+    "tenant_id",
+    "organization_id",
+    "workspace_id",
+    "actor_id",
+    "actor_type",
+    "roles",
+    "request_id",
+    "correlation_id",
+    "data_region",
+  ]) {
+    if (args[key] !== undefined) replayArgs[key] = args[key];
+  }
+  return replayArgs;
+}
+
+const DOJO_REPLAY_CONTEXT_RESERVED_ARGS = new Set([
+  "lease_id",
+  "workflow_id",
+  "mode",
+  "run_mode",
+  "parameters",
+  "tab_id",
+  "action",
+  "selector",
+  "value",
+  "url",
+]);
+
+export function dojoValidatedReplayContextArgsForBrowserWorkflow(
+  dojoContext?: DojoValidatedBrowserWorkflowContext
+): Record<string, unknown> {
+  const replayArgs: Record<string, unknown> = {};
+  const inputs = dojoContext?.validated_graph_inputs;
+  if (!inputs || typeof inputs !== "object" || Array.isArray(inputs)) return replayArgs;
+  for (const [key, value] of Object.entries(inputs)) {
+    if (!key || DOJO_REPLAY_CONTEXT_RESERVED_ARGS.has(key)) continue;
+    if (typeof value === "undefined" || typeof value === "function" || typeof value === "symbol" || typeof value === "bigint") continue;
+    replayArgs[key] = value;
+  }
+  return replayArgs;
+}
+
+type DojoPublishedWorkflowBindingResolution =
+  | {
+    status: "published";
+    source: "compatibility_registry" | "postgres";
+    binding: DojoPublishedWorkflowBinding;
+  }
+  | {
+    status: "unpublished";
+    source: "compatibility_registry" | "postgres";
+    workflow_id: string;
+  }
+  | {
+    status: "unknown";
+    source: "postgres";
+    workflow_id: string;
+    blocked_by: string[];
+  };
+
+async function resolveDojoPublishedWorkflowBinding(
+  args: unknown,
+  input: { workflow_id: string; tool_name?: string }
+): Promise<DojoPublishedWorkflowBindingResolution> {
+  const localBinding = input.tool_name
+    ? dojoSkillRegistry.getPublishedWorkflowBindingByToolName(input.tool_name) ??
+      dojoSkillRegistry.getPublishedWorkflowBindingByWorkflowId(input.workflow_id)
+    : dojoSkillRegistry.getPublishedWorkflowBindingByWorkflowId(input.workflow_id);
+  if (localBinding) {
+    return { status: "published", source: "compatibility_registry", binding: localBinding };
+  }
+
+  const enforcement = resolveDojoEnforcementConfig();
+  if (!enforcement.production_enforcement || !enforcement.require_durable_store) {
+    return { status: "unpublished", source: "compatibility_registry", workflow_id: input.workflow_id };
+  }
+
+  const resolution = await createDojoControlPlaneStoresFromEnv({
+    tenant: dojoTenantContext(args, input.workflow_id),
+    apply_migrations: false,
+  });
+  if (!resolution.ok) {
+    return {
+      status: "unknown",
+      source: "postgres",
+      workflow_id: input.workflow_id,
+      blocked_by: ["dojo_control_plane_binding_store_unavailable", ...resolution.blocked_by],
+    };
+  }
+
+  try {
+    const durableBinding = input.tool_name
+      ? await resolution.skill_store.getPublishedWorkflowBindingByToolName(input.tool_name) ??
+        await resolution.skill_store.getPublishedWorkflowBindingByWorkflowId(input.workflow_id)
+      : await resolution.skill_store.getPublishedWorkflowBindingByWorkflowId(input.workflow_id);
+    return durableBinding
+      ? { status: "published", source: "postgres", binding: durableBinding }
+      : { status: "unpublished", source: "postgres", workflow_id: input.workflow_id };
+  } catch (error) {
+    return {
+      status: "unknown",
+      source: "postgres",
+      workflow_id: input.workflow_id,
+      blocked_by: ["dojo_control_plane_binding_lookup_failed", error instanceof Error ? error.message : String(error)],
+    };
+  } finally {
+    await resolution.close?.().catch(() => undefined);
+  }
+}
+
+function policyBindingForResolution(
+  resolution: DojoPublishedWorkflowBindingResolution,
+  toolName?: string
+): DojoPublishedSkillBinding | null {
+  if (resolution.status === "published") {
+    return {
+      status: "published",
+      skill_id: resolution.binding.skill_id,
+      workflow_id: resolution.binding.workflow_id,
+      tool_name: toolName ?? resolution.binding.tool_names[0],
+    };
+  }
+  if (resolution.status === "unknown") {
+    return {
+      status: "unknown",
+      workflow_id: resolution.workflow_id,
+      tool_name: toolName,
+    };
+  }
+  return null;
+}
+
+function bindingResolutionSummary(resolution: DojoPublishedWorkflowBindingResolution): Record<string, unknown> {
+  if (resolution.status === "published") {
+    return {
+      status: resolution.status,
+      source: resolution.source,
+      skill_id: resolution.binding.skill_id,
+      workflow_id: resolution.binding.workflow_id,
+      tool_names: resolution.binding.tool_names,
+    };
+  }
+  return {
+    status: resolution.status,
+    source: resolution.source,
+    workflow_id: resolution.workflow_id,
+    ...(resolution.status === "unknown" ? { blocked_by: resolution.blocked_by } : {}),
+  };
+}
+
+function privateWorkflowHostedRuntimeGate(
+  toolName: string,
+  manifest: PrivateWorkflowToolManifestV7,
+  args: Record<string, unknown>,
+  dojoContext?: DojoValidatedBrowserWorkflowContext
+): ToolResponse | null {
+  const runtime = dojoContext?.verified_runtime_attachment ?? browserBroker.runtimeAttachment();
+  if (runtime?.kind === "hosted") return null;
+  const workspaceId = stringOpt(args["workspace_id"]);
+  const readiness = resolveHostedBrowserRuntime({
+    workspace_id: workspaceId,
+  });
+  return errorResponse("private_workflow_hosted_runtime_required", {
+    tool_name: toolName,
+    workflow_id: manifest.workflow_id,
+    required_tool: "synthi_browser_attach_current_workspace",
+    runtime: runtime ?? null,
+    readiness,
+    product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
+    next_action: {
+      tool: "synthi_browser_attach_current_workspace",
+      arguments: {
+        ...(workspaceId ? { workspace_id: workspaceId } : {}),
+        ...(readiness.workspace_url ? { workspace_url: readiness.workspace_url } : {}),
+        open_workspace: true,
+      },
+    },
+    notes: [
+      "Attach the Synthi-hosted workspace browser before running browser-backed private workflow tools.",
+      "Local Chrome, local CDP, desktop extensions, and script paths are not part of the normal user path.",
+    ],
+  });
+}
+
+function manifestWithLiveAuthReadiness(
+  manifest: PrivateWorkflowToolManifestV7,
+  contract: WorkflowContractV7
+): PrivateWorkflowToolManifestV7 {
+  if (!contract.authPlan.required) return manifest;
+  const interactive = authCheckpointManager.readiness(contract.appOrigin, false);
+  const unattended = authCheckpointManager.readiness(contract.appOrigin, true);
+  let notes = [...manifest.safety.notes];
+  const authDurability = authDurabilityForManifest(unattended.ready ? unattended : interactive, manifest.auth.durability);
+  let status = manifest.status;
+  if (unattended.ready) {
+    notes = notes.filter((note) => !/not configured for unattended|Do not mark this tool unattended durable/i.test(note));
+    if (
+      status === "manualOnly" &&
+      !manifest.mutation.requires_confirmation &&
+      manifest.safety.blockers.length === 0 &&
+      manifest.safety.limitations.length === 0
+    ) {
+      status = "available";
+    }
+    notes.push("Validated auth provider is ready for unattended replay.");
+  } else if (!interactive.ready) {
+    status = "blocked";
+    notes.push(`Auth readiness blocked: ${interactive.status}.`);
+  } else {
+    if (status === "available") status = "manualOnly";
+    notes.push(`Auth readiness is manual-only: ${unattended.status}.`);
+  }
+  return {
+    ...manifest,
+    status,
+    run_modes: unattended.ready && !manifest.mutation.requires_confirmation
+      ? orderedRunModes(manifest.run_modes, ["coldSession"])
+      : manifest.run_modes,
+    default_run_mode: unattended.ready && !manifest.mutation.requires_confirmation
+      ? "coldSession"
+      : manifest.default_run_mode,
+    auth: {
+      ...manifest.auth,
+      durability: authDurability,
+      unattended_ready: unattended.ready,
+      required: true,
+    },
+    safety: {
+      ...manifest.safety,
+      notes,
+    },
+  };
+}
+
+function missingPrivateWorkflowTargetConsents(
+  manifest: PrivateWorkflowToolManifestV7,
+  contract: WorkflowContractV7
+): Array<Record<string, unknown>> {
+  const missing: Array<Record<string, unknown>> = [];
+  for (const target of targetOriginsForPrivateTool(manifest, contract)) {
+    const consent = browserBroker.getConsent(target.origin)[0];
+    const originMissing = consent?.status !== "granted";
+    const screenshotMissing = !originMissing && target.screenshot_consent_required && consent?.screenshot !== "granted";
+    const diagnosticsMissing = !originMissing && target.diagnostics_consent_required && consent?.diagnostics !== "granted";
+    if (!originMissing && !screenshotMissing && !diagnosticsMissing) continue;
+    missing.push({
+      origin: target.origin,
+      primary: target.primary,
+      kinds: target.kinds,
+      step_ids: target.step_ids,
+      reason: originMissing
+        ? "origin_consent_required"
+        : screenshotMissing
+        ? "screenshot_consent_required"
+        : "diagnostics_consent_required",
+      request: {
+        tool: "synthi_browser_request_consent",
+        arguments: {
+          url: target.origin,
+          status: "granted",
+          screenshot: target.screenshot_consent_required,
+          diagnostics: target.diagnostics_consent_required,
+        },
+      },
+    });
+  }
+  return missing;
+}
+
+function targetOriginsForPrivateTool(
+  manifest: PrivateWorkflowToolManifestV7,
+  contract: WorkflowContractV7
+): PrivateWorkflowToolManifestV7["target_origins"] {
+  const raw = (manifest as { target_origins?: unknown }).target_origins;
+  if (Array.isArray(raw) && raw.length > 0 && raw.every(isPrivateWorkflowTargetOrigin)) {
+    return raw;
+  }
+  return generatePrivateWorkflowToolManifest(contract).target_origins;
+}
+
+function isPrivateWorkflowTargetOrigin(value: unknown): value is PrivateWorkflowToolManifestV7["target_origins"][number] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Partial<PrivateWorkflowToolManifestV7["target_origins"][number]>;
+  return typeof candidate.origin === "string" &&
+    typeof candidate.primary === "boolean" &&
+    Array.isArray(candidate.kinds) &&
+    Array.isArray(candidate.step_ids) &&
+    typeof candidate.screenshot_consent_required === "boolean" &&
+    typeof candidate.diagnostics_consent_required === "boolean";
+}
+
+function orderedRunModes<T extends string>(existing: T[], additions: T[]): T[] {
+  const modes = [...existing];
+  for (const mode of additions) {
+    if (!modes.includes(mode)) modes.push(mode);
+  }
+  return modes;
+}
+
+function replayAuthGate(
+  contract: WorkflowContractV7,
+  mode: WorkflowReplayModeV7
+): { ok: true } | { ok: false; detail: Record<string, unknown> } {
+  if (!contract.authPlan.required) return { ok: true };
+  const authState = replayAuthReadiness(contract, mode);
+  if (authState.ready) return { ok: true };
+  return { ok: false, detail: authReadinessDetail(contract.appOrigin, authState.readiness, authState.unattended) };
+}
+
+async function authStorageStateForColdReplay(
+  contract: WorkflowContractV7
+): Promise<{ ok: true; storageState: AuthBrowserStorageState } | { ok: false; detail: Record<string, unknown> }> {
+  const authState = replayAuthReadiness(contract, "coldSession");
+  if (!authState.ready) {
+    const minted = await authCheckpointManager.mintRefreshProviderStorageForOrigin(contract.appOrigin);
+    if (minted.ok) return { ok: true, storageState: minted.artifact.state };
+    return {
+      ok: false,
+      detail: minted.error === "auth_refresh_provider_not_found"
+        ? authReadinessDetail(contract.appOrigin, authState.readiness, authState.unattended)
+        : authRefreshProviderFailureDetail(contract.appOrigin, minted.error),
+    };
+  }
+
+  const providerId = authState.readiness.refresh_provider?.provider_id;
+  if (providerId && authState.unattended) {
+    const providerArtifact = await authCheckpointManager.mintRefreshProviderStorage(providerId);
+    if (!providerArtifact.ok || providerArtifact.artifact.metadata.app_origin !== contract.appOrigin) {
+      return {
+        ok: false,
+        detail: {
+          app_origin: contract.appOrigin,
+          auth_status: providerArtifact.ok ? "checkpointStorageMissing" : providerArtifact.error,
+          auth_durability: authState.readiness.durability,
+          unattended: true,
+          failure_class: "authRefreshFailed",
+          notes: ["Refresh provider did not produce broker-owned auth storage for this workflow origin."],
+        },
+      };
+    }
+    return { ok: true, storageState: providerArtifact.artifact.state };
+  }
+
+  const checkpoint = authState.readiness.checkpoint;
+  if (!checkpoint) {
+    return {
+      ok: false,
+      detail: authReadinessDetail(contract.appOrigin, authState.readiness, authState.unattended),
+    };
+  }
+  const artifact = authCheckpointManager.storageArtifactForCheckpoint(checkpoint.checkpoint_id);
+  if (!artifact) {
+    return {
+      ok: false,
+      detail: authReadinessDetail(contract.appOrigin, {
+        ...authState.readiness,
+        status: "checkpointStorageMissing",
+        ready: false,
+        notes: ["Auth checkpoint is missing a captured browser storage artifact."],
+      }, authState.unattended),
+    };
+  }
+  return { ok: true, storageState: artifact.state };
+}
+
+function replayAuthReadiness(
+  contract: WorkflowContractV7,
+  mode: WorkflowReplayModeV7
+): { ready: true; readiness: AuthReadiness; unattended: boolean } | { ready: false; readiness: AuthReadiness; unattended: boolean } {
+  if (mode === "ciIsolated") {
+    const readiness = authCheckpointManager.readiness(contract.appOrigin, true);
+    return { ready: readiness.ready, readiness, unattended: true };
+  }
+  const interactive = authCheckpointManager.readiness(contract.appOrigin, false);
+  if (mode === "coldSession") {
+    const providerBacked = authCheckpointManager.readiness(contract.appOrigin, true);
+    if (providerBacked.ready) return { ready: true, readiness: providerBacked, unattended: true };
+    return { ready: interactive.ready, readiness: interactive, unattended: false };
+  }
+  if (interactive.ready) return { ready: interactive.ready, readiness: interactive, unattended: false };
+  return { ready: false, readiness: interactive, unattended: false };
+}
+
+function authReadinessDetail(appOrigin: string, readiness: AuthReadiness, unattended: boolean): Record<string, unknown> {
+  return {
+    app_origin: appOrigin,
+    auth_status: readiness.status,
+    auth_durability: readiness.durability,
+    unattended,
+    failure_class: authFailureClassForReadiness(readiness),
+    notes: readiness.notes,
+  };
+}
+
+function authRefreshProviderFailureDetail(appOrigin: string, error: string): Record<string, unknown> {
+  return {
+    app_origin: appOrigin,
+    auth_status: error,
+    auth_durability: "refreshProvider",
+    unattended: true,
+    failure_class: "authRefreshFailed",
+    notes: ["Refresh provider could not mint broker-owned replay auth state."],
+  };
+}
+
+function authFailureClassForReadiness(readiness: AuthReadiness): "authExpired" | "authMissing" | "authRefreshFailed" {
+  if (readiness.status === "unattendedBlocked" && readiness.refresh_provider?.failure_class) return "authRefreshFailed";
+  return readiness.status === "checkpointExpired" ? "authExpired" : "authMissing";
+}
+
+function authDurabilityForManifest(readiness: AuthReadiness, fallback: AuthDurabilityV7): AuthDurabilityV7 {
+  return readiness.durability === "missing" ? fallback : readiness.durability;
+}
+
+type PrivateWorkflowRunMode = WorkflowReplayModeV7 | "confirmBeforeCommit" | "ciOnly";
+
+function privateWorkflowDefaultReplayMode(manifest: PrivateWorkflowToolManifestV7): WorkflowReplayModeV7 {
+  if (manifest.mutation.requires_confirmation) return "prefixOnly";
+  if (manifest.default_run_mode === "coldSession") return "coldSession";
+  if (manifest.default_run_mode === "prefixOnly") return "prefixOnly";
+  return "sameSession";
+}
+
+function privateWorkflowAllowedRunModes(manifest: PrivateWorkflowToolManifestV7): PrivateWorkflowRunMode[] {
+  return manifest.mutation.requires_confirmation
+    ? ["prefixOnly", "confirmBeforeCommit", "ciOnly", "sameSession", "coldSession"]
+    : ["sameSession", "prefixOnly", "coldSession"];
+}
+
+function privateWorkflowRunMode(value: unknown): { ok: true; mode?: PrivateWorkflowRunMode } | { ok: false } {
+  if (value === undefined) return { ok: true };
+  if (
+    value === "sameSession" ||
+    value === "prefixOnly" ||
+    value === "coldSession" ||
+    value === "confirmBeforeCommit" ||
+    value === "ciOnly"
+  ) {
+    return { ok: true, mode: value };
+  }
+  return { ok: false };
+}
+
+function privateWorkflowMutationConfirmationToken(toolName: string, manifest: PrivateWorkflowToolManifestV7): string {
+  return [
+    "confirm",
+    toolName,
+    manifest.workflow_id,
+    manifest.mutation.first_mutation_step_id ?? "mutation",
+  ].join(":");
+}
+
+async function openColdReplayTab(url: string, storageState?: AuthBrowserStorageState): Promise<{ tab_id: string; url: string }> {
   const access = browserBroker.requireSnapshotAccess(url);
   if (!access.ok) throw new Error(access.error);
-  const tab = await browserPlaywrightAdapter.openCold(url);
+  const tab = await browserPlaywrightAdapter.openCold(url, storageState);
   browserBroker.registerTabs(await browserPlaywrightAdapter.listTabs());
   browserBroker.selectTab(tab.tab_id);
   return { tab_id: tab.tab_id, url: tab.url };
@@ -1372,6 +3257,15 @@ async function browserActionTool(args: unknown): Promise<ToolResponse> {
   const tab = requireAuthorizedTab(stringOpt(a["tab_id"]));
   const action = requiredString(a, "action");
   if (!isBrowserActionKind(action)) return errorResponse("unsupported_browser_action", { action });
+  const dojoHostedRuntimeGate = rawHostedRuntimeMutationGateForProduction({
+    tool_name: "synthi_browser_action",
+    action,
+    tab_id: tab.tab_id,
+    url: tab.url,
+    mutation_kind: "browser_action",
+    error_code: "dojo_hosted_runtime_direct_action_blocked",
+  });
+  if (dojoHostedRuntimeGate) return dojoHostedRuntimeGate;
   const value = stringOpt(a["value"]);
   const targetUrl = action === "navigate" && value ? value : tab.url;
   const validation = browserBroker.validateAction({
@@ -1389,13 +3283,62 @@ async function browserActionTool(args: unknown): Promise<ToolResponse> {
   return jsonResponse({ ok: true, result, teach: browserBroker.teachState() });
 }
 
+function rawHostedRuntimeMutationGateForProduction(input: {
+  tool_name: string;
+  mutation_kind: "browser_action" | "open_tab" | "close_tab";
+  error_code: "dojo_hosted_runtime_direct_action_blocked" | "dojo_hosted_runtime_direct_tab_mutation_blocked";
+  action?: string;
+  tab_id?: string;
+  url?: string;
+}): ToolResponse | null {
+  const enforcement = resolveDojoEnforcementConfig();
+  if (!enforcement.production_enforcement) return null;
+  const runtime = browserBroker.runtimeAttachment();
+  if (runtime?.kind !== "hosted") return null;
+  return errorResponse(input.error_code, {
+    ok: false,
+    tool_name: input.tool_name,
+    mutation_kind: input.mutation_kind,
+    ...(input.action ? { action: input.action } : {}),
+    ...(input.tab_id ? { tab_id: input.tab_id } : {}),
+    ...(input.url ? { url: input.url } : {}),
+    enforcement_mode: enforcement.enforcement_mode,
+    required_tool: "synthi_dojo_run_with_proof_capsule",
+    required_context: "validated_dojo_hosted_runtime_session",
+    proof_not_consumed: true,
+    blocked_by: [input.error_code, "dojo_proof_capsule_required"],
+    runtime: {
+      kind: runtime.kind,
+      tenant_id: runtime.tenant_id ?? null,
+      workspace_id: runtime.workspace_id ?? null,
+      actor_id: runtime.actor_id ?? null,
+      runtime_id: runtime.runtime_id ?? null,
+      session_id: runtime.session_id ?? null,
+      workspace_url: runtime.workspace_url,
+      adapter: runtime.adapter,
+      expires_at: runtime.expires_at ?? null,
+      revoked_at: runtime.revoked_at ?? null,
+      origin_allowlist: runtime.origin_allowlist ?? [],
+    },
+  });
+}
+
 function actionForReplay(event: { kind: string; action?: BrowserActionKind }): BrowserActionKind | null {
   if (event.kind === "navigation") return "navigate";
   return event.action ?? null;
 }
 
-function replayValueForEvent(event: BrowserTraceEvent, action: BrowserActionKind): string | undefined {
+function replayValueForEvent(
+  event: BrowserTraceEvent,
+  action: BrowserActionKind,
+  parameters: Record<string, string> = {},
+  valueRefByStepId: Map<string, string> = new Map()
+): string | undefined {
   if (action === "navigate") return event.url;
+  const parameterName = valueRefByStepId.get(event.event_id);
+  if ((action === "fill" || action === "select") && parameterName && parameters[parameterName] !== undefined) {
+    return parameters[parameterName];
+  }
   if (action === "drag") return event.value ?? stringOpt(event.detail?.["drop_locator"]);
   if (action === "select") {
     const selectValues = stringArrayOpt(event.detail?.["select_values"]);
@@ -1420,6 +3363,65 @@ function rememberReplayPopupTab(
   if (tracePopupTab && replayPopupTab) replayTabByTraceTab.set(tracePopupTab, replayPopupTab);
 }
 
+function replayTabIds(replayTabByTraceTab: Map<string, string>, rootTabId: string): string[] {
+  return [...new Set([rootTabId, ...replayTabByTraceTab.values()].filter((value) => value.length > 0))];
+}
+
+function replayTargetsForPlan(
+  events: BrowserTraceEvent[],
+  replayTabByTraceTab: Map<string, string>,
+  rootTabId: string
+): Array<Record<string, unknown>> {
+  const byTraceTab = new Map<string, {
+    trace_tab_id: string;
+    replay_tab_id: string;
+    kind: "page" | "popup";
+    recorded_opener_tab_id?: string;
+    recorded_root_opener_tab_id?: string;
+    popup_context: boolean;
+  }>();
+
+  for (const event of events) {
+    if (!event.tab_id) continue;
+    const existing = byTraceTab.get(event.tab_id) ?? {
+      trace_tab_id: event.tab_id,
+      replay_tab_id: replayTabByTraceTab.get(event.tab_id) ?? rootTabId,
+      kind: "page",
+      popup_context: false,
+    };
+    const replayTabId = replayTabByTraceTab.get(event.tab_id);
+    if (replayTabId) existing.replay_tab_id = replayTabId;
+    if (event.detail?.["popup_context"] === true || event.detail?.["popup_event"] === true) {
+      existing.kind = "popup";
+      existing.popup_context = true;
+    }
+    const openerTabId = stringOpt(event.detail?.["opener_tab_id"]);
+    const rootOpenerTabId = stringOpt(event.detail?.["root_opener_tab_id"]);
+    if (openerTabId) existing.recorded_opener_tab_id = openerTabId;
+    if (rootOpenerTabId) existing.recorded_root_opener_tab_id = rootOpenerTabId;
+    byTraceTab.set(event.tab_id, existing);
+  }
+
+  return [...byTraceTab.values()].map((target) => ({
+    trace_tab_id: target.trace_tab_id,
+    replay_tab_id: target.replay_tab_id,
+    kind: target.kind,
+    ...(target.recorded_opener_tab_id ? { recorded_opener_tab_id: target.recorded_opener_tab_id } : {}),
+    ...(target.recorded_root_opener_tab_id ? { recorded_root_opener_tab_id: target.recorded_root_opener_tab_id } : {}),
+    popup_context: target.popup_context,
+  }));
+}
+
+async function refreshReplayTabsForSnapshotAccess(): Promise<string | null> {
+  if (!browserPlaywrightAdapter.isAttached()) return null;
+  try {
+    browserBroker.registerTabs(await browserPlaywrightAdapter.listTabs());
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
 function isFileDropEvent(event: BrowserTraceEvent): boolean {
   return event.action === "drag" && dragClassFor(event) === "filedrop";
 }
@@ -1430,6 +3432,34 @@ function isClipboardPasteEvent(event: BrowserTraceEvent): boolean {
     event.detail?.["clipboard_mode"] === "paste" ||
     event.detail?.["paste_event"] === true
   );
+}
+
+function isClipboardDropEvent(event: BrowserTraceEvent): boolean {
+  return event.action === "drag" && dragClassFor(event) === "clipboarddrop";
+}
+
+function isAcceptedPromptDialogEvent(event: BrowserTraceEvent): boolean {
+  return event.detail?.["dialog_event"] === true &&
+    event.detail?.["dialog_type"] === "prompt" &&
+    event.detail?.["dialog_accepted"] !== false;
+}
+
+function dialogPromptValueFor(event: BrowserTraceEvent, parameters: Record<string, string>): string | undefined {
+  if (!isAcceptedPromptDialogEvent(event)) return undefined;
+  const parameterName = dialogPromptParameterName(event);
+  return parameters[parameterName] ?? (typeof event.detail?.["fixture_prompt_value"] === "string" ? event.detail["fixture_prompt_value"] : undefined);
+}
+
+function dialogPromptParameterName(event: BrowserTraceEvent): string {
+  const explicit = stringOpt(event.detail?.["dialog_prompt_env"]) ?? stringOpt(event.detail?.["dialog_prompt_parameter"]) ?? stringOpt(event.detail?.["prompt_parameter"]);
+  const message = event.detail?.["dialog_message_redacted"] === true ? undefined : stringOpt(event.detail?.["dialog_message"]);
+  const element = event.detail?.["element"];
+  const label = element && typeof element === "object"
+    ? stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown }).label) ??
+      stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown }).name) ??
+      stringOpt((element as { label?: unknown; name?: unknown; test_id?: unknown }).test_id)
+    : undefined;
+  return slugIdentifier(explicit ?? message ?? label ?? `${event.event_id}_prompt`);
 }
 
 function clipboardPasteTextFor(event: BrowserTraceEvent, parameters: Record<string, string>): string | undefined {
@@ -1449,9 +3479,26 @@ function clipboardPasteParameterName(event: BrowserTraceEvent): string {
   return slugIdentifier(explicit ?? label ?? `${event.event_id}_paste`);
 }
 
+function clipboardDropTextFor(event: BrowserTraceEvent, parameters: Record<string, string>): string | undefined {
+  const parameterName = clipboardDropParameterName(event);
+  return parameters[parameterName] ?? stringOpt(event.detail?.["fixture_text"]);
+}
+
+function clipboardDropParameterName(event: BrowserTraceEvent): string {
+  const explicit = stringOpt(event.detail?.["drop_parameter"]) ?? stringOpt(event.detail?.["clipboard_parameter"]);
+  const element = event.detail?.["element"];
+  const label = element && typeof element === "object"
+    ? stringOpt((element as { label?: unknown; name?: unknown; placeholder?: unknown; test_id?: unknown }).label) ??
+      stringOpt((element as { label?: unknown; name?: unknown; placeholder?: unknown; test_id?: unknown }).name) ??
+      stringOpt((element as { label?: unknown; name?: unknown; placeholder?: unknown }).placeholder) ??
+      stringOpt((element as { test_id?: unknown }).test_id)
+    : undefined;
+  return slugIdentifier(explicit ?? label ?? `${event.event_id}_drop`);
+}
+
 function fileDropPathFor(event: BrowserTraceEvent, parameters: Record<string, string>): string | undefined {
   const parameterName = fileDropParameterName(event);
-  return parameters[parameterName] ??
+  return stringOpt(parameters[parameterName]) ??
     stringOpt(event.detail?.["fixture_file"]) ??
     stringOpt(event.detail?.["file_path"]);
 }
@@ -1483,7 +3530,7 @@ function stringParameters(value: unknown): Record<string, string> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const out: Record<string, string> = {};
   for (const [key, parameterValue] of Object.entries(value)) {
-    if (typeof parameterValue === "string" && parameterValue.length > 0) out[slugIdentifier(key)] = parameterValue;
+    if (typeof parameterValue === "string") out[slugIdentifier(key)] = parameterValue;
   }
   return out;
 }
@@ -1583,6 +3630,16 @@ function httpUrlOpt(value: unknown): string | undefined {
   }
 }
 
+function originForUrl(value: unknown): string | null {
+  const raw = stringOpt(value);
+  if (!raw) return null;
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return null;
+  }
+}
+
 function numberOpt(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
@@ -1594,6 +3651,11 @@ function stringArrayOpt(value: unknown): string[] | undefined {
 
 function boolOpt(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+function publicStorageArtifactMetadata(metadata: AuthStorageArtifactMetadata): Omit<AuthStorageArtifactMetadata, "artifact_id"> {
+  const { artifact_id: _artifactId, ...publicMetadata } = metadata;
+  return publicMetadata;
 }
 
 function isBrowserActionKind(value: string): value is BrowserActionKind {
@@ -1613,6 +3675,11 @@ function failureExplanation(failureClass: string): { explanation: string; sugges
       return {
         explanation: "The workflow could not reach the application state because authentication was missing or expired.",
         suggested_next_action: "Renew or configure an auth checkpoint before replaying or publishing the workflow.",
+      };
+    case "authRefreshFailed":
+      return {
+        explanation: "The workflow has a refresh provider, but it could not mint broker-owned replay auth state.",
+        suggested_next_action: "Check the replay auth provider configuration, secret reference, and mint command before running unattended replay.",
       };
     case "mutationBlocked":
     case "unsafeEnvironment":

@@ -1,5 +1,11 @@
 # Hybrid GKE + Cloud Run Migration Notes
 
+Status: legacy migration notes only. The current production and Agent Dojo
+release-gate path is the GKE deployment documented in
+`docs/AGENT_DOJO_RELEASE_GATE_RUNBOOK.md`. Do not apply the Cloud Run service
+YAML files as release-gate infrastructure until they have been regenerated for
+the target project, registry, domain, service accounts, and secrets.
+
 ## Target split
 
 - Cloud Run: frontend, ai-gateway, ai-engine.
@@ -22,11 +28,11 @@ That controller only manages Kubernetes backends. It will overwrite any manual U
 
 Use separate hostnames during migration.
 
-- `beta.synthi.app` or `app.beta.synthi.app` -> Cloud Run frontend.
-- `collab.beta.synthi.app` -> GKE collab-server.
-- `signal.beta.synthi.app` -> GKE signaling-server.
-- `gateway.beta.synthi.app` -> Cloud Run or GKE ai-gateway.
-- `ysweet.beta.synthi.app` -> GKE y-sweet.
+- `<domain>` or `app.<domain>` -> Cloud Run frontend.
+- `collab.<domain>` -> GKE collab-server.
+- `signal.<domain>` -> GKE signaling-server.
+- `gateway.<domain>` -> Cloud Run or GKE ai-gateway.
+- `ysweet.<domain>` -> GKE y-sweet.
 
 This is easier to cut over, but it requires updating the public frontend env vars and reviewing CORS.
 

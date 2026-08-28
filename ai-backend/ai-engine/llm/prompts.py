@@ -17,6 +17,20 @@ You are an expert developer, with much experience in the industry. When presente
 11) For C++ code, ensure functions with non-void return types have a return statement. If a function does not return a value, declare it as void.
 """
 
+# Reference so any AI surface routed through the engine (chat / CLI / terminal) can
+# explain + author a Vectant program manifest. Kept short (added to every prompt).
+VECTANT_MANIFEST_REFERENCE = """
+Vectant programs — `vectant.programs.json`: a manifest describing how to run a project as an installable program in a Vectant workspace. When asked to create, edit, or explain one, follow this schema:
+- packageId (kebab-case), version ("x.y.z"), displayName, description
+- runtimeType: web | cli | tui | background | gui | container
+- install: [shell commands]; launch: "shell command"; ports: [ints]
+- permissions: a subset of program.launch, workspace.files.read, workspace.files.write, network.outbound, ports.expose
+Never use --privileged, --cap-add, --security-opt, --device, or mount docker.sock / host paths — those are rejected. container/gui programs `docker run <image>`; web/cli/tui run their commands directly.
+Example (web): {"packageId":"my-app","version":"1.0.0","runtimeType":"web","install":["npm install"],"launch":"npm run dev","ports":[3000],"permissions":["program.launch","network.outbound","ports.expose"]}
+"""
+
+base_instructions = base_instructions + VECTANT_MANIFEST_REFERENCE
+
 FILE_CONTEXT_MAX_CHARS = 50_000
 FILE_CONTEXT_HEAD_CHARS = 25_000
 FILE_CONTEXT_TAIL_CHARS = FILE_CONTEXT_MAX_CHARS - FILE_CONTEXT_HEAD_CHARS

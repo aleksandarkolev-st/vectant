@@ -42,7 +42,7 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.card.status).toContain("Background hardening stops before mutation");
     expect(workflow.contract.appOrigin).toBe("https://app.example.com");
     expect(workflow.contract.parameters).toEqual([
-      expect.objectContaining({ name: "test_token", valueShape: "email", redacted: false }),
+      expect.objectContaining({ name: "test_token", valueShape: "secret", redacted: true }),
     ]);
     expect(workflow.contract.lane0).toEqual(expect.objectContaining({
       reducer_version: "lane0_deterministic_v1",
@@ -52,6 +52,14 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.contract.steps[0]?.semanticPlan).toEqual(expect.objectContaining({
       groupLabel: "Save workspace state workflow",
       confidence: "high",
+    }));
+    expect(workflow.contract.steps[0]?.targetContext).toEqual(expect.objectContaining({
+      kind: "page",
+      traceTargetId: "tab:app",
+      recordedTabId: "app",
+      targetOrigin: "https://app.example.com",
+      origin: "https://app.example.com",
+      routePattern: "/settings",
     }));
     expect(workflow.contract.mutationBoundaryPlan.firstMutationStepId).toBe("browser_evt_2");
     expect(workflow.contract.mutationBoundaryPlan.defaultReplayMode).toBe("prefixOnly");
@@ -79,7 +87,7 @@ describe("browser workflow contract compiler", () => {
       unattendedReady: false,
       mutationMode: "confirmBeforeCommit",
     }));
-    expect(workflow.contract.publishPlan.runModes).toEqual(["prefixOnly", "confirmBeforeCommit", "ciOnly"]);
+    expect(workflow.contract.publishPlan.runModes).toEqual(["prefixOnly", "coldSession", "confirmBeforeCommit", "ciOnly"]);
     expect(workflow.contract.generatedOutputs[2]).toEqual(expect.objectContaining({
       kind: "privateMcpToolManifest",
       status: "available",
@@ -89,6 +97,26 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.contract.failureClasses).toEqual(expect.arrayContaining(["locatorDrift", "mutationBlocked", "sourceIdentityMissing"]));
     expect(workflow.contract.generatedOutputs[0]).toEqual(expect.objectContaining({ kind: "playwright", status: "available" }));
     expect(workflow.contract.generatedOutputs[1]).toEqual(expect.objectContaining({ kind: "sourceAffordancePatch", status: "available" }));
+  });
+
+  it("normalizes Synthi forwarded preview ports out of route patterns", () => {
+    browserBroker.requestConsent("https://preview.example.com");
+    browserBroker.registerTabs([{ tab_id: "app", url: "https://preview.example.com/port/43267/settings?tab=team", active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+
+    browserBroker.recordHumanAction({
+      tab_id: "app",
+      url: "https://preview.example.com/port/43267/settings?tab=team",
+      origin: "https://preview.example.com",
+      action: "click",
+      element: { role: "button", name: "Open settings", test_id: "open-settings" },
+    });
+
+    const workflow = browserBroker.compiledWorkflow();
+
+    expect(workflow.contract.routePattern).toBe("/settings?...");
+    expect(workflow.contract.steps[0]?.targetContext.routePattern).toBe("/settings?...");
+    expect(JSON.stringify(workflow.contract)).not.toContain("/port/43267");
   });
 
   it("coalesces repeated fills on the same target before the next action", () => {
@@ -124,7 +152,62 @@ describe("browser workflow contract compiler", () => {
       "Click Save workspace state",
     ]);
     expect(workflow.contract.parameters).toEqual([
-      expect.objectContaining({ name: "test_token", valueShape: "shortText" }),
+      expect.objectContaining({ name: "test_token", valueShape: "secret", redacted: true }),
+    ]);
+  });
+
+  it("renames parameters that would collide with private tool control arguments", () => {
+    const workflow = compileWorkflowContract([
+      baseEvent({
+        event_id: "run-mode",
+        event_seq: 1,
+        action: "fill",
+        value: "safe",
+        detail: {
+          field_name: "Run mode",
+          element: { role: "textbox", label: "Run mode", source_id: "settings.run_mode" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Run mode\")", confidence: 0.96, reason: "form_label" },
+        ],
+      }),
+      baseEvent({
+        event_id: "tab-id",
+        event_seq: 2,
+        action: "fill",
+        value: "main",
+        detail: {
+          field_name: "Tab id",
+          element: { role: "textbox", label: "Tab id", source_id: "settings.tab_id" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Tab id\")", confidence: 0.96, reason: "form_label" },
+        ],
+      }),
+      baseEvent({
+        event_id: "workflow-run-mode",
+        event_seq: 3,
+        action: "fill",
+        value: "manual",
+        detail: {
+          field_name: "Workflow run mode",
+          element: { role: "textbox", label: "Workflow run mode", source_id: "settings.workflow_run_mode" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Workflow run mode\")", confidence: 0.96, reason: "form_label" },
+        ],
+      }),
+    ]);
+
+    expect(workflow.contract.parameters.map((parameter) => parameter.name)).toEqual([
+      "workflow_run_mode",
+      "workflow_tab_id",
+      "workflow_run_mode_2",
+    ]);
+    expect(workflow.contract.steps.map((step) => step.action.valueRef)).toEqual([
+      "workflow_run_mode",
+      "workflow_tab_id",
+      "workflow_run_mode_2",
     ]);
   });
 
@@ -192,6 +275,52 @@ describe("browser workflow contract compiler", () => {
     expect(browserBroker.traceSnapshot()[0]?.detail).toEqual(expect.objectContaining({
       download_event: true,
       suggested_filename: "report.csv",
+    }));
+  });
+
+  it("treats write-method network evidence as a mutation boundary", () => {
+    const url = "https://app.example.com/query";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, active: true }]);
+    expect(browserBroker.startTeachMode("app").ok).toBe(true);
+    expect(browserBroker.recordHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      action: "click",
+      element: { role: "button", name: "Run query", test_id: "run-query" },
+    }).ok).toBe(true);
+
+    const annotated = browserBroker.annotateLatestHumanAction({
+      tab_id: "app",
+      url,
+      origin: "https://app.example.com",
+      actions: ["click"],
+      detail: {
+        network_event: true,
+        network_method: "POST",
+        network_url: "https://app.example.com/api/query",
+        resource_type: "fetch",
+      },
+      within_ms: 5000,
+    });
+
+    expect(annotated.ok).toBe(true);
+    const workflow = browserBroker.compiledWorkflow();
+    const step = workflow.contract.steps[0];
+
+    expect(step?.mutation).toEqual(expect.objectContaining({
+      kind: "unknown",
+      evidence: ["network_method_implies_mutation"],
+      requiresIsolation: true,
+    }));
+    expect(workflow.contract.mutationBoundaryPlan.firstMutationStepId).toBe(step?.stepId);
+    expect(workflow.contract.mutationBoundaryPlan.defaultReplayMode).toBe("prefixOnly");
+    expect(workflow.contract.limitations).toContain("mutationRequiresIsolation");
+    expect(workflow.contract.failureClasses).toContain("mutationBlocked");
+    expect(planWorkflowReplay(browserBroker.traceSnapshot(), "prefixOnly")).toEqual(expect.objectContaining({
+      status: "stoppedAtMutationBoundary",
+      stoppedBeforeStepId: step?.stepId,
     }));
   });
 
@@ -400,6 +529,141 @@ describe("browser workflow contract compiler", () => {
     expect(replay.status).toBe("ready");
   });
 
+  it("allows consented cross-origin popup continuation when opener linkage is captured", () => {
+    const events = [
+      baseEvent({
+        event_id: "open-help",
+        event_seq: 1,
+        tab_id: "main",
+        action: "click",
+        detail: {
+          popup_event: true,
+          popup_url: "https://billing.example.com/help",
+          popup_origin_approved: true,
+          popup_tab_id: "popup",
+          opener_tab_id: "main",
+          element: { role: "button", name: "Open help", source_id: "src_open_help" },
+        },
+        security: {
+          exact_origin_approved: true,
+          screenshot_approved: true,
+          diagnostics_approved: true,
+          auth_checkpoint_approved: false,
+          popup_origin_approved: true,
+        },
+      }),
+      baseEvent({
+        event_id: "popup-search",
+        event_seq: 2,
+        tab_id: "popup",
+        action: "fill",
+        value: "contracts",
+        url: "https://billing.example.com/help",
+        origin: "https://billing.example.com",
+        detail: {
+          popup_context: true,
+          popup_tab_id: "popup",
+          opener_tab_id: "main",
+          opener_origin: "https://app.example.com",
+          element: { role: "textbox", label: "Search help", source_id: "src_help_search" },
+        },
+        security: {
+          exact_origin_approved: true,
+          screenshot_approved: true,
+          diagnostics_approved: true,
+          auth_checkpoint_approved: false,
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Search help\")", confidence: 0.94, reason: "form_label" },
+        ],
+      }),
+    ];
+
+    const workflow = compileWorkflowContract(events);
+    const replay = planWorkflowReplay(events, "sameSession");
+
+    expect(workflow.contract.limitations).toContain("crossOriginTrace");
+    expect(workflow.contract.limitations).not.toContain("popupOrMultiTab");
+    expect(workflow.contract.steps[0]?.targetContext).toEqual(expect.objectContaining({
+      kind: "page",
+      traceTargetId: "tab:main",
+      recordedTabId: "main",
+      targetOrigin: "https://app.example.com",
+      origin: "https://app.example.com",
+      popup: expect.objectContaining({
+        relationship: "opens",
+        recordedPopupTabId: "popup",
+        recordedOpenerTabId: "main",
+        origin: "https://billing.example.com",
+        routePattern: "/help",
+      }),
+      consent: expect.objectContaining({
+        popupOriginApproved: true,
+      }),
+    }));
+    expect(workflow.contract.steps[1]?.targetContext).toEqual(expect.objectContaining({
+      kind: "popup",
+      traceTargetId: "tab:popup|popup:popup",
+      recordedTabId: "popup",
+      targetOrigin: "https://billing.example.com",
+      origin: "https://billing.example.com",
+      routePattern: "/help",
+      popup: expect.objectContaining({
+        relationship: "context",
+        recordedPopupTabId: "popup",
+        recordedOpenerTabId: "main",
+        openerOrigin: "https://app.example.com",
+      }),
+      consent: expect.objectContaining({
+        exactOriginApproved: true,
+      }),
+    }));
+    expect(replay.status).toBe("ready");
+  });
+
+  it("blocks cross-origin popup continuation without popup origin consent metadata", () => {
+    const events = [
+      baseEvent({
+        event_id: "open-help",
+        event_seq: 1,
+        tab_id: "main",
+        action: "click",
+        detail: {
+          popup_event: true,
+          popup_url: "https://billing.example.com/help",
+          popup_tab_id: "popup",
+          opener_tab_id: "main",
+          element: { role: "button", name: "Open help", source_id: "src_open_help" },
+        },
+      }),
+      baseEvent({
+        event_id: "popup-search",
+        event_seq: 2,
+        tab_id: "popup",
+        action: "fill",
+        value: "contracts",
+        url: "https://billing.example.com/help",
+        origin: "https://billing.example.com",
+        detail: {
+          popup_context: true,
+          popup_tab_id: "popup",
+          opener_tab_id: "main",
+          opener_origin: "https://app.example.com",
+          element: { role: "textbox", label: "Search help", source_id: "src_help_search" },
+        },
+        locator_candidates: [
+          { kind: "label", locator: "page.getByLabel(\"Search help\")", confidence: 0.94, reason: "form_label" },
+        ],
+      }),
+    ];
+
+    const workflow = compileWorkflowContract(events);
+    const replay = planWorkflowReplay(events, "sameSession");
+
+    expect(workflow.contract.limitations).toEqual(expect.arrayContaining(["crossOriginTrace", "popupOrMultiTab"]));
+    expect(replay.status).toBe("blocked");
+  });
+
   it("blocks popup continuation when the opener event is missing", () => {
     const events = [
       baseEvent({
@@ -470,9 +734,95 @@ describe("browser workflow contract compiler", () => {
     const replay = planWorkflowReplay(events, "sameSession");
 
     expect(workflow.contract.steps[0]?.limitations).not.toContain("iframeNeedsFrameLocator");
+    expect(workflow.contract.steps[0]?.targetContext).toEqual(expect.objectContaining({
+      kind: "iframe",
+      traceTargetId: "tab:tab|frame:checkout-frame",
+      recordedTabId: "tab",
+      targetOrigin: "https://app.example.com",
+      frame: expect.objectContaining({
+        recordedFrameId: "checkout-frame",
+        locatorChain: ["iframe[data-testid=\"checkout-frame\"]"],
+      }),
+    }));
     expect(workflow.contract.limitations).not.toContain("iframeNeedsFrameLocator");
     expect(workflow.contract.mutationBoundaryPlan.defaultReplayMode).not.toBe("blocked");
     expect(replay.status).toBe("ready");
+  });
+
+  it("keeps nested iframe target contexts distinct when inner frame ids repeat", () => {
+    const workflow = compileWorkflowContract([
+      baseEvent({
+        event_id: "left-card",
+        event_seq: 1,
+        frame_id: "preview",
+        detail: {
+          frame_locator: "iframe[data-testid=\"preview\"]",
+          frame_locator_chain: [
+            "iframe[data-testid=\"left-panel\"]",
+            "iframe[data-testid=\"preview\"]",
+          ],
+          element: { role: "textbox", label: "Cardholder", source_id: "src_left_cardholder" },
+        },
+      }),
+      baseEvent({
+        event_id: "right-card",
+        event_seq: 2,
+        frame_id: "preview",
+        detail: {
+          frame_locator: "iframe[data-testid=\"preview\"]",
+          frame_locator_chain: [
+            "iframe[data-testid=\"right-panel\"]",
+            "iframe[data-testid=\"preview\"]",
+          ],
+          element: { role: "textbox", label: "Cardholder", source_id: "src_right_cardholder" },
+        },
+      }),
+    ]);
+
+    const targetIds = workflow.contract.steps.map((step) => step.targetContext?.traceTargetId);
+
+    expect(targetIds).toEqual([
+      "tab:tab|frame:preview|frameChain:iframe[data-testid=\"left-panel\"]>iframe[data-testid=\"preview\"]",
+      "tab:tab|frame:preview|frameChain:iframe[data-testid=\"right-panel\"]>iframe[data-testid=\"preview\"]",
+    ]);
+    expect(new Set(targetIds).size).toBe(targetIds.length);
+    expect(workflow.contract.steps[0]?.targetContext?.frame?.locatorChain).toEqual([
+      "iframe[data-testid=\"left-panel\"]",
+      "iframe[data-testid=\"preview\"]",
+    ]);
+    expect(workflow.contract.steps[1]?.targetContext?.frame?.locatorChain).toEqual([
+      "iframe[data-testid=\"right-panel\"]",
+      "iframe[data-testid=\"preview\"]",
+    ]);
+    expect(workflow.contract.limitations).not.toContain("iframeNeedsFrameLocator");
+  });
+
+  it("marks durable cross-origin iframe traces as cross-origin", () => {
+    const workflow = compileWorkflowContract([
+      baseEvent({
+        event_id: "card",
+        frame_id: "checkout-frame",
+        detail: {
+          frame_locator: "iframe[data-testid=\"checkout-frame\"]",
+          frame_origin: "https://billing.example.com",
+          frame_origin_approved: true,
+          element: { role: "textbox", label: "Cardholder", source_id: "src_cardholder" },
+        },
+      }),
+    ]);
+
+    expect(workflow.contract.steps[0]?.limitations).not.toContain("iframeNeedsFrameLocator");
+    expect(workflow.contract.steps[0]?.targetContext).toEqual(expect.objectContaining({
+      kind: "iframe",
+      origin: "https://app.example.com",
+      targetOrigin: "https://billing.example.com",
+      frame: expect.objectContaining({
+        origin: "https://billing.example.com",
+        locatorChain: ["iframe[data-testid=\"checkout-frame\"]"],
+      }),
+    }));
+    expect(workflow.contract.limitations).toContain("crossOriginTrace");
+    expect(workflow.contract.limitations).not.toContain("iframeNeedsFrameLocator");
   });
 
   it("treats open shadow DOM traces as durable when a piercing locator is captured", () => {
@@ -505,6 +855,42 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.contract.limitations).not.toContain("closedShadowDomBlocked");
     expect(workflow.contract.mutationBoundaryPlan.defaultReplayMode).not.toBe("blocked");
     expect(replay.status).toBe("ready");
+  });
+
+  it("models accepted native prompt responses as redacted required parameters", () => {
+    const workflow = compileWorkflowContract([
+      baseEvent({
+        event_id: "prompt-rename",
+        event_seq: 1,
+        action: "click",
+        detail: {
+          dialog_event: true,
+          dialog_type: "prompt",
+          dialog_message: "Enter workspace name",
+          dialog_prompt_value: "[REDACTED]",
+          dialog_prompt_value_redacted: true,
+          dialog_accepted: true,
+          observed_effects: ["Renamed workspace to [REDACTED]"],
+          observed_effects_redacted: true,
+          element: { role: "button", name: "Rename workspace", test_id: "rename-workspace", source_id: "src_rename_workspace" },
+        },
+        locator_candidates: [
+          { kind: "test_id", locator: "page.getByTestId(\"rename-workspace\")", confidence: 0.99, reason: "test_id" },
+        ],
+      }),
+    ]);
+
+    expect(workflow.contract.steps[0]?.action.valueRef).toBe("enter_workspace_name");
+    expect(workflow.contract.parameters).toContainEqual(expect.objectContaining({
+      name: "enter_workspace_name",
+      valueShape: "secret",
+      required: true,
+      redacted: true,
+    }));
+    expect(workflow.contract.steps[0]?.surfacePlan).toEqual(expect.objectContaining({
+      kind: "dom",
+      replay: "parameterized",
+    }));
   });
 
   it("surfaces coordinate and pointer limitations and blocks replay", () => {
@@ -628,6 +1014,118 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.contract.steps[1]?.surfacePlan.notes[0]).toContain("keyboard insertion");
   });
 
+  it("classifies terminal-like keyboard text entry as parameterized keyboard insertion", () => {
+    const workflow = compileWorkflowContract([
+      baseEvent({
+        event_id: "terminal-text",
+        event_seq: 1,
+        action: "fill",
+        value: "deploy preview",
+        detail: {
+          keyboard_text_entry: true,
+          text_entry_mode: "keyboardInsert",
+          element: { role: "application", name: "Terminal surface", source_id: "terminal.shell" },
+        },
+      }),
+    ]);
+
+    expect(workflow.contract.steps[0]?.action.valueRef).toBe("terminal_surface");
+    expect(workflow.contract.parameters[0]).toEqual(expect.objectContaining({
+      name: "terminal_surface",
+      valueShape: "shortText",
+    }));
+    expect(workflow.contract.steps[0]?.surfacePlan).toEqual(expect.objectContaining({
+      kind: "dom",
+      replay: "parameterized",
+    }));
+    expect(workflow.contract.steps[0]?.surfacePlan.notes[0]).toContain("keyboard typing");
+  });
+
+  it("classifies copy and cut as clipboard transfer surfaces", () => {
+    const workflow = compileWorkflowContract([
+      baseEvent({
+        event_id: "copy-key",
+        event_seq: 1,
+        action: "press",
+        value: "Control+C",
+        detail: {
+          element: { tag: "textarea", role: "textbox", label: "Release notes", source_id: "notes.editor" },
+        },
+      }),
+      baseEvent({
+        event_id: "copy-range",
+        event_seq: 2,
+        action: "copy",
+        detail: {
+          clipboard_event: true,
+          clipboard_mode: "copy",
+          selection_start: 0,
+          selection_end: 5,
+          element: { tag: "textarea", role: "textbox", label: "Release notes", source_id: "notes.editor" },
+        },
+      }),
+      baseEvent({
+        event_id: "cut-key",
+        event_seq: 3,
+        action: "press",
+        value: "Control+X",
+        detail: {
+          element: { tag: "textarea", role: "textbox", label: "Release notes", source_id: "notes.editor" },
+        },
+      }),
+      baseEvent({
+        event_id: "cut-range",
+        event_seq: 4,
+        ts: 1000,
+        action: "cut",
+        detail: {
+          clipboard_event: true,
+          clipboard_mode: "cut",
+          selection_start: 6,
+          selection_end: 10,
+          selected_text_length: 4,
+          value_length: 16,
+          element: { tag: "textarea", role: "textbox", label: "Release notes", source_id: "notes.editor" },
+        },
+      }),
+      baseEvent({
+        event_id: "cut-fill-noise",
+        event_seq: 5,
+        ts: 1100,
+        action: "fill",
+        value: "alpha  gamma",
+        detail: {
+          input_debounced: true,
+          element: { tag: "textarea", role: "textbox", label: "Release notes", source_id: "notes.editor" },
+        },
+      }),
+      baseEvent({
+        event_id: "cut-change-noise",
+        event_seq: 6,
+        ts: 4700,
+        action: "fill",
+        value: "alpha  gamma",
+        detail: {
+          change_event: true,
+          element: { tag: "textarea", role: "textbox", label: "Release notes", source_id: "notes.editor" },
+        },
+      }),
+    ]);
+
+    expect(workflow.contract.steps).toHaveLength(2);
+    expect(workflow.contract.parameters).toEqual([]);
+    expect(workflow.contract.steps[0]?.surfacePlan).toEqual(expect.objectContaining({
+      kind: "clipboardCopy",
+      replay: "durable",
+    }));
+    expect(workflow.contract.steps[1]?.surfacePlan).toEqual(expect.objectContaining({
+      kind: "clipboardCut",
+      replay: "durable",
+    }));
+    expect(workflow.contract.steps[0]?.expectedEffects[0]).toContain("clipboard");
+    expect(workflow.contract.steps[1]?.expectedEffects[0]).toContain("removed");
+  });
+
   it("classifies explicit drag surface replay plans", () => {
     const workflow = compileWorkflowContract([
       baseEvent({
@@ -651,8 +1149,20 @@ describe("browser workflow contract compiler", () => {
         },
       }),
       baseEvent({
-        event_id: "pointer-drag",
+        event_id: "clipboard-drop",
         event_seq: 3,
+        action: "drag",
+        detail: {
+          drag_mode: true,
+          drag_class: "clipboardDrop",
+          clipboard_parameter: "RELEASE_NOTES_DROP",
+          dropped_text_redacted: true,
+          element: { tag: "textarea", role: "textbox", label: "Release notes", source_id: "src_notes" },
+        },
+      }),
+      baseEvent({
+        event_id: "pointer-drag",
+        event_seq: 4,
         action: "drag",
         detail: {
           drag_mode: true,
@@ -665,16 +1175,24 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.contract.steps.map((step) => step.surfacePlan.kind)).toEqual([
       "nativeHtmlDrag",
       "fileDrop",
+      "clipboardDrop",
       "pointerDrag",
     ]);
     expect(workflow.contract.steps[0]?.surfacePlan.replay).toBe("durable");
     expect(workflow.contract.steps[1]?.surfacePlan.replay).toBe("parameterized");
-    expect(workflow.contract.steps[2]?.limitations).toContain("pointerDragUnreliable");
-    expect(workflow.contract.steps[2]?.surfacePlan.replay).toBe("blocked");
+    expect(workflow.contract.steps[2]?.surfacePlan.replay).toBe("parameterized");
+    expect(workflow.contract.steps[3]?.limitations).toContain("pointerDragUnreliable");
+    expect(workflow.contract.steps[3]?.surfacePlan.replay).toBe("blocked");
     expect(workflow.contract.parameters).toContainEqual(expect.objectContaining({
       name: "upload_file",
       sourceStepId: "file-drop",
       valueShape: "filePath",
+    }));
+    expect(workflow.contract.parameters).toContainEqual(expect.objectContaining({
+      name: "release_notes_drop",
+      sourceStepId: "clipboard-drop",
+      valueShape: "secret",
+      redacted: true,
     }));
   });
 
@@ -713,6 +1231,45 @@ describe("browser workflow contract compiler", () => {
     expect(replay.status).toBe("ready");
   });
 
+  it("classifies calibrated resize-handle drags as same-session replayable pointer workflows", () => {
+    const events = [
+      baseEvent({
+        event_id: "resize-panels",
+        event_seq: 1,
+        action: "drag",
+        value: "page.getByRole(\"group\", { name: \"Resizable workspace\" })",
+        detail: {
+          drag_mode: true,
+          drag_class: "pointerSensor",
+          pointer_drag: true,
+          pointer_replay: "calibrated",
+          pointer_start_x_ratio: 0.5,
+          pointer_start_y_ratio: 0.5,
+          pointer_end_x_ratio: 0.58,
+          pointer_end_y_ratio: 0.5,
+          drop_locator: "page.getByRole(\"group\", { name: \"Resizable workspace\" })",
+          resize_handle: true,
+          resize_axis: "x",
+          aria_orientation: "vertical",
+          element: { role: "separator", name: "Resize panels", source_id: "layout.resize.handle" },
+        },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"separator\", { name: \"Resize panels\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
+    ];
+    const workflow = compileWorkflowContract(events);
+    const replay = planWorkflowReplay(events, "sameSession");
+
+    expect(workflow.contract.limitations).not.toContain("pointerDragUnreliable");
+    expect(workflow.contract.steps[0]?.surfacePlan).toEqual(expect.objectContaining({
+      kind: "pointerDrag",
+      replay: "sameSessionOnly",
+    }));
+    expect(workflow.contract.steps[0]?.surfacePlan.notes[0]).toContain("Resize handle drag");
+    expect(replay.status).toBe("ready");
+  });
+
   it("marks clean read-only workflows ready for a private MCP tool manifest", () => {
     const workflow = compileWorkflowContract([
       baseEvent({
@@ -733,7 +1290,7 @@ describe("browser workflow contract compiler", () => {
       mutationMode: "readOnly",
       authDurability: "noneRequired",
     }));
-    expect(workflow.contract.publishPlan.runModes).toEqual(["sameSession"]);
+    expect(workflow.contract.publishPlan.runModes).toEqual(["sameSession", "coldSession", "prefixOnly"]);
     expect(workflow.contract.generatedOutputs[2]).toEqual(expect.objectContaining({
       kind: "privateMcpToolManifest",
       status: "available",
@@ -850,7 +1407,7 @@ describe("browser workflow contract compiler", () => {
       required: true,
       durability: "interactiveCheckpoint",
     }));
-    expect(workflow.contract.failureClasses).toEqual(expect.arrayContaining(["authMissing", "authExpired"]));
+    expect(workflow.contract.failureClasses).toEqual(expect.arrayContaining(["authMissing", "authExpired", "authRefreshFailed"]));
     expect(workflow.card.state).toContain("Auth-ready");
     expect(workflow.contract.publishPlan).toEqual(expect.objectContaining({
       readiness: "manualOnly",
@@ -860,12 +1417,18 @@ describe("browser workflow contract compiler", () => {
     expect(workflow.contract.publishPlan.notes.join(" ")).toContain("saved login checkpoint is valid");
   });
 
-  it("allows unattended publishing only with explicit durable auth metadata", () => {
+  it("ignores trace-injected durable auth metadata when planning publish readiness", () => {
     const workflow = compileWorkflowContract([
       baseEvent({
         event_id: "open-billing",
         event_seq: 1,
         action: "click",
+        security: {
+          exact_origin_approved: true,
+          screenshot_approved: true,
+          diagnostics_approved: true,
+          auth_checkpoint_approved: true,
+        },
         detail: {
           auth_durability: "refreshProvider",
           element: { role: "button", name: "Open billing", source_id: "src_open_billing" },
@@ -875,13 +1438,14 @@ describe("browser workflow contract compiler", () => {
 
     expect(workflow.contract.authPlan).toEqual(expect.objectContaining({
       required: true,
-      durability: "refreshProvider",
+      durability: "interactiveCheckpoint",
     }));
     expect(workflow.contract.publishPlan).toEqual(expect.objectContaining({
-      readiness: "ready",
-      unattendedReady: true,
-      authDurability: "refreshProvider",
+      readiness: "manualOnly",
+      unattendedReady: false,
+      authDurability: "interactiveCheckpoint",
     }));
+    expect(workflow.contract.publishPlan.notes.join(" ")).toContain("saved login checkpoint is valid");
   });
 
   it("plans prefix-only replay up to but not including the first mutation boundary", () => {
@@ -957,6 +1521,8 @@ describe("browser workflow contract compiler", () => {
     }))).toBe("routeChanged");
     expect(classifyWorkflowReplayFailure(new Error("net::ERR_CONNECTION_REFUSED"))).toBe("networkFailure");
     expect(classifyWorkflowReplayFailure(new Error("hydration boundary not ready"))).toBe("hydrationDelay");
+    expect(classifyWorkflowReplayFailure(new Error("reset_profile_mismatch"))).toBe("testDataMissing");
+    expect(classifyWorkflowReplayFailure(new Error("state seed id mismatch"))).toBe("testDataMissing");
   });
 });
 

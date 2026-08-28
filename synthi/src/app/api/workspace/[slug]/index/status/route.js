@@ -1,0 +1,16 @@
+import { NextResponse } from 'next/server';
+import { workspaceSearchIndex } from '@/server/workspaceSearchIndex';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+export async function GET(_request, { params }) {
+  const data = await params;
+  const workspaceId = data.slug;
+
+  if (!workspaceId) {
+    return NextResponse.json({ error: 'workspaceId is required' }, { status: 400 });
+  }
+
+  return NextResponse.json(workspaceSearchIndex.status(workspaceId), { status: 200 });
+}

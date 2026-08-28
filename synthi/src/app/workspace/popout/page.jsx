@@ -68,7 +68,7 @@ function PopoutPageInner() {
 
   if (!tabId || !panelType) {
     return (
-      <div className="flex h-screen items-center justify-center bg-[#09090b] text-zinc-400 text-sm">
+      <div className="flex h-screen items-center justify-center text-sm" style={{ background: 'var(--bg-app)', color: 'var(--text-secondary)' }}>
         Missing panel information. Close this window and try again.
       </div>
     );
@@ -76,14 +76,14 @@ function PopoutPageInner() {
 
   if (!ready) {
     return (
-      <div className="flex h-screen items-center justify-center bg-[#09090b] text-zinc-500 text-xs">
-        Connecting to workspace…
+      <div className="flex h-screen items-center justify-center text-xs" style={{ background: 'var(--bg-app)', color: 'var(--text-muted)' }}>
+        Connecting to workspace...
       </div>
     );
   }
 
   return (
-    <div className="h-screen w-screen overflow-hidden bg-[#09090b] text-[#D7DAE0]">
+    <div className="h-screen w-screen overflow-hidden" style={{ background: 'var(--bg-app)', color: 'var(--text-primary)' }}>
       <PopoutWindowContent
         tabId={tabId}
         panelType={panelType}
@@ -98,8 +98,8 @@ export default function PopoutPage() {
     <Provider store={store}>
       <Suspense
         fallback={
-          <div className="flex h-screen items-center justify-center bg-[#09090b] text-zinc-500 text-xs">
-            Loading…
+          <div className="flex h-screen items-center justify-center text-xs" style={{ background: 'var(--bg-app)', color: 'var(--text-muted)' }}>
+            Loading...
           </div>
         }
       >

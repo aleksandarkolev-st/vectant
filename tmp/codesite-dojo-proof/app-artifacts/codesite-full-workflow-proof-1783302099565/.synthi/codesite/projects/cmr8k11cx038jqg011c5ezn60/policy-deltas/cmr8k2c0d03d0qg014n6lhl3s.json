@@ -1,0 +1,65 @@
+{
+  "id": "cmr8k2c0d03d0qg014n6lhl3s",
+  "projectId": "cmr8k11cx038jqg011c5ezn60",
+  "learnedFromIncidents": [],
+  "affectedZoneKey": "synthi/prisma/schema.prisma",
+  "ruleCandidate": {
+    "rule": "flight_split_reduced_collision",
+    "learningSignals": [
+      "flight_split_reduced_collisions"
+    ],
+    "preferredStrategies": [
+      "schema-first"
+    ],
+    "avoidStrategies": [
+      "frontend-backend-parallel"
+    ],
+    "requiredTowerActions": [
+      "prefer_recorded_low_collision_split",
+      "replay_near_miss_before_parallel_clearance"
+    ],
+    "evidenceBasis": {
+      "validityStrength": "strong",
+      "incidentRefs": [],
+      "evidenceRefs": [
+        "codesite:shadow:full-workflow-counterfactual"
+      ],
+      "humanOverride": null,
+      "laterManualEditCount": 0
+    },
+    "promotion": {
+      "reviewedBy": "cmr8k10xc0386qg01sn6cm7hr",
+      "targetState": "active",
+      "validationStatus": "validated",
+      "replayRefs": [
+        "codesite:counterfactual-run:cmr8k2axz03cuqg01ak9lce1g",
+        "shadow:job:shadow:codesite-full-workflow-proof-1783302099565:counterfactual-choice",
+        "codesite:shadow:full-workflow-counterfactual"
+      ],
+      "evidenceRefs": [
+        "codesite:counterfactual-policy-validation:full-workflow",
+        "codesite:shadow:codesite-full-workflow-proof-1783302099565:counterfactual-choice"
+      ],
+      "reasonCodes": [],
+      "promotedAt": "2026-07-06T01:42:49.374Z"
+    }
+  },
+  "triggerConditions": [
+    {
+      "path": "synthi/prisma/schema.prisma"
+    },
+    {
+      "path": "synthi/src/app/api/auth/**"
+    }
+  ],
+  "expectedRiskReduction": 0.215,
+  "confidence": 0.86,
+  "promotionState": "active",
+  "replayRefs": [
+    "codesite:counterfactual-run:cmr8k2axz03cuqg01ak9lce1g",
+    "shadow:job:shadow:codesite-full-workflow-proof-1783302099565:counterfactual-choice",
+    "codesite:shadow:full-workflow-counterfactual"
+  ],
+  "createdAt": "2026-07-06T01:42:43.789Z",
+  "promotedAt": "2026-07-06T01:42:49.374Z"
+}

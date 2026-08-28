@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "synthi.codesite.proofCarryingCommit.proof.v1",
+  "source": "codesite-run-mature-proof-suite",
+  "assertions": {
+    "proofWillBeWritten": true,
+    "proofCommandsPassed": true,
+    "proofGitBound": true
+  },
+  "status": "validated",
+  "generatedAt": "2026-07-04T19:32:49.027Z",
+  "git": {
+    "head": "58e8a98c4fe554b44b36ff24fa67b19b0aff9605",
+    "branch": "codex/codesite-atc-full-from-dev-20260630",
+    "statusShort": "M tmp/codesite-dojo-proof/codesite-full-workflow-latest.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof-summary.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.html\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-publication.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-handover.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-mobile.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-coordination.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-line-inspector.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-proof-section.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui.png\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-host-block-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-overlay-attestation.json\n?? .synthi/codesite/\n?? synthi/scripts/codesite-run-mature-proof-suite.mjs"
+  },
+  "commands": [
+    {
+      "name": "proofSuite:proofVerifierHelp",
+      "command": "node synthi/scripts/codesite-proof-verify.mjs --help",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "runner": "command"
+      },
+      "outputTail": [
+        "Usage: node scripts/codesite-proof-verify.mjs --bundle <proof.json> [--trailers <trailers.txt>] [--repo <repo> --commit <sha> --require-git-commit] [--require-trailers] [--trusted-keys keys.json] [--require-trusted-authority]",
+        "Verifies a portable CodeSite proof bundle outside the UI and emits JSON."
+      ]
+    }
+  ],
+  "proofSuite": {
+    "runner": "synthi/scripts/codesite-run-mature-proof-suite.mjs",
+    "stampedAt": "2026-07-04T19:32:49.027Z",
+    "proofFile": "tmp/codesite-dojo-proof/proof-suite-runner-validation/codesite-proof-carrying-commit-proof.json"
+  },
+  "ok": true
+}

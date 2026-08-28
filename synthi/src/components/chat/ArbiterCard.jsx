@@ -146,8 +146,9 @@ function VerdictBlock({ verdict, onApply, onAskWhy }) {
     );
 }
 
-export function ArbiterCard({ jobId }) {
-    const verify = useShadowVerify(jobId);
+export function ArbiterCard({ jobId, verify: providedVerify = null }) {
+    const ownVerify = useShadowVerify(providedVerify ? null : jobId);
+    const verify = providedVerify || ownVerify;
     if (!jobId) return null;
 
     if (verify.convergence) {

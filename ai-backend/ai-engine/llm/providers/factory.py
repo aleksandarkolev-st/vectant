@@ -67,12 +67,15 @@ def get_provider(
     provider implementations.
     """
     del use_custom
+
     name = (provider_name or "gemini").lower().strip()
     loader = _PROVIDER_LOADERS.get(name)
+
     if loader is None:
         message = f"unknown provider {provider_name!r}"
         if require_exact:
             raise ProviderSelectionError(message)
+
         logger.warning("%s; falling back to gemini", message)
         return GeminiProvider()
 
@@ -82,5 +85,6 @@ def get_provider(
         message = f"provider {name!r} is unavailable: {exc}"
         if require_exact:
             raise ProviderSelectionError(message) from exc
+
         logger.warning("%s; falling back to gemini", message)
         return GeminiProvider()

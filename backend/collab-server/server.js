@@ -1,6 +1,12 @@
 const http = require('http');
 const WebSocket = require('ws');
 require('dotenv').config();
+const runtimeWorkspaceUmask = String(process.env.SYNTHI_RUNTIME_WORKSPACE_UMASK || '');
+if (/^(?:0?[0-7]{3,4})$/.test(runtimeWorkspaceUmask)) {
+  // Per-workspace repositories are setgid to the rootless runtime group. Keep
+  // new collaboration writes group-writable for that isolated peer only.
+  process.umask(Number.parseInt(runtimeWorkspaceUmask, 8));
+}
 const Y = require('yjs');
 const fileIndex = require('./fileIndex');
 const fs = require('fs');
@@ -8,10 +14,34 @@ const fsPromises = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
-const { createTerminalWSS, activeSessions: terminalSessions, broadcastToAll: terminalBroadcast, getAvailableShells } = require('./terminalService');
+const { createTerminalWSS, createHeadlessSession, activeSessions: terminalSessions, broadcastToAll: terminalBroadcast, getAvailableShells, resolveWorkspaceCwd } = require('./terminalService');
+const { createAgentSessionAttachService } = require('./agentSessionAttachService');
+const {
+  createRuntimeObservationPublisher,
+} = require('./runtimeObservationPublisher');
+const { createProgramRuntimeManager } = require('./programRuntimeManager');
+const { createContinuousFlushService } = require('./continuousFlushService');
 const proxyService = require('./proxyService');
+const { createRuntimeManager } = require('./workspaceRuntimeContainer');
+const { handleEnsureRuntime } = require('./ensureRuntime');
+const { createContainerPortMonitor } = require('./containerPortMonitor');
+const { isSysboxRuntimeEnabled } = require('./runtimePodSpec');
+const { runtimeRunOnce, runtimeExecOnce, createRuntimePodProgram, codeSiteProgramRuntimeTarget, codeSiteProgramRuntimeLaunchMode, pickRuntimeScopeForSlug } = require('./runtimePodTerminal');
+const { createContainerPortProxy } = require('./containerPortProxy');
 const config = require('./config');
 const gitService = require('./gitService');
+const { resolveCorsPolicy } = require('./corsPolicy');
+const {
+  COMMAND_SCOPES,
+  authorizeCollabGatewayRequest,
+  authorizeTerminalGatewayRequest,
+  hasTrustedInternalToken,
+  requireCollabGatewayAuth,
+} = require('./collabGatewayAuth');
+const {
+  codeSiteGitActionAttempts,
+  shouldRunCodeSiteGitBoundary,
+} = require('./codesiteGitPolicy');
 const repoCache = require('./repoCache');
 const sessionManager = require('./SessionManager');
 const { extractSessionContext, requireGitActionPermission, wsRequirePermission, wsDenyAction, wsAttachContext } = require('./permissionMiddleware');
@@ -24,6 +54,326 @@ const sseService = require('./sseService');
 const persistence = require('./persistence');
 const logger = require('./logger').child({ component: 'collab' });
 const workspacePrepManager = require('./workspacePrepManager');
+const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
+const { createWorkspaceInstructionProjectionRuntime } = require('./workspaceInstructionProjectionRuntime');
+const {
+  prepareFileContentForIdeWrite,
+  presentFileContentForIde,
+  presentFileTreeForIde,
+  shouldReconcileInstructionProjection,
+} = require('./workspaceInstructionProjectionCollabAdapter');
+const codeSiteActivityRegistry = require('./codesiteActivityRegistry');
+const {
+  assertCodeSiteWorkspaceMutationAllowedAsync,
+  guardCodeSiteHostSurface,
+  withCodeSiteBoundaryContext,
+} = require('./codesiteActiveBoundary');
+const workspaceInstructionProjectionRuntime = createWorkspaceInstructionProjectionRuntime({ logger });
+const {
+  configuredControlPlaneBaseUrl,
+  trustedControlPlaneBaseUrl,
+} = require('./codesiteControlPlaneTrust');
+const {
+  handleCodeSiteActivityRequest,
+} = require('./codesiteActivityEndpoint');
+const {
+  handleCodeSiteReadinessRequest,
+} = require('./codesiteReadiness');
+const {
+  handleCodeSiteDeploymentStatusRequest,
+} = require('./codesiteDeploymentStatus');
+const {
+  codeSiteContextFromRequest,
+  createCodeSiteOverlayWorkspace,
+  codeSiteQuarantineReplayPlan,
+  codeSiteRuntimeEnv,
+  codeSiteRuntimeMetadata,
+  createCodeSiteFS,
+  createCodeSiteQuarantineWorkspace,
+  deriveLineProvenanceFromContentChange,
+  enforceCodeSiteWriteAllowed,
+  enforceCodeSiteWritesAllowed,
+  finalizeCodeSiteQuarantineWorkspace,
+  isCodeSiteCommitBlockedError,
+  isCodeSiteDeniedError,
+  listCodeSiteQuarantineManifests,
+  normalizeRepoRelativePath,
+  readCodeSiteQuarantineManifest,
+} = require('./codesiteFs');
+
+function queueHeadlessCommandStart(ptyProcess, command) {
+  const isWin = require('os').platform() === 'win32';
+  const promptPattern = isWin ? /PS [^\r\n]*>/ : /[$#]\s*$/;
+  let promptBuffer = '';
+  let commandSent = false;
+  let promptCheckInterval = null;
+  let promptWaitTimeout = null;
+  let resolveCommandStarted;
+
+  const commandStartedPromise = new Promise((resolve) => {
+    resolveCommandStarted = resolve;
+  });
+
+  const promptDisposable = ptyProcess.onData((data) => {
+    if (commandSent) {
+      return;
+    }
+
+    promptBuffer = `${promptBuffer}${data}`.slice(-16_384);
+    if (promptPattern.test(promptBuffer)) {
+      sendCommand();
+    }
+  });
+
+  function cleanup() {
+    if (promptCheckInterval) {
+      clearInterval(promptCheckInterval);
+      promptCheckInterval = null;
+    }
+    if (promptWaitTimeout) {
+      clearTimeout(promptWaitTimeout);
+      promptWaitTimeout = null;
+    }
+    try { promptDisposable.dispose?.(); } catch (_) {}
+  }
+
+  function sendCommand() {
+    if (commandSent) {
+      return;
+    }
+
+    commandSent = true;
+    cleanup();
+    ptyProcess.write(`${command}\r`);
+    resolveCommandStarted();
+  }
+
+  promptCheckInterval = setInterval(() => {
+    if (!commandSent && promptPattern.test(promptBuffer)) {
+      sendCommand();
+    }
+  }, 100);
+  if (typeof promptCheckInterval.unref === 'function') {
+    promptCheckInterval.unref();
+  }
+
+  promptWaitTimeout = setTimeout(() => {
+    if (!commandSent) {
+      logger.info({ commandPreview: command.slice(0, 120) }, 'Prompt not detected, sending command anyway');
+      sendCommand();
+    }
+  }, 1000);
+  if (typeof promptWaitTimeout.unref === 'function') {
+    promptWaitTimeout.unref();
+  }
+
+  ptyProcess.onExit(() => {
+    if (!commandSent) {
+      cleanup();
+      resolveCommandStarted();
+    }
+  });
+
+  return { commandStartedPromise };
+}
+
+// ── Container runtime (hybrid Phase 1) ───────────────────────────────────────
+// ENABLE_CONTAINER_RUNTIME keeps the original opt-in behavior for ordinary
+// terminals/programs. ENABLE_CODESITE_DOCKER_RUNTIME is default-on because active
+// CodeSite managed sessions need a real Docker overlay boundary instead of a
+// host-shell fallback.
+const ENABLE_CONTAINER_RUNTIME = process.env.ENABLE_CONTAINER_RUNTIME === '1';
+const ENABLE_CODESITE_DOCKER_RUNTIME = process.env.ENABLE_CODESITE_DOCKER_RUNTIME !== '0';
+const ENABLE_WORKSPACE_RUNTIME = ENABLE_CONTAINER_RUNTIME || ENABLE_CODESITE_DOCKER_RUNTIME;
+const workspaceRuntime = ENABLE_WORKSPACE_RUNTIME
+  ? createRuntimeManager({
+      docker: new (require('dockerode'))({
+        socketPath: process.env.DOCKER_SOCKET_PATH || '/var/run/docker.sock',
+      }),
+      logger,
+    })
+  : null;
+const containerPortProxy = ENABLE_WORKSPACE_RUNTIME
+  ? createContainerPortProxy({
+      // Resolve the running runtime-container host for a slug. Dev is effectively
+      // single-user per workspace, but CodeSite overlay sessions carry runtime
+      // identity options, so ask the manager for explicit live session metadata.
+      resolveHost: (slug) => {
+        const sessions = typeof workspaceRuntime.listRuntimeSessions === 'function'
+          ? workspaceRuntime.listRuntimeSessions()
+          : [];
+        const match = sessions.find((session) => session.slug === slug && session.mode === 'readwrite')
+          || sessions.find((session) => session.slug === slug);
+        return match?.host || null;
+      },
+      // Stream auto-login: hand the proxy the per-session KasmVNC credential so it
+      // injects Authorization: Basic for webGui desktop streams (DBeaver/Postman).
+      // Invoked at request time, after managedProgramRuntime is initialized.
+      resolveStreamAuth: (slug, port) => managedProgramRuntime.resolveStreamAuth(slug, port),
+    })
+  : null;
+
+// Phase 2b — detect ports opened by servers INSIDE the runtime container (e.g.
+// `npm run dev` from the in-app terminal) and push the live set to the frontend
+// Ports panel. Reads /proc/net/tcp[6] via runOnce; broadcasts over notifyWss.
+const containerPortMonitor = ENABLE_WORKSPACE_RUNTIME
+  ? createContainerPortMonitor({
+      // Active runtime containers. Overlay sessions include runtimeOptions so
+      // runOnce addresses the same isolated container identity.
+      listContainers: () => (typeof workspaceRuntime.listRuntimeSessions === 'function'
+        ? workspaceRuntime.listRuntimeSessions().map((session) => ({
+            slug: session.slug,
+            userId: session.userId,
+            runtimeOptions: session.runtimeOptions || {},
+          }))
+        : []),
+      runOnce: (slug, userId, argv, runtimeOptions) => workspaceRuntime.runOnce(slug, userId, argv, runtimeOptions),
+      onPortsChanged: (slug, _userId, ports) => broadcastContainerPorts(slug, ports),
+      logger,
+    })
+  : null;
+
+// Slice 4 — detect ports opened INSIDE the per-workspace Sysbox runtime POD
+// (k8s-exec /proc/net/tcp[6]) and surface them at /runtime/<scope>/port/<N>. Dark:
+// only when RUNTIME_BACKEND=sysbox-pod. Reuses the same monitor (parse/baseline);
+// the key is (slug, runtimeScope) — slug routes the broadcast, scope addresses the pod.
+const runtimePortMonitor = isSysboxRuntimeEnabled()
+  ? createContainerPortMonitor({
+      listContainers: async () => {
+        const sp = require('./spawner');
+        if (typeof sp.listActiveRuntimeSessions !== 'function') return [];
+        const sessions = await sp.listActiveRuntimeSessions();
+        return sessions.map((s) => ({ slug: s.slug || s.runtimeScope, userId: s.runtimeScope }));
+      },
+      runOnce: (_slug, runtimeScope, argv) => runtimeRunOnce(runtimeScope, argv),
+      onPortsChanged: (slug, runtimeScope, ports) => {
+        broadcastRuntimePorts(slug, runtimeScope, ports);
+        // Slice 1 (real programs): also light up the App/Ports surfaces of any
+        // managed program session running in THIS runtime pod (scoped attribution).
+        try { managedProgramRuntime.recomputeRuntimeScopePorts(runtimeScope, ports); }
+        catch (err) { logger.warn({ err }, 'recomputeRuntimeScopePorts failed'); }
+      },
+      logger,
+    })
+  : null;
+
+const managedProgramRuntime = createProgramRuntimeManager({
+  activeSessions: terminalSessions,
+  logger,
+  onSessionEvent: (event) => {
+    try {
+      runtimeObservationPublisher.handleRuntimeEvent(event);
+    } catch (_) { /* never let telemetry break the runtime */ }
+  },
+  getActivePorts: () => proxyService.getActivePorts(),
+  launchRuntime: async ({ sessionId, workspaceSlug, userId, env, title, command, runtimeType, metadata, codesiteContext, activeWorkspacePath }) => {
+    // Slice 1 (real programs): `container` programs route into the per-workspace
+    // Sysbox runtime POD when the backend is on (its own validated, isolated
+    // dockerd — precedence), else the dev-hybrid runtime container, else fail loud.
+    // Everything else keeps the existing shared-collab headless PTY path.
+    const codeSiteHybridAvailable = Boolean(workspaceRuntime) && Boolean(ENABLE_CONTAINER_RUNTIME || ENABLE_CODESITE_DOCKER_RUNTIME);
+    const nonCodeSiteHybridAvailable = Boolean(workspaceRuntime) && ENABLE_CONTAINER_RUNTIME;
+    const hasHybrid = codesiteContext?.active ? codeSiteHybridAvailable : nonCodeSiteHybridAvailable;
+    const { target } = codeSiteProgramRuntimeTarget({
+      codeSiteContext: codesiteContext,
+      runtimeType,
+      sysboxEnabled: isSysboxRuntimeEnabled(),
+      hasHybrid,
+    });
+    if (target === 'sysbox-pod') {
+      const sessions = typeof spawner.listActiveRuntimeSessions === 'function'
+        ? await spawner.listActiveRuntimeSessions()
+        : [];
+      const runtimeScope = pickRuntimeScopeForSlug(sessions, workspaceSlug);
+      if (!runtimeScope) throw new Error('runtime_pod_not_ready');
+      return createRuntimePodProgram({ runtimeScope, workspaceSlug, userId, command, env });
+    }
+    if (target === 'hybrid') {
+      let codeSiteQuarantine = null;
+      let runtimeOptions = {};
+      try {
+        if (codesiteContext?.active) {
+          await ensureRuntimeFilesystem({
+            workspaceSlug,
+            filesystemUserId: userId,
+            runtimeScope: '',
+            reason: 'program_runtime_hybrid',
+            codesiteContext,
+          });
+          const cwd = await resolveWorkspaceCwd(workspaceSlug, userId);
+          codeSiteQuarantine = await createCodeSiteOverlayWorkspace(codesiteContext, cwd, {
+            operation: 'program-runtime',
+            baseDir: codeSiteRuntimeQuarantineBaseDir(cwd),
+          });
+          runtimeOptions = {
+            codesiteContext,
+            codeSiteBaseRoot: codeSiteQuarantine?.baseRoot || codeSiteQuarantine?.originalCwd || '',
+            codeSiteOverlayRoot: codeSiteQuarantine?.root || '',
+            codeSiteOverlayUpperRoot: codeSiteQuarantine?.upperRoot || '',
+            codeSiteOverlayWorkRoot: codeSiteQuarantine?.workRoot || '',
+            codeSiteOverlayId: codeSiteQuarantine?.overlayId || codeSiteQuarantine?.quarantineId || '',
+          };
+        }
+        await workspaceRuntime.ensureRuntimeContainer(workspaceSlug, userId, runtimeOptions);
+        // The rootless dockerd inside the runtime container takes ~15-25s to be
+        // ready; wait for it so the program's first `docker ...` command doesn't
+        // race a not-yet-listening daemon.
+        const ready = await workspaceRuntime.waitForRuntimeReady(workspaceSlug, userId, runtimeOptions);
+        if (!ready) {
+          const error = new Error('codesite_runtime_overlay_unavailable');
+          error.code = 'CODESITE_RUNTIME_OVERLAY_UNAVAILABLE';
+          throw error;
+        }
+        const handle = await workspaceRuntime.execInRuntime(workspaceSlug, userId, {
+          command,
+          env,
+          tty: true,
+          ...runtimeOptions,
+        });
+        return attachCodeSiteRuntimeQuarantineFinalizer(handle, codesiteContext, codeSiteQuarantine, {
+          operation: 'program-runtime',
+        });
+      } catch (err) {
+        if (codeSiteQuarantine) {
+          await finalizeCodeSiteQuarantineWorkspace(codesiteContext, codeSiteQuarantine, {
+            tool: 'program_runtime',
+          }).catch((finalizeErr) => {
+            logger.warn('codesite_program_runtime_quarantine_cleanup_failed', { err: finalizeErr?.message || finalizeErr });
+          });
+        }
+        throw err;
+      }
+    }
+    if (target === 'unavailable') {
+      // container requested but no runtime exists — do NOT run in the docker-less
+      // headless PTY (DOCKER_HOST is scrubbed there); surface a clear error.
+      throw new Error('container_runtime_unavailable');
+    }
+    const runtime = await createHeadlessSession(sessionId, workspaceSlug, userId, 120, 30, title, {
+      env,
+      codesite: metadata?.codesite || null,
+      codesiteContext,
+      activeWorkspacePath,
+    });
+    const { commandStartedPromise } = queueHeadlessCommandStart(runtime.ptyProcess, command);
+    return {
+      ...runtime,
+      commandStartedPromise,
+    };
+  },
+});
+
+// Continuous editor→disk flush: keep /workspace current for a running
+// container/webGui program (e.g. DBeaver) that reads the same files as the
+// editor, reusing flushWorkspaceDocsToDisk. Periodic while a session is active
+// (self-terminating via the manager's session state) + prompt on save. Tracks
+// only container/webGui sessions; env-gated (SYNTHI_CONTINUOUS_FLUSH_ENABLED /
+// SYNTHI_FLUSH_INTERVAL_MS / SYNTHI_FLUSH_DEBOUNCE_MS) so it is a no-op otherwise.
+const continuousFlush = createContinuousFlushService({
+  flushFn: (slug, userId, scope) => flushWorkspaceDocsToDisk(slug, userId, scope),
+  isSessionActive: (sessionId) =>
+    managedProgramRuntime.getManagedSession(sessionId)?.state === 'running',
+});
 
 // ── User block list (in-memory) ──────────────────────────────────────────────
 // blockedBy: userId → Set<blockedUserId>
@@ -45,6 +395,39 @@ if (typeof fetch === 'function') {
 const CODE_INTEL_URL = config.CODE_INTEL_URL;
 
 const PORT = config.PORT;
+
+function normalizeBaseUrl(value, fallback) {
+  const raw = String(value || fallback || '').trim();
+  if (!raw) return '';
+  return raw.replace(/\/+$/, '');
+}
+
+function publicAppBaseUrl() {
+  return normalizeBaseUrl(
+    process.env.SYNTHI_PUBLIC_APP_URL || process.env.SYNTHI_APP_URL,
+    'http://localhost:3000',
+  );
+}
+
+function internalAppBaseUrl() {
+  return normalizeBaseUrl(
+    process.env.SYNTHI_APP_INTERNAL_URL || process.env.SYNTHI_APP_URL,
+    'http://localhost:3000',
+  );
+}
+
+function makeInviteLink({ sessionId, inviteToken, roomCode, slug }) {
+  const style = String(process.env.SYNTHI_INVITE_LINK_STYLE || 'slug').trim().toLowerCase();
+  const useSlugPath = style !== 'legacy' && slug;
+  const url = new URL(
+    useSlugPath ? `/${encodeURIComponent(slug)}` : `/collab/${encodeURIComponent(sessionId)}`,
+    publicAppBaseUrl(),
+  );
+  if (useSlugPath) url.searchParams.set('collab', sessionId);
+  url.searchParams.set('token', inviteToken);
+  if (roomCode) url.searchParams.set('code', roomCode);
+  return url.toString();
+}
 
 // PERF: Bounded LRU cache replaces unbounded Map to prevent memory leak and
 // GC pauses on long-running servers with many files.  1000 entries covers the
@@ -121,9 +504,7 @@ function enforceOrigin(req, res) {
   if (!origin) {
     // Allow if an explicit cross-service bypass header is configured, to
     // support service-to-service calls in trusted networks.
-    const internalToken = req.headers['x-collab-internal-token'];
-    if (internalToken && process.env.COLLAB_INTERNAL_TOKEN &&
-        internalToken === process.env.COLLAB_INTERNAL_TOKEN) {
+    if (hasTrustedInternalToken(req, { config })) {
       return true;
     }
     // When no allowlist is configured we keep legacy permissive behaviour.
@@ -140,6 +521,23 @@ function enforceOrigin(req, res) {
   return true;
 }
 
+function isLocalControlPlaneBypass() {
+  return Boolean(
+    config.SYNTHI_WORKSPACE_AUTH_BYPASS &&
+    !process.env.KUBERNETES_SERVICE_HOST &&
+    process.env.NODE_ENV !== 'production'
+  );
+}
+
+function requireInternalControlPlaneToken(req, res) {
+  if (hasTrustedInternalToken(req, { config }) || isLocalControlPlaneBypass()) {
+    return true;
+  }
+  res.writeHead(403, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'forbidden', detail: 'internal token required' }));
+  return false;
+}
+
 /**
  * Rate-limit guard.  If over budget, writes a 429 and returns false.
  * Scope keys help separate sensitive endpoints (knock, invite) from cheap ones.
@@ -150,6 +548,29 @@ function rateLimitGuard(req, res, scope, limitPerMin) {
   res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '30' });
   res.end(JSON.stringify({ error: 'rate_limited', scope }));
   return false;
+}
+
+function applyCollabGatewayAuthIdentity(parsed, auth) {
+  if (!parsed || !auth || auth.source !== 'gateway') return parsed;
+  if (auth.workspaceUserId) parsed.userId = auth.workspaceUserId;
+  if (auth.filesystemUserId) parsed.filesystemUserId = auth.filesystemUserId;
+  else if (auth.workspaceUserId && !parsed.filesystemUserId) parsed.filesystemUserId = auth.workspaceUserId;
+  if (auth.runtimeScope) parsed.runtimeScope = auth.runtimeScope;
+  if (auth.collabSessionId) parsed.collabSessionId = auth.collabSessionId;
+  return parsed;
+}
+
+function requireCommandGatewayAuth(req, res, { slug, parsed, requiredScope = COMMAND_SCOPES.EXEC } = {}) {
+  const auth = requireCollabGatewayAuth(req, res, {
+    slug,
+    parsed,
+    requiredScope,
+    config,
+    sessionManager,
+  });
+  if (!auth) return null;
+  applyCollabGatewayAuthIdentity(parsed, auth);
+  return auth;
 }
 
 // Track which slugs have been hydrated from GCS this boot.
@@ -181,6 +602,430 @@ async function purgeLegacyRoomState(slug, filePath) {
  */
 function computeHash(content) {
   return crypto.createHash('md5').update(content || '').digest('hex');
+}
+
+function arrayValue(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function uniqueArray(values) {
+  return [...new Set(arrayValue(values).filter(Boolean))];
+}
+
+function codeSiteWriteEvidence(payload = {}, derivedLineProvenance = []) {
+  const explicitLineProvenance = arrayValue(
+    payload.lineProvenance
+    || payload.line_provenance
+    || payload.hunks
+    || payload.lineAnchors
+    || payload.line_anchors,
+  );
+  return {
+    lineProvenance: [...explicitLineProvenance, ...arrayValue(derivedLineProvenance)],
+    evidenceRefs: arrayValue(payload.evidenceRefs || payload.evidence_refs),
+    processAncestry: arrayValue(payload.processAncestry || payload.process_ancestry),
+  };
+}
+
+function sha256TextDigest(value) {
+  return sha256BufferDigest(Buffer.from(String(value ?? ''), 'utf8'));
+}
+
+function sha256BufferDigest(buffer) {
+  return `sha256:${crypto.createHash('sha256').update(buffer || Buffer.alloc(0)).digest('hex')}`;
+}
+
+function decodeQuarantineReplayContent(change) {
+  if (change.replayOperation === 'delete') {
+    return { operation: 'delete', buffer: null, text: null, digest: null };
+  }
+  if (change.replayOperation === 'write_binary' || typeof change.afterBase64 === 'string') {
+    const buffer = Buffer.from(String(change.afterBase64 || ''), 'base64');
+    return { operation: 'write_binary', buffer, text: null, digest: sha256BufferDigest(buffer) };
+  }
+  const text = String(change.afterText ?? '');
+  const buffer = Buffer.from(text, 'utf8');
+  return { operation: 'write_text', buffer, text, digest: sha256BufferDigest(buffer) };
+}
+
+async function workspaceFileExists(repoRoot, filePath) {
+  try {
+    const relPath = normalizeRepoRelativePath(filePath);
+    await fsPromises.stat(path.join(repoRoot, relPath));
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.message === 'path_escape' || error?.message === 'path_required') {
+      return false;
+    }
+    return false;
+  }
+}
+
+async function readWorkspaceFileBuffer(repoRoot, filePath) {
+  try {
+    const relPath = normalizeRepoRelativePath(filePath);
+    return await fsPromises.readFile(path.join(repoRoot, relPath));
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.message === 'path_escape' || error?.message === 'path_required') {
+      return null;
+    }
+    return null;
+  }
+}
+
+function validateQuarantineReplayBase(change, currentBuffer, currentExists) {
+  const currentDigest = currentBuffer ? sha256BufferDigest(currentBuffer) : null;
+  const nextContent = decodeQuarantineReplayContent(change);
+  const afterDigest = nextContent.digest;
+  if (change.afterDigest && afterDigest && change.afterDigest !== afterDigest) {
+    return {
+      ok: false,
+      reasonCodes: ['quarantine_replay_after_digest_mismatch'],
+      currentDigest,
+      afterDigest,
+    };
+  }
+  if (change.afterDigest && nextContent.operation === 'delete' && change.afterDigest !== null) {
+    return {
+      ok: false,
+      reasonCodes: ['quarantine_replay_delete_after_digest_mismatch'],
+      currentDigest,
+      afterDigest,
+    };
+  }
+  if (change.beforeExists === false && currentExists) {
+    return {
+      ok: false,
+      reasonCodes: ['quarantine_replay_base_exists'],
+      currentDigest,
+      afterDigest,
+    };
+  }
+  if (change.beforeExists === true && !currentExists) {
+    return {
+      ok: false,
+      reasonCodes: ['quarantine_replay_base_missing'],
+      currentDigest,
+      afterDigest,
+    };
+  }
+  if (typeof change.beforeText === 'string') {
+    const currentContent = currentBuffer ? currentBuffer.toString('utf8') : '';
+    return currentExists && currentContent === change.beforeText
+      ? { ok: true, currentDigest, afterDigest, operation: nextContent.operation, nextContent }
+      : {
+        ok: false,
+        reasonCodes: ['quarantine_replay_base_mismatch'],
+        currentDigest,
+        expectedDigest: sha256TextDigest(change.beforeText),
+        afterDigest,
+      };
+  }
+  if (typeof change.beforeBase64 === 'string') {
+    const expectedBuffer = Buffer.from(change.beforeBase64, 'base64');
+    return currentExists && currentBuffer && currentBuffer.equals(expectedBuffer)
+      ? { ok: true, currentDigest, afterDigest, operation: nextContent.operation, nextContent }
+      : {
+        ok: false,
+        reasonCodes: ['quarantine_replay_base_mismatch'],
+        currentDigest,
+        expectedDigest: sha256BufferDigest(expectedBuffer),
+        afterDigest,
+      };
+  }
+  if (change.beforeDigest) {
+    return currentDigest === change.beforeDigest
+      ? { ok: true, currentDigest, afterDigest, operation: nextContent.operation, nextContent }
+      : {
+        ok: false,
+        reasonCodes: ['quarantine_replay_base_mismatch'],
+        currentDigest,
+        expectedDigest: change.beforeDigest,
+        afterDigest,
+      };
+  }
+  if (nextContent.operation === 'delete') {
+    return {
+      ok: false,
+      reasonCodes: ['quarantine_replay_delete_base_evidence_required'],
+      currentDigest,
+      afterDigest,
+    };
+  }
+  if (String(change.kind || '').toLowerCase() === 'created' && currentExists) {
+    return {
+      ok: false,
+      reasonCodes: ['quarantine_replay_base_exists'],
+      currentDigest,
+      afterDigest,
+    };
+  }
+  return { ok: true, currentDigest, afterDigest, operation: nextContent.operation, nextContent };
+}
+
+function selectedQuarantinePathSet(parsed = {}) {
+  const requestedPaths = new Set(arrayValue(parsed.paths || parsed.selectedPaths || parsed.selected_paths)
+    .map((item) => {
+      try { return normalizeRepoRelativePath(item); } catch (_) { return null; }
+    })
+    .filter(Boolean));
+  if (!requestedPaths.size) {
+    const error = new Error('missing_selected_paths');
+    error.code = 'MISSING_SELECTED_PATHS';
+    throw error;
+  }
+  return requestedPaths;
+}
+
+function selectedQuarantineChanges(manifest, parsed = {}, requestedPaths = null) {
+  const selectedPaths = requestedPaths || selectedQuarantinePathSet(parsed);
+  const changes = arrayValue(manifest?.changes);
+  return changes.filter((change) => selectedPaths.has(change.path || change.quarantineEvidence?.path));
+}
+
+function quarantineManifestEventDetails(manifest = {}) {
+  const changes = arrayValue(manifest.changes).map((change) => {
+    const evidence = change.quarantineEvidence || {};
+    return {
+      path: change.path || evidence.path || null,
+      kind: change.kind || evidence.kind || null,
+      beforeDigest: change.beforeDigest || evidence.beforeDigest || null,
+      afterDigest: change.afterDigest || evidence.afterDigest || null,
+      evidenceRef: evidence.evidenceRef || change.evidenceRef || null,
+      quarantineId: change.quarantineId || evidence.quarantineId || manifest.quarantineId || null,
+    };
+  }).filter((change) => change.path);
+  return {
+    manifestPaths: uniqueArray(changes.map((change) => change.path)),
+    manifestChanges: changes,
+    manifestChangeCount: changes.length,
+    symlinkSanitization: manifest.symlinkSanitization || null,
+  };
+}
+
+async function codeSiteQuarantineStorageForRequest(slug, filesystemUserId, runtimeScope, reason, codeSiteContext = null, options = {}) {
+  if (options.ensureRuntime !== false) {
+    await ensureRuntimeFilesystem({
+      workspaceSlug: slug,
+      filesystemUserId,
+      runtimeScope,
+      reason,
+      codesiteContext: codeSiteContext?.active ? codeSiteContext : null,
+    });
+  }
+  const cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
+  const baseDir = codeSiteRuntimeQuarantineBaseDir(cwd)
+    || path.join(require('os').tmpdir(), 'synthi-codesitefs-quarantine');
+  return {
+    cwd,
+    baseDir,
+    repoRoot: gitService.getEffectiveRepoPath(slug, filesystemUserId),
+  };
+}
+
+async function prepareCodeSiteQuarantineReplayPlan({
+  slug,
+  changes,
+  repoRoot,
+  effectiveUserId,
+  evidenceRefs = [],
+  processAncestry = [],
+  ancestryLabel = 'collab-server:codesitefs-quarantine-replay',
+}) {
+  const replayPlan = codeSiteQuarantineReplayPlan(changes);
+  const rejected = [...replayPlan.rejected];
+  const prepared = [];
+  if (!replayPlan.changes.length && !rejected.length) {
+    rejected.push({
+      ok: false,
+      index: null,
+      path: null,
+      reasonCodes: ['quarantine_replay_no_changes_selected'],
+    });
+  }
+  if (rejected.length) {
+    return { replayPlan, prepared, rejected };
+  }
+  for (const change of replayPlan.changes) {
+    const currentBuffer = await readWorkspaceFileBuffer(repoRoot, change.path);
+    const currentContent = currentBuffer ? currentBuffer.toString('utf8') : '';
+    const currentExists = await workspaceFileExists(repoRoot, change.path);
+    const validation = validateQuarantineReplayBase(change, currentBuffer, currentExists);
+    const changeEvidenceRefs = uniqueArray([
+      ...arrayValue(evidenceRefs),
+      ...arrayValue(change.evidenceRefs),
+      change.evidenceRef,
+    ]);
+    const changeProcessAncestry = uniqueArray([
+      ...arrayValue(processAncestry),
+      ancestryLabel,
+    ]);
+    if (!validation.ok) {
+      rejected.push({
+        ok: false,
+        index: change.index,
+        path: change.path,
+        kind: change.kind,
+        reasonCodes: validation.reasonCodes,
+        currentDigest: validation.currentDigest,
+        expectedDigest: validation.expectedDigest || change.beforeDigest || null,
+        afterDigest: validation.afterDigest || change.afterDigest || null,
+        evidenceRef: change.evidenceRef,
+        quarantineId: change.quarantineId || null,
+      });
+      continue;
+    }
+    const lineProvenance = quarantineReplayLineProvenance(change, currentContent, validation, {
+      evidenceRefs: changeEvidenceRefs,
+      processAncestry: changeProcessAncestry,
+    });
+    prepared.push({
+      change,
+      operation: validation.operation,
+      currentContent,
+      currentBuffer,
+      currentExists,
+      validation,
+      evidenceRefs: changeEvidenceRefs,
+      processAncestry: changeProcessAncestry,
+      lineProvenance,
+    });
+  }
+  return { replayPlan, prepared, rejected };
+}
+
+function quarantineReplayLineProvenance(change, currentContent, validation, options = {}) {
+  if (validation.operation === 'write_text' || validation.operation === 'delete') {
+    return deriveLineProvenanceFromContentChange(
+      change.path,
+      currentContent,
+      validation.operation === 'delete' ? '' : validation.nextContent.text,
+      {
+        evidenceRefs: options.evidenceRefs,
+        processAncestry: options.processAncestry,
+        promptSummary: validation.operation === 'delete'
+          ? 'Apply reviewed CodeSiteFS quarantine delete'
+          : 'Apply reviewed CodeSiteFS quarantine text change',
+        reasonRef: `quarantine-review-apply:${change.evidenceRef || change.path}`,
+      },
+    );
+  }
+  return [{
+    filePath: change.path,
+    startLine: 1,
+    endLine: 1,
+    lineAnchor: `${change.path}#L1-L1`,
+    reasonRef: `quarantine-review-apply:${change.evidenceRef || change.path}`,
+    evidenceRefs: options.evidenceRefs,
+    processAncestry: options.processAncestry,
+    promptSummary: 'Apply reviewed CodeSiteFS quarantine binary change',
+  }];
+}
+
+function quarantineReplayAttempt(item) {
+  return {
+    path: item.change.path,
+    kind: 'quarantine-review-apply',
+    tool: item.operation === 'delete' ? 'file_delete' : 'file_write',
+    evidenceRefs: item.evidenceRefs,
+    processAncestry: item.processAncestry,
+    lineProvenance: item.lineProvenance,
+  };
+}
+
+async function applyQuarantineReplayItem(slug, item, effectiveUserId) {
+  if (item.operation === 'delete') {
+    await withTelemetry('fs:delete', () => gitService.deleteFile(slug, item.change.path, effectiveUserId));
+    return;
+  }
+  const nextContent = item.validation.nextContent;
+  await withTelemetry('fs:write', () => gitService.writeFile(
+    slug,
+    item.change.path,
+    item.operation === 'write_binary' ? nextContent.buffer : nextContent.text,
+    effectiveUserId,
+  ));
+}
+
+function quarantineReplayAppliedRecord(item) {
+  return {
+    path: item.change.path,
+    kind: item.change.kind,
+    operation: item.operation,
+    beforeDigest: item.validation.currentDigest,
+    afterDigest: item.validation.afterDigest,
+    evidenceRef: item.change.evidenceRef,
+    lineProvenanceCount: item.lineProvenance.length,
+  };
+}
+
+function codeSiteControlPlaneBaseUrl(context = {}) {
+  const workspaceSlug = context.workspaceSlug || context.slug || '';
+  if (context.controlPlaneUrl) {
+    return trustedControlPlaneBaseUrl(context.controlPlaneUrl, workspaceSlug, {
+      controlPlaneTrusted: context.controlPlaneTrusted,
+    });
+  }
+  return configuredControlPlaneBaseUrl(workspaceSlug);
+}
+
+async function recordCodeSiteQuarantineTimelineEvent(context, eventType, body = {}) {
+  if (!context?.active || !context.transactionId) return null;
+  const baseUrl = codeSiteControlPlaneBaseUrl(context);
+  if (!baseUrl || typeof fetch !== 'function') return null;
+  const headers = {
+    accept: 'application/json',
+    'content-type': 'application/json',
+  };
+  const token = context.authToken || process.env.SYNTHI_CODESITE_TOKEN;
+  const cookie = context.cookie || process.env.SYNTHI_CODESITE_COOKIE;
+  if (token) headers.authorization = `Bearer ${token}`;
+  if (cookie) headers.cookie = cookie;
+  const response = await fetch(`${baseUrl}/transactions/${encodeURIComponent(context.transactionId)}/quarantine-events`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      ...body,
+      eventType,
+    }),
+  });
+  const text = await response.text().catch(() => '');
+  let parsed = {};
+  try {
+    parsed = text ? JSON.parse(text) : {};
+  } catch (_) {
+    parsed = { raw: text };
+  }
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: response.status,
+      error: parsed.error || parsed.message || 'codesite_quarantine_event_failed',
+    };
+  }
+  return parsed.event || parsed;
+}
+
+async function readWorkspaceFileForLineProvenance(slug, filePath, userId) {
+  try {
+    return await gitService.readFile(slug, filePath, userId);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return '';
+    return '';
+  }
+}
+
+async function deriveCodeSiteLineProvenance(slug, filePath, nextContent, userId, options = {}) {
+  if (typeof nextContent !== 'string') return [];
+  const previousContent = typeof options.previousContent === 'string'
+    ? options.previousContent
+    : await readWorkspaceFileForLineProvenance(slug, filePath, userId);
+  return deriveLineProvenanceFromContentChange(filePath, previousContent, nextContent, {
+    evidenceRefs: options.evidenceRefs,
+    processAncestry: options.processAncestry,
+    promptSummary: options.promptSummary,
+    reasonRef: options.reasonRef,
+  });
 }
 
 /**
@@ -360,12 +1205,9 @@ function validateDocAccess(parsedDoc, { userId, sessionId }) {
  * When userId is provided, reads from the per-user repo; otherwise falls
  * back to the slug-level repo.
  */
-async function getActualFileContent(slug, filePath, userId) {
+async function getActualFileContent(slug, filePath, userId, options = {}) {
   try {
-    const repoPath = gitService.getEffectiveRepoPath(slug, userId);
-    const fullPath = path.join(repoPath, filePath);
-    const content = await fsPromises.readFile(fullPath, 'utf8');
-    return content;
+    return await gitService.readFile(slug, filePath, userId, options);
   } catch (e) {
     console.log(`[Collab] Could not read file ${slug}/${filePath}:`, e.code || e.message);
     return null;
@@ -430,6 +1272,11 @@ async function flushDocToDisk(docName, options = {}) {
     content = await ySweetBridge.readDocContent(docName);
   }
   if (content == null) return;
+  // The CRDT and durable editor backup keep user-visible bytes. A passive
+  // instruction projection adds a terminal-only block only at disk-write time.
+  const diskContent = typeof options.physicalContentOverride === 'string'
+    ? options.physicalContentOverride
+    : content;
 
   // 1. GCS sync (durable store)
   if (config.GCS_SYNC_ON_FLUSH && gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
@@ -460,16 +1307,18 @@ async function flushDocToDisk(docName, options = {}) {
   // the user's edited content, and there's nothing to revert to.
   //
   // ORDER MATTERS: we MUST read the prior disk content BEFORE calling
-  // safeWriteFile, otherwise the read sees the freshly-written new content
+  // gitService.writeFile, otherwise the read sees the freshly-written new content
   // and `prior === content` short-circuits the baseline seed.  An earlier
   // version relied on gitService.syncFile() happening in the caller, which
   // broke this ordering and meant the very first saved version was always
   // the edited content with nothing to revert to.
   const repoPath = gitService.getEffectiveRepoPath(slug, effectiveUserId);
   const fullPath = path.join(repoPath, filePath);
+  let priorContent = '';
   try {
     const prior = await fsPromises.readFile(fullPath, 'utf8');
-    if (prior !== content) {
+    priorContent = prior;
+    if (prior !== diskContent) {
       const priorHash = computeHash(prior);
       const existingCount = await persistence.countFileVersions(slug, filePath);
       if (existingCount === 0) {
@@ -488,7 +1337,25 @@ async function flushDocToDisk(docName, options = {}) {
       logger.warn('version_baseline_read_failed', { slug, filePath }, err);
     }
   }
-  await gitService.safeWriteFile(fullPath, content);
+  const derivedLineProvenance = deriveLineProvenanceFromContentChange(filePath, priorContent, diskContent, {
+    evidenceRefs: options.evidenceRefs,
+    processAncestry: options.processAncestry,
+    promptSummary: 'Yjs save flushed to disk',
+    reasonRef: `yjs_flush:${filePath}`,
+  });
+  await runCodeSiteMutationBoundary(options.codesiteContext, {
+    operation: 'yjs_flush',
+    tool: 'file_write',
+    attempts: [{
+      path: filePath,
+      kind: 'yjs_flush',
+      tool: 'file_write',
+      ...codeSiteWriteEvidence(options, derivedLineProvenance),
+    }],
+  }, async () => gitService.writeFile(slug, filePath, diskContent, effectiveUserId), {
+    repoRoot: repoPath,
+    workspaceSlug: slug,
+  });
 
   // Update hash cache
   fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
@@ -596,6 +1463,213 @@ function validateFilePath(filePath) {
   return normalized;
 }
 
+function writeCodeSiteDenied(res, err) {
+  res.writeHead(err.status || 403, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    error: 'codesite_write_denied',
+    message: err.message,
+    event: err.event,
+  }));
+}
+
+function codeSiteEnforceOptions(context, options = {}) {
+  if (!context?.active || context.mode === 'monitor') return options;
+  return {
+    ...options,
+    requireAuthoritativeContext: true,
+  };
+}
+
+async function runCodeSiteMutationBoundary(context, operation, applyFn, options = {}) {
+  await assertCodeSiteWorkspaceMutationAllowedAsync(options.workspaceSlug || context?.workspaceSlug, context, operation, {
+    surface: options.surface || operation.operation || operation.kind,
+    controlPlaneUrl: options.controlPlaneUrl || context?.controlPlaneUrl,
+    controlPlaneTrusted: options.controlPlaneTrusted || context?.controlPlaneTrusted,
+    fetch: options.fetch || options.codesiteFetch || options.codeSiteFetch,
+    authToken: options.authToken || context?.authToken,
+    cookie: options.cookie || context?.cookie,
+  });
+  const codesiteFs = createCodeSiteFS(context, codeSiteEnforceOptions(context, options));
+  return withCodeSiteBoundaryContext(
+    context,
+    () => codesiteFs.run(operation, applyFn, options),
+    {
+      operation: operation.operation || operation.kind || options.surface || 'workspace_mutation',
+      source: 'collab-server',
+    },
+  );
+}
+
+async function runCodeSiteGitMutationBoundary(context, action, attempts, applyFn, options = {}) {
+  return runCodeSiteMutationBoundary(context, {
+    operation: `git:${action}`,
+    tool: attempts?.[0]?.tool || 'git_worktree',
+    attempts,
+  }, applyFn, options);
+}
+
+function codeSiteProvisioningAttempt(kind) {
+  return {
+    path: '**',
+    kind,
+    tool: 'git_provisioning',
+  };
+}
+
+async function enforceCodeSiteProvisioningAllowed(context, kind, options = {}) {
+  await assertCodeSiteWorkspaceMutationAllowedAsync(options.workspaceSlug || context?.workspaceSlug, context, codeSiteProvisioningAttempt(kind), {
+    surface: kind,
+    controlPlaneUrl: options.controlPlaneUrl || context?.controlPlaneUrl,
+    controlPlaneTrusted: options.controlPlaneTrusted || context?.controlPlaneTrusted,
+    fetch: options.fetch || options.codesiteFetch || options.codeSiteFetch,
+    authToken: options.authToken || context?.authToken,
+    cookie: options.cookie || context?.cookie,
+  });
+  if (!context?.active) return null;
+  return enforceCodeSiteWriteAllowed(
+    context,
+    codeSiteProvisioningAttempt(kind),
+    codeSiteEnforceOptions(context, options),
+  );
+}
+
+function codeSiteArray(value) {
+  return Array.isArray(value) ? value.filter(Boolean) : [];
+}
+
+function codeSiteProvisioningOptions(context, options = {}) {
+  return {
+    ...codeSiteEnforceOptions(context, options),
+    codesiteContext: context,
+    evidenceRefs: [
+      ...codeSiteArray(options.evidenceRefs),
+      'collab:git-provisioning',
+    ],
+    processAncestry: [
+      ...codeSiteArray(options.processAncestry),
+      'collab-server:git-provisioning',
+    ],
+  };
+}
+
+function codeSiteGitServiceOptions(context, action, options = {}) {
+  return {
+    ...codeSiteEnforceOptions(context, options),
+    codesiteContext: context,
+    evidenceRefs: [
+      ...codeSiteArray(options.evidenceRefs),
+      `collab:git:${action}`,
+    ],
+    processAncestry: [
+      ...codeSiteArray(options.processAncestry),
+      `collab-server:git:${action}`,
+    ],
+  };
+}
+
+function needsCodeSiteUserRepoProvisioning(slug, userId) {
+  if (!userId) return false;
+  try {
+    return !gitService.isUserRepoInitialized(slug, userId);
+  } catch (_) {
+    return true;
+  }
+}
+
+function runtimeCodeSiteContext(req, parsed = {}, extra = {}) {
+  return codeSiteContextFromRequest(req, parsed, {
+    workspaceSlug: extra.workspaceSlug,
+    actorUserId: extra.actorUserId || parsed.userId || parsed.actorUserId || '',
+    effectiveUserId: extra.effectiveUserId || parsed.filesystemUserId || parsed.userId || '',
+  });
+}
+
+async function readJsonRequestBody(req) {
+  let body = '';
+  for await (const chunk of req) body += chunk;
+  if (!body.trim()) return {};
+  return JSON.parse(body);
+}
+
+function writeJsonResponse(res, status, body) {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(body));
+}
+
+function runtimeCodeSiteEnv(context, processAncestry) {
+  return codeSiteRuntimeEnv(context, { processAncestry });
+}
+
+function codeSiteRuntimeQuarantineBaseDir(cwd) {
+  const dataRoot = process.env.DATA_ROOT || process.env.WORKSPACE_DATA_VOLUME_ROOT || '';
+  if (dataRoot) return path.posix.join(path.posix.resolve(dataRoot), 'codesitefs-quarantine');
+  if (cwd) return path.join(path.dirname(cwd), '.synthi', 'codesitefs-quarantine');
+  return path.join(require('os').tmpdir(), 'synthi-codesitefs-quarantine');
+}
+
+function attachCodeSiteRuntimeQuarantineFinalizer(handle, codeSiteContext, quarantine, details = {}) {
+  if (!handle || !quarantine) return handle;
+  let finalized = false;
+  const finalize = async (extra = {}) => {
+    if (finalized) return null;
+    finalized = true;
+    return finalizeCodeSiteQuarantineWorkspace(codeSiteContext, quarantine, {
+      tool: 'program_runtime',
+      ...details,
+      ...extra,
+    });
+  };
+  return {
+    ...handle,
+    codesiteQuarantine: quarantine,
+    finalizeCodeSiteQuarantine: finalize,
+    stop: async () => {
+      let stopError = null;
+      try { handle.stop?.(); } catch (err) { stopError = err; }
+      const result = await finalize({ reason: 'runtime_stop' });
+      if (stopError) throw stopError;
+      return result;
+    },
+  };
+}
+
+function writeCodeSiteRuntimeBlocked(res, codeSiteMetadata, surface) {
+  res.writeHead(409, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    error: 'codesite_runtime_quarantine_unavailable',
+    message: 'CodeSite runtime blocked: this runtime target cannot mount a transaction quarantine workspace.',
+    surface,
+    codesite: codeSiteMetadata,
+  }));
+}
+
+function writeCodeSiteManagedContextRequired(res, codeSiteMetadata, surface) {
+  res.writeHead(403, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    error: 'codesite_managed_context_required',
+    message: 'Managed agent runtime requests require an active CodeSite transaction before they can execute against a workspace.',
+    surface,
+    codesite: codeSiteMetadata,
+  }));
+}
+
+function requiresCodeSiteManagedRuntimeContext(context) {
+  return Boolean(context?.managedAgent && !context.transactionId);
+}
+
+function guardCodeSiteRuntimeHostSurface(slug, context, surface) {
+  return guardCodeSiteHostSurface({
+    workspaceSlug: slug,
+    context,
+    surface,
+    operation: {
+      operation: surface,
+      tool: 'raw_terminal',
+      attempts: [{ path: '**', tool: 'raw_terminal' }],
+    },
+  });
+}
+
 /**
  * Force-flush any in-memory Yjs document content for a specific file to disk.
  * Called before selective staging (git apply) so the patch always matches the
@@ -612,7 +1686,12 @@ async function flushYjsDocForFile(slug, filePath, scope = {}) {
   // Read current CRDT content from Y-Sweet and write to the git worktree.
   // This ensures the on-disk content matches the editor state before git ops.
   const docName = buildDocName(slug, filePath, scope);
-  const content = await ySweetBridge.readDocContent(docName);
+  // Prefer the LIVE editor doc: the frontend syncs to the yjsWsServer relay, so
+  // its in-memory room holds the authoritative (incl. unsaved) content. Y-Sweet
+  // is not in the editor's sync path, so it's only a fallback for docs that
+  // aren't currently open.
+  let content = require('./yjsWsServer').getRoomText(docName);
+  if (content == null) content = await ySweetBridge.readDocContent(docName);
   if (content == null) return;
 
   const effectiveUser = scope.userId || null;
@@ -622,10 +1701,60 @@ async function flushYjsDocForFile(slug, filePath, scope = {}) {
   if (!fs.existsSync(repoPath)) return;
 
   const fullPath = path.join(repoPath, filePath);
-  await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
-  await fsPromises.writeFile(fullPath, content, 'utf-8');
+  const previousContent = await readWorkspaceFileForLineProvenance(slug, filePath, effectiveUser);
+  const derivedLineProvenance = deriveLineProvenanceFromContentChange(filePath, previousContent, content, {
+    evidenceRefs: scope.evidenceRefs,
+    processAncestry: scope.processAncestry,
+    promptSummary: 'Yjs pre-stage flush to disk',
+    reasonRef: `yjs_flush:${filePath}`,
+  });
+  await runCodeSiteMutationBoundary(scope.codesiteContext, {
+    operation: 'yjs_flush',
+    tool: 'file_write',
+    attempts: [{
+      path: filePath,
+      kind: 'yjs_flush',
+      tool: 'file_write',
+      ...codeSiteWriteEvidence(scope, derivedLineProvenance),
+    }],
+  }, async () => {
+    await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
+    await fsPromises.writeFile(fullPath, content, 'utf-8');
+  }, {
+    repoRoot: repoPath,
+    workspaceSlug: slug,
+  });
   fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
   console.log(`[Collab] Pre-stage flush via Y-Sweet: ${filePath} (${content.length} chars)`);
+}
+
+/**
+ * Flush a workspace's LIVE editor docs to disk before a server-side consumer
+ * reads the working tree (a `container`/`web` program's `docker build .` /
+ * `npm install`). The frontend syncs edits to the yjsWsServer relay, so the
+ * authoritative (incl. unsaved) content is its in-memory rooms — NOT Y-Sweet
+ * and NOT necessarily disk. We enumerate the open rooms for this workspace and
+ * flush each via flushYjsDocForFile (which reads the room first). Only
+ * currently-open docs need flushing; closed docs were already written on save.
+ * @returns {Promise<number>} number of docs flushed
+ */
+async function flushWorkspaceDocsToDisk(slug, userId, scope = {}) {
+  if (!slug || !userId) return 0;
+  const prefix = `workspace:${slug}:user:${encodeURIComponent(String(userId))}:`;
+  const docNames = require('./yjsWsServer').listRoomNames().filter((n) => n.startsWith(prefix));
+  let flushed = 0;
+  for (const docName of docNames) {
+    const filePath = docName.slice(prefix.length);
+    try { validateFilePath(filePath); } catch { continue; } // skip unsafe paths
+    try {
+      await flushYjsDocForFile(slug, filePath, { userId, codesiteContext: scope.codesiteContext });
+      flushed += 1;
+    } catch (e) {
+      logger.warn('workspace_doc_flush_failed', { slug, filePath }, e);
+    }
+  }
+  if (flushed) logger.info('workspace_docs_flushed', { slug, userId, count: flushed });
+  return flushed;
 }
 
 async function invalidateDocsForSlug(slug, filePaths = null, scope = {}) {
@@ -758,6 +1887,10 @@ function _resolveNotifyUserId(scope = {}) {
  * to match currentContent, clearing the unsaved indicator.
  */
 function broadcastFileSaved(slug, filePath, scope = {}) {
+  // A running container/webGui program reads /workspace from disk — flush the
+  // workspace's live editor docs so this save (and any sibling unsaved edits)
+  // become visible to it. No-op unless such a session is active for this slug.
+  continuousFlush.notifySave(slug);
   if (!slug || !notifyWss) return;
   const message = JSON.stringify({ type: 'file-saved', slug, filePath, scope });
   notifyWss.clients.forEach((ws) => {
@@ -767,6 +1900,36 @@ function broadcastFileSaved(slug, filePath, scope = {}) {
   });
   // Also push via SSE so polling-free clients receive the event
   sseService.emitFileSaved(slug, filePath);
+}
+
+/**
+ * Broadcast the live set of forwardable ports detected inside a workspace's
+ * runtime container. The frontend Ports panel renders these at
+ * /wsport/<slug>/<port>/. Workspace-wide (no per-user scope filtering).
+ */
+function broadcastContainerPorts(slug, ports) {
+  if (!slug || !notifyWss) return;
+  const message = JSON.stringify({ type: 'container-ports', slug, ports: Array.isArray(ports) ? ports : [] });
+  notifyWss.clients.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN && ws._slug === slug) {
+      try { ws.send(message); } catch (_) {}
+    }
+  });
+}
+
+/**
+ * Broadcast the live set of forwardable ports detected inside a workspace's Sysbox
+ * runtime POD (Slice 4). Routed to the workspace's clients by slug; carries the
+ * runtimeScope so the frontend builds /runtime/<scope>/port/<N> preview URLs.
+ */
+function broadcastRuntimePorts(slug, runtimeScope, ports) {
+  if (!slug || !notifyWss) return;
+  const message = JSON.stringify({ type: 'runtime-ports', slug, runtimeScope, ports: Array.isArray(ports) ? ports : [] });
+  notifyWss.clients.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN && ws._slug === slug) {
+      try { ws.send(message); } catch (_) {}
+    }
+  });
 }
 
 /**
@@ -1023,17 +2186,38 @@ async function getTurnCredentials() {
 }
 
 const server = http.createServer(async (req, res) => {
-  // Strip /collab or /collab/ prefix if passed by ingress
-  req.url = req.url.replace(/^\/collab/, '');
+  // Strip /collab or /collab/ prefix if passed by ingress, but preserve the
+  // public mount prefix so preview HTML can rewrite absolute asset URLs back
+  // through the externally visible proxy route.
+  const originalUrl = req.url || '/';
+  const collabMountMatch = originalUrl.match(/^\/collab(?=\/|$)/);
+  req._synthiExternalMountPrefix = collabMountMatch ? '/collab' : '';
+  req.url = originalUrl.replace(/^\/collab(?=\/|$)/, '');
   if (!req.url.startsWith('/')) req.url = '/' + req.url;
 
+  // Wildcard preview hosts (p<port>-rt-*.preview.vectant.dev) are user app
+  // traffic, not collab API traffic. Route them into the reverse proxy before
+  // app-level CORS/origin checks so POSTs, HMR, and absolute root assets work.
+  if (proxyService.isPreviewHostRequest(req)) {
+    proxyService.proxyHttpRequest(req, res);
+    return;
+  }
+
   // CORS headers — must echo the exact Origin (not '*') when credentials are included
-  const requestOrigin = req.headers.origin;
-  res.setHeader('Access-Control-Allow-Origin', requestOrigin || '*');
-  if (requestOrigin) res.setHeader('Access-Control-Allow-Credentials', 'true');
+  const cors = resolveCorsPolicy({
+    origin: req.headers.origin,
+    allowedOrigins: ALLOWED_ORIGINS,
+    devBypass: isLocalControlPlaneBypass(),
+  });
+  if (cors.allowOrigin !== null) {
+    res.setHeader('Access-Control-Allow-Origin', cors.allowOrigin);
+  }
+  if (cors.credentials) {
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-user-id, x-session-id, x-user-name, x-user-email');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-user-id, x-session-id, x-user-name, x-user-email, x-runtime-scope, x-runtime-fs-user-id, x-synthi-internal-token, x-collab-internal-token');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -1055,6 +2239,7 @@ const server = http.createServer(async (req, res) => {
   // Called by the signaling server when all peers disconnect from a session.
   // ========================================================================
   if (req.url === '/api/spawner/session-ended') {
+    if (!requireInternalControlPlaneToken(req, res)) return;
     return spawner.handleSessionEnded(req, res);
   }
 
@@ -1072,6 +2257,13 @@ const server = http.createServer(async (req, res) => {
       const snapshot = spawner.lifecycleSnapshot
         ? await spawner.lifecycleSnapshot(sessionId)
         : { session_id: sessionId, state: 'unknown', tracked: false };
+      // Slice 5: ride the Sysbox runtime pod's coarse state alongside the worker's.
+      // Self-gated → returns {skipped} when sysbox is dark, so the response is
+      // byte-identical unless RUNTIME_BACKEND=sysbox-pod is on.
+      if (spawner.runtimeLifecycleSnapshot && snapshot && typeof snapshot === 'object') {
+        const rt = await spawner.runtimeLifecycleSnapshot(sessionId);
+        if (rt && !rt.skipped) snapshot.runtime = rt;
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(snapshot));
     } catch (e) {
@@ -1103,7 +2295,7 @@ const server = http.createServer(async (req, res) => {
       try { parsed = JSON.parse(body); } catch { res.writeHead(400); res.end('Invalid JSON'); return; }
     }
     try {
-      const snapshot = await spawner.warm(sessionId, parsed.user_id || parsed.userId || 'warm_trigger');
+      const snapshot = await spawner.warm(sessionId, parsed.user_id || parsed.userId || 'warm_trigger', parsed);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(snapshot));
     } catch (e) {
@@ -1160,7 +2352,35 @@ const server = http.createServer(async (req, res) => {
     const { session_id, user_id } = parsed;
     if (!session_id || !user_id) { res.writeHead(400); res.end('Missing session_id or user_id'); return; }
     try {
-      const result = await spawner.ensurePod(session_id, user_id);
+      const workspaceSlug = parsed.workspace_slug || parsed.workspaceSlug || '';
+      const runtimeKind = parsed.runtime_kind || parsed.runtimeKind || '';
+      const filesystemUserId =
+        parsed.filesystemUserId ||
+        parsed.filesystem_user_id ||
+        parsed.fsUserId ||
+        user_id;
+      if (workspaceSlug) {
+        await ensureRuntimeFilesystem({
+          workspaceSlug,
+          filesystemUserId,
+          runtimeScope: session_id,
+          reason: 'spawner_ensure',
+        });
+      }
+      const result = await spawner.ensurePod(session_id, user_id, {
+        workspaceSlug,
+        runtimeKind,
+        filesystemUserId,
+      });
+      // Sysbox runtime pod (dark): bring up the per-workspace container engine
+      // alongside the worker. Fire-and-forget + self-gated on RUNTIME_BACKEND, so
+      // it's a no-op unless the flag is on and never blocks/breaks the worker
+      // session. Only the k8s spawner exposes spawnRuntimePod.
+      if (typeof spawner.spawnRuntimePod === 'function') {
+        Promise.resolve(
+          spawner.spawnRuntimePod(session_id, user_id, { workspaceSlug, runtimeKind, filesystemUserId }),
+        ).catch((err) => console.error('[Spawner] spawnRuntimePod failed:', err && err.message ? err.message : err));
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
     } catch (e) {
@@ -1193,6 +2413,44 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ========================================================================
+  // SPAWNER — /api/spawner/release
+  // Explicitly stop the caller's current runtime. This complements the idle
+  // culler so users can free a pod/container immediately.
+  // Body: { session_id | runtimeScope, reason? }
+  // ========================================================================
+  if (req.url === '/api/spawner/release' && req.method === 'POST') {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body || '{}'); } catch { res.writeHead(400); res.end('Invalid JSON'); return; }
+
+    const sessionId = parsed.session_id || parsed.runtimeScope || '';
+    const headerScope = String(req.headers['x-runtime-scope'] || '').trim();
+    if (!sessionId || typeof sessionId !== 'string') {
+      res.writeHead(400);
+      res.end('Missing session_id');
+      return;
+    }
+    if (headerScope && headerScope !== sessionId) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'runtime_scope_mismatch' }));
+      return;
+    }
+
+    try {
+      const reason = parsed.reason || 'explicit_release';
+      await spawner.teardown(sessionId, { reason });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, session_id: sessionId, reason }));
+    } catch (e) {
+      console.error('[Spawner] release failed:', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
   if (req.url === '/turn-credentials' && req.method === 'GET') {
     res.setHeader('Content-Type', 'application/json');
     try {
@@ -1213,22 +2471,78 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ========================================================================
-  // REVERSE PROXY — /port/<N>/... → http://127.0.0.1:<N>/...
+  // ========================================================================
+  // CONTAINER REVERSE PROXY — /wsport/<slug>/<N>/... → <runtime-container>:<N>
+  // Additive, workspace-scoped path for `container`-type programs whose ports
+  // bind inside a per-workspace runtime container (not collab's localhost).
+  // The global /port/<N>/ path below is left untouched.
+  // ========================================================================
+  if (req.url.startsWith('/wsport/')) {
+    if (containerPortProxy) {
+      containerPortProxy.proxyHttp(req, res);
+    } else {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'container_runtime_disabled' }));
+    }
+    return;
+  }
+
+  // REVERSE PROXY — /port/<N>/... or /runtime/<scope>/port/<N>/...
   // Enables in-IDE preview of running dev servers (Next.js, Vite, etc.)
   // ========================================================================
-  if (req.url.startsWith('/port/')) {
+  if (req.url.startsWith('/port/') || req.url.startsWith('/runtime/')) {
     proxyService.proxyHttpRequest(req, res);
+    return;
+  }
+
+  // GET /preview-url — resolve localhost terminal links to the canonical
+  // production preview URL. The client cannot compute the rt-* HMAC itself.
+  if (req.method === 'GET' && (req.url === '/preview-url' || req.url.startsWith('/preview-url?'))) {
+    proxyService.handlePreviewUrlRequest(req, res);
+    return;
+  }
+
+  // POST /runtime-callback — replay a browser localhost OAuth callback into
+  // the correct runtime pod, where the CLI's loopback listener is running.
+  if (req.url === '/runtime-callback' || req.url.startsWith('/runtime-callback?')) {
+    proxyService.handleRuntimeCallbackRequest(req, res);
     return;
   }
 
   // GET /ports — list active dev-server ports
   if (req.method === 'GET' && (req.url === '/ports' || req.url.startsWith('/ports?'))) {
+    if (!requireInternalControlPlaneToken(req, res)) return;
     proxyService.handlePortsStatus(req, res);
+    return;
+  }
+
+  const codeSiteActivityMatch = new URL(req.url, `http://${req.headers.host}`).pathname.match(/^\/codesite\/activity\/([^/]+)$/);
+  if (codeSiteActivityMatch) {
+    const slug = decodeURIComponent(codeSiteActivityMatch[1]);
+    await handleCodeSiteActivityRequest(slug, req, res, {
+      activityRegistry: codeSiteActivityRegistry,
+      readJsonRequestBody,
+      writeJsonResponse,
+    });
+    return;
+  }
+
+  if (req.url === '/codesite/readiness' && req.method === 'GET') {
+    await handleCodeSiteReadinessRequest(req, res);
+    return;
+  }
+
+  if (req.url === '/codesite/deployment-status') {
+    await handleCodeSiteDeploymentStatusRequest(req, res, {
+      probeOverlayCapability: workspaceRuntime?.probeOverlayCapability,
+      probeRuntimeEventAdapter: () => runtimeObservationPublisher.reportHealth(),
+    });
     return;
   }
 
   // Debug endpoint to check collab server state
   if (req.url === '/debug/status' && req.method === 'GET') {
+    if (!requireInternalControlPlaneToken(req, res)) return;
     const status = {
       server: 'running',
       persistence: 'Y-Sweet',
@@ -1255,6 +2569,13 @@ const server = http.createServer(async (req, res) => {
     const effectiveUserId = sessionId && userId
       ? sessionManager.getEffectiveUserId(userId, sessionId)
       : userId;
+    const prepCodeSiteData = Object.fromEntries(urlObj.searchParams.entries());
+    const prepCodeSiteContext = codeSiteContextFromRequest(req, prepCodeSiteData, {
+      workspaceSlug: slug,
+      actorUserId: userId || null,
+      effectiveUserId: effectiveUserId || null,
+    });
+    const prepCodeSiteEnforcement = codeSiteEnforceOptions(prepCodeSiteContext);
 
     if (req.method === 'GET') {
       const status = await workspacePrepManager.getWorkspacePrepStatus(slug, effectiveUserId);
@@ -1275,15 +2596,58 @@ const server = http.createServer(async (req, res) => {
 
       const hKey = hydrationKey(slug, effectiveUserId);
       if (!hydratedSlugs.has(hKey)) {
-        await gitService.initRepo(slug, null, effectiveUserId);
+        try {
+          if (!effectiveUserId || needsCodeSiteUserRepoProvisioning(slug, effectiveUserId)) {
+            await enforceCodeSiteProvisioningAllowed(prepCodeSiteContext, 'workspace-prepare:auto-init', prepCodeSiteEnforcement);
+          }
+          await gitService.initRepo(
+            slug,
+            null,
+            effectiveUserId,
+            null,
+            codeSiteProvisioningOptions(prepCodeSiteContext, {
+              evidenceRefs: ['collab:workspace-prepare:auto-init'],
+              processAncestry: ['collab-server:workspace-prepare'],
+            }),
+          );
+        } catch (e) {
+          if (e?.code === 'CODESITE_WRITE_DENIED') {
+            writeCodeSiteDenied(res, e);
+            return;
+          }
+          throw e;
+        }
         hydratedSlugs.add(hKey);
       }
 
       const force = /^(1|true|yes)$/i.test(String(urlObj.searchParams.get('force') || ''));
-      const status = await workspacePrepManager.ensureWorkspacePrepared(slug, effectiveUserId, {
-        force,
-        trigger: 'workspace_prepare_api',
-      });
+      try {
+        await enforceCodeSiteProvisioningAllowed(prepCodeSiteContext, 'workspace-prepare', prepCodeSiteEnforcement);
+      } catch (e) {
+        if (e?.code === 'CODESITE_WRITE_DENIED') {
+          writeCodeSiteDenied(res, e);
+          return;
+        }
+        throw e;
+      }
+      let status;
+      try {
+        status = await workspacePrepManager.ensureWorkspacePrepared(slug, effectiveUserId, {
+          force,
+          trigger: 'workspace_prepare_api',
+          codesiteContext: prepCodeSiteContext,
+        });
+      } catch (e) {
+        if (e?.code === 'CODESITE_WORKSPACE_PREP_REQUIRES_ISOLATION') {
+          res.writeHead(e.status || 409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            error: e.code,
+            message: e.message,
+          }));
+          return;
+        }
+        throw e;
+      }
       res.writeHead(202, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(status));
       return;
@@ -1311,6 +2675,7 @@ const server = http.createServer(async (req, res) => {
   // TELEMETRY ENDPOINT — /telemetry/metrics — Performance metrics snapshot
   // ========================================================================
   if (req.url === '/telemetry/metrics' && req.method === 'GET') {
+    if (!requireInternalControlPlaneToken(req, res)) return;
     const metrics = getMetrics();
     const elBlocks = getEventLoopBlockCount();
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1320,6 +2685,7 @@ const server = http.createServer(async (req, res) => {
 
   // POST /telemetry/reset — Reset performance counters
   if (req.url === '/telemetry/reset' && req.method === 'POST') {
+    if (!requireInternalControlPlaneToken(req, res)) return;
     resetMetrics();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, message: 'Metrics reset' }));
@@ -1335,6 +2701,7 @@ const server = http.createServer(async (req, res) => {
   
   // Debug endpoint to validate a specific file
   if (req.url.startsWith('/debug/validate/') && req.method === 'GET') {
+    if (!requireInternalControlPlaneToken(req, res)) return;
     const urlObj = new URL(req.url, `http://${req.headers.host}`);
     const parts = urlObj.pathname.split('/');
     // /debug/validate/:slug/:filePath
@@ -1396,6 +2763,13 @@ const server = http.createServer(async (req, res) => {
     
     // Extract optional userId for per-user repo support
     const userId = req.headers['x-user-id'] || urlObj.searchParams.get('userId') || null;
+    const fileContentCodeSiteData = Object.fromEntries(urlObj.searchParams.entries());
+    const fileContentCodeSiteContext = codeSiteContextFromRequest(req, fileContentCodeSiteData, {
+      workspaceSlug: slug,
+      actorUserId: userId || null,
+      effectiveUserId: userId || null,
+    });
+    const fileContentCodeSiteEnforcement = codeSiteEnforceOptions(fileContentCodeSiteContext);
 
     try {
       // Ensure repo exists and (when configured) hydrate from GCS before reading.
@@ -1403,16 +2777,39 @@ const server = http.createServer(async (req, res) => {
       const hKey = hydrationKey(slug, userId);
       if (!hydratedSlugs.has(hKey)) {
         try {
-          await gitService.initRepo(slug, null, userId);
+          if (!userId || needsCodeSiteUserRepoProvisioning(slug, userId)) {
+            await enforceCodeSiteProvisioningAllowed(fileContentCodeSiteContext, 'file-content:auto-init', fileContentCodeSiteEnforcement);
+          }
+          await gitService.initRepo(
+            slug,
+            null,
+            userId,
+            null,
+            codeSiteProvisioningOptions(fileContentCodeSiteContext, {
+              evidenceRefs: ['collab:file-content:auto-init'],
+              processAncestry: ['collab-server:file-content'],
+            }),
+          );
           hydratedSlugs.add(hKey);
         } catch (e) {
+          if (e?.code === 'CODESITE_WRITE_DENIED') {
+            writeCodeSiteDenied(res, e);
+            return;
+          }
           if (gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
             console.warn('[Collab] FILE-CONTENT auto-init failed for slug:', slug, e?.message || e);
           }
         }
       }
 
-      const content = await getActualFileContent(slug, filePath, userId);
+      const content = await getActualFileContent(slug, filePath, userId, {
+        codesiteContext: fileContentCodeSiteContext,
+        ...fileContentCodeSiteEnforcement,
+        operation: 'file-content',
+        tool: 'file_read',
+        evidenceRefs: ['collab:file-content'],
+        processAncestry: ['collab-server:file-content'],
+      });
       if (content === null) {
         console.log(`[Collab] FILE-CONTENT: File not found: ${slug}/${filePath}`);
         res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -1437,6 +2834,7 @@ const server = http.createServer(async (req, res) => {
   // GET /available-shells
   // Returns: { shells: [{ key, label, executable }], default: string }
   if (req.url === '/available-shells' && req.method === 'GET') {
+    if (!requireInternalControlPlaneToken(req, res)) return;
     const shells = getAvailableShells();
     const { getDefaultShell } = require('./terminalService');
     const defaultShell = getDefaultShell();
@@ -1444,6 +2842,818 @@ const server = http.createServer(async (req, res) => {
     const defaultKey = shells.find(s => defaultShell.includes(s.executable))?.key || shells[0]?.key || 'powershell';
     res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
     res.end(JSON.stringify({ shells, default: defaultKey }));
+    return;
+  }
+
+  const programRuntimeUrl = new URL(req.url, `http://${req.headers.host}`);
+  const programRuntimeMatch = /^\/program-runtime\/([^/]+)\/sessions(?:\/([^/]+)(?:\/(stop|restart|events))?)?$/.exec(programRuntimeUrl.pathname);
+  if (programRuntimeMatch) {
+    const runtimeSlug = decodeURIComponent(programRuntimeMatch[1]);
+    const runtimeSessionId = programRuntimeMatch[2] ? decodeURIComponent(programRuntimeMatch[2]) : null;
+    const runtimeAction = programRuntimeMatch[3] || null;
+    const runtimeSession = runtimeSessionId ? managedProgramRuntime.getManagedSession(runtimeSessionId) : null;
+
+    if (runtimeSessionId && (!runtimeSession || runtimeSession.workspaceSlug !== runtimeSlug)) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Managed program session not found' }));
+      return;
+    }
+
+    if (!runtimeSessionId && req.method === 'GET') {
+      const sessions = managedProgramRuntime
+        .listManagedSessions()
+        .filter((session) => session.workspaceSlug === runtimeSlug);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ sessions }));
+      return;
+    }
+
+    if (runtimeSessionId && !runtimeAction && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ session: runtimeSession }));
+      return;
+    }
+
+    if (runtimeSessionId && runtimeAction === 'events' && req.method === 'GET') {
+      const events = managedProgramRuntime.listManagedSessionEvents(runtimeSessionId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ events }));
+      return;
+    }
+
+    if (runtimeSessionId && runtimeAction === 'stop' && req.method === 'POST') {
+      const session = await managedProgramRuntime.stopManagedSession(runtimeSessionId, { reason: 'user_stop' });
+      continuousFlush.unregisterSession(runtimeSessionId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ session }));
+      return;
+    }
+
+    if (runtimeSessionId && runtimeAction === 'restart' && req.method === 'POST') {
+      const session = await managedProgramRuntime.restartManagedSession(runtimeSessionId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ session }));
+      return;
+    }
+
+    res.writeHead(405, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Method not allowed' }));
+    return;
+  }
+
+  // POST /program-runtime/:slug/launch-program  { sessionId, userId?, title?, config }
+  // Launch an installed program from its NormalizedProgramConfig recipe (Phase 2).
+  const launchProgramMatch = /^\/program-runtime\/([^/]+)\/launch-program$/.exec(programRuntimeUrl.pathname);
+  if (launchProgramMatch && req.method === 'POST') {
+    const slug = decodeURIComponent(launchProgramMatch[1]);
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body); } catch (_) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+    if (!requireCommandGatewayAuth(req, res, { slug, parsed, requiredScope: COMMAND_SCOPES.EXEC })) {
+      return;
+    }
+
+    const config = parsed && typeof parsed.config === 'object' ? parsed.config : null;
+    const sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId.trim() : '';
+    if (!config || !sessionId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing config or sessionId' }));
+      return;
+    }
+
+    try {
+      const actorUserId = parsed.userId || '';
+      const codeSiteContext = runtimeCodeSiteContext(req, parsed, {
+        workspaceSlug: slug,
+        actorUserId,
+        effectiveUserId: parsed.filesystemUserId || actorUserId,
+      });
+      const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
+      try {
+        guardCodeSiteRuntimeHostSurface(slug, codeSiteContext, 'program-runtime:launch-program');
+      } catch (err) {
+        writeCodeSiteDenied(res, err);
+        return;
+      }
+      if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
+        writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'program-runtime:launch-program');
+        return;
+      }
+      const launchConfig = codeSiteMetadata
+        ? {
+          ...config,
+          env: {
+            ...(config.env || {}),
+            ...runtimeCodeSiteEnv(codeSiteContext, ['collab-server', 'program-runtime:launch-program']),
+          },
+        }
+        : config;
+      const launchMode = codeSiteProgramRuntimeLaunchMode({
+        codeSiteContext,
+        runtimeType: launchConfig.runtimeType || 'cli',
+        sysboxEnabled: isSysboxRuntimeEnabled(),
+        hasHybrid: Boolean(workspaceRuntime && (ENABLE_CONTAINER_RUNTIME || ENABLE_CODESITE_DOCKER_RUNTIME)),
+      });
+      if (launchMode === 'block-runtime' || launchMode === 'block-host') {
+        writeCodeSiteRuntimeBlocked(res, codeSiteMetadata, 'program-runtime:launch-program');
+        return;
+      }
+      // Reconcile the working tree from Y-Sweet first: a program's install/launch
+      // (docker build ., npm install) reads files from disk, but unsaved editor
+      // content lives only in Y-Sweet until flushed. Without this the build sees
+      // stale/empty files (e.g. an unsaved Dockerfile or package.json).
+      await flushWorkspaceDocsToDisk(slug, actorUserId, { codesiteContext }).catch((e) =>
+        logger.warn('workspace_flush_before_launch_failed', { slug }, e));
+      const session = await managedProgramRuntime.launchManagedProgram({
+        sessionId,
+        workspaceSlug: slug,
+        userId: actorUserId,
+        title: parsed.title || null,
+        config: launchConfig,
+        metadata: codeSiteMetadata
+          ? {
+            packageId: config.packageId || null,
+            version: config.version || null,
+            source: config.source || null,
+            codesite: codeSiteMetadata,
+          }
+          : null,
+        codesiteContext: codeSiteContext.active ? codeSiteContext : null,
+      });
+      // Container/webGui programs read /workspace from disk for their whole
+      // lifetime — keep the editor's content flushed there while this session runs.
+      continuousFlush.registerSession({
+        sessionId,
+        slug,
+        userId: actorUserId,
+        config: launchConfig,
+        codesiteContext: codeSiteContext.active ? codeSiteContext : null,
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ session }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'Program launch failed' }));
+    }
+    return;
+  }
+
+  // POST /program-runtime/:slug/exec  { command, timeout? }
+  // One-shot, non-interactive command exec inside the workspace's Sysbox runtime
+  // pod (where its own dockerd lives, so `docker ...` works). Routed by
+  // workspaceSlug → runtimeScope (never a user id). Returns
+  // { runtimeScope, stdout, stderr, exitCode, timedOut }. Used by the PAT-gated
+  // MCP `synthi_exec_in_runtime` tool (the in-app AI's command control).
+  const execRuntimeMatch = /^\/program-runtime\/([^/]+)\/exec$/.exec(programRuntimeUrl.pathname);
+  if (execRuntimeMatch && req.method === 'POST') {
+    const slug = decodeURIComponent(execRuntimeMatch[1]);
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body); } catch (_) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+    if (!requireCommandGatewayAuth(req, res, { slug, parsed, requiredScope: COMMAND_SCOPES.EXEC })) {
+      return;
+    }
+    const command = String(parsed.command || '').trim();
+    if (!command) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing command' }));
+      return;
+    }
+    const codeSiteContext = runtimeCodeSiteContext(req, parsed, {
+      workspaceSlug: slug,
+      actorUserId: parsed.userId || '',
+      effectiveUserId: parsed.filesystemUserId || parsed.userId || '',
+    });
+    const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
+    try {
+      try {
+        guardCodeSiteRuntimeHostSurface(slug, codeSiteContext, 'program-runtime:exec');
+      } catch (err) {
+        writeCodeSiteDenied(res, err);
+        return;
+      }
+      if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
+        writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'program-runtime:exec');
+        return;
+      }
+      if (codeSiteContext.active) {
+        writeCodeSiteRuntimeBlocked(res, codeSiteMetadata, 'program-runtime:exec');
+        return;
+      }
+      const sessions = typeof spawner.listActiveRuntimeSessions === 'function'
+        ? await spawner.listActiveRuntimeSessions()
+        : [];
+      const runtimeScope = pickRuntimeScopeForSlug(sessions, slug);
+      if (!runtimeScope) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'runtime_pod_not_ready' }));
+        return;
+      }
+      const result = await runtimeExecOnce(runtimeScope, command, {
+        timeoutMs: Number(parsed.timeout) || 30000,
+        env: runtimeCodeSiteEnv(codeSiteContext, ['collab-server', 'program-runtime:exec']),
+      });
+      console.log(`[RuntimeExec] slug=${slug} runtimeScope=${runtimeScope} exit=${result.exitCode} timedOut=${result.timedOut} cmd=${command.slice(0, 120)}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ runtimeScope, codesite: codeSiteMetadata, ...result }));
+    } catch (err) {
+      const notReady = err && err.message === 'runtime_pod_not_ready';
+      res.writeHead(notReady ? 409 : 500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'runtime exec failed' }));
+    }
+    return;
+  }
+
+  // POST /program-runtime/:slug/ensure-runtime  { userId? }  → pre-warm container
+  // Fired by the frontend on workspace mount so the first terminal doesn't eat
+  // the rootless-dockerd cold start. Returns immediately (202); the daemon warms
+  // in the background.
+  const ensureRuntimeMatch = /^\/program-runtime\/([^/]+)\/ensure-runtime$/.exec(programRuntimeUrl.pathname);
+  if (ensureRuntimeMatch && req.method === 'POST') {
+    const slug = decodeURIComponent(ensureRuntimeMatch[1]);
+    let parsed = {};
+    try {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      parsed = body ? JSON.parse(body) : {};
+    } catch (_) { parsed = {}; }
+    try {
+      const actorUserId = parsed.userId || '';
+      const codeSiteContext = runtimeCodeSiteContext(req, parsed, {
+        workspaceSlug: slug,
+        actorUserId,
+        effectiveUserId: parsed.filesystemUserId || actorUserId,
+      });
+      const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
+      try {
+        guardCodeSiteRuntimeHostSurface(slug, codeSiteContext, 'program-runtime:ensure-runtime');
+      } catch (err) {
+        writeCodeSiteDenied(res, err);
+        return;
+      }
+      const { status, body: out } = await handleEnsureRuntime({
+        workspaceRuntime,
+        slug,
+        userId: actorUserId,
+        codesiteContext: codeSiteContext.active ? codeSiteContext : null,
+        codesiteMetadata: codeSiteMetadata,
+      });
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(out));
+    } catch (err) {
+      logger.warn('ensure_runtime_failed', { slug }, err);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'ensure_runtime_failed' }));
+    }
+    return;
+  }
+
+  // GET /program-runtime/:slug/manifest  → { found, source, raw }
+  // Reads the workspace recipe manifest (vectant.programs.json preferred, else
+  // .devcontainer/devcontainer.json). Returns raw bytes for the caller to parse.
+  const manifestMatch = /^\/program-runtime\/([^/]+)\/manifest$/.exec(programRuntimeUrl.pathname);
+  if (manifestMatch && req.method === 'GET') {
+    const slug = decodeURIComponent(manifestMatch[1]);
+    // userId is required to resolve a per-user workspace repo (repos/<slug>/<userId>);
+    // without it we'd read the shared slug dir and miss the user's manifest.
+    const manifestUserId = programRuntimeUrl.searchParams.get('userId') || undefined;
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const { resolveWorkspaceCwd } = require('./terminalService');
+      const cwd = await resolveWorkspaceCwd(slug, manifestUserId);
+      const candidates = [
+        { source: 'vectant.programs.json', file: path.join(cwd, 'vectant.programs.json') },
+        { source: 'devcontainer.json', file: path.join(cwd, '.devcontainer', 'devcontainer.json') },
+        { source: 'devcontainer.json', file: path.join(cwd, '.devcontainer.json') },
+      ];
+      let result = { found: false };
+      for (const candidate of candidates) {
+        if (fs.existsSync(candidate.file)) {
+          result = { found: true, source: candidate.source, raw: fs.readFileSync(candidate.file, 'utf8') };
+          break;
+        }
+      }
+      // Slice 1 (real programs): report whether a container runtime exists so the
+      // frontend imports a devcontainer with an image as a real `container` program.
+      const containerRuntimeAvailable = isSysboxRuntimeEnabled() || process.env.ENABLE_CONTAINER_RUNTIME === '1';
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ...result, containerRuntimeAvailable }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'Manifest read failed' }));
+    }
+    return;
+  }
+
+  // GET /program-runtime/:slug/detect → { found, files:{name:raw}, containerRuntimeAvailable }
+  // Slice 1 (real programs): probe the workspace for container artifacts
+  // (docker-compose / devcontainer / Dockerfile) and report whether a container
+  // runtime is available. The frontend (repoDetect) maps the raw bytes → config.
+  const detectMatch = /^\/program-runtime\/([^/]+)\/detect$/.exec(programRuntimeUrl.pathname);
+  if (detectMatch && req.method === 'GET') {
+    const slug = decodeURIComponent(detectMatch[1]);
+    const detectUserId = programRuntimeUrl.searchParams.get('userId') || undefined;
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const { resolveWorkspaceCwd } = require('./terminalService');
+      const cwd = await resolveWorkspaceCwd(slug, detectUserId);
+      const names = [
+        'docker-compose.yml', 'compose.yaml', 'compose.yml',
+        '.devcontainer/devcontainer.json', '.devcontainer.json', 'devcontainer.json',
+        'Dockerfile',
+      ];
+      const files = {};
+      for (const name of names) {
+        const file = path.join(cwd, name);
+        if (fs.existsSync(file)) files[name] = fs.readFileSync(file, 'utf8');
+      }
+      const containerRuntimeAvailable = isSysboxRuntimeEnabled() || process.env.ENABLE_CONTAINER_RUNTIME === '1';
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ found: Object.keys(files).length > 0, files, containerRuntimeAvailable }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'detect failed' }));
+    }
+    return;
+  }
+
+  // GET /program-runtime/:slug/context → { files:{name:contents} }
+  // Curated, read-only workspace files for AI manifest generation (allow-listed).
+  const contextMatch = /^\/program-runtime\/([^/]+)\/context$/.exec(programRuntimeUrl.pathname);
+  if (contextMatch && req.method === 'GET') {
+    const slug = decodeURIComponent(contextMatch[1]);
+    const ctxUserId = programRuntimeUrl.searchParams.get('userId') || undefined;
+    try {
+      const { resolveWorkspaceCwd } = require('./terminalService');
+      const { readContextFiles } = require('./contextFiles');
+      const cwd = await resolveWorkspaceCwd(slug, ctxUserId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ files: readContextFiles(cwd) }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'context failed' }));
+    }
+    return;
+  }
+
+  // POST /program-runtime/:slug/scaffold  { userId, files:[{path,contents}], overwrite? }
+  // Writes starter files into the workspace dir, ONLY when missing. Path-guarded.
+  const scaffoldMatch = /^\/program-runtime\/([^/]+)\/scaffold$/.exec(programRuntimeUrl.pathname);
+  if (scaffoldMatch && req.method === 'POST') {
+    const slug = decodeURIComponent(scaffoldMatch[1]);
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body || '{}'); } catch (_) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+    try {
+      const { resolveWorkspaceCwd } = require('./terminalService');
+      const { applyScaffoldFiles } = require('./scaffold');
+      const cwd = await resolveWorkspaceCwd(slug, parsed.userId || undefined);
+      const codeSiteContext = codeSiteContextFromRequest(req, parsed, {
+        workspaceSlug: slug,
+        actorUserId: parsed.userId || null,
+        effectiveUserId: parsed.userId || null,
+      });
+      const scaffoldAttempts = await Promise.all((parsed.files || []).map(async (file) => {
+        const derivedLineProvenance = await deriveCodeSiteLineProvenance(slug, file?.path, file?.content, parsed.userId || null, {
+          evidenceRefs: file?.evidenceRefs || file?.evidence_refs || parsed.evidenceRefs || parsed.evidence_refs,
+          processAncestry: file?.processAncestry || file?.process_ancestry || parsed.processAncestry || parsed.process_ancestry,
+          promptSummary: 'Program scaffold file write',
+          reasonRef: `program-scaffold:${file?.path}`,
+        });
+        return {
+          path: file?.path,
+          kind: 'program-scaffold',
+          tool: 'file_write',
+          ...codeSiteWriteEvidence({ ...parsed, ...file }, derivedLineProvenance),
+        };
+      }));
+      const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
+        operation: 'program-scaffold',
+        tool: 'file_write',
+        attempts: scaffoldAttempts,
+      }, async () => applyScaffoldFiles(cwd, parsed.files || [], { overwrite: parsed.overwrite === true }), { repoRoot: cwd });
+      const result = boundary.applyResult;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      if (isCodeSiteDeniedError(err)) {
+        writeCodeSiteDenied(res, err);
+        return;
+      }
+      const code = err?.message === 'path_escape' ? 400 : 500;
+      res.writeHead(code, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err?.message || 'scaffold failed' }));
+    }
+    return;
+  }
+
+  const quarantineCollectionMatch = /^\/codesitefs\/quarantines\/([^/]+)$/.exec(programRuntimeUrl.pathname);
+  if (quarantineCollectionMatch && req.method === 'GET') {
+    const slug = decodeURIComponent(quarantineCollectionMatch[1]);
+    const actorUserId = programRuntimeUrl.searchParams.get('userId') || (req.headers['x-user-id'] ? String(req.headers['x-user-id']) : '');
+    const effectiveUserId = programRuntimeUrl.searchParams.get('filesystemUserId')
+      || (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '')
+      || actorUserId;
+    const runtimeScope = programRuntimeUrl.searchParams.get('runtimeScope') || (req.headers['x-runtime-scope'] ? String(req.headers['x-runtime-scope']) : '');
+    const collectionCodeSiteData = Object.fromEntries(programRuntimeUrl.searchParams.entries());
+    const collectionCodeSiteContext = runtimeCodeSiteContext(req, collectionCodeSiteData, {
+      workspaceSlug: slug,
+      actorUserId,
+      effectiveUserId,
+    });
+    try {
+      const storage = await codeSiteQuarantineStorageForRequest(slug, effectiveUserId, runtimeScope, 'codesitefs-quarantines-list', collectionCodeSiteContext, {
+        ensureRuntime: false,
+      });
+      const quarantines = await listCodeSiteQuarantineManifests(storage.baseDir, slug, {
+        transactionId: programRuntimeUrl.searchParams.get('transactionId') || null,
+        status: programRuntimeUrl.searchParams.get('status') || null,
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, quarantines }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: err?.message || 'codesite_quarantine_list_failed' }));
+    }
+    return;
+  }
+
+  const quarantineRecordMatch = /^\/codesitefs\/quarantines\/([^/]+)\/([^/]+)(?:\/(replay|apply))?$/.exec(programRuntimeUrl.pathname);
+  if (quarantineRecordMatch) {
+    const slug = decodeURIComponent(quarantineRecordMatch[1]);
+    const quarantineId = decodeURIComponent(quarantineRecordMatch[2]);
+    const action = quarantineRecordMatch[3] || null;
+    let parsed = {};
+    if (req.method !== 'GET') {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      try { parsed = JSON.parse(body || '{}'); } catch (_) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        return;
+      }
+    }
+    const headerUserId = req.headers['x-user-id'] ? String(req.headers['x-user-id']) : '';
+    const runtimeScope = parsed.runtimeScope
+      || programRuntimeUrl.searchParams.get('runtimeScope')
+      || (req.headers['x-runtime-scope'] ? String(req.headers['x-runtime-scope']) : '');
+    const actorUserId = parsed.userId || parsed.actorUserId || programRuntimeUrl.searchParams.get('userId') || headerUserId || '';
+    const effectiveUserId =
+      parsed.filesystemUserId ||
+      programRuntimeUrl.searchParams.get('filesystemUserId') ||
+      (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '') ||
+      actorUserId;
+    const codeSiteContext = runtimeCodeSiteContext(req, parsed, {
+      workspaceSlug: slug,
+      actorUserId,
+      effectiveUserId,
+    });
+    const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
+    try {
+      let requestedPaths = null;
+      if (action) {
+        if (!['replay', 'apply'].includes(action) || req.method !== 'POST') {
+          res.writeHead(405, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'method_not_allowed' }));
+          return;
+        }
+        requestedPaths = selectedQuarantinePathSet(parsed);
+        if (action === 'apply' && (!codeSiteContext.active || !codeSiteContext.transactionId)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            ok: false,
+            error: 'codesite_transaction_required',
+            message: 'Applying a quarantine replay requires an active CodeSite transaction.',
+            codesite: codeSiteMetadata,
+          }));
+          return;
+        }
+        if (action === 'apply' && requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
+          writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'codesitefs-quarantine-apply');
+          return;
+        }
+      }
+      const storage = await codeSiteQuarantineStorageForRequest(slug, effectiveUserId, runtimeScope, `codesitefs-quarantine-${action || 'get'}`, codeSiteContext);
+      const quarantine = await readCodeSiteQuarantineManifest(storage.baseDir, slug, quarantineId);
+      if (!action && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, quarantine }));
+        return;
+      }
+
+      const selected = selectedQuarantineChanges(quarantine, parsed, requestedPaths);
+      const manifestEventDetails = quarantineManifestEventDetails(quarantine);
+      const replay = await prepareCodeSiteQuarantineReplayPlan({
+        slug,
+        changes: selected,
+        repoRoot: storage.repoRoot,
+        effectiveUserId,
+        evidenceRefs: [
+          ...arrayValue(parsed.evidenceRefs || parsed.evidence_refs),
+          ...arrayValue(quarantine.evidenceRefs),
+        ],
+        processAncestry: [
+          ...arrayValue(parsed.processAncestry || parsed.process_ancestry),
+          ...arrayValue(quarantine.processAncestry),
+        ],
+        ancestryLabel: action === 'apply'
+          ? 'collab-server:codesitefs-quarantine-apply'
+          : 'collab-server:codesitefs-quarantine-replay',
+      });
+
+      if (action === 'replay') {
+        const reviewedEvent = await recordCodeSiteQuarantineTimelineEvent(codeSiteContext, 'quarantine_reviewed', {
+          quarantineId,
+          paths: replay.prepared.map((item) => item.change.path),
+          rejected: replay.rejected,
+          evidenceRefs: quarantine.evidenceRefs,
+          details: {
+            quarantineId,
+            selectedChangeCount: selected.length,
+            replayableChangeCount: replay.prepared.length,
+            rejectedChangeCount: replay.rejected.length,
+            ...manifestEventDetails,
+          },
+        });
+        const replayedEvent = await recordCodeSiteQuarantineTimelineEvent(codeSiteContext, 'quarantine_replayed', {
+          quarantineId,
+          paths: replay.prepared.map((item) => item.change.path),
+          rejected: replay.rejected,
+          evidenceRefs: quarantine.evidenceRefs,
+          details: {
+            quarantineId,
+            selectedChangeCount: selected.length,
+            replayableChangeCount: replay.prepared.length,
+            rejectedChangeCount: replay.rejected.length,
+            ...manifestEventDetails,
+          },
+        });
+        res.writeHead(replay.rejected.length ? 409 : 200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: replay.rejected.length === 0,
+          mode: 'replay',
+          quarantine: {
+            quarantineId,
+            status: quarantine.status,
+            transactionId: quarantine.transactionId,
+          },
+          replay: replay.prepared.map(quarantineReplayAppliedRecord),
+          rejected: replay.rejected,
+          timelineEvents: {
+            reviewed: reviewedEvent,
+            replayed: replayedEvent,
+          },
+          codesite: codeSiteMetadata,
+        }));
+        return;
+      }
+
+      if (replay.rejected.length) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: false,
+          error: 'quarantine_replay_stale_or_invalid',
+          rejected: replay.rejected,
+          codesite: codeSiteMetadata,
+        }));
+        return;
+      }
+
+      const attempts = replay.prepared.map(quarantineReplayAttempt);
+      const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
+        operation: 'quarantine-review-apply',
+        tool: 'file_write',
+        attempts,
+      }, async () => {
+        const applied = [];
+        for (const item of replay.prepared) {
+          await applyQuarantineReplayItem(slug, item, effectiveUserId);
+          applied.push(quarantineReplayAppliedRecord(item));
+        }
+        return { applied };
+      }, {
+        ...codeSiteEnforceOptions(codeSiteContext),
+        repoRoot: storage.repoRoot,
+      });
+
+      const applied = boundary.applyResult?.applied || [];
+      for (const item of applied) {
+        if (item.operation === 'delete') {
+          broadcastFileReverted(slug, [item.path], { userId: effectiveUserId });
+        } else {
+          broadcastFileSaved(slug, item.path, { userId: effectiveUserId });
+        }
+      }
+      broadcastFileTreeChanged(slug, { userId: effectiveUserId });
+      broadcastGitStatusChanged(slug, undefined, { userId: effectiveUserId }, { immediate: true });
+      const timelineEvent = await recordCodeSiteQuarantineTimelineEvent(codeSiteContext, 'quarantine_applied', {
+        quarantineId,
+        paths: applied.map((item) => item.path),
+        evidenceRefs: quarantine.evidenceRefs,
+        details: {
+          quarantineId,
+          applied,
+          boundaryPhase: boundary.phase,
+          ...manifestEventDetails,
+        },
+      });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        quarantine: { quarantineId, status: quarantine.status, transactionId: quarantine.transactionId },
+        applied,
+        rejected: [],
+        timelineEvent,
+        codesite: codeSiteMetadata,
+        boundary: {
+          phase: boundary.phase,
+          operation: boundary.operation?.operation || boundary.operation,
+          attempts: boundary.attempts.map((attempt) => ({
+            path: attempt.path,
+            disposition: attempt.disposition,
+            eventRecordId: attempt.eventRecord?.id || null,
+          })),
+          verification: boundary.verification,
+        },
+      }));
+    } catch (err) {
+      if (isCodeSiteDeniedError(err)) {
+        writeCodeSiteDenied(res, err);
+        return;
+      }
+      if (err?.code === 'MISSING_SELECTED_PATHS') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: false,
+          error: 'missing_selected_paths',
+          message: 'Replay/apply requires explicit selected quarantine paths.',
+          codesite: codeSiteMetadata,
+        }));
+        return;
+      }
+      const notFound = err?.code === 'ENOENT';
+      console.error('[CodeSiteFS Quarantine] failed:', err?.message || err);
+      res.writeHead(notFound ? 404 : 500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: false,
+        error: notFound ? 'codesite_quarantine_not_found' : 'codesite_quarantine_failed',
+        message: err?.message || 'CodeSite quarantine operation failed',
+        detail: {
+          action: action || 'get',
+          controlPlaneUrl: codeSiteControlPlaneBaseUrl(codeSiteContext),
+          hasControlPlaneCookie: Boolean(codeSiteContext.cookie),
+        },
+        codesite: codeSiteMetadata,
+      }));
+    }
+    return;
+  }
+
+  // Compatibility endpoint for callers that already have explicit quarantine
+  // evidence packets but not a stored manifest id.
+  const quarantineApplyMatch = /^\/codesitefs\/quarantine\/apply\/([^/]+)$/.exec(programRuntimeUrl.pathname);
+  if (quarantineApplyMatch && req.method === 'POST') {
+    const slug = decodeURIComponent(quarantineApplyMatch[1]);
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body || '{}'); } catch (_) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const headerUserId = req.headers['x-user-id'] ? String(req.headers['x-user-id']) : '';
+    const runtimeScope = parsed.runtimeScope || (req.headers['x-runtime-scope'] ? String(req.headers['x-runtime-scope']) : '');
+    const actorUserId = parsed.userId || parsed.actorUserId || headerUserId || '';
+    const effectiveUserId =
+      parsed.filesystemUserId ||
+      (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '') ||
+      actorUserId;
+    const codeSiteContext = runtimeCodeSiteContext(req, parsed, {
+      workspaceSlug: slug,
+      actorUserId,
+      effectiveUserId,
+    });
+    const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
+    if (!codeSiteContext.active || !codeSiteContext.transactionId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: false,
+        error: 'codesite_transaction_required',
+        message: 'Applying a quarantine replay requires an active CodeSite transaction.',
+        codesite: codeSiteMetadata,
+      }));
+      return;
+    }
+    if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
+      writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'codesitefs-quarantine-apply');
+      return;
+    }
+
+    try {
+      const storage = await codeSiteQuarantineStorageForRequest(slug, effectiveUserId, runtimeScope, 'codesitefs-quarantine-apply', codeSiteContext);
+      const replay = await prepareCodeSiteQuarantineReplayPlan({
+        slug,
+        changes: parsed.changes || parsed.quarantineChanges || parsed.quarantine_changes || parsed.files || [],
+        repoRoot: storage.repoRoot,
+        effectiveUserId,
+        evidenceRefs: parsed.evidenceRefs || parsed.evidence_refs,
+        processAncestry: parsed.processAncestry || parsed.process_ancestry,
+        ancestryLabel: 'collab-server:codesitefs-quarantine-apply',
+      });
+      if (replay.rejected.length) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: false,
+          error: 'quarantine_replay_stale_or_invalid',
+          rejected: replay.rejected,
+          codesite: codeSiteMetadata,
+        }));
+        return;
+      }
+      const attempts = replay.prepared.map(quarantineReplayAttempt);
+      const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
+        operation: 'quarantine-review-apply',
+        tool: 'file_write',
+        attempts,
+      }, async () => {
+        const applied = [];
+        for (const item of replay.prepared) {
+          await applyQuarantineReplayItem(slug, item, effectiveUserId);
+          applied.push(quarantineReplayAppliedRecord(item));
+        }
+        return { applied };
+      }, {
+        ...codeSiteEnforceOptions(codeSiteContext),
+        repoRoot: storage.repoRoot,
+      });
+      const applied = boundary.applyResult?.applied || [];
+      for (const item of applied) {
+        if (item.operation === 'delete') {
+          broadcastFileReverted(slug, [item.path], { userId: effectiveUserId });
+        } else {
+          broadcastFileSaved(slug, item.path, { userId: effectiveUserId });
+        }
+      }
+      broadcastFileTreeChanged(slug, { userId: effectiveUserId });
+      broadcastGitStatusChanged(slug, undefined, { userId: effectiveUserId }, { immediate: true });
+      const timelineEvent = await recordCodeSiteQuarantineTimelineEvent(codeSiteContext, 'quarantine_applied', {
+        quarantineId: replay.prepared[0]?.change?.quarantineId || null,
+        paths: applied.map((item) => item.path),
+        evidenceRefs: parsed.evidenceRefs || parsed.evidence_refs,
+        details: { applied, boundaryPhase: boundary.phase },
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        applied,
+        rejected: [],
+        timelineEvent,
+        codesite: codeSiteMetadata,
+        boundary: {
+          phase: boundary.phase,
+          operation: boundary.operation?.operation || boundary.operation,
+          attempts: boundary.attempts.map((attempt) => ({
+            path: attempt.path,
+            disposition: attempt.disposition,
+            eventRecordId: attempt.eventRecord?.id || null,
+          })),
+          verification: boundary.verification,
+        },
+      }));
+    } catch (err) {
+      if (isCodeSiteDeniedError(err)) {
+        writeCodeSiteDenied(res, err);
+        return;
+      }
+      console.error('[CodeSiteFS Quarantine Apply] failed:', err?.message || err);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: false,
+        error: 'codesite_quarantine_apply_failed',
+        message: err?.message || 'CodeSite quarantine apply failed',
+        codesite: codeSiteMetadata,
+      }));
+    }
     return;
   }
 
@@ -1470,6 +3680,9 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));
       return;
     }
+    if (!requireCommandGatewayAuth(req, res, { slug, parsed, requiredScope: COMMAND_SCOPES.EXEC })) {
+      return;
+    }
 
     const command = (parsed.command || '').trim();
     if (!command) {
@@ -1481,70 +3694,98 @@ const server = http.createServer(async (req, res) => {
     const timeoutMs = Math.min(Number(parsed.timeout) || 30000, 60000);
 
     try {
-      const { createHeadlessSession } = require('./terminalService');
-      const crypto = require('crypto');
-      const sessionId = `ai-${crypto.randomUUID().slice(0, 8)}`;
-
-      // Create a real PTY with a known session ID
-      const { ptyProcess, cwd } = await createHeadlessSession(sessionId, slug, parsed.userId || '');
-
-      console.log(`[ExecTerminal] slug=${slug} cwd=${cwd} sessionId=${sessionId} cmd=${command.slice(0, 120)}`);
-
-      // Collect output from the PTY
-      let output = '';
-      const MAX_OUT = 50000;
-      let commandDone = false;
-      let commandSent = false;
-
-      const outputCollector = (data) => {
-        if (output.length < MAX_OUT) output += data;
-      };
-      ptyProcess.onData(outputCollector);
-
-      // Write the command after the shell finishes its banner output.
-      // We detect the shell is ready by waiting for the first prompt.
-      // PowerShell prompt: "PS C:\...>" | Bash prompt: "$" or "#"
-      const isWin = require('os').platform() === 'win32';
-      const promptPattern = isWin ? /PS [^\r\n]*>/ : /[$#]\s*$/;
-      let promptCheckInterval;
-      let promptWaitTimeout;
-
-      function sendCommand() {
-        if (commandSent) return;
-        commandSent = true;
-        if (promptCheckInterval) clearInterval(promptCheckInterval);
-        if (promptWaitTimeout) clearTimeout(promptWaitTimeout);
-        ptyProcess.write(command + '\r');
-        // Start stability checking AFTER the command is sent + a grace period
-        // for the command to start producing output
-        setTimeout(startStabilityCheck, 1500);
+      // Launch via the managed program runtime (tracks output/lifecycle, which
+      // the completion-detection below relies on). Carry dev's runtime-scope /
+      // filesystem-user identity so the pod path can route on it where active.
+      const requestedSessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId.trim() : '';
+      const sessionId = requestedSessionId || `ai-${crypto.randomUUID().slice(0, 8)}`;
+      const headerUserId = req.headers['x-user-id'] ? String(req.headers['x-user-id']) : '';
+      const runtimeScope = parsed.runtimeScope || (req.headers['x-runtime-scope'] ? String(req.headers['x-runtime-scope']) : '');
+      const terminalUserId = parsed.userId || headerUserId || '';
+      const filesystemUserId =
+        parsed.filesystemUserId ||
+        (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '') ||
+        terminalUserId;
+      const launchEnv = parsed.env && typeof parsed.env === 'object' ? parsed.env : {};
+      const codeSiteContext = runtimeCodeSiteContext(req, parsed, {
+        workspaceSlug: slug,
+        actorUserId: terminalUserId,
+        effectiveUserId: filesystemUserId,
+      });
+      const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
+      try {
+        guardCodeSiteRuntimeHostSurface(slug, codeSiteContext, 'exec-terminal');
+      } catch (err) {
+        writeCodeSiteDenied(res, err);
+        return;
+      }
+      if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
+        writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'exec-terminal');
+        return;
+      }
+      if (codeSiteContext.active) {
+        writeCodeSiteRuntimeBlocked(res, codeSiteMetadata, 'exec-terminal');
+        return;
       }
 
-      // Check every 100ms if prompt appeared
-      promptCheckInterval = setInterval(() => {
-        if (promptPattern.test(output)) {
-          sendCommand();
-        }
-      }, 100);
+      await managedProgramRuntime.launchManagedSession({
+        sessionId,
+        workspaceSlug: slug,
+        userId: terminalUserId,
+        command,
+        env: {
+          ...launchEnv,
+          ...runtimeCodeSiteEnv(codeSiteContext, ['collab-server', 'exec-terminal']),
+        },
+        title: parsed.name || null,
+        runtimeScope,
+        filesystemUserId,
+        activeWorkspacePath: parsed.activeWorkspacePath || '',
+        metadata: codeSiteMetadata ? { codesite: codeSiteMetadata } : null,
+        codesiteContext: codeSiteContext.active ? codeSiteContext : null,
+      });
 
-      // Fallback: if prompt never detected, send command anyway after 1s
-      promptWaitTimeout = setTimeout(() => {
-        if (!commandSent) {
-          console.log(`[ExecTerminal] Prompt not detected, sending command anyway`);
-          sendCommand();
-        }
-      }, 1000);
+      const terminalSession = terminalSessions.get(sessionId);
+      if (!terminalSession?.pty || !terminalSession.cwd) {
+        throw new Error(`Managed runtime ${sessionId} failed to initialize`);
+      }
+
+      // Create a real PTY with a known session ID
+      const { pty: ptyProcess, cwd } = terminalSession;
+      const runtimeHandle = managedProgramRuntime.getManagedRuntime(sessionId);
+      const commandStartedPromise = runtimeHandle?.commandStartedPromise || Promise.resolve();
+
+      console.log(`[ExecTerminal] slug=${slug} runtimeScope=${runtimeScope || 'legacy'} fsUser=${filesystemUserId || 'none'} cwd=${cwd} sessionId=${sessionId} cmd=${command.slice(0, 120)}`);
+
+      let commandDone = false;
+      let commandSent = false;
+      let timedOut = false;
+
+      function getManagedOutput() {
+        return managedProgramRuntime.getManagedSession(sessionId)?.output || '';
+      }
+
+      const isWin = require('os').platform() === 'win32';
+      const promptPattern = isWin ? /PS [^\r\n]*>/ : /[$#]\s*$/;
+      commandStartedPromise.then(() => {
+        commandSent = true;
+        // Start stability checking AFTER the command is sent + a grace period
+        // for the command to start producing output.
+        setTimeout(startStabilityCheck, 1500);
+      });
 
       // Wait for the command to finish by detecting the shell prompt returning
       // AFTER the command output. Also use a stability fallback.
       function startStabilityCheck() {
-        let lastOutputLen = output.length;
+        let lastOutputLen = getManagedOutput().length;
         let stableCount = 0;
         const STABLE_THRESHOLD = 4; // 4 consecutive checks × 500ms = 2s of silence
         const CHECK_INTERVAL = 500;
         let promptSeenAfterCmd = false;
 
         const checkDone = setInterval(() => {
+          const output = getManagedOutput();
+
           // Primary: detect the shell prompt reappearing after command output
           // This means the command finished and the shell is ready for input
           if (commandSent && output.length > lastOutputLen) {
@@ -1573,13 +3814,16 @@ const server = http.createServer(async (req, res) => {
       }
 
       const hardTimeout = setTimeout(() => {
+        timedOut = true;
         respond();
       }, timeoutMs);
 
       let responded = false;
-      function respond() {
+      async function respond() {
         if (responded) return;
         responded = true;
+
+        const output = getManagedOutput();
 
         // Extract the command output: find the echoed command and take everything after it
         // up to (but not including) the next shell prompt
@@ -1603,14 +3847,36 @@ const server = http.createServer(async (req, res) => {
           && !/\b(0 error|no error|fixed|resolved|warning)\b/i.test(cleanOutput);
         const inferredExitCode = looksLikeError ? 1 : 0;
 
+        managedProgramRuntime.refreshManagedSessionPorts(sessionId).catch((portErr) => {
+          logger.warn({ err: portErr, sessionId }, 'Failed to refresh managed session ports');
+        });
+
+        let quarantine = null;
+        const proofSession = terminalSessions.get(sessionId);
+        if (proofSession?.codesiteQuarantine) {
+          try {
+            quarantine = await finalizeCodeSiteQuarantineWorkspace(codeSiteContext, proofSession.codesiteQuarantine, {
+              tool: 'raw_terminal',
+              cleanup: false,
+              resetBaseline: true,
+            });
+          } catch (err) {
+            quarantine = { error: err?.message || 'codesite_quarantine_finalize_failed' };
+          }
+        }
+
         console.log(`[ExecTerminal] Done: sessionId=${sessionId} output=${cleanOutput.length}B exitCode=${inferredExitCode}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           sessionId,
+          runtimeScope: runtimeScope || null,
+          filesystemScoped: Boolean(filesystemUserId),
+          codesite: codeSiteMetadata,
           command,
           output: cleanOutput || '(no output)',
           exitCode: inferredExitCode,
-          timedOut: false,
+          timedOut,
+          quarantine,
         }));
       }
 
@@ -1651,6 +3917,9 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));
       return;
     }
+    if (!requireCommandGatewayAuth(req, res, { slug, parsed, requiredScope: COMMAND_SCOPES.EXEC })) {
+      return;
+    }
 
     const command = (parsed.command || '').trim();
     if (!command) {
@@ -1661,14 +3930,69 @@ const server = http.createServer(async (req, res) => {
 
     const timeoutMs = Math.min(Number(parsed.timeout) || 30000, 60000);
     const { resolveWorkspaceCwd } = require('./terminalService');
-    const cwd = resolveWorkspaceCwd(slug);
+    const headerUserId = req.headers['x-user-id'] ? String(req.headers['x-user-id']) : '';
+    const runtimeScope = parsed.runtimeScope || (req.headers['x-runtime-scope'] ? String(req.headers['x-runtime-scope']) : '');
+    const terminalUserId = parsed.userId || headerUserId || '';
+    const filesystemUserId =
+      parsed.filesystemUserId ||
+      (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '') ||
+      terminalUserId;
+    const codeSiteContext = runtimeCodeSiteContext(req, parsed, {
+      workspaceSlug: slug,
+      actorUserId: terminalUserId,
+      effectiveUserId: filesystemUserId,
+    });
+    const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
+    try {
+      guardCodeSiteRuntimeHostSurface(slug, codeSiteContext, 'exec-pty');
+    } catch (err) {
+      writeCodeSiteDenied(res, err);
+      return;
+    }
+    if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
+      writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'exec-pty');
+      return;
+    }
+    let cwd;
+    try {
+      await ensureRuntimeFilesystem({
+        workspaceSlug: slug,
+        filesystemUserId,
+        runtimeScope,
+        reason: 'exec_pty',
+        codesiteContext: codeSiteContext,
+      });
+      cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
+    } catch (err) {
+      console.error('[ExecPTY] Workspace filesystem preparation failed:', err.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Workspace filesystem preparation failed', detail: err.message }));
+      return;
+    }
+    let codeSiteQuarantine = null;
+    if (codeSiteContext.active) {
+      try {
+        codeSiteQuarantine = await createCodeSiteQuarantineWorkspace(codeSiteContext, cwd, {
+          operation: 'exec-pty',
+          baseDir: codeSiteRuntimeQuarantineBaseDir(cwd),
+        });
+        if (codeSiteQuarantine?.cwd) cwd = codeSiteQuarantine.cwd;
+      } catch (err) {
+        console.error('[ExecPTY] CodeSite quarantine preparation failed:', err.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'CodeSite quarantine preparation failed', detail: err.message }));
+        return;
+      }
+    }
 
-    console.log(`[ExecPTY] slug=${slug} cwd=${cwd} cmd=${command.slice(0, 120)}`);
+    console.log(`[ExecPTY] slug=${slug} runtimeScope=${runtimeScope || 'legacy'} fsUser=${filesystemUserId || 'none'} cwd=${cwd} cmd=${command.slice(0, 120)}`);
 
     // Find active PTY session for this workspace to mirror output
     let targetSession = null;
     for (const [, session] of terminalSessions) {
-      if (session.cwd && session.cwd.endsWith(slug) && session.pty) {
+      const sameWorkspace = session.workspaceSlug === slug || (session.cwd && session.cwd.endsWith(slug));
+      const sameFilesystem = !filesystemUserId || !session.filesystemUserId || session.filesystemUserId === filesystemUserId;
+      if (sameWorkspace && sameFilesystem && session.pty) {
         targetSession = session;
         break;
       }
@@ -1683,7 +4007,11 @@ const server = http.createServer(async (req, res) => {
     const child = spawn(shell, shellArgs, {
       cwd,
       timeout: timeoutMs,
-      env: { ...process.env, TERM: 'dumb' },
+      env: {
+        ...process.env,
+        TERM: 'dumb',
+        ...runtimeCodeSiteEnv(codeSiteContext, ['collab-server', 'exec-pty']),
+      },
       windowsHide: true,
     });
 
@@ -1700,10 +4028,20 @@ const server = http.createServer(async (req, res) => {
       try { child.kill('SIGTERM'); } catch (_) {}
     }, timeoutMs);
 
-    child.on('close', (exitCode) => {
+    child.on('close', async (exitCode) => {
       clearTimeout(timer);
 
       const combinedOutput = stdout + (stderr ? `\n${stderr}` : '');
+      let quarantine = null;
+      if (codeSiteQuarantine) {
+        try {
+          quarantine = await finalizeCodeSiteQuarantineWorkspace(codeSiteContext, codeSiteQuarantine, {
+            tool: 'raw_terminal',
+          });
+        } catch (err) {
+          quarantine = { error: err?.message || 'codesite_quarantine_finalize_failed' };
+        }
+      }
 
       // NOTE: Do NOT write output to the PTY via pty.write() — that sends INPUT
       // which PowerShell/bash interprets as commands, causing errors.
@@ -1718,6 +4056,8 @@ const server = http.createServer(async (req, res) => {
         stderr,
         timedOut,
         usedPty: Boolean(targetSession),
+        codesite: codeSiteMetadata,
+        quarantine,
       }));
     });
 
@@ -1753,6 +4093,9 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'Invalid JSON body' }));
       return;
     }
+    if (!requireCommandGatewayAuth(req, res, { slug, parsed, requiredScope: COMMAND_SCOPES.EXEC })) {
+      return;
+    }
 
     const command = (parsed.command || '').trim();
     if (!command) {
@@ -1763,9 +4106,62 @@ const server = http.createServer(async (req, res) => {
 
     const timeoutMs = Math.min(Number(parsed.timeout) || 30000, 60000);
     const { resolveWorkspaceCwd } = require('./terminalService');
-    const cwd = resolveWorkspaceCwd(slug);
+    const headerUserId = req.headers['x-user-id'] ? String(req.headers['x-user-id']) : '';
+    const runtimeScope = parsed.runtimeScope || (req.headers['x-runtime-scope'] ? String(req.headers['x-runtime-scope']) : '');
+    const terminalUserId = parsed.userId || headerUserId || '';
+    const filesystemUserId =
+      parsed.filesystemUserId ||
+      (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '') ||
+      terminalUserId;
+    const codeSiteContext = runtimeCodeSiteContext(req, parsed, {
+      workspaceSlug: slug,
+      actorUserId: terminalUserId,
+      effectiveUserId: filesystemUserId,
+    });
+    const codeSiteMetadata = codeSiteRuntimeMetadata(codeSiteContext);
+    try {
+      guardCodeSiteRuntimeHostSurface(slug, codeSiteContext, 'exec');
+    } catch (err) {
+      writeCodeSiteDenied(res, err);
+      return;
+    }
+    if (requiresCodeSiteManagedRuntimeContext(codeSiteContext)) {
+      writeCodeSiteManagedContextRequired(res, codeSiteMetadata, 'exec');
+      return;
+    }
+    let cwd;
+    try {
+      await ensureRuntimeFilesystem({
+        workspaceSlug: slug,
+        filesystemUserId,
+        runtimeScope,
+        reason: 'exec',
+        codesiteContext: codeSiteContext,
+      });
+      cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
+    } catch (err) {
+      console.error('[Exec] Workspace filesystem preparation failed:', err.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Workspace filesystem preparation failed', detail: err.message }));
+      return;
+    }
+    let codeSiteQuarantine = null;
+    if (codeSiteContext.active) {
+      try {
+        codeSiteQuarantine = await createCodeSiteQuarantineWorkspace(codeSiteContext, cwd, {
+          operation: 'exec',
+          baseDir: codeSiteRuntimeQuarantineBaseDir(cwd),
+        });
+        if (codeSiteQuarantine?.cwd) cwd = codeSiteQuarantine.cwd;
+      } catch (err) {
+        console.error('[Exec] CodeSite quarantine preparation failed:', err.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'CodeSite quarantine preparation failed', detail: err.message }));
+        return;
+      }
+    }
 
-    console.log(`[Exec] slug=${slug} cwd=${cwd} cmd=${command.slice(0, 120)}`);
+    console.log(`[Exec] slug=${slug} runtimeScope=${runtimeScope || 'legacy'} fsUser=${filesystemUserId || 'none'} cwd=${cwd} cmd=${command.slice(0, 120)}`);
 
     const { spawn } = require('child_process');
     const isWin = require('os').platform() === 'win32';
@@ -1775,7 +4171,11 @@ const server = http.createServer(async (req, res) => {
     const child = spawn(shell, shellArgs, {
       cwd,
       timeout: timeoutMs,
-      env: { ...process.env, TERM: 'dumb' },
+      env: {
+        ...process.env,
+        TERM: 'dumb',
+        ...runtimeCodeSiteEnv(codeSiteContext, ['collab-server', 'exec']),
+      },
       windowsHide: true,
     });
 
@@ -1792,11 +4192,21 @@ const server = http.createServer(async (req, res) => {
       try { child.kill('SIGTERM'); } catch (_) {}
     }, timeoutMs);
 
-    child.on('close', (exitCode) => {
+    child.on('close', async (exitCode) => {
       clearTimeout(timer);
+      let quarantine = null;
+      if (codeSiteQuarantine) {
+        try {
+          quarantine = await finalizeCodeSiteQuarantineWorkspace(codeSiteContext, codeSiteQuarantine, {
+            tool: 'raw_terminal',
+          });
+        } catch (err) {
+          quarantine = { error: err?.message || 'codesite_quarantine_finalize_failed' };
+        }
+      }
       console.log(`[Exec] Done: exitCode=${exitCode} timedOut=${timedOut} stdout=${stdout.length}B stderr=${stderr.length}B`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ exitCode, stdout, stderr, timedOut }));
+      res.end(JSON.stringify({ exitCode, stdout, stderr, timedOut, codesite: codeSiteMetadata, quarantine }));
     });
 
     child.on('error', (err) => {
@@ -1814,8 +4224,9 @@ const server = http.createServer(async (req, res) => {
           // Parse query params for owner
           const url = new URL(req.url, `http://${req.headers.host}`);
           const owner = url.searchParams.get('owner');
+          const recentOnly = url.searchParams.get('recent') === 'true';
           
-          const workspaces = workspaceManager.getWorkspaces(owner);
+          const workspaces = workspaceManager.getWorkspaces(owner, { recentOnly });
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(workspaces));
       } catch (e) {
@@ -2182,7 +4593,20 @@ const server = http.createServer(async (req, res) => {
         }
 
         // 1) Disk is authoritative — rewrite it first.
-        await gitService.safeWriteFile(fullPath, content);
+        const codeSiteContext = codeSiteContextFromRequest(req, payload, {
+          workspaceSlug: slug,
+          actorUserId: userId,
+          effectiveUserId: targetUserId,
+        });
+        await runCodeSiteMutationBoundary(codeSiteContext, {
+          operation: 'file-version-restore',
+          tool: 'file_write',
+          attempts: [{
+            path: normalizedPath,
+            kind: 'file-version-restore',
+            tool: 'file_write',
+          }],
+        }, async () => gitService.writeFile(slug, normalizedPath, content, targetUserId), { repoRoot: repoPath });
 
         // 2) Pull the CRDT doc onto the restored content so live editors
         // converge without data loss, then ALWAYS hard-invalidate the doc.
@@ -2257,6 +4681,10 @@ const server = http.createServer(async (req, res) => {
           crdtReset,
         }));
       } catch (e) {
+        if (isCodeSiteDeniedError(e)) {
+          writeCodeSiteDenied(res, e);
+          return;
+        }
         logger.error('file_version_restore_failed', {}, e);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: e.message }));
@@ -2349,6 +4777,7 @@ const server = http.createServer(async (req, res) => {
             seen.set(uid, {
               id: uid,
               name: ws._userName || userDisplayNameCache.get(uid)?.name || 'Anonymous',
+              email: ws._userEmail || null,
               color: ws._userColor || '#888',
               image: ws._userImage || userDisplayNameCache.get(uid)?.avatar || null,
               lastActive: Date.now(),
@@ -2419,8 +4848,9 @@ const server = http.createServer(async (req, res) => {
           return;
         }
 
-        // Auto-create session if needed
-        let session = sessionManager.getSessionByHost(hostId);
+        // Auto-create session if needed. Existing sessions must be read
+        // through the host-only view so inviteToken is available for links.
+        let session = sessionManager.getHostSessionForReconnect(hostId, slug);
         if (!session) {
           session = sessionManager.createSession({
             hostId,
@@ -2452,8 +4882,12 @@ const server = http.createServer(async (req, res) => {
           .then((r) => logger.info('invite_delivery', { targetUserId, slug, delivered: r.delivered, queued: r.queued }))
           .catch((err) => logger.warn('invite_delivery_failed', { targetUserId, slug }, err));
 
-        const appUrl = process.env.SYNTHI_APP_URL || 'http://localhost:3000';
-        const inviteLink = `${appUrl}/collab/${session.id}?token=${session.inviteToken}${session.roomCode ? `&code=${session.roomCode}` : ''}`;
+        const inviteLink = makeInviteLink({
+          sessionId: session.id,
+          inviteToken: session.inviteToken,
+          roomCode: session.roomCode,
+          slug,
+        });
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -2708,6 +5142,8 @@ const server = http.createServer(async (req, res) => {
     const RATE_BUDGETS = {
       create: 20,
       'validate-token': 60,
+      host: 120,
+      'workspace-access': 120,
       knock: 30,
       admit: 60,
       deny: 60,
@@ -2724,7 +5160,17 @@ const server = http.createServer(async (req, res) => {
     // sessionId parameter must look like the format emitted by SessionManager
     // (hex, 2*SESSION_ID_LEN chars).  Reject malformed IDs before they reach
     // any manager call — defence-in-depth against injection via URL paths.
-    if (sessionIdParam && !/^[a-f0-9]{8,64}$/i.test(sessionIdParam)) {
+    const sessionIdActions = new Set([
+      'admit',
+      'deny',
+      'permissions',
+      'kick',
+      'leave',
+      'terminate',
+      'info',
+      'regenerate-token',
+    ]);
+    if (sessionIdActions.has(action) && sessionIdParam && !/^[a-f0-9]{8,64}$/i.test(sessionIdParam)) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'invalid_session_id_format' }));
       return;
@@ -2756,18 +5202,99 @@ const server = http.createServer(async (req, res) => {
             } catch (e) {
               console.warn(`[Collab] Could not ensure host repo for session: ${e.message}`);
             }
+            const existing = sessionManager.getHostSessionForReconnect(hostId, slug);
             const session = sessionManager.createSession({
               hostId, hostName: hostName || hostId, hostAvatar: hostAvatar || '',
               slug, worktreePath: hostRepoPath || '', defaultPerms,
             });
             result = {
+              reused: Boolean(existing && existing.id === session.id),
               sessionId: session.id,
               inviteToken: session.inviteToken,
               worktreePath: session.worktreePath,
               roomCode: session.roomCode || null,
               createdAt: session.createdAt,
-              inviteLink: `${process.env.SYNTHI_APP_URL || 'http://localhost:3000'}/collab/${session.id}?token=${session.inviteToken}${session.roomCode ? `&code=${session.roomCode}` : ''}`,
+              inviteLink: makeInviteLink({
+                sessionId: session.id,
+                inviteToken: session.inviteToken,
+                roomCode: session.roomCode,
+                slug,
+              }),
             };
+            break;
+          }
+
+          case 'host': {
+            // GET /session/host/:hostId?slug=<workspace>
+            const hostId = sessionIdParam ? decodeURIComponent(sessionIdParam) : '';
+            const slug = urlObj.searchParams.get('slug') || '';
+            if (!hostId) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'hostId is required' }));
+              return;
+            }
+            const session = sessionManager.getHostSessionForReconnect(hostId, slug || null);
+            if (!session) {
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Session not found' }));
+              return;
+            }
+            result = {
+              ...session,
+              sessionId: session.id,
+              inviteLink: makeInviteLink({
+                sessionId: session.id,
+                inviteToken: session.inviteToken,
+                roomCode: session.roomCode,
+                slug: session.slug,
+              }),
+            };
+            break;
+          }
+
+          case 'workspace-access': {
+            // GET /session/workspace-access/:userId?slug=<workspace>
+            //
+            // Internal-only lookup used by the frontend server to check whether
+            // an authenticated caller (identified by their workspaceUserId — see
+            // synthi/src/lib/integrations/session.js) is currently the host or an
+            // admitted guest of an active collab session for a workspace slug.
+            // This is how collab guests get real file access without a Prisma
+            // WorkspaceMembership row (see synthi/src/lib/workspaceAccess.js).
+            //
+            // Must never be reachable without the shared internal token — it
+            // would otherwise let anyone probe session membership for an
+            // arbitrary userId.
+            if (!hasTrustedInternalToken(req, { config })) {
+              res.writeHead(403, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'internal_token_required' }));
+              return;
+            }
+            const targetUserId = sessionIdParam ? decodeURIComponent(sessionIdParam) : '';
+            const workspaceSlug = urlObj.searchParams.get('slug') || '';
+            if (!targetUserId || !workspaceSlug) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'userId and slug are required' }));
+              return;
+            }
+            let access = null;
+            for (const session of sessionManager.getSessionsForSlug(workspaceSlug)) {
+              if (session.hostId === targetUserId) {
+                access = { role: 'host', permissions: { canEdit: true, canFileOps: true, canTerminal: true, canGit: true } };
+                break;
+              }
+              const guest = (session.guests || []).find((g) => g.guestId === targetUserId);
+              if (guest) {
+                access = { role: 'guest', permissions: { ...guest.permissions } };
+                break;
+              }
+            }
+            if (!access) {
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'No active session for this user in this workspace' }));
+              return;
+            }
+            result = access;
             break;
           }
 
@@ -2911,7 +5438,12 @@ const server = http.createServer(async (req, res) => {
             result = {
               inviteToken: regenResult.inviteToken,
               roomCode: regenResult.roomCode,
-              inviteLink: `${process.env.SYNTHI_APP_URL || 'http://localhost:3000'}/collab/${sessionIdParam}?token=${regenResult.inviteToken}${regenResult.roomCode ? `&code=${regenResult.roomCode}` : ''}`,
+              inviteLink: makeInviteLink({
+                sessionId: sessionIdParam,
+                inviteToken: regenResult.inviteToken,
+                roomCode: regenResult.roomCode,
+                slug: sessionManager.getSession(sessionIdParam)?.slug,
+              }),
             };
             break;
           }
@@ -2974,6 +5506,7 @@ const server = http.createServer(async (req, res) => {
             const effectiveUserId = sessionId && userId
               ? sessionManager.getEffectiveUserId(userId, sessionId)
               : userId;
+            const allowUnauthenticatedDevGit = config.SYNTHI_WORKSPACE_AUTH_BYPASS && !sessionId && !userId;
 
             if (effectiveUserId && effectiveUserId !== userId) {
               console.log(`[Collab] Direct-access: guest=${userId} → host=${effectiveUserId} session=${sessionId} action=${action}`);
@@ -2981,6 +5514,17 @@ const server = http.createServer(async (req, res) => {
 
             const notifyScope = { userId: effectiveUserId || null, sessionId: sessionId || null };
             const bootstrapUserId = effectiveUserId || userId || null;
+            const codeSiteContext = codeSiteContextFromRequest(req, data, {
+              workspaceSlug: slug,
+              actorUserId: userId || null,
+              effectiveUserId: effectiveUserId || null,
+            });
+            const codeSiteEnforcement = codeSiteEnforceOptions(codeSiteContext);
+            const codeSiteNotifyScope = {
+              ...notifyScope,
+              codesiteContext: codeSiteContext,
+              ...codeSiteWriteEvidence(data),
+            };
 
             // ── Per-requester token isolation ──────────────────────────
             // Repo path / working tree → effectiveUserId (guest writes
@@ -3038,7 +5582,7 @@ const server = http.createServer(async (req, res) => {
                 }));
                 return;
               }
-            } else if (action !== 'init' && action !== 'clone') {
+            } else if (action !== 'init' && action !== 'clone' && !allowUnauthenticatedDevGit) {
               // Require userId for ALL actions (except bootstrapping).
               // Without a userId the server falls back to the slug-level
               // directory which may not be a valid git repo (migrated
@@ -3057,14 +5601,30 @@ const server = http.createServer(async (req, res) => {
         // exists with partial/stale content (e.g. .code_intel artifacts).
         // Now safe to run AFTER permission check.
         const hKey = hydrationKey(slug, effectiveUserId);
-        if (action !== 'clone' && !hydratedSlugs.has(hKey)) {
+        if (action !== 'clone' && action !== 'init' && !hydratedSlugs.has(hKey)) {
           try {
             // initRepo will mkdir the repo path, init .git, and (when configured)
             // pull the current workspace contents from GCS.
             // Pass effectiveUserId so it also provisions the per-user working tree.
-            await gitService.initRepo(slug, null, effectiveUserId);
+            if (!effectiveUserId || needsCodeSiteUserRepoProvisioning(slug, effectiveUserId)) {
+              await enforceCodeSiteProvisioningAllowed(codeSiteContext, 'git:auto-init', codeSiteEnforcement);
+            }
+            await gitService.initRepo(
+              slug,
+              null,
+              effectiveUserId,
+              null,
+              codeSiteProvisioningOptions(codeSiteContext, {
+                evidenceRefs: ['collab:git:auto-init'],
+                processAncestry: ['collab-server:git:auto-init'],
+              }),
+            );
             hydratedSlugs.add(hKey);
           } catch (e) {
+            if (e?.code === 'CODESITE_WRITE_DENIED') {
+              writeCodeSiteDenied(res, e);
+              return;
+            }
             // If init fails, continue so the normal handler can return a structured error.
             if (gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
               console.warn('[Collab] auto-init repo failed for slug:', slug, e?.message || e);
@@ -3079,12 +5639,26 @@ const server = http.createServer(async (req, res) => {
             // skip provisioning a separate repo.
             if (effectiveUserId) {
               try {
-                await gitService.ensureUserRepo(slug, effectiveUserId);
+                if (needsCodeSiteUserRepoProvisioning(slug, effectiveUserId)) {
+                  await enforceCodeSiteProvisioningAllowed(codeSiteContext, 'git:ensure-user-repo', codeSiteEnforcement);
+                }
+                await gitService.ensureUserRepo(
+                  slug,
+                  effectiveUserId,
+                  codeSiteProvisioningOptions(codeSiteContext, {
+                    evidenceRefs: ['collab:git:ensure-user-repo'],
+                    processAncestry: ['collab-server:git:ensure-user-repo'],
+                  }),
+                );
                 // Pin the per-user repo in the cache so it won't be evicted
                 // while this user is actively interacting with the workspace.
                 // Unpinning happens when the notification WS disconnects.
                 repoCache.pin(slug, effectiveUserId);
               } catch (e) {
+                if (e?.code === 'CODESITE_WRITE_DENIED') {
+                  writeCodeSiteDenied(res, e);
+                  return;
+                }
                 // For non-clone/init actions this is a real error — the user
                 // cannot operate without an isolated repo.
                 if (action !== 'clone' && action !== 'init') {
@@ -3100,6 +5674,26 @@ const server = http.createServer(async (req, res) => {
             }
 
             let result;
+            let instructionProjection = null;
+            if (shouldReconcileInstructionProjection(action)) {
+              try {
+                instructionProjection = await workspaceInstructionProjectionRuntime.reconcile({
+                  workspaceId: slug,
+                  repositoryRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+                  activeWorkspacePath: data.activeWorkspacePath || '',
+                });
+              } catch (projectionError) {
+                logger.warn('workspace_instruction_projection_reconcile_failed', {
+                  slug, action, message: projectionError?.message || String(projectionError),
+                });
+                res.writeHead(503, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                  error: 'workspace_instruction_projection_unavailable',
+                  message: 'Workspace instruction projection is temporarily unavailable. Please retry.',
+                }));
+                return;
+              }
+            }
 
             // Validate file paths before processing any action that accepts one.
             // This prevents path-traversal attacks (e.g. "../../etc/passwd").
@@ -3119,28 +5713,122 @@ const server = http.createServer(async (req, res) => {
               }
             }
 
+            const codeSiteGitAttempts = codeSiteGitActionAttempts(action, data);
+            const codeSiteGitRepoRoot = gitService.getEffectiveRepoPath(slug, effectiveUserId);
+            const runGitBoundary = (applyFn) => runCodeSiteGitMutationBoundary(
+              codeSiteContext,
+              action,
+              codeSiteGitAttempts,
+              applyFn,
+              {
+                ...codeSiteEnforcement,
+                repoRoot: codeSiteGitRepoRoot,
+              },
+            );
+            if (codeSiteGitAttempts.length && !shouldRunCodeSiteGitBoundary(action)) {
+              await enforceCodeSiteWritesAllowed(codeSiteContext, codeSiteGitAttempts, codeSiteEnforcement);
+            }
+
             switch (action) {
                 case 'init':
-                result = await gitService.initRepo(slug, data.remoteUrl, bootstrapUserId, tokenUserId);
+	                {
+	                  const boundary = await runGitBoundary(
+	                    async () => gitService.initRepo(
+	                      slug,
+	                      data.remoteUrl,
+	                      bootstrapUserId,
+	                      tokenUserId,
+	                      codeSiteProvisioningOptions(codeSiteContext, {
+	                        evidenceRefs: ['collab:git:init'],
+	                        processAncestry: ['collab-server:git:init'],
+	                      }),
+	                    ),
+	                  );
+	                  result = boundary.applyResult;
+	                }
                 hydratedSlugs.add(hydrationKey(slug, bootstrapUserId));
+                if (data.owner || data.name || data.showInRecent === true || data.addToRecent === true) {
+                  workspaceManager.addWorkspace(slug, data.remoteUrl, data.owner, data.name, {
+                    showInRecent: data.showInRecent !== false && data.addToRecent !== false,
+                    source: data.source || 'create',
+                  });
+                }
                     break;
                 case 'add-remote':
-                    result = await gitService.addRemote(slug, data.name, data.url, effectiveUserId, data.token, tokenUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.addRemote(
+                          slug,
+                          data.name,
+                          data.url,
+                          effectiveUserId,
+                          data.token,
+                          tokenUserId,
+                          codeSiteGitServiceOptions(codeSiteContext, 'add-remote'),
+                        ),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'remove-remote':
-                    result = await gitService.removeRemote(slug, data.name, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.removeRemote(
+                          slug,
+                          data.name,
+                          effectiveUserId,
+                          codeSiteGitServiceOptions(codeSiteContext, 'remove-remote'),
+                        ),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'set-remote-url':
-                    result = await gitService.setRemoteUrl(slug, data.name, data.url, effectiveUserId, data.token, tokenUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.setRemoteUrl(
+                          slug,
+                          data.name,
+                          data.url,
+                          effectiveUserId,
+                          data.token,
+                          tokenUserId,
+                          codeSiteGitServiceOptions(codeSiteContext, 'set-remote-url'),
+                        ),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'remotes':
                     result = await gitService.getRemotes(slug, effectiveUserId);
                     break;
                 case 'clone':
-                  result = await gitService.cloneRepo(slug, data.repoUrl, data.token, bootstrapUserId, tokenUserId);
+	                  {
+	                    const boundary = await runGitBoundary(
+	                      async () => gitService.cloneRepo(
+	                        slug,
+	                        data.repoUrl,
+	                        data.token,
+	                        bootstrapUserId,
+	                        tokenUserId,
+	                        codeSiteProvisioningOptions(codeSiteContext, {
+	                          evidenceRefs: ['collab:git:clone'],
+	                          processAncestry: ['collab-server:git:clone'],
+	                        }),
+	                      ),
+	                    );
+	                    result = boundary.applyResult;
+	                  }
                   hydratedSlugs.add(hydrationKey(slug, bootstrapUserId));
-                  // Save metadata locally
-                  workspaceManager.addWorkspace(slug, data.repoUrl, data.owner, data.name);
+                  // Save metadata locally for the dashboard recent list. Callers can
+                  // still opt out explicitly for short-lived internal workspaces.
+                  const showInRecent =
+                    data.showInRecent !== false &&
+                    data.addToRecent !== false;
+                  workspaceManager.addWorkspace(slug, data.repoUrl, data.owner, data.name, {
+                    showInRecent,
+                    source: data.source || 'import',
+                  });
                   let workspaceRegistration = {
                     attempted: false,
                     created: false,
@@ -3148,8 +5836,8 @@ const server = http.createServer(async (req, res) => {
                   };
 
                   // Try to create the workspace in the main Synthi app DB so the web UI finds it.
-                  // Use environment var SYNTHI_APP_URL or default to http://localhost:3000
-                  const SYNTHI_APP_URL = process.env.SYNTHI_APP_URL || 'http://localhost:3000';
+                  // Use the internal app URL when deployed; public invite links use SYNTHI_PUBLIC_APP_URL.
+                  const appInternalUrl = internalAppBaseUrl();
 
                   // Determine fetch function - prefer global fetch (Node 18+), otherwise require node-fetch
                   let fetchFunc = null;
@@ -3178,7 +5866,7 @@ const server = http.createServer(async (req, res) => {
                     while (attempt < maxAttempts && !created) {
                       attempt += 1;
                       try {
-                        const res = await fetchFunc(`${SYNTHI_APP_URL}/api/workspace`, {
+                        const res = await fetchFunc(`${appInternalUrl}/api/workspace`, {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify(payload),
@@ -3210,7 +5898,7 @@ const server = http.createServer(async (req, res) => {
 
                     workspaceRegistration.created = created;
                   } else {
-                    console.warn('[Collab] Fetch not available - skipping workspace creation in main app. Set SYNTHI_APP_URL or install node-fetch.');
+                    console.warn('[Collab] Fetch not available - skipping workspace creation in main app. Set SYNTHI_APP_INTERNAL_URL or install node-fetch.');
                     workspaceRegistration.pending = true;
                   }
 
@@ -3229,7 +5917,10 @@ const server = http.createServer(async (req, res) => {
                 case 'checkout':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.checkout(slug, data.branch, data.create, effectiveUserId, data.mode, tokenUserId, tokenFallbackUserIds);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.checkout(slug, data.branch, data.create, effectiveUserId, data.mode, tokenUserId, tokenFallbackUserIds),
+                      );
+                      result = boundary.applyResult;
                       // Broadcast BEFORE invalidation so clients destroy stale
                       // Yjs docs before WS close triggers provider reconnect.
                       broadcastFileReverted(slug, [], notifyScope);
@@ -3240,47 +5931,99 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'fetch':
-                    result = await withTelemetry('git:fetch', () => gitService.fetch(slug, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds));
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => withTelemetry('git:fetch', () => gitService.fetch(slug, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds)),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'commit':
-                    result = await withTelemetry('git:commit', () => gitService.commit(slug, data.message, effectiveUserId, data.amend, commitIdentity));
+                    result = await withTelemetry('git:commit', () => gitService.commit(
+                        slug,
+                        data.message,
+                        effectiveUserId,
+                        data.amend,
+                        commitIdentity,
+                        {
+                          codesiteContext: codeSiteContext,
+                          data,
+                        },
+                    ));
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'stage':
-                    // Acquire staging lock to suppress FS watcher events during staging
-                    acquireStagingLock(slug, data.filePath);
-                    // Force-flush Yjs content to disk before staging
-                    await flushYjsDocForFile(slug, data.filePath, notifyScope);
-                    result = await gitService.stageFile(slug, data.filePath, effectiveUserId);
-                    releaseStagingLock(slug, data.filePath);
+                    {
+                      const boundary = await runGitBoundary(async () => {
+                        // Acquire staging lock to suppress FS watcher events during staging
+                        acquireStagingLock(slug, data.filePath);
+                        try {
+                          // Force-flush Yjs content to disk before staging
+                          await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
+                          return gitService.stageFile(slug, data.filePath, effectiveUserId);
+                        } finally {
+                          releaseStagingLock(slug, data.filePath);
+                        }
+                      });
+                      result = boundary.applyResult;
+                    }
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'stage-all':
-                    result = await gitService.stageAll(slug, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.stageAll(slug, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'stage-lines':
-                    // Acquire staging lock to suppress FS watcher events during staging
-                    acquireStagingLock(slug, data.filePath);
-                    // Force-flush Yjs content to disk before patching so the
-                    // working tree matches the editor state exactly.
-                    await flushYjsDocForFile(slug, data.filePath, notifyScope);
-                    result = await gitService.stageLines(slug, data.filePath, data.patch, effectiveUserId);
-                    releaseStagingLock(slug, data.filePath);
+                    {
+                      const boundary = await runGitBoundary(async () => {
+                        // Acquire staging lock to suppress FS watcher events during staging
+                        acquireStagingLock(slug, data.filePath);
+                        try {
+                          // Force-flush Yjs content to disk before patching so the
+                          // working tree matches the editor state exactly.
+                          await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
+                          return gitService.stageLines(slug, data.filePath, data.patch, effectiveUserId);
+                        } finally {
+                          releaseStagingLock(slug, data.filePath);
+                        }
+                      });
+                      result = boundary.applyResult;
+                    }
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'unstage-lines':
-                    acquireStagingLock(slug, data.filePath);
-                    await flushYjsDocForFile(slug, data.filePath, notifyScope);
-                    result = await gitService.unstageLines(slug, data.filePath, data.patch, effectiveUserId);
-                    releaseStagingLock(slug, data.filePath);
+                    {
+                      const boundary = await runGitBoundary(async () => {
+                        acquireStagingLock(slug, data.filePath);
+                        try {
+                          await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
+                          return gitService.unstageLines(slug, data.filePath, data.patch, effectiveUserId);
+                        } finally {
+                          releaseStagingLock(slug, data.filePath);
+                        }
+                      });
+                      result = boundary.applyResult;
+                    }
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'discard-lines':
-                    acquireStagingLock(slug, data.filePath);
-                    await flushYjsDocForFile(slug, data.filePath, notifyScope);
-                    result = await gitService.discardLines(slug, data.filePath, data.patch, effectiveUserId);
-                    releaseStagingLock(slug, data.filePath);
+                    {
+                      const boundary = await runGitBoundary(async () => {
+                        acquireStagingLock(slug, data.filePath);
+                        try {
+                          await flushYjsDocForFile(slug, data.filePath, codeSiteNotifyScope);
+                          return gitService.discardLines(slug, data.filePath, data.patch, effectiveUserId);
+                        } finally {
+                          releaseStagingLock(slug, data.filePath);
+                        }
+                      });
+                      result = boundary.applyResult;
+                    }
                     broadcastFileReverted(slug, data.filePath ? [data.filePath] : [], notifyScope);
                     if (data.filePath) {
                       await invalidateDocsForSlug(slug, [data.filePath], notifyScope);
@@ -3288,19 +6031,43 @@ const server = http.createServer(async (req, res) => {
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'unstage':
-                    acquireStagingLock(slug, data.filePath);
-                    result = await gitService.unstageFile(slug, data.filePath, effectiveUserId);
-                    releaseStagingLock(slug, data.filePath);
+                    {
+                      const boundary = await runGitBoundary(async () => {
+                        acquireStagingLock(slug, data.filePath);
+                        try {
+                          return gitService.unstageFile(slug, data.filePath, effectiveUserId);
+                        } finally {
+                          releaseStagingLock(slug, data.filePath);
+                        }
+                      });
+                      result = boundary.applyResult;
+                    }
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'unstage-all':
-                    result = await gitService.unstageAll(slug, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.unstageAll(slug, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'push':
                     pauseWatcher(slug);
                     try {
-                      result = await withTelemetry('git:push', () => gitService.push(slug, effectiveUserId, data.token, data.force, tokenUserId, tokenFallbackUserIds));
+                      const boundary = await runGitBoundary(
+                        async () => withTelemetry('git:push', () => gitService.push(
+                          slug,
+                          effectiveUserId,
+                          data.token,
+                          data.force,
+                          tokenUserId,
+                          tokenFallbackUserIds,
+                          codeSiteGitServiceOptions(codeSiteContext, 'push'),
+                        )),
+                      );
+                      result = boundary.applyResult;
                       broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     } finally {
                       resumeWatcher(slug);
@@ -3309,7 +6076,10 @@ const server = http.createServer(async (req, res) => {
                 case 'pull':
                     pauseWatcher(slug);
                     try {
-                      result = await withTelemetry('git:pull', () => gitService.pull(slug, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds, commitIdentity));
+                      const boundary = await runGitBoundary(
+                        async () => withTelemetry('git:pull', () => gitService.pull(slug, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds, commitIdentity)),
+                      );
+                      result = boundary.applyResult;
                       // Broadcast BEFORE invalidation so clients destroy stale
                       // Yjs docs before WS close triggers provider reconnect.
                       broadcastFileReverted(slug, [], notifyScope);
@@ -3321,7 +6091,12 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'discard':
-                    result = await gitService.discardChange(slug, data.filePath, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.discardChange(slug, data.filePath, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     // Broadcast BEFORE invalidation so clients destroy stale
                     // Yjs docs before WS close triggers provider reconnect.
                     broadcastFileReverted(slug, data.filePath ? [data.filePath] : [], notifyScope);
@@ -3334,7 +6109,10 @@ const server = http.createServer(async (req, res) => {
                 case 'discard-all':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.discardAll(slug, effectiveUserId);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.discardAll(slug, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
                       // Broadcast BEFORE invalidation so clients destroy stale
                       // Yjs docs before WS close triggers provider reconnect.
                       broadcastFileReverted(slug, [], notifyScope);
@@ -3347,24 +6125,44 @@ const server = http.createServer(async (req, res) => {
                     break;
                 // Merge conflict resolution
                 case 'resolve-ours':
-                    result = await gitService.resolveConflictOurs(slug, data.filePath, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.resolveConflictOurs(slug, data.filePath, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     if (data.filePath) {
                       broadcastFileReverted(slug, [data.filePath], notifyScope);
                       await invalidateDocsForSlug(slug, [data.filePath], notifyScope);
                     }
                     break;
                 case 'resolve-theirs':
-                    result = await gitService.resolveConflictTheirs(slug, data.filePath, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.resolveConflictTheirs(slug, data.filePath, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     if (data.filePath) {
                       broadcastFileReverted(slug, [data.filePath], notifyScope);
                       await invalidateDocsForSlug(slug, [data.filePath], notifyScope);
                     }
                     break;
                 case 'mark-resolved':
-                    result = await gitService.markResolved(slug, data.filePath, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.markResolved(slug, data.filePath, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'abort-merge':
-                    result = await gitService.abortMerge(slug, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.abortMerge(slug, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
+                    }
                     broadcastFileReverted(slug, [], notifyScope);
                     await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);
@@ -3372,7 +6170,10 @@ const server = http.createServer(async (req, res) => {
                 case 'merge-branch':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.mergeBranch(slug, data.branch, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds, commitIdentity);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.mergeBranch(slug, data.branch, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds, commitIdentity),
+                      );
+                      result = boundary.applyResult;
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);
@@ -3382,11 +6183,13 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'check-merge-conflicts':
-                    // In-memory merge conflict detection using git merge-tree.
-                    // No working tree changes — runs in milliseconds.
-                    result = await gitService.checkMergeConflicts(
+                    // Fetch updates remote-tracking refs, then merge-tree checks in memory.
+                    {
+                      const boundary = await runGitBoundary(() => gitService.checkMergeConflicts(
                         slug, data.baseBranch, data.headBranch, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds
-                    );
+                      ));
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'conflict-versions':
                     result = await gitService.getConflictVersions(slug, data.filePath, effectiveUserId);
@@ -3417,12 +6220,20 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.stashList(slug, effectiveUserId);
                     break;
                 case 'stash-push':
-                    result = await gitService.stashPush(slug, data.message, effectiveUserId, commitIdentity);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.stashPush(slug, data.message, effectiveUserId, commitIdentity),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'stash-pop':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.stashPop(slug, data.index, effectiveUserId, commitIdentity);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.stashPop(slug, data.index, effectiveUserId, commitIdentity),
+                      );
+                      result = boundary.applyResult;
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);
@@ -3433,7 +6244,10 @@ const server = http.createServer(async (req, res) => {
                 case 'stash-apply':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.stashApply(slug, data.index, effectiveUserId);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.stashApply(slug, data.index, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);
@@ -3442,12 +6256,25 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'stash-drop':
-                    result = await gitService.stashDrop(slug, data.index, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.stashDrop(
+                          slug,
+                          data.index,
+                          effectiveUserId,
+                          codeSiteGitServiceOptions(codeSiteContext, 'stash-drop'),
+                        ),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'interactive-rebase':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.interactiveRebase(slug, data.baseCommit, data.operations, effectiveUserId, commitIdentity);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.interactiveRebase(slug, data.baseCommit, data.operations, effectiveUserId, commitIdentity),
+                      );
+                      result = boundary.applyResult;
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);
@@ -3459,7 +6286,10 @@ const server = http.createServer(async (req, res) => {
                 case 'rebase-abort':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.rebaseAbort(slug, effectiveUserId);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.rebaseAbort(slug, effectiveUserId),
+                      );
+                      result = boundary.applyResult;
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);
@@ -3471,7 +6301,10 @@ const server = http.createServer(async (req, res) => {
                 case 'rebase-continue':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.rebaseContinue(slug, effectiveUserId, commitIdentity);
+                      const boundary = await runGitBoundary(
+                        async () => gitService.rebaseContinue(slug, effectiveUserId, commitIdentity),
+                      );
+                      result = boundary.applyResult;
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);
@@ -3481,7 +6314,12 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'cherry-pick':
-                    result = await gitService.cherryPick(slug, data.hash, effectiveUserId, commitIdentity);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.cherryPick(slug, data.hash, effectiveUserId, commitIdentity),
+                      );
+                      result = boundary.applyResult;
+                    }
                     broadcastFileReverted(slug, [], notifyScope);
                     await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);
@@ -3490,16 +6328,56 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.getTags(slug, effectiveUserId);
                     break;
                 case 'create-tag':
-                    result = await gitService.createTag(slug, data.name, data.ref || 'HEAD', data.message, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.createTag(
+                          slug,
+                          data.name,
+                          data.ref || 'HEAD',
+                          data.message,
+                          effectiveUserId,
+                          codeSiteGitServiceOptions(codeSiteContext, 'create-tag'),
+                        ),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'delete-tag':
-                    result = await gitService.deleteTag(slug, data.name, effectiveUserId);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.deleteTag(
+                          slug,
+                          data.name,
+                          effectiveUserId,
+                          codeSiteGitServiceOptions(codeSiteContext, 'delete-tag'),
+                        ),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'push-tag':
-                    result = await gitService.pushTag(slug, data.name, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.pushTag(
+                          slug,
+                          data.name,
+                          effectiveUserId,
+                          data.token,
+                          tokenUserId,
+                          tokenFallbackUserIds,
+                          codeSiteGitServiceOptions(codeSiteContext, 'push-tag'),
+                        ),
+                      );
+                      result = boundary.applyResult;
+                    }
                     break;
                 case 'revert':
-                    result = await gitService.revertCommit(slug, data.hash, effectiveUserId, commitIdentity);
+                    {
+                      const boundary = await runGitBoundary(
+                        async () => gitService.revertCommit(slug, data.hash, effectiveUserId, commitIdentity),
+                      );
+                      result = boundary.applyResult;
+                    }
                     broadcastFileReverted(slug, [], notifyScope);
                     await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);
@@ -3533,25 +6411,43 @@ const server = http.createServer(async (req, res) => {
                       // so calling syncFile() here was redundant AND prevented
                       // the very first version from being restorable.
                       const docKey = buildDocName(slug, data.filePath, notifyScope);
-                      await flushDocToDisk(docKey, { contentOverride: data.content });
+                      await flushDocToDisk(docKey, {
+                        contentOverride: data.content,
+                        physicalContentOverride: prepareFileContentForIdeWrite({
+                          path: data.filePath,
+                          userContent: data.content,
+                          projectionResult: instructionProjection,
+                        }),
+                        codesiteContext: codeSiteContext,
+                        ...codeSiteWriteEvidence(data),
+                      });
                     }
                     result = { success: true };
                     break;
                 case 'files':
-                    result = await gitService.listFiles(slug, effectiveUserId);
+                    result = presentFileTreeForIde(
+                      await gitService.listFiles(slug, effectiveUserId),
+                      instructionProjection,
+                    );
                     break;
                 case 'files-meta':
                   // Metadata only (no content)
-                  result = { files: await gitService.listFilesMeta(slug, effectiveUserId) };
+                  result = {
+                    files: presentFileTreeForIde(
+                      await gitService.listFilesMeta(slug, effectiveUserId),
+                      instructionProjection,
+                    ),
+                  };
                   // Kick off index build in background (non-blocking)
                   try {
                     fileIndex.ensureIndex(slug, gitService.getEffectiveRepoPath(slug, effectiveUserId)).catch(() => {});
                   } catch (_) {}
                   try {
                     const canAutoPrepare = !sessionId || !userId || sessionManager.checkPermission(sessionId, userId, 'canFileOps');
-                    if (canAutoPrepare) {
+                    if (canAutoPrepare && !codeSiteContext.active) {
                       workspacePrepManager.ensureWorkspacePrepared(slug, effectiveUserId, {
                         trigger: 'workspace_files_meta',
+                        codesiteContext: codeSiteContext,
                       }).catch((error) => {
                         logger.warn('workspace_prep_background_trigger_failed', {
                           slug,
@@ -3590,14 +6486,34 @@ const server = http.createServer(async (req, res) => {
                 case 'file':
                     // Normalize path - convert backslashes and strip leading slashes
                     const filePath_file = (data.path || '').replace(/\\/g, '/').replace(/^\/+/, '');
-                    const content = await withTelemetry('fs:read', () => gitService.readFile(slug, filePath_file, effectiveUserId));
-                    result = { content };
+                    const content = await withTelemetry('fs:read', () => gitService.readFile(slug, filePath_file, effectiveUserId, {
+                      codesiteContext: codeSiteContext,
+                      ...codeSiteEnforcement,
+                      operation: 'workspace-action:file',
+                      tool: 'file_read',
+                      evidenceRefs: ['collab:workspace-action:file'],
+                      processAncestry: ['collab-server:workspace-action'],
+                    }));
+                    result = {
+                      content: presentFileContentForIde({
+                        path: filePath_file,
+                        physicalContent: content,
+                        projectionResult: instructionProjection,
+                      }),
+                    };
                     break;
                 case 'file-hash':
                     // Get content hash for a file (for VFS validation)
                     try {
                         const hashFilePath = (data.path || '').replace(/\\/g, '/').replace(/^\/+/, '');
-                        const hashContent = await gitService.readFile(slug, hashFilePath, effectiveUserId);
+                        const hashContent = await gitService.readFile(slug, hashFilePath, effectiveUserId, {
+                          codesiteContext: codeSiteContext,
+                          ...codeSiteEnforcement,
+                          operation: 'workspace-action:file-hash',
+                          tool: 'file_read',
+                          evidenceRefs: ['collab:workspace-action:file-hash'],
+                          processAncestry: ['collab-server:workspace-action'],
+                        });
                         const hashValue = computeHash(hashContent);
                         result = { hash: hashValue, path: data.path };
                     } catch (e) {
@@ -3605,10 +6521,35 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'write-file':
-                    await withTelemetry('fs:write', () => gitService.writeFile(slug, data.path, data.content, effectiveUserId));
-                    result = { success: true };
-                    broadcastFileTreeChanged(slug, notifyScope);
-                    break;
+                  {
+                    const physicalContent = prepareFileContentForIdeWrite({
+                      path: data.path,
+                      userContent: data.content,
+                      projectionResult: instructionProjection,
+                    });
+                    const derivedLineProvenance = await deriveCodeSiteLineProvenance(slug, data.path, data.content, effectiveUserId, {
+                      evidenceRefs: data.evidenceRefs || data.evidence_refs,
+                      processAncestry: data.processAncestry || data.process_ancestry,
+                      promptSummary: 'Direct file write',
+                      reasonRef: `write-file:${data.path}`,
+                    });
+                    await runCodeSiteMutationBoundary(codeSiteContext, {
+                      operation: 'write-file',
+                      tool: 'file_write',
+                      attempts: [{
+                        path: data.path,
+                        kind: 'write-file',
+                        tool: 'file_write',
+                        ...codeSiteWriteEvidence(data, derivedLineProvenance),
+                      }],
+                    }, async () => withTelemetry('fs:write', () => gitService.writeFile(slug, data.path, physicalContent, effectiveUserId)), {
+                      ...codeSiteEnforcement,
+                      repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+                    });
+	                    result = { success: true };
+	                    broadcastFileTreeChanged(slug, notifyScope);
+	                  }
+	                  break;
                 case 'apply-shadow-patch':
                     // Synthi Genome — master plan §8.4.
                     // Apply a verified shadow patch as a CRDT-aware Yjs.Text
@@ -3623,18 +6564,42 @@ const server = http.createServer(async (req, res) => {
                         continue;
                       }
                       try {
-                        const docName = buildDocName(slug, f.path, notifyScope);
-                        const op = await ySweetBridge.applyTextDiffOps(docName, f.patched);
-                        if (op?.ok) {
-                          // Persist to disk so git sees the same content.
-                          await flushYjsDocForFile(slug, f.path, notifyScope);
-                          result.applied.push({ path: f.path, strategy: op.strategy });
-                        } else {
+                        const previousContent = typeof f.base === 'string'
+                          ? f.base
+                          : await readWorkspaceFileForLineProvenance(slug, f.path, effectiveUserId);
+                        const derivedLineProvenance = deriveLineProvenanceFromContentChange(f.path, previousContent, f.patched, {
+                          evidenceRefs: f.evidenceRefs || f.evidence_refs || data.evidenceRefs || data.evidence_refs,
+                          processAncestry: f.processAncestry || f.process_ancestry || data.processAncestry || data.process_ancestry,
+                          promptSummary: 'Apply verified shadow patch',
+                          reasonRef: `apply-shadow-patch:${data.universeId || 'universe'}:${f.path}`,
+                        });
+                        const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
+                          operation: 'apply-shadow-patch',
+                          tool: 'shadow_patch',
+                          attempts: [{
+                            path: f.path,
+                            kind: 'apply-shadow-patch',
+                            tool: 'shadow_patch',
+                            ...codeSiteWriteEvidence({ ...data, ...f }, derivedLineProvenance),
+                          }],
+                        }, async () => {
+                          const nonRecordingScope = { ...codeSiteNotifyScope, codesiteContext: null };
+                          const docName = buildDocName(slug, f.path, notifyScope);
+                          const op = await ySweetBridge.applyTextDiffOps(docName, f.patched);
+                          if (op?.ok) {
+                            // Persist to disk so git sees the same content.
+                            await flushYjsDocForFile(slug, f.path, nonRecordingScope);
+                            return { strategy: op.strategy };
+                          }
                           // CRDT path failed — fall back to direct write.
-                          await flushYjsDocForFile(slug, f.path, notifyScope);
+                          await flushYjsDocForFile(slug, f.path, nonRecordingScope);
                           await withTelemetry('fs:write', () => gitService.writeFile(slug, f.path, f.patched, effectiveUserId));
-                          result.applied.push({ path: f.path, strategy: 'direct-fallback' });
-                        }
+                          return { strategy: 'direct-fallback' };
+                        }, {
+                          ...codeSiteEnforcement,
+                          repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+                        });
+                        result.applied.push({ path: f.path, strategy: boundary.applyResult.strategy });
                       } catch (e) {
                         result.skipped.push({ path: f.path, reason: e?.message || 'apply failed' });
                       }
@@ -3645,29 +6610,137 @@ const server = http.createServer(async (req, res) => {
                 case 'write-files-batch':
                   // Batch write many files (supports base64 for binary).
                   // Payload shape: { files: [{ path, encoding: 'utf8'|'base64', content }] }
-                  result = await gitService.writeFilesBatch(slug, data.files, {
-                    syncToGcs: data.syncToGcs !== false,
-                    userId: effectiveUserId,
-                  });
+                  {
+                    const physicalFiles = (data.files || []).map((file) => {
+                      if (!file || String(file.encoding || 'utf8').toLowerCase() === 'base64') return file;
+                      return {
+                        ...file,
+                        content: prepareFileContentForIdeWrite({
+                          path: file.path,
+                          userContent: file.content,
+                          projectionResult: instructionProjection,
+                        }),
+                      };
+                    });
+                    const attempts = await Promise.all((data.files || []).map(async (file) => {
+                      const nextContent = file?.encoding === 'base64'
+                        ? null
+                        : file?.content;
+                      const derivedLineProvenance = await deriveCodeSiteLineProvenance(slug, file?.path, nextContent, effectiveUserId, {
+                        evidenceRefs: file?.evidenceRefs || file?.evidence_refs || data.evidenceRefs || data.evidence_refs,
+                        processAncestry: file?.processAncestry || file?.process_ancestry || data.processAncestry || data.process_ancestry,
+                        promptSummary: 'Batch file write',
+                        reasonRef: `write-files-batch:${file?.path}`,
+                      });
+                      return {
+                        path: file?.path,
+                        kind: 'write-files-batch',
+                        tool: 'file_write',
+                        ...codeSiteWriteEvidence({ ...data, ...file }, derivedLineProvenance),
+                      };
+                    }));
+                    const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
+                      operation: 'write-files-batch',
+                      tool: 'file_write',
+                      attempts,
+                    }, async () => gitService.writeFilesBatch(slug, physicalFiles, {
+                      syncToGcs: data.syncToGcs !== false,
+                      userId: effectiveUserId,
+                    }), {
+                      ...codeSiteEnforcement,
+                      repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+                    });
+                    result = boundary.applyResult;
+                  }
                   break;
                 case 'create-directory':
-                    await gitService.createDirectory(slug, data.path, effectiveUserId);
+                    await runCodeSiteMutationBoundary(codeSiteContext, {
+                      operation: 'create-directory',
+                      tool: 'file_write',
+                      attempts: [{
+                        path: data.path,
+                        kind: 'create-directory',
+                        tool: 'file_write',
+                        ...codeSiteWriteEvidence(data),
+                      }],
+                    }, async () => gitService.createDirectory(slug, data.path, effectiveUserId), {
+                      ...codeSiteEnforcement,
+                      repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+                    });
                     result = { success: true };
                     broadcastFileTreeChanged(slug, notifyScope);
                     break;
                 case 'delete-item':
-                    // Delete a file or folder from the workspace
-                    console.log('[Collab] delete-item called for:', slug, data.path);
-                    result = await gitService.deleteItem(slug, data.path, effectiveUserId);
+	                    // Delete a file or folder from the workspace
+	                    console.log('[Collab] delete-item called for:', slug, data.path);
+                    {
+                      const previousContent = await readWorkspaceFileForLineProvenance(slug, data.path, effectiveUserId);
+                      const derivedLineProvenance = deriveLineProvenanceFromContentChange(data.path, previousContent, '', {
+                        evidenceRefs: data.evidenceRefs || data.evidence_refs,
+                        processAncestry: data.processAncestry || data.process_ancestry,
+                        promptSummary: 'Delete workspace item',
+                        reasonRef: `delete-item:${data.path}`,
+                      });
+                      const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
+                        operation: 'delete-item',
+                        tool: 'file_delete',
+                        attempts: [{
+                          path: data.path,
+                          kind: 'delete-item',
+                          tool: 'file_delete',
+                          ...codeSiteWriteEvidence(data, derivedLineProvenance),
+                        }],
+                      }, async () => gitService.deleteItem(slug, data.path, effectiveUserId), {
+                        ...codeSiteEnforcement,
+                        repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+                      });
+                      result = boundary.applyResult;
+                    }
                     console.log('[Collab] delete-item result:', result);
                     if (data.path) {
                       await invalidateDocsForSlug(slug, [data.path], notifyScope);
                     }
                     broadcastFileTreeChanged(slug, notifyScope);
                     break;
-                case 'rename-item':
-                    // Rename / move a file or directory
-                    result = await gitService.renameItem(slug, data.oldPath, data.newPath, effectiveUserId);
+	                case 'rename-item':
+	                    // Rename / move a file or directory
+                    {
+                      const previousContent = await readWorkspaceFileForLineProvenance(slug, data.oldPath, effectiveUserId);
+                      const oldPathLineProvenance = deriveLineProvenanceFromContentChange(data.oldPath, previousContent, '', {
+                        evidenceRefs: data.evidenceRefs || data.evidence_refs,
+                        processAncestry: data.processAncestry || data.process_ancestry,
+                        promptSummary: 'Rename source path',
+                        reasonRef: `rename-item:old:${data.oldPath}`,
+                      });
+                      const newPathLineProvenance = deriveLineProvenanceFromContentChange(data.newPath, '', previousContent, {
+                        evidenceRefs: data.evidenceRefs || data.evidence_refs,
+                        processAncestry: data.processAncestry || data.process_ancestry,
+                        promptSummary: 'Rename destination path',
+                        reasonRef: `rename-item:new:${data.newPath}`,
+                      });
+                      const boundary = await runCodeSiteMutationBoundary(codeSiteContext, {
+                        operation: 'rename-item',
+                        tool: 'file_rename',
+                        attempts: [
+                          {
+                            path: data.oldPath,
+                            kind: 'rename-item:old',
+                            tool: 'file_rename',
+                            ...codeSiteWriteEvidence(data, oldPathLineProvenance),
+                          },
+                          {
+                            path: data.newPath,
+                            kind: 'rename-item:new',
+                            tool: 'file_rename',
+                            ...codeSiteWriteEvidence(data, newPathLineProvenance),
+                          },
+                        ],
+                      }, async () => gitService.renameItem(slug, data.oldPath, data.newPath, effectiveUserId), {
+                        ...codeSiteEnforcement,
+                        repoRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+                      });
+                      result = boundary.applyResult;
+                    }
                     // Invalidate old path's Yjs doc (the file no longer exists at old path)
                     if (data.oldPath) {
                       await invalidateDocsForSlug(slug, [data.oldPath], notifyScope);
@@ -3738,6 +6811,19 @@ const server = http.createServer(async (req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(result));
         } catch (e) {
+            if (isCodeSiteDeniedError(e)) {
+                writeCodeSiteDenied(res, e);
+                return;
+            }
+            if (isCodeSiteCommitBlockedError(e)) {
+                res.writeHead(e.status || 409, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    error: 'codesite_commit_blocked',
+                    message: e.message,
+                    details: e.details || {},
+                }));
+                return;
+            }
             // Handle structured GitError responses
             if (e.code && e.toJSON) {
                 const statusCode = e.code === 'REPO_NOT_FOUND' || e.code === 'REPO_NOT_INITIALIZED' ? 404 : 
@@ -3752,6 +6838,11 @@ const server = http.createServer(async (req, res) => {
             
             // Legacy error handling for unstructured errors
             const msg = e?.message || '';
+            if (['path_required', 'path_null_byte', 'path_escape'].includes(msg)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'invalid_path', message: msg }));
+                return;
+            }
             if (msg.includes('not initialized') || msg.includes('not found') || msg.includes('no remote configured') || msg.includes('no configured push destination') || msg.includes('authentication failed') || msg.includes('user cancelled') || msg.includes('user cancelled dialog') || msg.includes('repository not found') || msg.includes('remote: repository not found')) {
                 console.debug('[Collab] Client error in /git/:', msg);
                 res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -3798,7 +6889,15 @@ const sessionWss = new WebSocket.Server({ noServer: true, perMessageDeflate: wsP
 
 // Terminal PTY WebSocket server — spawns shell sessions via node-pty.
 // Clients connect to /terminal?sessionId=<id>&workspace=<slug>&cols=N&rows=N.
-const terminalWss = createTerminalWSS();
+const agentSessionAttachService = createAgentSessionAttachService();
+const runtimeObservationPublisher = createRuntimeObservationPublisher();
+const terminalWss = createTerminalWSS({
+  enableContainerRuntime: ENABLE_CONTAINER_RUNTIME,
+  enableCodeSiteDockerRuntime: ENABLE_CODESITE_DOCKER_RUNTIME,
+  workspaceRuntime,
+  flushWorkspaceDocsToDisk,
+  agentSessionAttachService,
+});
 
 // Grace period for guest disconnect → reconnect (prevents phantom kicks)
 const GUEST_DISCONNECT_GRACE_MS = 30_000;
@@ -3893,10 +6992,22 @@ function sendToSessionUser(sessionId, targetUserId, eventType, payload) {
 
 
 server.on('upgrade', (request, socket, head) => {
-  // Use replace to safely strip the prefix
-  request.url = request.url.replace(/^\/collab/, '');
+  if (proxyService.isPreviewHostRequest(request)) {
+    if (!proxyService.proxyWsUpgrade(request, socket, head)) {
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+      socket.destroy();
+    }
+    return;
+  }
+
+  // Use replace to safely strip the prefix while retaining the public mount
+  // prefix for runtime preview WebSocket URL reconstruction.
+  const originalUrl = request.url || '/';
+  const collabMountMatch = originalUrl.match(/^\/collab(?=\/|$)/);
+  request._synthiExternalMountPrefix = collabMountMatch ? '/collab' : '';
+  request.url = originalUrl.replace(/^\/collab(?=\/|$)/, '');
   if (!request.url.startsWith('/')) request.url = '/' + request.url;
-  if (request.url.startsWith('/port/')) {
+  if (request.url.startsWith('/port/') || request.url.startsWith('/runtime/')) {
     if (!proxyService.proxyWsUpgrade(request, socket, head)) {
       socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
       socket.destroy();
@@ -3906,7 +7017,13 @@ server.on('upgrade', (request, socket, head) => {
   const pathname = request.url ? request.url.slice(1).split('?')[0] : 'unknown';
   console.log(`[Collab DEBUG] Upgrade request for room: ${pathname}`);
 
-  if (pathname === 'notifications') {
+  if (pathname.startsWith('wsport/')) {
+    // Container-program port proxy WS upgrade (HMR etc.) → runtime container.
+    // request.url is `/wsport/<slug>/<port>/...` at this point.
+    if (!containerPortProxy || !containerPortProxy.proxyWsUpgrade(request, socket, head)) {
+      socket.destroy();
+    }
+  } else if (pathname === 'notifications') {
     // Route to lightweight notification WebSocket server
     notifyWss.handleUpgrade(request, socket, head, (ws) => {
       notifyWss.emit('connection', ws, request);
@@ -3917,6 +7034,39 @@ server.on('upgrade', (request, socket, head) => {
       sessionWss.emit('connection', ws, request);
     });
   } else if (pathname === 'terminal') {
+    const terminalUrl = new URL(request.url || '/terminal', `http://${request.headers.host || 'localhost'}`);
+    const terminalSlug = terminalUrl.searchParams.get('workspace') || '';
+    const auth = authorizeTerminalGatewayRequest({
+      req: request,
+      slug: terminalSlug,
+      config,
+      sessionManager,
+    });
+    if (!auth.ok) {
+      const status = auth.status || 401;
+      const body = JSON.stringify({ error: auth.error || 'collab_gateway_auth_failed' });
+      socket.write(
+        `HTTP/1.1 ${status} Unauthorized\r\n` +
+        'Content-Type: application/json\r\n' +
+        'Connection: close\r\n' +
+        `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n` +
+        body
+      );
+      socket.destroy();
+      return;
+    }
+    if (auth.source === 'gateway') {
+      if (auth.workspaceUserId) terminalUrl.searchParams.set('userId', auth.workspaceUserId);
+      if (auth.filesystemUserId) terminalUrl.searchParams.set('filesystemUserId', auth.filesystemUserId);
+      else if (auth.workspaceUserId) terminalUrl.searchParams.set('filesystemUserId', auth.workspaceUserId);
+      if (auth.runtimeScope) terminalUrl.searchParams.set('runtimeScope', auth.runtimeScope);
+      if (auth.collabSessionId) terminalUrl.searchParams.set('collabSessionId', auth.collabSessionId);
+      terminalUrl.searchParams.delete('codeSiteProjectId');
+      terminalUrl.searchParams.delete('agentProvider');
+      terminalUrl.searchParams.delete('providerSessionRef');
+      terminalUrl.searchParams.delete('token');
+      request.url = `${terminalUrl.pathname}${terminalUrl.search}`;
+    }
     // Route to terminal PTY WebSocket server
     terminalWss.handleUpgrade(request, socket, head, (ws) => {
       terminalWss.emit('connection', ws, request);
@@ -4072,8 +7222,9 @@ notifyWss.on('connection', (ws, req) => {
   const params = new URLSearchParams((req.url || '').split('?')[1] || '');
   ws._slug = params.get('slug') || null;
   ws._userId = params.get('userId') ? decodeURIComponent(params.get('userId')) : null;
+  ws._userEmail = params.get('email') ? decodeURIComponent(params.get('email')).trim().toLowerCase() : null;
   ws._sessionId = params.get('sessionId') || null;
-  logger.info('notify_ws_connected', { slug: ws._slug, userId: ws._userId });
+  logger.info('notify_ws_connected', { slug: ws._slug, userId: ws._userId, hasEmail: !!ws._userEmail });
   // Flush any offline events for this user as a burst of queued:true
   // messages so the UI can surface them as popups.
   if (ws._userId) {
@@ -4088,10 +7239,58 @@ notifyWss.on('connection', (ws, req) => {
 // ── Session-events WS connection handler ────────────────────────────
 sessionWss.on('connection', (ws, req) => {
   const params = new URLSearchParams((req.url || '').split('?')[1] || '');
+  ws._socketId = `session-ws-${crypto.randomBytes(8).toString('hex')}`;
   ws._sessionId = params.get('sessionId') || null;
   ws._userId = params.get('userId') ? decodeURIComponent(params.get('userId')) : null;
+  ws._role = params.get('role') || null;
+
+  function identify(payload = {}) {
+    const nextSessionId = payload.sessionId || ws._sessionId;
+    const nextUserId = payload.userId || ws._userId;
+    const nextRole = payload.role || ws._role;
+    if (nextSessionId) ws._sessionId = String(nextSessionId);
+    if (nextUserId) ws._userId = String(nextUserId);
+    if (nextRole) ws._role = String(nextRole);
+
+    const session = ws._sessionId ? sessionManager.getSession(ws._sessionId) : null;
+    if (!session || !ws._userId) return;
+
+    if (session.hostId === ws._userId && (ws._role === 'hosting' || ws._role === 'host')) {
+      try { sessionManager.registerHostSocket(ws._sessionId, ws._socketId); } catch (_) {}
+      return;
+    }
+
+    const isGuestLike = ws._role === 'guest' || ws._role === 'knocking';
+    if (isGuestLike) {
+      if (guestDisconnectTimers.has(ws._userId)) {
+        clearTimeout(guestDisconnectTimers.get(ws._userId));
+        guestDisconnectTimers.delete(ws._userId);
+      }
+      try { sessionManager.updateGuestSocket(ws._sessionId, ws._userId, ws); } catch (_) {}
+    }
+  }
+
+  identify();
+
   logger.info('session_ws_connected', { sessionId: ws._sessionId, userId: ws._userId });
+  ws.on('message', (raw) => {
+    try {
+      const text = Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw);
+      const msg = JSON.parse(text);
+      if (msg?.type === 'identify') {
+        identify(msg);
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'identified', sessionId: ws._sessionId, userId: ws._userId, role: ws._role }));
+        }
+      }
+    } catch (_) {
+      // Session event WS only accepts JSON control frames from clients.
+    }
+  });
   ws.on('close', () => {
+    if (ws._role === 'hosting' || ws._role === 'host') {
+      try { sessionManager.handleDisconnect(ws._socketId); } catch (_) {}
+    }
     logger.info('session_ws_disconnected', { sessionId: ws._sessionId, userId: ws._userId });
   });
 });
@@ -4250,5 +7449,25 @@ process.on('uncaughtException', (err) => {
     // Synthi Genome — bridge fs-change events to the ai-engine's
     // continuous-shadow watcher (master plan §14).
     shadowContinuousProducer.start();
+
+    // Slice 3 Phase 3 — live web-port auto-detection. Run the port scanner
+    // (excluding our own port) and push detected port-set changes into the
+    // managed program sessions so their App/Ports surfaces light up live.
+    proxyService.startScanner(PORT);
+    if (containerPortMonitor) {
+      containerPortMonitor.start();
+      logger.info('container_port_monitor_started', {});
+    }
+    if (runtimePortMonitor) {
+      runtimePortMonitor.start();
+      logger.info('runtime_port_monitor_started', {});
+    }
+    proxyService.onPortsChanged((ports) => {
+      try {
+        managedProgramRuntime.recomputeManagedPorts(ports);
+      } catch (err) {
+        logger.warn({ err }, 'recomputeManagedPorts failed');
+      }
+    });
   });
 })();

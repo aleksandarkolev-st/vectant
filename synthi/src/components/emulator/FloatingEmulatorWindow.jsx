@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Power, Home, RotateCcw, X, Minus, Plus } from 'lucide-react';
+import { motion, useReducedMotion } from 'framer-motion';
+import { GripHorizontal, Home, Minus, Plus, Power, RotateCcw, Smartphone, X } from 'lucide-react';
 import EmulatorScreen from './EmulatorScreen';
 import {
   EMULATOR_STATES,
@@ -13,9 +14,9 @@ import {
 /**
  * FloatingEmulatorWindow
  * 
- * A floating, draggable Android emulator frame that looks like a real device.
- * Controls are integrated inside the device bezel.
- * Uses fixed phone aspect ratio (9:19.5) - video will be fit inside with object-contain.
+ * Floating, draggable mobile runtime viewer.
+ * Controls are integrated inside the runtime frame.
+ * Uses fixed mobile aspect ratio (9:19.5) - video fits inside with object-contain.
  */
 export default function FloatingEmulatorWindow({
   defaultState,
@@ -36,6 +37,7 @@ export default function FloatingEmulatorWindow({
   const [streamConnected, setStreamConnected] = useState(false);
   const lastEventAtRef = useRef(0);
   const capabilitiesRef = useRef(null);
+  const prefersReducedMotion = useReducedMotion();
 
   // Refs for video/canvas
   const videoRef = useRef(null);
@@ -207,7 +209,7 @@ export default function FloatingEmulatorWindow({
     [sessionId]
   );
 
-  // Fake boot completion (UI-only mode)
+  // Local standby boot completion.
   useEffect(() => {
     if (sessionId) return;
     if (state !== EMULATOR_STATES.BOOTING) return;
@@ -221,7 +223,7 @@ export default function FloatingEmulatorWindow({
   useEffect(() => {
     if (!sessionId) return;
     if (!mediaStream) {
-      setWebrtcDiagnostics('Waiting for mediaStream...');
+      setWebrtcDiagnostics('Waiting for media stream');
       return;
     }
     try {
@@ -409,7 +411,7 @@ export default function FloatingEmulatorWindow({
   // Bezel padding values (must match the CSS classes on the screen area)
   // Screen area uses: left-3 right-3 (12px each) and top-8 bottom-14 (32px top, 56px bottom)
   const BEZEL_HORIZONTAL = 24; // left-3 + right-3 = 12 + 12
-  const BEZEL_TOP = 32; // top-8
+  const BEZEL_TOP = 36;
   const BEZEL_BOTTOM = 56; // bottom-14
   const BEZEL_VERTICAL = BEZEL_TOP + BEZEL_BOTTOM;
   
@@ -417,23 +419,24 @@ export default function FloatingEmulatorWindow({
   const frameWidth = screenWidth + BEZEL_HORIZONTAL;
   const frameHeight = screenHeight + BEZEL_VERTICAL;
 
-  // Container styles
   const containerStyle = {
     position: 'fixed',
     left: position.x,
     top: position.y,
     zIndex: 9999,
-    transition: isDragging ? 'none' : 'transform 0.1s ease',
+    transition: isDragging ? 'none' : 'transform 140ms cubic-bezier(0.16, 1, 0.3, 1)',
   };
 
   return (
-    <div
+    <motion.div
       ref={containerRef}
       style={containerStyle}
       className="select-none"
       onMouseDown={handleDragStart}
+      initial={prefersReducedMotion ? false : { opacity: 0, scale: 0.98, y: 8 }}
+      animate={prefersReducedMotion ? undefined : { opacity: 1, scale: 1, y: 0 }}
+      transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
     >
-      {/* Device Frame */}
       <div
         className={`relative ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
         style={{
@@ -441,43 +444,67 @@ export default function FloatingEmulatorWindow({
           height: frameHeight,
         }}
       >
-        {/* Outer bezel - dark metal frame */}
-        <div className="absolute inset-0 bg-gradient-to-b from-[#1a1a1e] to-[#0a0a0c] rounded-[2rem] shadow-2xl border border-[#2a2a2e]">
-          
-          {/* Inner bezel highlight */}
-          <div className="absolute inset-[2px] rounded-[1.9rem] bg-gradient-to-b from-[#252528] to-[#151518] border border-[#333]">
-            
-            {/* Top speaker/camera area */}
-            <div className="absolute top-3 left-1/2 -translate-x-1/2 flex items-center gap-2">
-              {/* Camera */}
-              <div className="w-2 h-2 rounded-full bg-[#1a1a1e] border border-[#333]">
-                <div className="w-1 h-1 rounded-full bg-[#0066ff] opacity-30 m-0.5" />
+        <div
+          className="vt-command-surface absolute inset-0 overflow-hidden rounded-[1.35rem]"
+          style={{
+            background:
+              'linear-gradient(180deg, color-mix(in srgb, var(--bg-elevated) 90%, white 5%), color-mix(in srgb, var(--bg-editor) 82%, black 18%))',
+          }}
+        >
+          <div
+            className="absolute inset-[2px] rounded-[1.2rem] border"
+            style={{
+              borderColor: 'color-mix(in srgb, var(--border-subtle) 80%, transparent)',
+              background:
+                'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 42%, transparent), transparent)',
+            }}
+          >
+            <div className="absolute left-3 right-3 top-2 flex items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <GripHorizontal size={14} aria-hidden="true" style={{ color: 'var(--text-muted)' }} />
+                <Smartphone size={13} aria-hidden="true" style={{ color: 'var(--text-muted)' }} />
+                <span className="truncate font-mono text-[10px] font-semibold uppercase tracking-[0.08em]" style={{ color: 'var(--text-muted)' }}>
+                  Mobile runtime
+                </span>
               </div>
-              {/* Speaker */}
-              <div className="w-12 h-1.5 rounded-full bg-[#1a1a1e]" />
+              <span
+                className={`h-1.5 w-1.5 shrink-0 rounded-full ${state === EMULATOR_STATES.BOOTING ? 'animate-pulse' : ''}`}
+                style={{
+                  background: streamConnected
+                    ? 'var(--accent-success)'
+                    : state === EMULATOR_STATES.ERROR
+                      ? 'var(--accent-danger)'
+                      : state === EMULATOR_STATES.BOOTING
+                        ? 'var(--accent-warning)'
+                        : 'var(--text-muted)',
+                  boxShadow: streamConnected ? '0 0 10px color-mix(in srgb, var(--accent-success) 60%, transparent)' : undefined,
+                }}
+                aria-hidden="true"
+              />
             </div>
 
-            {/* Close button - top right corner */}
             {typeof onClose === 'function' && (
               <button
                 onClick={handleClose}
-                className="absolute top-2 right-3 w-5 h-5 rounded-full bg-[#333] hover:bg-red-500/80 flex items-center justify-center transition-colors z-20"
+                className="vt-icon-button th-focus-ring absolute right-7 top-1.5 z-20 h-6 min-w-6 text-[var(--accent-danger)]"
                 aria-label="Close emulator"
               >
-                <X className="w-3 h-3 text-gray-400 hover:text-white" />
+                <X className="w-3 h-3" />
               </button>
             )}
 
-            {/* Screen area - positioned inside the bezel with explicit dimensions */}
             <div 
               data-emulator-screen
-              className="absolute rounded-xl bg-black overflow-hidden"
+              className="absolute overflow-hidden rounded-[1rem] border"
               style={{ 
                 cursor: 'default',
                 left: 12,
-                top: 32,
+                top: BEZEL_TOP,
                 width: screenWidth,
                 height: screenHeight,
+                background: 'var(--bg-editor)',
+                borderColor: 'color-mix(in srgb, var(--border-subtle) 78%, transparent)',
+                boxShadow: 'inset 0 0 0 1px color-mix(in srgb, black 18%, transparent)',
               }}
             >
               <EmulatorScreen
@@ -492,67 +519,52 @@ export default function FloatingEmulatorWindow({
               />
             </div>
 
-            {/* Bottom control area - inside the bezel */}
-<div className="absolute bottom-2 left-0 right-0 flex items-center justify-center gap-2">
-              {/* Scale down button */}
+            <div className="absolute bottom-2 left-0 right-0 flex items-center justify-center gap-2">
               <button
                 onClick={handleScaleDown}
-                className="w-7 h-7 rounded-full bg-[#1a1a1e] hover:bg-[#2a2a2e] border border-[#333] hover:border-blue-500/50 flex items-center justify-center transition-all group"
+                className="vt-icon-button th-focus-ring h-7 min-w-7"
                 aria-label="Smaller"
                 title="Make smaller"
               >
-                <Minus className="w-3 h-3 text-gray-500 group-hover:text-blue-400" />
+                <Minus className="w-3 h-3" />
               </button>
 
-              {/* Power button */}
               <button
                 onClick={handlePower}
-                className="w-8 h-8 rounded-full bg-[#1a1a1e] hover:bg-[#2a2a2e] border border-[#333] hover:border-emerald-500/50 flex items-center justify-center transition-all group"
+                className="vt-icon-button th-focus-ring h-8 min-w-8 text-[var(--accent-secondary)]"
                 aria-label="Power"
               >
-                <Power className="w-3.5 h-3.5 text-gray-500 group-hover:text-emerald-400" />
+                <Power className="w-3.5 h-3.5" />
               </button>
 
-              {/* Home button - larger, centered */}
               <button
                 onClick={handleHome}
-                className="w-10 h-10 rounded-full bg-[#1a1a1e] hover:bg-[#2a2a2e] border-2 border-[#333] hover:border-emerald-500/50 flex items-center justify-center transition-all group"
+                className="vt-icon-button th-focus-ring h-9 min-w-9 text-[var(--accent-secondary)]"
                 aria-label="Home"
               >
-                <Home className="w-4 h-4 text-gray-500 group-hover:text-emerald-400" />
+                <Home className="w-4 h-4" />
               </button>
 
-              {/* Rotate button */}
               <button
                 onClick={handleRotate}
-                className="w-8 h-8 rounded-full bg-[#1a1a1e] hover:bg-[#2a2a2e] border border-[#333] hover:border-emerald-500/50 flex items-center justify-center transition-all group"
+                className="vt-icon-button th-focus-ring h-8 min-w-8 text-[var(--accent-secondary)]"
                 aria-label="Rotate"
               >
-                <RotateCcw className="w-3.5 h-3.5 text-gray-500 group-hover:text-emerald-400" />
+                <RotateCcw className="w-3.5 h-3.5" />
               </button>
 
-              {/* Scale up button */}
               <button
                 onClick={handleScaleUp}
-                className="w-7 h-7 rounded-full bg-[#1a1a1e] hover:bg-[#2a2a2e] border border-[#333] hover:border-blue-500/50 flex items-center justify-center transition-all group"
+                className="vt-icon-button th-focus-ring h-7 min-w-7"
                 aria-label="Larger"
                 title="Make larger"
               >
-                <Plus className="w-3 h-3 text-gray-500 group-hover:text-blue-400" />
+                <Plus className="w-3 h-3" />
               </button>
             </div>
-
           </div>
         </div>
-
-        {/* Status indicator - small LED style */}
-        <div className={`absolute top-3 left-3 w-1.5 h-1.5 rounded-full ${
-          streamConnected ? 'bg-emerald-500 shadow-emerald-500/50 shadow-sm' : 
-          state === EMULATOR_STATES.ERROR ? 'bg-red-500 shadow-red-500/50 shadow-sm' :
-          state === EMULATOR_STATES.BOOTING ? 'bg-yellow-500 animate-pulse' :
-          'bg-gray-600'
-        }`} />
       </div>
-    </div>
+    </motion.div>
   );
 }

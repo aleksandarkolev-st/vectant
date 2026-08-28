@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CodeSite FilesystemBoundaryProof",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "proofId",
+    "eventType",
+    "disposition",
+    "path",
+    "leaseState",
+    "reasonCodes",
+    "evidenceRefs",
+    "proofComplete"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string"
+    },
+    "proofId": {
+      "type": "string"
+    },
+    "projectId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "workspaceSlug": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "eventId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "policyDecisionId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "eventType": {
+      "type": "string"
+    },
+    "disposition": {
+      "type": "string",
+      "enum": [
+        "write_denied",
+        "write_quarantined"
+      ]
+    },
+    "prevented": {
+      "type": "boolean"
+    },
+    "quarantined": {
+      "type": "boolean"
+    },
+    "path": {
+      "type": "string"
+    },
+    "transactionId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "mutationLeaseId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "requestedMutationLeaseId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "inspectedLeases": {
+      "type": "array"
+    },
+    "displayCallsign": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "leaseState": {
+      "type": "string"
+    },
+    "lease": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "reasonCodes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "reason": {
+      "type": "string"
+    },
+    "zone": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "boundary": {
+      "type": "object"
+    },
+    "process": {
+      "type": "object"
+    },
+    "evidence": {
+      "type": "object"
+    },
+    "evidenceRefs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "quarantine": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "proofComplete": {
+      "type": "boolean"
+    },
+    "missingProofFields": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "createdAt": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": true
+}

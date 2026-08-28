@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CodeSite IncidentReplay",
+  "type": "object",
+  "required": [
+    "incidentId",
+    "event",
+    "source",
+    "sequence"
+  ],
+  "properties": {
+    "incidentId": {
+      "type": "string"
+    },
+    "replayDigest": {
+      "type": "string"
+    },
+    "event": {
+      "type": "object"
+    },
+    "source": {
+      "type": "string"
+    },
+    "sequence": {
+      "type": "number"
+    }
+  },
+  "additionalProperties": true
+}

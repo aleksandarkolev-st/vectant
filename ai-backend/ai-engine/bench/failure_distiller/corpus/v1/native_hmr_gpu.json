@@ -1,0 +1,11 @@
+{
+  "id": "native-diagnostic-v1",
+  "adapter": "native",
+  "faulty_region": "runner.py",
+  "accepted_fix": "correct compiler diagnostic source",
+  "files": {"runner.py": "import sys\nprint('FailureSignature E0425')\nsys.exit(7)\n", "unused.asset": "discard\n"},
+  "command": ["{python}", "runner.py"],
+  "signature": "FailureSignature E0425",
+  "candidates": ["unused.asset"],
+  "observation": {"kind": "native", "diagnostic": {"code": "E0425", "source_span": "runner.py:2:1"}, "compiler_flags": ["-Wall"]}
+}

@@ -6,20 +6,20 @@
  * single source of truth for the palette.
  */
 const COLLAB_THEME = Object.freeze({
-  bg:       '#0c0d12',
-  card:     '#0d0e14',
-  surface:  '#101118',
-  border:   '#1c1d26',
-  borderHi: '#2a2b38',
-  text:     '#e0e4ec',
-  textSec:  '#7c80a0',
-  textMuted:'#5a6178',
-  teal:     '#4aba9a',
-  tealDim:  '#3a8574',
-  blue:     '#7cb8f8',
-  amber:    '#fbbf24',
-  red:      '#ff5757',
-  live:     '#ff5757',
+  bg:       'var(--bg-app)',
+  card:     'var(--bg-panel)',
+  surface:  'var(--surface-panel-subtle)',
+  border:   'var(--border-subtle)',
+  borderHi: 'var(--border-medium)',
+  text:     'var(--text-primary)',
+  textSec:  'var(--text-secondary)',
+  textMuted:'var(--text-muted)',
+  teal:     'var(--accent-secondary)',
+  tealDim:  'var(--accent-secondary)',
+  blue:     'var(--brand-stop-4)',
+  amber:    'var(--accent-warning)',
+  red:      'var(--accent-danger)',
+  live:     'var(--accent-danger)',
 });
 
 export default COLLAB_THEME;

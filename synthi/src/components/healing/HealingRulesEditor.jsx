@@ -2,7 +2,7 @@
 // Plain-English rule builder for the self-healing system.
 //
 // Rules read as a sentence:  "Always fix missing imports in any file."
-// The user never types regex, error codes, or JSON — each part of the
+// The user never types regex, error codes, or JSON - each part of the
 // sentence is a dropdown pick.  An optional "files matching …" scope opens
 // a simple text input that accepts a glob (e.g. `tests/*`).
 'use client';
@@ -11,6 +11,13 @@ import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Check } from 'lucide-react';
 import { useDispatch, useSelector } from 'react-redux';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import {
   addRule,
   removeRule,
@@ -70,28 +77,23 @@ const SCOPE_ORDER = [
 // ── Inline dropdown pill ─────────────────────────────────────────────────
 function Pill({ value, onChange, options, getLabel, className = '' }) {
   return (
-    <select
+    <Select
       value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className={`inline-block rounded-md px-2 py-0.5 text-sm font-medium cursor-pointer appearance-none pr-6 ${className}`}
-      style={{
-        background: 'var(--bg-elevated)',
-        color: 'var(--text-primary)',
-        border: '1px solid var(--border-subtle)',
-        backgroundImage:
-          'linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%)',
-        backgroundPosition:
-          'calc(100% - 12px) calc(50% - 2px), calc(100% - 8px) calc(50% - 2px)',
-        backgroundSize: '4px 4px',
-        backgroundRepeat: 'no-repeat',
-      }}
+      onValueChange={onChange}
     >
-      {options.map((opt) => (
-        <option key={opt} value={opt}>
-          {getLabel(opt)}
-        </option>
-      ))}
-    </select>
+      <SelectTrigger
+        className={`inline-flex h-7 w-auto min-w-[7.5rem] px-2 py-0.5 text-sm font-medium ${className}`}
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent align="start">
+        {options.map((opt) => (
+          <SelectItem key={opt} value={opt}>
+            {getLabel(opt)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 
@@ -154,9 +156,9 @@ function MatchPreview({ matched, anchorRect, onPointerEnter, onPointerLeave }) {
           const severity = (d.severity || 'error').toLowerCase();
           const sevColor =
             severity === 'error'
-              ? 'var(--accent-danger, #ff6b6b)'
+              ? 'var(--accent-danger)'
               : severity === 'warning'
-                ? 'var(--accent-warning, #fbbf24)'
+                ? 'var(--accent-warning)'
                 : 'var(--accent-primary)';
           return (
             <div
@@ -289,16 +291,32 @@ function RuleRow({ rule, index, total, matched, onMove, onChange, onRemove, onTo
         opacity: rule.disabled ? 0.55 : 1,
       }}
     >
-      {/* Enabled checkbox */}
-      <input
-        type="checkbox"
-        checked={!rule.disabled}
-        onChange={() => onToggle(rule.id, !!rule.disabled)}
-        className="mt-1"
+      <button
+        type="button"
+        role="switch"
+        aria-checked={!rule.disabled}
+        onClick={() => onToggle(rule.id, !!rule.disabled)}
+        className="th-focus-ring mt-1 grid h-5 w-8 shrink-0 rounded-full border p-0.5 transition-colors"
         title={rule.disabled ? 'Enable this rule' : 'Disable this rule'}
-      />
+        style={{
+          borderColor: rule.disabled
+            ? 'var(--border-medium)'
+            : 'color-mix(in srgb, var(--accent-primary) 58%, var(--border-subtle))',
+          background: rule.disabled
+            ? 'color-mix(in srgb, var(--bg-panel) 84%, transparent)'
+            : 'color-mix(in srgb, var(--accent-primary) 18%, var(--bg-elevated))',
+        }}
+      >
+        <span
+          className="h-3.5 w-3.5 rounded-full transition-transform"
+          style={{
+            transform: rule.disabled ? 'translateX(0)' : 'translateX(12px)',
+            background: rule.disabled ? 'var(--text-muted)' : 'var(--accent-primary)',
+          }}
+        />
+      </button>
 
-      {/* Sentence — either read-only summary or inline builder */}
+      {/* Sentence - either read-only summary or inline builder */}
       <div className="flex-1 min-w-0">
         {!isEditing ? (
           <div className="flex items-baseline gap-1 flex-wrap">
@@ -312,7 +330,7 @@ function RuleRow({ rule, index, total, matched, onMove, onChange, onRemove, onTo
             >
               {ruleToSentence(rule)}
             </span>
-            {/* Live preview badge — updates as you edit the rule or as new
+            {/* Live preview badge - updates as you edit the rule or as new
                 diagnostics appear.  A zero count shows in muted grey so the
                 user can see the rule is inert in the current snapshot.
                 Hovering over a non-zero badge opens MatchPreview which
@@ -528,7 +546,7 @@ export function HealingRulesEditor() {
   const [nlTranslating, setNlTranslating] = useState(false);
   const [nlError, setNlError] = useState(null);
 
-  // Only offer the NL input when AI is enabled — otherwise the endpoint
+  // Only offer the NL input when the translator is enabled; otherwise the endpoint
   // call just fails with a 503, and exposing it would be misleading.
   const aiAvailable = !!triggers?.useAIForHard;
 
@@ -554,7 +572,7 @@ export function HealingRulesEditor() {
       const resp = await ruleTranslate({ plainEnglish: text });
       const rule = responseToRule(resp);
       if (!rule) {
-        setNlError("AI returned an unexpected response. Try rephrasing.");
+        setNlError("Rule translator returned an unexpected response. Try rephrasing.");
         return;
       }
       dispatch(addRule(rule));
@@ -564,9 +582,9 @@ export function HealingRulesEditor() {
       // Gateway surfaces a "Rule translation backend error" when the
       // backend 503s (no GEMINI_API_KEY). Rewrite to something friendly.
       if (/503|unavailable|GEMINI_API_KEY/i.test(msg)) {
-        setNlError("AI is not configured on the backend. Use the dropdown builder above.");
+        setNlError("Rule translator is not configured on the backend. Use the dropdown builder above.");
       } else if (/valid JSON|non-object/i.test(msg)) {
-        setNlError("AI couldn't understand that. Try rephrasing or use the dropdown builder.");
+        setNlError("Rule translator could not parse that. Try rephrasing or use the dropdown builder.");
       } else {
         setNlError(msg);
       }
@@ -628,7 +646,7 @@ export function HealingRulesEditor() {
               size={14}
               strokeWidth={3}
               className="synthi-save-pulse"
-              style={{ color: 'var(--accent-success, #4ade80)' }}
+              style={{ color: 'var(--accent-success)' }}
               aria-label="Saved"
             />
           )}
@@ -675,7 +693,7 @@ export function HealingRulesEditor() {
         + Add a rule
       </button>
 
-      {/* Natural-language rule translator — AI opt-in only */}
+      {/* Natural-language rule translator */}
       {aiAvailable && (
         <div className="mt-2">
           <div

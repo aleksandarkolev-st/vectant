@@ -1,0 +1,9809 @@
+﻿import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { createHash } from 'crypto';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  canonicalDojoProofPayload,
+  createEd25519DojoProofSigner,
+  generateEd25519DojoProofKeyPair,
+} from '../../../../../mcp/synthi-mcp/src/dojo/proof/signing.ts';
+
+const { prisma } = vi.hoisted(() => ({
+  prisma: {
+    codeSiteMutationTransaction: {
+      create: vi.fn(),
+      findFirst: vi.fn(),
+      findMany: vi.fn(),
+      update: vi.fn(),
+      updateMany: vi.fn(),
+    },
+    codeSiteProject: {
+      create: vi.fn(),
+      findFirst: vi.fn(),
+      findUnique: vi.fn(),
+      update: vi.fn(),
+      updateMany: vi.fn(),
+    },
+    codeSiteProjectMember: {
+      findUnique: vi.fn(),
+      findFirst: vi.fn(),
+      findMany: vi.fn(),
+      upsert: vi.fn(),
+      update: vi.fn(),
+    },
+    codeSiteExecutionPlan: {
+      create: vi.fn(),
+      findFirst: vi.fn(),
+      findMany: vi.fn(),
+      update: vi.fn(),
+    },
+    codeSiteMutationLease: {
+      create: vi.fn(),
+      findFirst: vi.fn(),
+      findMany: vi.fn(),
+      update: vi.fn(),
+    },
+    codeSiteAgentSession: {
+      create: vi.fn(),
+      findFirst: vi.fn(),
+      findMany: vi.fn(),
+      update: vi.fn(),
+    },
+    codeSiteAgentChannel: {
+      create: vi.fn(),
+      findFirst: vi.fn(),
+      findUnique: vi.fn(),
+      findMany: vi.fn(),
+      count: vi.fn(),
+      update: vi.fn(),
+      updateMany: vi.fn(),
+    },
+    codeSiteAgentInboxItem: {
+      create: vi.fn(),
+      findMany: vi.fn(),
+      findFirst: vi.fn(),
+      update: vi.fn(),
+    },
+    codeSiteKnowledgeItem: {
+      create: vi.fn(),
+      findFirst: vi.fn(),
+      findMany: vi.fn(),
+      update: vi.fn(),
+    },
+    codeSiteKnowledgeReference: {
+      createMany: vi.fn(),
+      findMany: vi.fn(),
+    },
+    codeSiteAssumptionLease: {
+      create: vi.fn(),
+      findMany: vi.fn(),
+      update: vi.fn(),
+    },
+    codeSiteEvent: {
+      count: vi.fn(),
+      create: vi.fn(),
+      findFirst: vi.fn(),
+      findMany: vi.fn(),
+    },
+    codeSiteFleetNotam: {
+      findMany: vi.fn(),
+    },
+    codeSitePolicyDecision: {
+      create: vi.fn(),
+    },
+    codeSiteProofBundle: {
+      create: vi.fn(),
+      update: vi.fn(),
+      findFirst: vi.fn(),
+    },
+    codeSiteInspectionRun: {
+      create: vi.fn(),
+      findFirst: vi.fn(),
+      findMany: vi.fn(),
+      update: vi.fn(),
+    },
+    codeSiteIncident: {
+      create: vi.fn(),
+      update: vi.fn(),
+      findFirst: vi.fn(),
+      findMany: vi.fn(),
+    },
+    codeSiteLineProvenance: {
+      create: vi.fn(),
+      findMany: vi.fn(),
+    },
+    codeSiteDocument: {
+      create: vi.fn(),
+      findFirst: vi.fn(),
+      findMany: vi.fn(),
+      update: vi.fn(),
+    },
+    codeSitePermit: {
+      create: vi.fn(),
+      findMany: vi.fn(),
+    },
+    codeSiteDocumentReview: {
+      create: vi.fn(),
+      findMany: vi.fn(),
+    },
+    codeSiteRouteRevision: {
+      create: vi.fn(),
+      findFirst: vi.fn(),
+      findMany: vi.fn(),
+      update: vi.fn(),
+    },
+    codeSiteCounterfactualRun: {
+      create: vi.fn(),
+      findMany: vi.fn(),
+      update: vi.fn(),
+    },
+    codeSitePolicyDelta: {
+      create: vi.fn(),
+      findFirst: vi.fn(),
+      findMany: vi.fn(),
+      update: vi.fn(),
+    },
+    codeSiteMutationZone: {
+      findMany: vi.fn(),
+      upsert: vi.fn(),
+    },
+    workspace: {
+      findUnique: vi.fn(),
+    },
+    $transaction: vi.fn(),
+  },
+}));
+
+vi.mock('@/lib/prisma', () => ({
+  default: prisma,
+}));
+
+import {
+  abortTransaction,
+  attachAgentSession,
+  attachProofBundleCommit,
+  commitTransaction,
+  acknowledgeInboxItem,
+  acknowledgeInboxItemForAgent,
+  answerProjectQuestion,
+  collisionPredict,
+  applyRouteRevision,
+  createAgentSession,
+  createAgentKnowledgeItem,
+  createCounterfactualRun,
+  createExecutionPlan,
+  createProject,
+  createIncident,
+  createDocument,
+  createInspectionRun,
+  createPermit,
+  createPolicyDelta,
+  dryRunTransactionWrites,
+  detachAgentSession,
+  getAgentInbox,
+  getAgentInboxForAgent,
+  getAgentManifest,
+  getControlState,
+  getEvents,
+  getIncidentReplay,
+  getLineProvenance,
+  getProject,
+  getProofBundle,
+  getRelevantAgentContext,
+  getAgentSharedKnowledge,
+  listProjectKnowledge,
+  listProjectKnowledgePage,
+  getSourceStateSince,
+  openTransaction,
+  preflightCodeSiteFsWrite,
+  getWorkspaceActiveState,
+  heartbeatAgentSession,
+  proposeRouteRevision,
+  promotePolicyDelta,
+  requireAgentTokenAuthority,
+  recordAgentProjectObservation,
+  recordRuntimeProjectObservation,
+  recordTransactionRead,
+  recordTransactionQuarantineEvent,
+  recordTransactionWrite,
+  requestMutationLease,
+  requestAgentChannel,
+  acceptAgentChannel,
+  rejectAgentChannel,
+  closeAgentChannel,
+  listProjectChannels,
+  reportAgentChannelViolation,
+  agentChannelRateLimitKey,
+  requireAgentChannelRateAuthority,
+  respondToAgentKnowledgeInbox,
+  resumeMaydayIncident,
+  reviewDocument,
+  reviewRouteRevision,
+  shadowMergeSimulate,
+  submitAgentQuestionFeedback,
+  submitProjectQuestionFeedback,
+  updateZonePolicy,
+  validateTransaction,
+} from '../controlPlane.js';
+import { __resetRateLimits } from '@/lib/integrations/rateLimit';
+import { CODESITE_MCP_TOOLS } from '../artifacts.js';
+import { digest } from '../policy.js';
+import { buildProofBundle, proofCommitTrailers } from '../proof.js';
+import { buildReadSnapshotEvidence } from '../repoSnapshot.js';
+
+async function withEnvCleared(keys, callback) {
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  for (const key of keys) delete process.env[key];
+  try {
+    return await callback();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value == null) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
+async function withEnv(values, callback) {
+  const previous = Object.fromEntries(Object.keys(values).map((key) => [key, process.env[key]]));
+  for (const [key, value] of Object.entries(values)) {
+    if (value == null) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+  try {
+    return await callback();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value == null) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
+const AGENT_AUTHORITY_NOW = new Date('2026-08-22T12:00:00.000Z');
+const AGENT_INBOX_NOW = new Date(AGENT_AUTHORITY_NOW.getTime() + 60_000);
+const AGENT_AUTHORITY_TOKEN = `csa_${'z'.repeat(43)}`;
+const AGENT_AUTHORITY_TOKEN_HASH = createHash('sha256').update(AGENT_AUTHORITY_TOKEN, 'utf8').digest('hex');
+const AGENT_AUTHORITY_TOKEN_B = `csa_${'q'.repeat(43)}`;
+const AGENT_AUTHORITY_TOKEN_HASH_B = createHash('sha256').update(AGENT_AUTHORITY_TOKEN_B, 'utf8').digest('hex');
+
+function agentAuthoritySession(overrides = {}) {
+  const member = {
+    userId: 'user-agent-owner',
+    role: 'agent',
+    permissionsJson: JSON.stringify(['project:read']),
+    participationStatus: 'enabled',
+    revokedAt: null,
+    ...(overrides.member || {}),
+  };
+  return {
+    id: 'agent-authority-1',
+    projectId: 'project-authority-1',
+    workspaceSlug: 'acme',
+    ownerUserId: 'user-agent-owner',
+    agentProvider: 'custom-provider',
+    status: 'attached',
+    capabilitiesJson: JSON.stringify(['codesite.context.read', 'codesite.knowledge.read']),
+    agentAccessTokenExpiresAt: new Date(AGENT_AUTHORITY_NOW.getTime() + 60_000),
+    lastHeartbeatAt: new Date(AGENT_AUTHORITY_NOW.getTime() - 1_000),
+    endedAt: null,
+    project: {
+      id: 'project-authority-1',
+      workspaceSlug: 'acme',
+      status: 'active',
+      members: [member],
+      ...(overrides.project || {}),
+    },
+    ...Object.fromEntries(Object.entries(overrides).filter(([key]) => !['member', 'project'].includes(key))),
+  };
+}
+
+function mockBoundAgentAuthoritySession(session, tokenHash = AGENT_AUTHORITY_TOKEN_HASH) {
+  prisma.codeSiteAgentSession.findFirst.mockImplementation(async ({ where } = {}) => {
+    if (session.endedAt) return null;
+    return where?.id === session.id
+      && where?.workspaceSlug === session.workspaceSlug
+      && where?.agentAccessTokenHash === tokenHash
+      && where?.endedAt === null
+      ? session
+      : null;
+  });
+}
+
+function codesiteScriptPath(scriptName) {
+  // Resolve from this test file's location so it is independent of the vitest
+  // process cwd (repo-local harness runs with cwd=synthi; CI harness does not).
+  const here = path.dirname(fileURLToPath(import.meta.url)); // .../synthi/src/lib/codesite/__tests__
+  const synthiRoot = path.resolve(here, '..', '..', '..', '..');            // .../synthi
+  return path.join(synthiRoot, 'scripts', scriptName);
+}
+
+function transactionFixture() {
+  return {
+    id: 'txn-1',
+    projectId: 'project-1',
+    mutationLeaseId: 'lease-1',
+    agentSessionId: 'agent-1',
+    baseSnapshot: 'base',
+    baseSnapshotEvidenceJson: null,
+    isolation: 'serializable',
+    status: 'open',
+    readSetJson: JSON.stringify([]),
+    observedReadSetJson: JSON.stringify([]),
+    writeSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+    observedWriteSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+    semanticDependencyRefsJson: JSON.stringify([]),
+    invariantsJson: JSON.stringify(['clearance.diff.inside_route']),
+    assumptionRefsJson: JSON.stringify([]),
+    commitDecisionJson: null,
+    proofBundleDigest: null,
+    openedAt: new Date('2026-06-29T23:00:00.000Z'),
+    closedAt: null,
+    agentSession: {
+      id: 'agent-1',
+      projectId: 'project-1',
+      ownerUserId: 'user-1',
+      displayCallsign: 'ATLAS-1',
+    },
+    mutationLease: {
+      id: 'lease-1',
+      status: 'active',
+      displayCallsign: 'ATLAS-1',
+      leaseJson: JSON.stringify({
+        allowedPaths: ['synthi/prisma/**'],
+        blockedPaths: ['secrets/**'],
+        allowedTools: ['file_write'],
+        requiredRadar: ['typecheck', 'tests'],
+      }),
+      executionPlanId: 'plan-1',
+    },
+  };
+}
+
+function repoStateFixture(ranges = [{
+  filePath: 'synthi/prisma/schema.prisma',
+  lineAnchor: 'synthi/prisma/schema.prisma#L12-L15',
+  startLine: 12,
+  endLine: 15,
+  source: 'head_commit_diff',
+}], overrides = {}) {
+  const workspaceSlug = overrides.workspaceSlug || 'acme';
+  const transactionId = overrides.transactionId || 'txn-1';
+  const writePath = overrides.writePath || ranges[0]?.filePath || 'synthi/prisma/schema.prisma';
+  const repoIdentity = {
+    schemaVersion: 'synthi.codesite.repoIdentity.v1',
+    workspaceSlug,
+    transactionId,
+    repoRootDigest: 'sha256:repo-root',
+    gitTopLevelDigest: 'sha256:repo-root',
+    gitCommonDirDigest: 'sha256:git-common-dir',
+    gitTopLevelMatchesRepoRoot: true,
+    source: 'collab-server',
+  };
+  repoIdentity.identityDigest = digest(repoIdentity);
+  const repoState = {
+    schemaVersion: 'synthi.codesite.repoStateEvidence.v1',
+    workspaceSlug,
+    transactionId,
+    baseSnapshot: overrides.baseSnapshot || 'base',
+    repoIdentity,
+    gitHead: 'abc123',
+    stagedDiffDigest: 'sha256:staged',
+    worktreeDiffDigest: 'sha256:worktree',
+    headDiffDigest: 'sha256:head-diff',
+    changedLineRanges: ranges,
+    writeFileDigests: [{
+      path: writePath,
+      digest: 'sha256:file',
+      size: 120,
+      exists: true,
+      changedLineRanges: ranges,
+    }],
+    generatedAt: '2026-06-29T23:02:30.000Z',
+    source: 'collab-server',
+  };
+  repoState.evidenceDigest = digest(repoState);
+  return repoState;
+}
+
+function passedLandingInspection(overrides = {}) {
+  return {
+    id: overrides.id || 'inspection-1',
+    projectId: overrides.projectId || 'project-1',
+    executionPlanId: overrides.executionPlanId || 'plan-1',
+    displayCallsign: overrides.displayCallsign || 'ATLAS-1',
+    status: overrides.status || 'completed',
+    changedPathsJson: JSON.stringify(overrides.changedPaths || ['synthi/prisma/**']),
+    inspectionSignalsJson: JSON.stringify(overrides.signals || [
+      { key: 'typecheck', status: 'passed', evidenceRefs: ['runtime:event:typecheck-1'] },
+      { key: 'tests', status: 'passed', evidenceRefs: ['runtime:event:tests-1'] },
+    ]),
+    evidenceRefsJson: JSON.stringify(overrides.evidenceRefs || ['runtime:event:inspection-1']),
+    requestedAt: overrides.requestedAt || new Date('2026-06-29T23:02:00.000Z'),
+    completedAt: overrides.completedAt || new Date('2026-06-29T23:03:00.000Z'),
+  };
+}
+
+function executionPlanFixture(route = ['synthi/prisma/**']) {
+  return {
+    id: 'plan-1',
+    projectId: 'project-1',
+    agentSessionId: 'agent-1',
+    displayCallsign: 'ATLAS-1',
+    mission: 'Update schema',
+    domain: 'schema',
+    status: 'filed',
+    routeJson: JSON.stringify(route),
+    blockedZonesJson: JSON.stringify([]),
+    abortJson: JSON.stringify([]),
+    requestedToolsJson: JSON.stringify(['file_write']),
+    estimatedDurationMs: null,
+    filedAt: new Date('2026-06-29T22:59:00.000Z'),
+    closedAt: null,
+    project: {
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      zonePolicyJson: JSON.stringify({
+        zones: [
+          { zoneKey: 'schema', class: 'B', label: 'Schema', paths: ['synthi/prisma/**'], rules: [], risk: 'high' },
+          { zoneKey: 'docs', class: 'D', label: 'Docs', paths: ['docs/**'], rules: [], risk: 'low' },
+        ],
+        noFlyZones: ['secrets/**'],
+      }),
+    },
+    agentSession: {
+      id: 'agent-1',
+      projectId: 'project-1',
+      ownerUserId: 'user-1',
+      displayCallsign: 'ATLAS-1',
+      pilotLicenseSnapshotJson: JSON.stringify({
+        level: 2,
+        repoScope: 'acme',
+        authorizedAirspace: ['synthi/prisma/**'],
+        requiredRadar: ['api_contract', 'security'],
+      }),
+    },
+  };
+}
+
+function approvedPermitFixture(overrides = {}) {
+  const scope = {
+    executionPlanId: 'plan-1',
+    allowedPaths: ['synthi/prisma/**'],
+    blockedPaths: [],
+    affectedZones: ['schema'],
+    contractRefs: ['auth.signup.v2'],
+    ...(overrides.scope || {}),
+  };
+  return {
+    id: overrides.id || 'permit-approved',
+    projectId: 'project-1',
+    executionPlanId: overrides.executionPlanId ?? 'plan-1',
+    mutationLeaseId: overrides.mutationLeaseId ?? null,
+    documentId: overrides.documentId ?? 'doc-1',
+    permitType: overrides.permitType || 'schema_work_permit',
+    status: overrides.status || 'issued',
+    title: overrides.title || 'Schema work permit',
+    scopeJson: JSON.stringify(scope),
+    approvalJson: JSON.stringify(overrides.approval || { approved: true, approvedByUserId: 'reviewer-1' }),
+    evidenceRefsJson: JSON.stringify(overrides.evidenceRefs || ['evidence:permit-review']),
+    issuedByUserId: overrides.issuedByUserId || 'reviewer-1',
+    issuedAt: new Date('2026-06-29T23:04:30.000Z'),
+    expiresAt: null,
+    closedAt: null,
+    ...overrides,
+    scopeJson: JSON.stringify(scope),
+  };
+}
+
+function signedDojoProofFixture(validAt = new Date()) {
+  const referenceTime = validAt instanceof Date ? validAt : new Date(validAt);
+  const issuedAt = new Date(referenceTime.getTime() - 60_000).toISOString();
+  const expiresAt = new Date(referenceTime.getTime() + 60 * 60_000).toISOString();
+  const keyPair = generateEd25519DojoProofKeyPair('dojo-test-key');
+  const signer = createEd25519DojoProofSigner({
+    key_id: keyPair.key_id,
+    private_key_pem: keyPair.private_key_pem,
+  });
+  const unsignedCapsule = {
+    schema_version: 'synthi.dojo.proofCapsule.v1',
+    capsule_id: 'pcap-auth-schema',
+    skill_id: 'codesite.schema',
+    skill_version: '2026-06-25.1',
+    requested_action: 'codesite.mutation.clearance',
+    license_version: 'schema.level_2@2026-06-25',
+    issuer: 'dojo-test-issuer',
+    key_id: keyPair.key_id,
+    nonce: 'nonce-codesite-test-1',
+    ledger_checkpoint_hash: 'a'.repeat(64),
+    evidence_claims: [{
+      claim: 'codesite.restricted_mutation',
+      satisfied: true,
+      evidence_refs: ['evidence:ev-checkride-1'],
+    }],
+    evidence_record_ids: ['ev-checkride-1'],
+    issued_at: issuedAt,
+    expires_at: expiresAt,
+    signature_algorithm: 'ed25519',
+  };
+  const signature = signer.sign(canonicalDojoProofPayload(unsignedCapsule));
+  return {
+    dojoProofCapsule: {
+      ...unsignedCapsule,
+      signature: signature.signature,
+    },
+    dojoProofKey: {
+      schema_version: 'synthi.dojo.proofKey.v1',
+      tenant_id: 'acme',
+      key_id: keyPair.key_id,
+      issuer: 'dojo-test-issuer',
+      algorithm: 'ed25519',
+      signing_provider: 'ed25519-local',
+      key_custody: 'local',
+      public_key_pem: keyPair.public_key_pem,
+      status: 'active',
+      created_at: '2026-06-29T00:00:00.000Z',
+      retain_for_forensic_verification: false,
+    },
+    dojoRequiredEvidenceClaims: ['codesite.restricted_mutation'],
+    implementationStatus: { executable: true, productionRuntime: false },
+  };
+}
+
+describe('recordAgentProjectObservation', () => {
+  const OBS_NOW = new Date('2026-08-22T12:00:00.000Z');
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+  function observationSession(overrides = {}) {
+    return agentAuthoritySession({
+      capabilitiesJson: JSON.stringify(['codesite.context.read', 'codesite.observations.write']),
+      terminalSessionId: 'term-obs-1',
+      providerSessionRef: 'prov-ref-obs',
+      displayCallsign: 'CODEX-OBS',
+      ...overrides,
+    });
+  }
+  function observationBody(overrides = {}) {
+    return {
+      eventType: 'runtime_observed',
+      producer: { kind: 'program_runtime_adapter', eventId: 'program-event-9' },
+      occurredAt: '2026-08-22T12:00:01.000Z',
+      refs: {
+        runtimeSessionIds: ['rt-1'],
+        transactionIds: ['txn-obs'],
+        process: { pid: 4321, ancestry: [{ pid: 4000, parentPid: 1 }] },
+      },
+      evidenceRefs: ['runtime-event:9'],
+      fact: {
+        observationKind: 'crashed',
+        runtimeState: 'crashed',
+        exitCode: 17,
+        reasonCodes: ['process_exit_nonzero'],
+      },
+      ...overrides,
+    };
+  }
+  function mockObservationStores() {
+    prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([
+      { id: 'txn-obs', agentSessionId: 'agent-other-1' },
+    ]);
+    prisma.codeSiteEvent.count.mockResolvedValue(7);
+    prisma.codeSiteEvent.create.mockImplementation(async ({ data }) => ({
+      id: data.id,
+      projectId: data.projectId,
+      mutationLeaseId: data.mutationLeaseId,
+      eventType: data.eventType,
+      displayCallsign: data.displayCallsign,
+      actorType: data.actorType,
+      actorId: data.actorId,
+      detailsJson: data.detailsJson,
+      evidenceRefsJson: data.evidenceRefsJson,
+      logicalTime: data.logicalTime,
+      createdAt: new Date('2026-08-22T12:00:02.000Z'),
+    }));
+  }
+
+  it('publishes an attached agent observation onto the coordination bus and persists one causal event', async () => {
+    const session = observationSession();
+    mockBoundAgentAuthoritySession(session);
+    mockObservationStores();
+
+    const first = await recordAgentProjectObservation('acme', session.id, AGENT_AUTHORITY_TOKEN, observationBody(), { now: OBS_NOW });
+    const second = await recordAgentProjectObservation('acme', session.id, AGENT_AUTHORITY_TOKEN, observationBody(), { now: OBS_NOW });
+
+    expect(first.observation.eventType).toBe('runtime_observed');
+    expect(first.observation.fact.observationKind).toBe('crashed');
+    expect(first.event.eventType).toBe('runtime_observed');
+    expect(first.event.projectId).toBe(session.projectId);
+    expect(first.event.logicalTime).toBe(8);
+    expect(first.event.details.producer).toEqual({ kind: 'program_runtime_adapter', eventId: 'program-event-9' });
+    expect(second.observation.id).toBe(first.observation.id);
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('routes recipients to the owners of referenced transactions instead of the publisher', async () => {
+    const session = observationSession();
+    mockBoundAgentAuthoritySession(session);
+    mockObservationStores();
+
+    const result = await recordAgentProjectObservation('acme', session.id, AGENT_AUTHORITY_TOKEN, observationBody(), { now: OBS_NOW });
+    expect(result.event.details.references.transactionIds).toEqual(['txn-obs']);
+  });
+
+  it('keeps private material out of the persisted event payload', async () => {
+    const session = observationSession();
+    mockBoundAgentAuthoritySession(session);
+    mockObservationStores();
+
+    await recordAgentProjectObservation('acme', session.id, AGENT_AUTHORITY_TOKEN, observationBody(), { now: OBS_NOW });
+    const written = prisma.codeSiteEvent.create.mock.calls.at(-1)[0].data;
+    expect(written.detailsJson).not.toMatch(/prompt|transcript|credential|token|providerSessionRef/i);
+  });
+
+  it.each([
+    ['agent_session_mismatch', { refs: { agentSessionIds: ['agent-someone-else'], runtimeSessionIds: ['rt-1'] } }],
+    ['foreign_transaction', null],
+    ['capability_required', null],
+    ['invalid_observation', { refs: {} }],
+  ])('denies %s before persistence', async (scenario, overrides) => {
+    const session = observationSession(
+      scenario === 'capability_required'
+        ? { capabilitiesJson: JSON.stringify(['codesite.context.read']) }
+        : {},
+    );
+    mockBoundAgentAuthoritySession(session);
+    if (scenario === 'foreign_transaction') {
+      prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([]);
+    }
+    const attempt = () => recordAgentProjectObservation(
+      'acme',
+      session.id,
+      AGENT_AUTHORITY_TOKEN,
+      observationBody(overrides || {}),
+      { now: OBS_NOW },
+    );
+    if (scenario === 'agent_session_mismatch') {
+      await expect(attempt()).rejects.toMatchObject({ status: 403, code: 'observation_agent_session_mismatch' });
+    } else if (scenario === 'foreign_transaction') {
+      await expect(attempt()).rejects.toMatchObject({
+        status: 403,
+        stage: 'authorize',
+        code: 'observation_transaction_outside_project',
+      });
+    } else if (scenario === 'capability_required') {
+      await expect(attempt()).rejects.toMatchObject({ status: 403, code: 'agent_capability_required' });
+    } else {
+      await expect(attempt()).rejects.toMatchObject({ status: 422, code: 'project_observation_runtime_reference_required' });
+    }
+    expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects oversized payloads before normalization', async () => {
+    const session = observationSession();
+    mockBoundAgentAuthoritySession(session);
+    await expect(recordAgentProjectObservation(
+      'acme',
+      session.id,
+      AGENT_AUTHORITY_TOKEN,
+      { pad: 'x'.repeat(300 * 1024) },
+      { now: OBS_NOW },
+    )).rejects.toMatchObject({ status: 400, code: 'observation_payload_too_large' });
+  });
+});
+
+describe('recordRuntimeProjectObservation', () => {
+  function runtimeProject(overrides = {}) {
+    return {
+      id: 'project-runtime-1',
+      workspaceSlug: 'acme',
+      status: 'active',
+      members: [{
+        userId: 'user-alice',
+        role: 'owner',
+        permissionsJson: JSON.stringify(['project:read']),
+        participationStatus: 'enabled',
+        revokedAt: null,
+      }],
+      ...overrides,
+    };
+  }
+  function adapterBody(overrides = {}) {
+    return {
+      producer: { kind: 'program_runtime_adapter', eventId: 'adapter-event-77' },
+      occurredAt: '2026-08-22T12:00:01.000Z',
+      refs: {
+        runtimeSessionIds: ['rt-shared-1'],
+        paths: ['src/DoorState.cpp'],
+      },
+      evidenceRefs: ['runtime-event:77'],
+      fact: {
+        observationKind: 'state_changed',
+        runtimeState: 'ready',
+        healthState: 'ok',
+        ports: [8080],
+      },
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    prisma.codeSiteEvent.count.mockResolvedValue(4);
+    prisma.codeSiteEvent.create.mockImplementation(async ({ data }) => ({ ...data, createdAt: new Date() }));
+    prisma.codeSiteAgentInboxItem.create.mockImplementation(async ({ data }) => ({ id: `inbox-${data.agentSessionId}`, createdAt: new Date(), ...data }));
+    prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([]);
+  });
+
+  it('persists one causal event and notifies only agents whose active routes intersect the observation', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValue(runtimeProject());
+    prisma.codeSiteAgentSession.findMany.mockResolvedValue([
+      { id: 'agent-ben-1', ownerUserId: 'user-ben', status: 'attached', endedAt: null, runtimeSessionId: null, subscriptionsJson: '[]' },
+      { id: 'agent-alice-1', ownerUserId: 'user-alice', status: 'attached', endedAt: null, runtimeSessionId: null, subscriptionsJson: '[]' },
+    ]);
+    prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([
+      { id: 'plan-ben-1', agentSessionId: 'agent-ben-1', routeJson: JSON.stringify(['src/DoorState.cpp']), status: 'active' },
+    ]);
+    prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([]);
+
+    const result = await recordRuntimeProjectObservation('acme', 'project-runtime-1', adapterBody());
+
+    expect(result.event.eventType).toBe('runtime_observed');
+    expect(result.event.projectId).toBe('project-runtime-1');
+    expect(result.notifiedAgentSessionIds).toEqual(['agent-ben-1']);
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledTimes(1);
+    const inboxData = prisma.codeSiteAgentInboxItem.create.mock.calls[0][0].data;
+    expect(inboxData.agentSessionId).toBe('agent-ben-1');
+    expect(inboxData.recipientUserId).toBe('user-ben');
+    expect(JSON.parse(inboxData.redactedPayloadJson).fact.observationKind).toBe('state_changed');
+  });
+
+  it('rejects malformed adapter payloads before persistence', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValue(runtimeProject());
+    await expect(recordRuntimeProjectObservation('acme', 'project-runtime-1', adapterBody({ fact: {} })))
+      .rejects.toMatchObject({ status: 422 });
+    expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+    expect(prisma.codeSiteAgentInboxItem.create).not.toHaveBeenCalled();
+  });
+
+  it('denies unknown or inactive projects', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValue(null);
+    await expect(recordRuntimeProjectObservation('acme', 'missing', adapterBody()))
+      .rejects.toMatchObject({ status: 404, code: 'codesite_project_not_found' });
+    prisma.codeSiteProject.findFirst.mockResolvedValue(runtimeProject({ status: 'paused' }));
+    await expect(recordRuntimeProjectObservation('acme', 'project-runtime-1', adapterBody()))
+      .rejects.toMatchObject({ status: 403, code: 'codesite_project_inactive' });
+  });
+});
+
+describe('CodeSite control plane transaction validation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    prisma.codeSiteProjectMember.findUnique.mockResolvedValue(null);
+    prisma.codeSiteProjectMember.findFirst.mockImplementation(async ({ where } = {}) => {
+      const userId = where?.userId;
+      if (!['user-1', 'user-2', 'reviewer-1'].includes(userId)) return null;
+      return {
+        id: `member-${userId}`,
+        projectId: where?.projectId || 'project-1',
+        workspaceSlug: 'acme',
+        userId,
+        role: userId === 'reviewer-1' ? 'admin' : 'agent',
+        permissionsJson: JSON.stringify(['project:read', 'project:write', 'project:members:manage', 'mayday:resume']),
+        redactionPolicyJson: null,
+        participationStatus: 'enabled',
+        revokedAt: null,
+        source: 'test',
+        createdAt: new Date('2026-06-29T23:00:00.000Z'),
+        updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+      };
+    });
+    prisma.codeSiteProjectMember.findMany.mockResolvedValue([]);
+    prisma.codeSiteProjectMember.upsert.mockImplementation(async ({ create, update }) => ({
+      id: 'member-1',
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+      ...(create || {}),
+      ...(update || {}),
+    }));
+    prisma.codeSiteProjectMember.update.mockImplementation(async ({ where, data }) => ({
+      id: 'member-1',
+      projectId: where.projectId_userId?.projectId || 'project-1',
+      workspaceSlug: 'acme',
+      userId: where.projectId_userId?.userId || 'user-2',
+      role: 'agent',
+      permissionsJson: JSON.stringify(['project:read']),
+      redactionPolicyJson: null,
+      participationStatus: 'enabled',
+      source: 'test',
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+      ...data,
+    }));
+    const transaction = transactionFixture();
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue(transaction);
+    prisma.codeSiteMutationTransaction.update.mockImplementation(async ({ data }) => ({
+      ...transaction,
+      ...data,
+    }));
+    prisma.codeSiteMutationTransaction.updateMany.mockResolvedValue({ count: 1 });
+    prisma.codeSiteProject.findUnique.mockResolvedValue({
+      id: 'project-1',
+      zonePolicyJson: JSON.stringify({
+        zones: [
+          { zoneKey: 'schema', class: 'B', label: 'Schema', paths: ['synthi/prisma/**'], rules: [], risk: 'high' },
+        ],
+        noFlyZones: ['secrets/**'],
+      }),
+    });
+    prisma.codeSiteProject.create.mockImplementation(async ({ data }) => ({
+      id: 'project-created',
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+      ...data,
+    }));
+    prisma.codeSiteProject.update.mockImplementation(async ({ where, data }) => ({
+      id: where.id,
+      workspaceSlug: 'acme',
+      title: 'Signup',
+      request: 'Build signup',
+      status: 'active',
+      zonePolicyJson: JSON.stringify({ zones: [] }),
+      controlPlanJson: data.controlPlanJson,
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+    }));
+    prisma.codeSiteProject.updateMany.mockResolvedValue({ count: 1 });
+    prisma.codeSiteProject.findFirst.mockResolvedValue({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Signup',
+      request: 'Build signup',
+      status: 'active',
+      collaborationSessionId: null,
+      zonePolicyJson: JSON.stringify({ zones: [] }),
+      controlPlanJson: JSON.stringify({}),
+      createdByUserId: 'user-1',
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+      members: [
+        {
+          id: 'member-owner',
+          projectId: 'project-1',
+          workspaceSlug: 'acme',
+          userId: 'user-1',
+          role: 'owner',
+          permissionsJson: JSON.stringify(['project:read', 'project:write', 'project:members:manage', 'mayday:resume']),
+          participationStatus: 'enabled',
+          revokedAt: null,
+        },
+        {
+          id: 'member-reviewer',
+          projectId: 'project-1',
+          workspaceSlug: 'acme',
+          userId: 'reviewer-1',
+          role: 'admin',
+          permissionsJson: JSON.stringify(['project:read', 'project:write', 'project:members:manage', 'mayday:resume']),
+          participationStatus: 'enabled',
+          revokedAt: null,
+        },
+      ],
+    });
+    prisma.workspace.findUnique.mockResolvedValue({
+      slug: 'acme',
+      memberships: [
+        { userId: 'user-1', role: 'member' },
+        { userId: 'user-2', role: 'member' },
+      ],
+    });
+    prisma.codeSiteMutationZone.upsert.mockResolvedValue({});
+    prisma.codeSiteMutationZone.findMany.mockResolvedValue([]);
+    prisma.codeSiteExecutionPlan.findFirst.mockResolvedValue(executionPlanFixture());
+    prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([]);
+    prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([]);
+    prisma.codeSiteKnowledgeItem.findFirst.mockResolvedValue(null);
+    prisma.codeSiteKnowledgeItem.findMany.mockResolvedValue([]);
+    prisma.codeSiteKnowledgeItem.create.mockImplementation(async ({ data }) => ({
+      ...data,
+      createdAt: new Date('2026-08-22T04:00:00.000Z'),
+      updatedAt: new Date('2026-08-22T04:00:00.000Z'),
+    }));
+    prisma.codeSiteKnowledgeItem.update.mockImplementation(async ({ where, data }) => ({
+      id: where.id,
+      ...data,
+      updatedAt: new Date('2026-08-22T04:01:00.000Z'),
+    }));
+    prisma.codeSiteKnowledgeReference.createMany.mockResolvedValue({ count: 0 });
+    prisma.$transaction.mockImplementation(async (callback) => callback(prisma));
+    prisma.codeSiteExecutionPlan.create.mockImplementation(async ({ data }) => ({
+      id: `plan-${data.displayCallsign}`,
+      filedAt: new Date('2026-06-29T23:01:00.000Z'),
+      closedAt: null,
+      ...data,
+    }));
+    prisma.codeSiteExecutionPlan.update.mockImplementation(async ({ where, data }) => ({
+      id: where.id,
+      projectId: 'project-1',
+      agentSessionId: 'agent-1',
+      displayCallsign: 'ATLAS-1',
+      mission: 'Update schema',
+      domain: 'schema',
+      status: 'filed',
+      routeJson: JSON.stringify(['synthi/prisma/**']),
+      blockedZonesJson: JSON.stringify([]),
+      abortJson: JSON.stringify([]),
+      requestedToolsJson: JSON.stringify(['file_write']),
+      estimatedDurationMs: null,
+      filedAt: new Date('2026-06-29T22:59:00.000Z'),
+      closedAt: null,
+      ...data,
+    }));
+    prisma.codeSiteMutationLease.create.mockImplementation(async ({ data }) => ({
+      id: 'lease-created',
+      issuedAt: new Date('2026-06-29T23:00:00.000Z'),
+      expiresAt: null,
+      revokedAt: null,
+      ...data,
+    }));
+    prisma.codeSiteMutationLease.findFirst.mockResolvedValue({
+      id: 'lease-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      agentSessionId: 'agent-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'active',
+      leaseJson: JSON.stringify({ allowedPaths: ['synthi/prisma/**'] }),
+      issuedAt: new Date('2026-06-29T23:00:00.000Z'),
+      expiresAt: null,
+      revokedAt: null,
+      agentSession: {
+        id: 'agent-1',
+        projectId: 'project-1',
+        ownerUserId: 'user-1',
+        displayCallsign: 'ATLAS-1',
+      },
+    });
+    prisma.codeSiteMutationLease.findMany.mockResolvedValue([]);
+    prisma.codeSiteMutationLease.update.mockImplementation(async ({ where, data }) => ({
+      id: where.id,
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      agentSessionId: 'agent-1',
+      displayCallsign: where.id === 'lease-api' ? 'API-01' : 'DOCS-01',
+      status: data.status,
+      leaseJson: JSON.stringify({ allowedPaths: where.id === 'lease-api' ? ['api/auth/**'] : ['docs/**'] }),
+      issuedAt: new Date('2026-06-29T23:00:00.000Z'),
+      expiresAt: null,
+      revokedAt: null,
+    }));
+    prisma.codeSiteAssumptionLease.create.mockImplementation(async ({ data }) => ({
+      id: 'assumption-created',
+      createdAt: new Date('2026-06-29T23:02:00.000Z'),
+      invalidatedAt: null,
+      invalidatedBy: null,
+      ...data,
+    }));
+    prisma.codeSiteAssumptionLease.findMany.mockResolvedValue([]);
+    prisma.codeSiteAssumptionLease.update.mockImplementation(async ({ where, data }) => ({
+      id: where.id,
+      projectId: 'project-1',
+      ownerSessionId: 'agent-1',
+      displayCallsign: 'ATLAS-1',
+      assumptionKey: 'auth.signup.schema',
+      dependsOnJson: JSON.stringify([{ ref: 'auth.signup.schema', version: 'v1' }]),
+      usedByJson: JSON.stringify(['components/auth/SignupForm.tsx']),
+      createdAt: new Date('2026-06-29T23:02:00.000Z'),
+      ...data,
+    }));
+    prisma.codeSiteAgentSession.findFirst.mockResolvedValue({
+      id: 'agent-1',
+      projectId: 'project-1',
+      ownerUserId: 'user-1',
+      displayCallsign: 'ATLAS-1',
+    });
+    prisma.codeSiteAgentSession.create.mockImplementation(async ({ data }) => ({
+      id: `agent-${data.displayCallsign}`,
+      createdAt: new Date('2026-06-29T23:01:00.000Z'),
+      endedAt: null,
+      ...data,
+    }));
+    prisma.codeSiteAgentSession.update.mockImplementation(async ({ where, data }) => ({
+      id: where.id,
+      projectId: 'project-1',
+      workspaceSlug: 'acme',
+      ownerUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeSessionId: 'runtime-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      agentRuntime: 'terminal',
+      providerSessionRef: 'codex-session-1',
+      displayCallsign: 'CODEX-01',
+      status: 'attached',
+      permissionsJson: JSON.stringify(['workspace.read']),
+      redactionPolicyJson: JSON.stringify({ redactSecrets: true }),
+      capabilitiesJson: JSON.stringify(['workspace.read']),
+      executionHostJson: JSON.stringify({ type: 'workspace_terminal', hostId: null, platform: null }),
+      subscriptionsJson: JSON.stringify(['project.events']),
+      deliveryChannelJson: JSON.stringify({ type: 'mcp_poll', channelId: null }),
+      attachSource: 'collab_terminal_adapter',
+      bindingVersion: 1,
+      activeMutationLeaseId: null,
+      activeTransactionId: null,
+      attachedAt: new Date('2026-08-22T00:00:00.000Z'),
+      lastHeartbeatAt: new Date('2026-08-22T00:00:00.000Z'),
+      detachedAt: null,
+      createdAt: new Date('2026-08-22T00:00:00.000Z'),
+      updatedAt: new Date('2026-08-22T00:00:00.000Z'),
+      endedAt: null,
+      ...data,
+    }));
+    prisma.codeSiteAgentSession.findMany.mockResolvedValue([{
+      id: 'agent-2',
+      projectId: 'project-1',
+      ownerUserId: 'user-2',
+      displayCallsign: 'BETA-2',
+    }]);
+    prisma.codeSiteDocument.create.mockImplementation(async ({ data }) => ({
+      id: 'doc-1',
+      createdAt: new Date('2026-06-29T23:04:00.000Z'),
+      resolvedAt: null,
+      ...data,
+    }));
+    prisma.codeSiteDocument.findFirst.mockResolvedValue({
+      id: 'doc-1',
+      projectId: 'project-1',
+      kind: 'change_order',
+      status: 'pending_review',
+      title: 'Route change',
+      bodyJson: JSON.stringify({ summary: 'Route revision proposed' }),
+      blocking: true,
+      createdAt: new Date('2026-06-29T23:04:00.000Z'),
+      resolvedAt: null,
+      project: {
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Signup',
+        request: 'Build signup',
+        status: 'active',
+        createdByUserId: 'user-1',
+        members: [
+          {
+            id: 'member-owner',
+            projectId: 'project-1',
+            workspaceSlug: 'acme',
+            userId: 'user-1',
+            role: 'owner',
+            permissionsJson: JSON.stringify(['project:read', 'project:write']),
+            participationStatus: 'enabled',
+            revokedAt: null,
+          },
+        ],
+        agentSessions: [],
+      },
+    });
+    prisma.codeSiteDocument.findMany.mockResolvedValue([]);
+    prisma.codeSiteDocument.update.mockImplementation(async ({ where, data }) => ({
+      id: where.id,
+      projectId: 'project-1',
+      kind: 'change_order',
+      status: 'pending_review',
+      title: 'Route change',
+      bodyJson: JSON.stringify({ summary: 'Route revision proposed' }),
+      blocking: true,
+      createdAt: new Date('2026-06-29T23:04:00.000Z'),
+      resolvedAt: null,
+      ...data,
+    }));
+    prisma.codeSitePermit.create.mockImplementation(async ({ data }) => ({
+      id: 'permit-created',
+      issuedAt: new Date('2026-06-29T23:04:30.000Z'),
+      expiresAt: null,
+      closedAt: null,
+      ...data,
+    }));
+    prisma.codeSitePermit.findMany.mockResolvedValue([]);
+    prisma.codeSiteDocumentReview.create.mockImplementation(async ({ data }) => ({
+      id: 'review-created',
+      requestedAt: new Date('2026-06-29T23:04:30.000Z'),
+      reviewedAt: null,
+      ...data,
+    }));
+    prisma.codeSiteDocumentReview.findMany.mockResolvedValue([]);
+    prisma.codeSiteRouteRevision.create.mockImplementation(async ({ data }) => ({
+      id: 'route-revision-created',
+      createdAt: new Date('2026-06-29T23:05:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:05:00.000Z'),
+      appliedAt: null,
+      approvedByUserId: null,
+      ...data,
+    }));
+    prisma.codeSiteRouteRevision.findMany.mockResolvedValue([]);
+    prisma.codeSiteRouteRevision.findFirst.mockResolvedValue({
+      id: 'route-revision-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      documentId: 'doc-1',
+      status: 'approved',
+      previousRouteJson: JSON.stringify(['synthi/prisma/**']),
+      proposedRouteJson: JSON.stringify(['synthi/prisma/**', 'packages/schemas/**']),
+      affectedLeasesJson: JSON.stringify([{ id: 'lease-1', status: 'active', displayCallsign: 'ATLAS-1' }]),
+      approvalJson: JSON.stringify({ decision: 'approved', approved: true }),
+      evidenceRefsJson: JSON.stringify(['evidence:route-review']),
+      proposedByUserId: 'user-1',
+      approvedByUserId: 'reviewer-1',
+      appliedAt: null,
+      createdAt: new Date('2026-06-29T23:05:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:05:00.000Z'),
+      project: {
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Signup',
+        request: 'Build signup',
+        status: 'active',
+        createdByUserId: 'user-1',
+        members: [
+          {
+            id: 'member-owner',
+            projectId: 'project-1',
+            workspaceSlug: 'acme',
+            userId: 'user-1',
+            role: 'owner',
+            permissionsJson: JSON.stringify(['project:read', 'project:write']),
+            participationStatus: 'enabled',
+            revokedAt: null,
+          },
+        ],
+        agentSessions: [],
+      },
+      executionPlan: executionPlanFixture(),
+      document: {
+        id: 'doc-1',
+        projectId: 'project-1',
+        kind: 'change_order',
+        status: 'approved',
+        title: 'Route change',
+        bodyJson: JSON.stringify({ summary: 'Route revision approved' }),
+        blocking: true,
+        createdAt: new Date('2026-06-29T23:04:00.000Z'),
+        resolvedAt: null,
+      },
+    });
+    prisma.codeSiteRouteRevision.update.mockImplementation(async ({ where, data }) => ({
+      id: where.id,
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      documentId: 'doc-1',
+      status: 'approved',
+      previousRouteJson: JSON.stringify(['synthi/prisma/**']),
+      proposedRouteJson: JSON.stringify(['synthi/prisma/**', 'packages/schemas/**']),
+      affectedLeasesJson: JSON.stringify([{ id: 'lease-1', status: 'active', displayCallsign: 'ATLAS-1' }]),
+      approvalJson: JSON.stringify({ decision: 'approved', approved: true }),
+      evidenceRefsJson: JSON.stringify(['evidence:route-review']),
+      proposedByUserId: 'user-1',
+      approvedByUserId: 'reviewer-1',
+      appliedAt: null,
+      createdAt: new Date('2026-06-29T23:05:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:05:00.000Z'),
+      ...data,
+    }));
+    prisma.codeSiteAgentInboxItem.create.mockImplementation(async ({ data }) => ({
+      id: 'inbox-created',
+      status: 'pending',
+      createdAt: new Date('2026-06-29T23:04:00.000Z'),
+      acknowledgedAt: null,
+      ...data,
+    }));
+    prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([]);
+    prisma.codeSiteAgentInboxItem.findFirst.mockResolvedValue({
+      id: 'inbox-1',
+      projectId: 'project-1',
+      agentSessionId: 'agent-1',
+      recipientUserId: 'user-1',
+      eventId: 'evt-1',
+      documentId: 'doc-1',
+      kind: 'rfi',
+      requiresResponse: true,
+      status: 'pending',
+      redactedPayloadJson: JSON.stringify({ title: 'RFI' }),
+      createdAt: new Date('2026-06-29T23:04:00.000Z'),
+      acknowledgedAt: null,
+    });
+    prisma.codeSiteAgentInboxItem.update.mockImplementation(async ({ data }) => ({
+      id: 'inbox-1',
+      projectId: 'project-1',
+      agentSessionId: 'agent-1',
+      recipientUserId: 'user-1',
+      eventId: 'evt-1',
+      documentId: 'doc-1',
+      kind: 'rfi',
+      requiresResponse: true,
+      status: 'pending',
+      redactedPayloadJson: JSON.stringify({ title: 'RFI' }),
+      createdAt: new Date('2026-06-29T23:04:00.000Z'),
+      acknowledgedAt: null,
+      ...data,
+    }));
+    let eventSeq = 0;
+    prisma.codeSiteEvent.count.mockResolvedValue(1);
+    prisma.codeSiteEvent.create.mockImplementation(async ({ data }) => ({
+      id: `event-${data.eventType || 'codesite'}-${eventSeq += 1}`,
+      createdAt: new Date('2026-06-29T23:04:00.000Z'),
+      ...data,
+    }));
+    prisma.codeSiteEvent.findFirst.mockResolvedValue(null);
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+    prisma.codeSitePolicyDecision.create.mockImplementation(async ({ data }) => ({
+      id: 'decision-1',
+      createdAt: new Date('2026-06-29T23:01:00.000Z'),
+      ...data,
+    }));
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([]);
+    prisma.codeSiteInspectionRun.create.mockImplementation(async ({ data }) => ({
+      id: 'inspection-created',
+      requestedAt: new Date('2026-06-29T23:05:00.000Z'),
+      completedAt: null,
+      ...data,
+    }));
+    prisma.codeSiteInspectionRun.findFirst.mockResolvedValue({
+      id: 'inspection-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'requested',
+      changedPathsJson: JSON.stringify(['components/auth/SignupForm.tsx']),
+      inspectionSignalsJson: JSON.stringify([]),
+      evidenceRefsJson: JSON.stringify([]),
+      requestedAt: new Date('2026-06-29T23:05:00.000Z'),
+      completedAt: null,
+    });
+    prisma.codeSiteInspectionRun.update.mockImplementation(async ({ where, data }) => ({
+      id: where.id,
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'requested',
+      changedPathsJson: JSON.stringify(['components/auth/SignupForm.tsx']),
+      inspectionSignalsJson: JSON.stringify([]),
+      evidenceRefsJson: JSON.stringify([]),
+      requestedAt: new Date('2026-06-29T23:05:00.000Z'),
+      completedAt: null,
+      ...data,
+    }));
+    let latestIncident = null;
+    prisma.codeSiteIncident.create.mockImplementation(async ({ data }) => {
+      latestIncident = {
+        id: 'incident-created',
+        createdAt: new Date('2026-06-29T23:05:00.000Z'),
+        ...data,
+      };
+      return latestIncident;
+    });
+    prisma.codeSiteIncident.update.mockImplementation(async ({ where, data }) => ({
+      ...(latestIncident || {
+        id: where.id,
+        projectId: 'project-1',
+        severity: 'critical',
+        category: 'mayday',
+        participantsJson: JSON.stringify(['API-01']),
+        affectedZonesJson: JSON.stringify(['api/auth/**']),
+        policyDeltaJson: JSON.stringify(null),
+        evidenceRefsJson: JSON.stringify(['runtime:event:mayday']),
+        createdAt: new Date('2026-06-29T23:05:00.000Z'),
+      }),
+      ...data,
+    }));
+    let latestProofBundle = null;
+    const defaultProofBundle = (id = 'proof-created') => ({
+      id,
+      projectId: 'project-1',
+      transactionId: 'txn-1',
+      commitSha: 'abc123',
+      readSetDigest: 'sha256:read',
+      writeSetDigest: 'sha256:write',
+      invariantsJson: JSON.stringify(['clearance.diff.inside_route']),
+      evidenceRefsJson: JSON.stringify(['runtime:event:inspection-1', 'codesite:transaction:txn-1', 'codesite:lease:lease-1']),
+      dojoEvidenceRefsJson: JSON.stringify([]),
+      repoStateJson: JSON.stringify(repoStateFixture()),
+      incidentReplayDigest: null,
+      landingStatus: null,
+      bundleDigest: 'sha256:bundle',
+      createdAt: new Date('2026-06-29T23:03:00.000Z'),
+    });
+    prisma.codeSiteProofBundle.create.mockImplementation(async ({ data }) => {
+      latestProofBundle = {
+        ...defaultProofBundle('proof-created'),
+        ...data,
+      };
+      return latestProofBundle;
+    });
+    prisma.codeSiteProofBundle.update.mockImplementation(async ({ where, data }) => {
+      latestProofBundle = {
+        ...(latestProofBundle || defaultProofBundle(where.id)),
+        id: where.id,
+        ...data,
+      };
+      return latestProofBundle;
+    });
+    prisma.codeSiteLineProvenance.create.mockResolvedValue({ id: 'line-created' });
+    prisma.codeSiteCounterfactualRun.findMany.mockResolvedValue([]);
+    prisma.codeSiteCounterfactualRun.update.mockImplementation(async ({ where, data }) => ({
+      id: where.id,
+      projectId: 'project-1',
+      shadowJobRef: 'shadow-job-1',
+      baseSnapshot: 'repo@sha256:base',
+      universesJson: JSON.stringify([]),
+      arbiterVerdictJson: JSON.stringify(null),
+      userChoiceJson: JSON.stringify(null),
+      laterManualEditsJson: JSON.stringify([]),
+      validityStrength: 'simulated',
+      evidenceRefsJson: JSON.stringify([]),
+      createdAt: new Date('2026-06-29T23:12:00.000Z'),
+      ...data,
+    }));
+    prisma.codeSitePolicyDelta.create.mockImplementation(async ({ data }) => ({
+      id: 'delta-created',
+      createdAt: new Date('2026-06-29T23:13:00.000Z'),
+      promotedAt: null,
+      ...data,
+    }));
+    prisma.codeSitePolicyDelta.findFirst.mockResolvedValue(null);
+    prisma.codeSitePolicyDelta.findMany.mockResolvedValue([]);
+    prisma.codeSitePolicyDelta.update.mockImplementation(async ({ data }) => ({
+      id: 'delta-updated',
+      projectId: 'project-1',
+      learnedFromIncidentsJson: JSON.stringify([]),
+      affectedZoneKey: null,
+      ruleCandidateJson: JSON.stringify({}),
+      triggerConditionsJson: JSON.stringify([]),
+      expectedRiskReduction: 0.3,
+      confidence: 0.9,
+      replayRefsJson: JSON.stringify([]),
+      createdAt: new Date('2026-06-29T23:13:00.000Z'),
+      promotedAt: null,
+      ...data,
+    }));
+	  });
+
+  it('reports workspace active-state with transaction, lease, and protected-zone authority', async () => {
+    const transaction = {
+      ...transactionFixture(),
+      id: 'txn-active-1',
+      projectId: 'project-1',
+      mutationLeaseId: 'lease-active-1',
+      agentSessionId: 'agent-1',
+      project: {
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        members: [],
+        agentSessions: [],
+      },
+      mutationLease: {
+        id: 'lease-active-1',
+        projectId: 'project-1',
+        executionPlanId: 'plan-1',
+        agentSessionId: 'agent-1',
+        displayCallsign: 'ATLAS-1',
+        status: 'active',
+        leaseJson: JSON.stringify({
+          allowedPaths: ['apps/web/**'],
+          route: ['components/auth/**'],
+          blockedPaths: ['api/auth/**'],
+          noFlyZones: ['infra/prod/**'],
+        }),
+        issuedAt: new Date('2026-06-29T23:00:00.000Z'),
+        expiresAt: null,
+        revokedAt: null,
+      },
+      agentSession: {
+        id: 'agent-1',
+        projectId: 'project-1',
+        ownerUserId: 'user-1',
+        displayCallsign: 'ATLAS-1',
+      },
+    };
+    prisma.codeSiteMutationTransaction.findMany.mockResolvedValueOnce([transaction]);
+    prisma.codeSiteMutationLease.findMany.mockResolvedValueOnce([{
+      ...transaction.mutationLease,
+      project: { id: 'project-1', workspaceSlug: 'acme', members: [] },
+      agentSession: transaction.agentSession,
+      executionPlan: executionPlanFixture(),
+    }]);
+    prisma.codeSiteMutationZone.findMany.mockResolvedValueOnce([{
+      id: 'zone-auth-api',
+      workspaceSlug: 'acme',
+      zoneKey: 'auth_api',
+      label: 'Auth API',
+      zoneClass: 'A',
+      pathsJson: JSON.stringify(['api/auth/**']),
+      rulesJson: JSON.stringify(['explicit_tower_clearance_required']),
+      risk: 'critical',
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+    }]);
+
+    const state = await getWorkspaceActiveState('acme');
+
+    expect(state.active).toBe(true);
+    expect(state.ambiguous).toBe(false);
+    expect(state.activeProjectIds).toEqual(['project-1']);
+    expect(state.activeTransactions).toHaveLength(1);
+    expect(state.activeTransactions[0]).toMatchObject({
+      id: 'txn-active-1',
+      transactionId: 'txn-active-1',
+      mutationLeaseId: 'lease-active-1',
+      executionPlanId: 'plan-1',
+      allowedPaths: ['apps/web/**', 'components/auth/**'],
+      blockedPaths: ['api/auth/**', 'infra/prod/**'],
+    });
+    expect(state.activeLeases).toHaveLength(1);
+    expect(state.allowedPaths).toEqual(['apps/web/**', 'components/auth/**']);
+    expect(state.blockedPaths).toEqual(['api/auth/**', 'infra/prod/**']);
+    expect(state.protectedZones[0]).toMatchObject({
+      zoneKey: 'auth_api',
+      class: 'A',
+      paths: ['api/auth/**'],
+    });
+  });
+
+  it('serves the shared MCP tool contract from the agent manifest', async () => {
+    const manifest = await getAgentManifest('acme', 'project-1');
+
+    expect(manifest.mcpTools).toEqual(CODESITE_MCP_TOOLS);
+    expect(manifest.mcpTools).toContain('synthi_codesite_get_inbox');
+    expect(manifest.mcpTools).toEqual(expect.arrayContaining([
+      'synthi_codesite_get_relevant_context',
+      'synthi_codesite_record_discovery',
+      'synthi_codesite_record_lead',
+      'synthi_codesite_publish_shared_skill',
+      'synthi_codesite_file_handoff',
+      'synthi_codesite_get_shared_knowledge',
+      'synthi_codesite_respond_impact_notice',
+    ]));
+    expect(manifest.mcpTools).toContain('synthi_codesite_review_quarantine');
+    expect(manifest.inboxRoot).toBe('projects/project-1/inbox/');
+    expect(manifest.quarantineRoot).toBe('projects/project-1/quarantines/');
+    expect(manifest.quarantineIndex).toBe('projects/project-1/quarantines/index.jsonl');
+  });
+
+  it('includes pending quarantine reviews in agent-readable control state', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Quarantine run',
+      request: 'Review quarantined write',
+      status: 'active',
+      createdByUserId: 'user-1',
+      createdAt: new Date('2026-07-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-07-01T00:03:00.000Z'),
+      zonePolicyJson: JSON.stringify({ zones: [], noFlyZones: [] }),
+      controlPlanJson: JSON.stringify({}),
+      agentSessions: [{
+        id: 'agent-1',
+        projectId: 'project-1',
+        ownerUserId: 'user-1',
+        agentProvider: 'codex',
+        agentRuntime: 'cli',
+        providerSessionRef: null,
+        displayCallsign: 'ATLAS-1',
+        status: 'active',
+        permissionsJson: JSON.stringify([]),
+        redactionPolicyJson: JSON.stringify({}),
+        createdAt: new Date('2026-07-01T00:00:00.000Z'),
+        endedAt: null,
+      }],
+      executionPlans: [executionPlanFixture(['docs/**'])],
+      mutationLeases: [{
+        id: 'lease-1',
+        projectId: 'project-1',
+        executionPlanId: 'plan-1',
+        agentSessionId: 'agent-1',
+        displayCallsign: 'ATLAS-1',
+        status: 'active',
+        leaseJson: JSON.stringify({ allowedPaths: ['docs/**'], blockedPaths: [] }),
+        dojoProofRef: null,
+        dojoLicenseRef: null,
+        dojoEvidenceRefsJson: JSON.stringify([]),
+        dojoLedgerCheckpointHash: null,
+        dojoDecisionDigest: null,
+        implementationStatusJson: JSON.stringify({}),
+        issuedAt: new Date('2026-07-01T00:00:00.000Z'),
+        expiresAt: null,
+        revokedAt: null,
+      }],
+      mutationTxns: [{
+        ...transactionFixture(),
+        writeSetJson: JSON.stringify(['docs/review.md']),
+        observedWriteSetJson: JSON.stringify([]),
+      }],
+      assumptions: [],
+      policyDecisions: [],
+      events: [{
+        id: 'evt-q1',
+        projectId: 'project-1',
+        mutationLeaseId: 'lease-1',
+        eventType: 'write_quarantined',
+        displayCallsign: 'ATLAS-1',
+        actorType: 'codesitefs',
+        actorId: 'qtn-1',
+        evidenceRefsJson: JSON.stringify(['codesitefs:quarantine:sha256:review']),
+        logicalTime: 9,
+        createdAt: new Date('2026-07-01T00:02:00.000Z'),
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-1',
+          quarantineId: 'qtn-1',
+          path: 'docs/review.md',
+          quarantineEvidence: {
+            path: 'docs/review.md',
+            afterDigest: 'sha256:after-review',
+            evidenceRef: 'codesitefs:quarantine:sha256:review',
+          },
+        }),
+      }],
+      incidents: [],
+      inspectionRuns: [],
+      proofBundles: [],
+      lineProvenance: [],
+      documents: [],
+      counterfactualRuns: [],
+      policyDeltas: [],
+      inboxItems: [],
+    });
+
+    const state = await getControlState('acme', 'project-1');
+
+    expect(state.pendingQuarantines).toEqual([
+      expect.objectContaining({
+        quarantineId: 'qtn-1',
+        status: 'reviewable',
+        transactionId: 'txn-1',
+        paths: ['docs/review.md'],
+        changeCount: 1,
+      }),
+    ]);
+    expect(state.filesystemBoundaryProofs).toEqual([
+      expect.objectContaining({
+        eventId: 'evt-q1',
+        disposition: 'write_quarantined',
+        path: 'docs/review.md',
+        mutationLeaseId: 'lease-1',
+        leaseState: 'matched_clearance',
+        proofComplete: false,
+        missingProofFields: expect.arrayContaining(['reason', 'process']),
+        evidenceRefs: expect.arrayContaining(['event:evt-q1', 'codesitefs:quarantine:sha256:review']),
+      }),
+    ]);
+    expect(state.requiredActions).toContain('review_quarantine:qtn-1');
+    expect(state.requiredActions).toContain('complete_filesystem_boundary_proof:fs-boundary-evt-q1');
+    expect(state.towerState).toBe('holding');
+  });
+
+  it('keeps partially applied quarantines pending with remaining paths', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Partial quarantine run',
+      request: 'Apply one quarantined path',
+      status: 'active',
+      createdByUserId: 'user-1',
+      createdAt: new Date('2026-07-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-07-01T00:03:00.000Z'),
+      zonePolicyJson: JSON.stringify({ zones: [], noFlyZones: [] }),
+      controlPlanJson: JSON.stringify({}),
+      agentSessions: [{
+        id: 'agent-1',
+        projectId: 'project-1',
+        ownerUserId: 'user-1',
+        agentProvider: 'codex',
+        agentRuntime: 'cli',
+        providerSessionRef: null,
+        displayCallsign: 'ATLAS-1',
+        status: 'active',
+        permissionsJson: JSON.stringify([]),
+        redactionPolicyJson: JSON.stringify({}),
+        createdAt: new Date('2026-07-01T00:00:00.000Z'),
+        endedAt: null,
+      }],
+      executionPlans: [executionPlanFixture(['docs/**'])],
+      mutationLeases: [{
+        id: 'lease-1',
+        projectId: 'project-1',
+        executionPlanId: 'plan-1',
+        agentSessionId: 'agent-1',
+        displayCallsign: 'ATLAS-1',
+        status: 'active',
+        leaseJson: JSON.stringify({ allowedPaths: ['docs/**'], blockedPaths: [] }),
+        dojoProofRef: null,
+        dojoLicenseRef: null,
+        dojoEvidenceRefsJson: JSON.stringify([]),
+        dojoLedgerCheckpointHash: null,
+        dojoDecisionDigest: null,
+        implementationStatusJson: JSON.stringify({}),
+        issuedAt: new Date('2026-07-01T00:00:00.000Z'),
+        expiresAt: null,
+        revokedAt: null,
+      }],
+      mutationTxns: [{
+        ...transactionFixture(),
+        writeSetJson: JSON.stringify(['docs/review.md']),
+        observedWriteSetJson: JSON.stringify(['docs/review.md']),
+      }],
+      assumptions: [],
+      policyDecisions: [],
+      events: [
+        {
+          id: 'evt-q1',
+          projectId: 'project-1',
+          mutationLeaseId: 'lease-1',
+          eventType: 'write_quarantined',
+          displayCallsign: 'ATLAS-1',
+          actorType: 'codesitefs',
+          actorId: 'qtn-1',
+          evidenceRefsJson: JSON.stringify(['codesitefs:quarantine:sha256:review']),
+          logicalTime: 9,
+          createdAt: new Date('2026-07-01T00:02:00.000Z'),
+          detailsJson: JSON.stringify({
+            transactionId: 'txn-1',
+            quarantineId: 'qtn-1',
+            path: 'docs/review.md',
+            quarantineEvidence: {
+              path: 'docs/review.md',
+              afterDigest: 'sha256:after-review',
+              evidenceRef: 'codesitefs:quarantine:sha256:review',
+            },
+          }),
+        },
+        {
+          id: 'evt-q2',
+          projectId: 'project-1',
+          mutationLeaseId: 'lease-1',
+          eventType: 'write_quarantined',
+          displayCallsign: 'ATLAS-1',
+          actorType: 'codesitefs',
+          actorId: 'qtn-1',
+          evidenceRefsJson: JSON.stringify(['codesitefs:quarantine:sha256:notes']),
+          logicalTime: 10,
+          createdAt: new Date('2026-07-01T00:02:15.000Z'),
+          detailsJson: JSON.stringify({
+            transactionId: 'txn-1',
+            quarantineId: 'qtn-1',
+            path: 'docs/notes.md',
+            quarantineEvidence: {
+              path: 'docs/notes.md',
+              afterDigest: 'sha256:after-notes',
+              evidenceRef: 'codesitefs:quarantine:sha256:notes',
+            },
+          }),
+        },
+        {
+          id: 'evt-q3',
+          projectId: 'project-1',
+          mutationLeaseId: 'lease-1',
+          eventType: 'quarantine_applied',
+          displayCallsign: 'ATLAS-1',
+          actorType: 'codesitefs',
+          actorId: 'qtn-1',
+          evidenceRefsJson: JSON.stringify(['codesitefs:quarantine:sha256:review']),
+          logicalTime: 11,
+          createdAt: new Date('2026-07-01T00:02:30.000Z'),
+          detailsJson: JSON.stringify({
+            transactionId: 'txn-1',
+            quarantineId: 'qtn-1',
+            paths: ['docs/review.md'],
+            applied: [{ path: 'docs/review.md', evidenceRef: 'codesitefs:quarantine:sha256:review' }],
+          }),
+        },
+      ],
+      incidents: [],
+      inspectionRuns: [],
+      proofBundles: [],
+      lineProvenance: [],
+      documents: [],
+      counterfactualRuns: [],
+      policyDeltas: [],
+      inboxItems: [],
+    });
+
+    const state = await getControlState('acme', 'project-1');
+
+    expect(state.pendingQuarantines).toEqual([
+      expect.objectContaining({
+        quarantineId: 'qtn-1',
+        status: 'partially_applied',
+        appliedPaths: ['docs/review.md'],
+        remainingPaths: ['docs/notes.md'],
+      }),
+    ]);
+    expect(state.requiredActions).toContain('review_quarantine:qtn-1');
+    expect(state.towerState).toBe('holding');
+  });
+
+  it('bootstraps automatic tower workflow with schema-first holding plans', async () => {
+    await createProject('acme', { userId: 'user-1' }, {
+      title: 'Build signup',
+      request: 'Build signup with email verification',
+      autoWorkflow: true,
+      zonePolicy: {
+        zones: [
+          { zoneKey: 'schema', class: 'B', label: 'Shared schema', paths: ['packages/schemas/**'], rules: [], risk: 'high' },
+          { zoneKey: 'frontend', class: 'C', label: 'Frontend UI', paths: ['components/auth/**'], rules: [], risk: 'medium' },
+        ],
+        repoSignals: {
+          files: ['packages/schemas/auth.ts', 'components/auth/SignupForm.tsx'],
+          importEdges: [{ from: 'components/auth/SignupForm.tsx', imports: ['packages/schemas/auth.ts'] }],
+        },
+      },
+    });
+
+    expect(prisma.codeSiteAgentSession.create).toHaveBeenCalledTimes(2);
+    expect(prisma.codeSiteExecutionPlan.create).toHaveBeenCalledTimes(2);
+    const createdPlans = prisma.codeSiteExecutionPlan.create.mock.calls.map((call) => call[0].data);
+    expect(createdPlans.map((plan) => plan.domain)).toEqual(['schema', 'frontend']);
+    expect(createdPlans[0]).toMatchObject({ displayCallsign: 'SCHEMA-01', status: 'preflight' });
+    expect(createdPlans[1]).toMatchObject({ displayCallsign: 'UI-02', status: 'holding' });
+    const controlPlan = JSON.parse(prisma.codeSiteProject.update.mock.calls.at(-1)[0].data.controlPlanJson);
+    expect(controlPlan.selectedStrategy).toBe('schema-first');
+    expect(controlPlan.automaticWorkflow).toMatchObject({
+      enabled: true,
+      collisionForecast: { riskLevel: 'high' },
+    });
+    expect(controlPlan.routeIntersections).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        risk: 'semantic_collision',
+        recommendedResolution: expect.objectContaining({ action: 'schema_first' }),
+      }),
+    ]));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'flight_plan_filed',
+        detailsJson: expect.stringContaining('Hold position until schema-first route lands'),
+      }),
+    }));
+  });
+
+  it('runs eligible automatic workflow plans through clearance, inspection, proof, and black-box closeout', async () => {
+    prisma.codeSiteMutationTransaction.create.mockImplementation(async ({ data }) => ({
+      id: 'txn-auto-docs',
+      openedAt: new Date('2026-06-29T23:04:00.000Z'),
+      closedAt: null,
+      commitDecisionJson: null,
+      proofBundleDigest: null,
+      ...data,
+    }));
+
+    await createProject('acme', { userId: 'user-1' }, {
+      title: 'Document release process',
+      request: 'Prepare release coordination docs',
+      autoWorkflow: true,
+      repoPolicyCompiler: false,
+      missions: [{
+        callsign: 'DOCS-01',
+        domain: 'docs',
+        mission: 'Coordinate release docs',
+        route: ['docs/release/**'],
+        requestedTools: ['file_read'],
+      }],
+      zonePolicy: {
+        zones: [
+          { zoneKey: 'docs', class: 'C', label: 'Docs coordination', paths: ['docs/release/**'], rules: [], risk: 'medium' },
+        ],
+      },
+    });
+
+    const controlPlan = JSON.parse(prisma.codeSiteProject.update.mock.calls.at(-1)[0].data.controlPlanJson);
+    expect(controlPlan.automaticWorkflow.summary).toMatchObject({
+      clearances: 1,
+      transactions: 1,
+      inspections: 1,
+      proofBundles: 1,
+      skippedFlights: [],
+    });
+    expect(prisma.codeSiteMutationLease.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        displayCallsign: 'DOCS-01',
+        status: 'active',
+      }),
+    }));
+    const leaseBody = JSON.parse(prisma.codeSiteMutationLease.create.mock.calls.at(-1)[0].data.leaseJson);
+    expect(leaseBody).toMatchObject({
+      allowedPaths: ['docs/release/**'],
+      blockedPaths: [],
+    });
+    expect(leaseBody.requiredRadar).toEqual(expect.arrayContaining(['handover']));
+    expect(leaseBody.invariants).toEqual(expect.arrayContaining(['handover.packet.complete']));
+
+    expect(prisma.codeSiteMutationTransaction.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        mutationLeaseId: 'lease-created',
+        status: 'open',
+        readSetJson: JSON.stringify([]),
+        writeSetJson: JSON.stringify([]),
+        baseSnapshotEvidenceJson: JSON.stringify(null),
+      }),
+    }));
+    expect(prisma.codeSiteInspectionRun.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        executionPlanId: 'plan-DOCS-01',
+        displayCallsign: 'DOCS-01',
+        status: 'completed',
+        changedPathsJson: JSON.stringify([]),
+      }),
+    }));
+    expect(prisma.codeSiteProofBundle.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        transactionId: 'txn-auto-docs',
+        landingStatus: 'landed-noop',
+        writeSetDigest: expect.stringMatching(/^sha256:/),
+      }),
+    }));
+    expect(prisma.codeSiteMutationTransaction.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'txn-auto-docs' },
+      data: expect.objectContaining({
+        status: 'committed',
+        proofBundleDigest: expect.stringMatching(/^sha256:/),
+      }),
+    }));
+    expect(prisma.codeSiteIncident.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        category: 'black_box',
+        evidenceRefsJson: expect.stringContaining('codesite:transaction:txn-auto-docs'),
+      }),
+    }));
+    const eventTypes = prisma.codeSiteEvent.create.mock.calls.map((call) => call[0].data.eventType);
+    expect(eventTypes).toEqual(expect.arrayContaining([
+      'clearance_requested',
+      'clearance_issued',
+      'transaction_opened',
+      'landing_requested',
+      'inspection_result',
+      'transaction_committed',
+      'black_box_closed',
+    ]));
+  });
+
+  it('lands writeful automatic workflow plans only with durable agent evidence', async () => {
+    const writePath = 'docs/release/plan.md';
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-auto-workflow-snapshot-'));
+    await fs.mkdir(path.join(repoRoot, 'docs', 'release'), { recursive: true });
+    await fs.writeFile(path.join(repoRoot, 'docs', 'release', 'requirements.md'), 'Release requirements v1\n', 'utf8');
+    const snapshot = await buildReadSnapshotEvidence(['docs/release/requirements.md'], {
+      repoRoot,
+      scope: 'repo_wide',
+    });
+    const lineRange = {
+      filePath: writePath,
+      lineAnchor: `${writePath}#L4-L9`,
+      startLine: 4,
+      endLine: 9,
+      source: 'agent_patch',
+      evidenceRefs: ['runtime:event:write-docs-1'],
+    };
+    const repoState = repoStateFixture([lineRange], {
+      transactionId: 'txn-auto-write',
+      baseSnapshot: snapshot.snapshotDigest,
+      writePath,
+    });
+    const events = [];
+    const inspections = [];
+    let eventSeq = 0;
+    let autoTransaction = null;
+    const autoLease = () => ({
+      id: 'lease-created',
+      projectId: 'project-created',
+      executionPlanId: 'plan-DOCS-01',
+      agentSessionId: 'agent-DOCS-01',
+      displayCallsign: 'DOCS-01',
+      status: 'active',
+      leaseJson: JSON.stringify({
+        allowedPaths: ['docs/release/**'],
+        blockedPaths: [],
+        allowedTools: ['file_write', 'npm_test'],
+        requiredRadar: ['clearance', 'handover', 'typecheck', 'tests'],
+        invariants: ['clearance.diff.inside_route', 'handover.packet.complete'],
+      }),
+      issuedAt: new Date('2026-06-29T23:00:00.000Z'),
+      expiresAt: null,
+      revokedAt: null,
+    });
+    const autoProject = {
+      id: 'project-created',
+      workspaceSlug: 'acme',
+      title: 'Document release process',
+      request: 'Prepare release coordination docs',
+      status: 'active',
+      createdByUserId: 'user-1',
+      zonePolicyJson: JSON.stringify({
+        zones: [
+          { zoneKey: 'docs', class: 'C', label: 'Docs coordination', paths: ['docs/release/**'], rules: [], risk: 'medium' },
+        ],
+      }),
+      controlPlanJson: JSON.stringify({}),
+      members: [],
+      agentSessions: [],
+    };
+    prisma.codeSiteProject.findUnique.mockResolvedValue(autoProject);
+    prisma.codeSiteProject.findFirst.mockImplementation(async ({ where } = {}) => {
+      if (where?.id === 'project-created') return autoProject;
+      return {
+        ...autoProject,
+        id: where?.id || 'project-1',
+        workspaceSlug: where?.workspaceSlug || 'acme',
+      };
+    });
+    prisma.codeSiteMutationTransaction.create.mockImplementation(async ({ data }) => {
+      autoTransaction = {
+        id: 'txn-auto-write',
+        openedAt: new Date('2026-06-29T23:04:00.000Z'),
+        closedAt: null,
+        commitDecisionJson: null,
+        proofBundleDigest: null,
+        ...data,
+      };
+      return autoTransaction;
+    });
+    prisma.codeSiteMutationTransaction.findFirst.mockImplementation(async () => ({
+      ...autoTransaction,
+      project: autoProject,
+      mutationLease: autoLease(),
+      agentSession: {
+        id: 'agent-DOCS-01',
+        projectId: 'project-created',
+        ownerUserId: 'user-1',
+        displayCallsign: 'DOCS-01',
+      },
+    }));
+    prisma.codeSiteMutationTransaction.update.mockImplementation(async ({ data }) => {
+      autoTransaction = { ...autoTransaction, ...data };
+      return autoTransaction;
+    });
+    prisma.codeSiteEvent.create.mockImplementation(async ({ data }) => {
+      const event = {
+        id: `event-${data.eventType || 'codesite'}-${eventSeq += 1}`,
+        createdAt: new Date(`2026-06-29T23:${String(4 + eventSeq).padStart(2, '0')}:00.000Z`),
+        ...data,
+      };
+      events.push(event);
+      return event;
+    });
+    prisma.codeSiteEvent.findMany.mockImplementation(async ({ where } = {}) => events.filter((event) => (
+      (!where?.projectId || event.projectId === where.projectId)
+      && (!where?.eventType || event.eventType === where.eventType || (Array.isArray(where.eventType?.in) && where.eventType.in.includes(event.eventType)))
+    )));
+    prisma.codeSiteInspectionRun.create.mockImplementation(async ({ data }) => {
+      const run = {
+        id: `inspection-${inspections.length + 1}`,
+        requestedAt: new Date('2026-06-29T23:05:00.000Z'),
+        ...data,
+      };
+      inspections.push(run);
+      return run;
+    });
+    prisma.codeSiteInspectionRun.findMany.mockImplementation(async () => inspections);
+
+    await createProject('acme', { userId: 'user-1' }, {
+      title: 'Document release process',
+      request: 'Prepare release coordination docs',
+      autoWorkflow: true,
+      repoPolicyCompiler: false,
+      missions: [{
+        callsign: 'DOCS-01',
+        domain: 'docs',
+        mission: 'Coordinate release docs',
+        route: ['docs/release/**'],
+        requestedTools: ['file_write', 'npm_test'],
+      }],
+      zonePolicy: {
+        zones: [
+          { zoneKey: 'docs', class: 'C', label: 'Docs coordination', paths: ['docs/release/**'], rules: [], risk: 'medium' },
+        ],
+      },
+      autoWorkflowEvidenceByCallsign: {
+        'DOCS-01': {
+          writeSet: [writePath],
+          readSet: ['docs/release/requirements.md'],
+          baseSnapshot: snapshot.snapshotDigest,
+          baseSnapshotEvidence: snapshot,
+          writes: [{
+            path: writePath,
+            evidenceRefs: ['runtime:event:write-docs-1'],
+            lineProvenance: [lineRange],
+            changedLineRanges: [lineRange],
+          }],
+          inspectionSignals: [
+            { key: 'clearance', status: 'passed', evidenceRefs: ['clearance:run:lease-created'] },
+            { key: 'handover', status: 'passed', evidenceRefs: ['handover:packet:txn-auto-write'] },
+            { key: 'typecheck', status: 'passed', evidenceRefs: ['typecheck:run:docs-release'] },
+            { key: 'tests', status: 'passed', evidenceRefs: ['test:run:docs-release'] },
+          ],
+          repoState,
+          evidenceRefs: ['runtime:event:agent-docs-session'],
+        },
+      },
+    });
+
+    const controlPlan = JSON.parse(prisma.codeSiteProject.update.mock.calls.at(-1)[0].data.controlPlanJson);
+    expect(controlPlan.automaticWorkflow.summary).toMatchObject({
+      clearances: 1,
+      transactions: 1,
+      inspections: 1,
+      proofBundles: 1,
+      skippedFlights: [],
+    });
+    expect(prisma.codeSiteEvent.create.mock.calls.map((call) => call[0].data.eventType)).toEqual(expect.arrayContaining([
+      'write_allowed',
+      'transaction_validated',
+      'transaction_committed',
+      'black_box_closed',
+    ]));
+    expect(prisma.codeSiteProofBundle.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        transactionId: 'txn-auto-write',
+        landingStatus: 'completed',
+        evidenceRefsJson: expect.stringContaining('codesite:repo-state:'),
+      }),
+    }));
+    expect(prisma.codeSiteLineProvenance.create).toHaveBeenCalled();
+    expect(autoTransaction.status).toBe('committed');
+    expect(autoTransaction.proofBundleDigest).toMatch(/^sha256:/);
+  });
+
+  it('preserves explicit auto-workflow mission license metadata', async () => {
+    await createProject('acme', { userId: 'user-1' }, {
+      title: 'Update schema',
+      request: 'Update schema contract',
+      autoWorkflow: true,
+      repoPolicyCompiler: false,
+      missions: [{
+        callsign: 'SCHEMA-01',
+        domain: 'schema',
+        mission: 'Schema first',
+        route: ['synthi/prisma/**'],
+        requestedTools: ['file_write', 'npm_test'],
+        dojoPilotLicenseRef: 'schema.level_2@2026-06-25',
+        dojoProofRef: 'pcap-schema-proof',
+        dojoEvidenceRefs: ['dojo:evidence:checkride'],
+        dojoDecisionDigest: 'sha256:decision',
+        pilotLicenseSnapshot: {
+          licenseLevel: 'IFR',
+          repoScope: 'acme',
+          authorizedAirspace: ['synthi/prisma/**'],
+        },
+      }],
+    });
+
+    const createdSession = prisma.codeSiteAgentSession.create.mock.calls.at(-1)[0].data;
+    expect(createdSession).toMatchObject({
+      dojoPilotLicenseRef: 'schema.level_2@2026-06-25',
+      dojoProofRef: 'pcap-schema-proof',
+      dojoDecisionDigest: 'sha256:decision',
+    });
+    expect(JSON.parse(createdSession.dojoEvidenceRefsJson)).toEqual(['dojo:evidence:checkride']);
+    expect(JSON.parse(createdSession.pilotLicenseSnapshotJson)).toMatchObject({
+      licenseLevel: 'IFR',
+      repoScope: 'acme',
+      authorizedAirspace: ['synthi/prisma/**'],
+    });
+  });
+
+  it('preserves repo policy compiler provenance across policy updates', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-policy-root-'));
+    await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({ private: true, workspaces: ['packages/*'] }));
+    await fs.mkdir(path.join(root, 'packages/contracts/src'), { recursive: true });
+    await fs.writeFile(path.join(root, 'packages/contracts/package.json'), JSON.stringify({
+      name: '@acme/contracts',
+      exports: { '.': './src/index.ts' },
+    }));
+    await fs.writeFile(path.join(root, 'packages/contracts/src/index.ts'), 'export type Signup = { email: string };\n');
+
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Policy provenance',
+      request: 'Compile repo policy',
+      status: 'active',
+      zonePolicyJson: JSON.stringify({
+        zones: [],
+        compiler: {
+          repoRoot: root,
+          sourceDigest: 'sha256:previous-source',
+          policyDigest: 'sha256:previous-policy',
+          compilerVersion: 'previous',
+          fileCount: 3,
+          maxFiles: 12000,
+          truncated: false,
+        },
+      }),
+      controlPlanJson: JSON.stringify({}),
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+    });
+
+    await updateZonePolicy('acme', 'project-1', {
+      zones: [{ zoneKey: 'docs', class: 'D', label: 'Docs', paths: ['docs/**'], risk: 'low' }],
+    });
+
+    const storedPolicy = JSON.parse(prisma.codeSiteProject.update.mock.calls.at(-1)[0].data.zonePolicyJson);
+    expect(storedPolicy.compiler).toMatchObject({
+      repoRoot: root,
+      compilerVersion: '2026-07-01.1',
+      maxFiles: 12000,
+      truncated: false,
+      source: 'repo_policy_compiler',
+    });
+    expect(storedPolicy.compiler.sourceDigest).toMatch(/^sha256:/);
+    expect(storedPolicy.compiler.policyDigest).toMatch(/^sha256:/);
+    expect(storedPolicy.policyDigest).toBe(storedPolicy.compiler.policyDigest);
+    expect(storedPolicy.compiler.fileCount).toBeGreaterThan(0);
+    expect(storedPolicy.compiler.compiledAt).toEqual(expect.any(String));
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it('persists Dojo pilot license refs on agent sessions', async () => {
+    const result = await createAgentSession('acme', 'project-1', { userId: 'user-1' }, {
+      displayCallsign: 'PILOT-1',
+      agentProvider: 'codex',
+      agentRuntime: 'tmp-codex-cli',
+      toolList: ['synthi_codesite_get_radar', 'synthi_codesite_apply_patch'],
+      dojoPilotLicenseRef: 'license:codex-runtime@2026-06-30',
+      dojoProofRef: 'proof:pilot-session',
+      dojoEvidenceRefs: ['dojo:evidence:pilot-session'],
+      dojoDecisionDigest: 'sha256:pilotdecision',
+      pilotLicenseSnapshot: { licenseClass: 'runtime', level: 2 },
+    });
+
+    expect(prisma.codeSiteAgentSession.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        dojoPilotLicenseRef: 'license:codex-runtime@2026-06-30',
+        dojoProofRef: 'proof:pilot-session',
+        dojoEvidenceRefsJson: JSON.stringify(['dojo:evidence:pilot-session']),
+        dojoDecisionDigest: 'sha256:pilotdecision',
+        permissionsJson: JSON.stringify(['synthi_codesite_get_radar', 'synthi_codesite_apply_patch']),
+        pilotLicenseSnapshotJson: JSON.stringify({ licenseClass: 'runtime', level: 2 }),
+      }),
+    }));
+    expect(result).toMatchObject({
+      displayCallsign: 'PILOT-1',
+      permissions: ['synthi_codesite_get_radar', 'synthi_codesite_apply_patch'],
+      dojoPilotLicenseRef: 'license:codex-runtime@2026-06-30',
+      dojoProofRef: 'proof:pilot-session',
+      dojoEvidenceRefs: ['dojo:evidence:pilot-session'],
+      dojoDecisionDigest: 'sha256:pilotdecision',
+      pilotLicenseSnapshot: { licenseClass: 'runtime', level: 2 },
+    });
+  });
+
+  it('automatically attaches a verified collaboration agent with durable identity bindings', async () => {
+    prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([]);
+    const authority = {
+      internalService: true,
+      collaborationMembershipVerified: true,
+      actorUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      runtimeScope: 'shared-workspace',
+    };
+
+    const result = await attachAgentSession('acme', 'project-1', {
+      ownerUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeSessionId: 'runtime-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'codex-session-1',
+      displayCallsign: 'CODEX-01',
+      capabilities: ['workspace.read', 'workspace.read'],
+      subscriptions: ['project.events'],
+      deliveryChannel: { type: 'mcp_poll' },
+      executionHost: { type: 'workspace_terminal', hostId: 'host-1', platform: 'linux' },
+    }, authority);
+
+    expect(result).toMatchObject({
+      resumed: false,
+      session: {
+        ownerUserId: 'user-1',
+        collaborationUserId: 'user-1',
+        effectiveWorkspaceUserId: 'shared-owner',
+        collaborationSessionId: 'collab-session-1',
+        terminalSessionId: 'terminal-1',
+        runtimeSessionId: 'runtime-1',
+        runtimeScope: 'shared-workspace',
+        agentProvider: 'codex',
+        providerSessionBound: true,
+        displayCallsign: 'CODEX-01',
+        capabilities: ['workspace.read'],
+        subscriptions: ['project.events'],
+        deliveryChannel: { type: 'mcp_poll', channelId: null },
+        executionHost: { type: 'workspace_terminal', hostId: 'host-1', platform: 'linux' },
+      },
+      event: { eventType: 'agent_attached' },
+    });
+    expect(prisma.codeSiteProjectMember.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ userId: 'user-1', source: 'collab_agent_attach' }),
+    }));
+    expect(result.agentAccessToken).toMatch(/^csa_[A-Za-z0-9_-]+$/);
+    expect(result.session).not.toHaveProperty('providerSessionRef');
+    const createData = prisma.codeSiteAgentSession.create.mock.calls[0][0].data;
+    expect(createData.agentAccessTokenHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(createData.agentAccessTokenHash).not.toBe(result.agentAccessToken);
+    expect(JSON.stringify(createData)).not.toContain(result.agentAccessToken);
+  });
+
+  it('resumes only the same owner, collaboration, terminal, runtime, provider, and work identity', async () => {
+    const existing = {
+      id: 'agent-attached-1',
+      projectId: 'project-1',
+      workspaceSlug: 'acme',
+      ownerUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeSessionId: 'runtime-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      agentRuntime: 'terminal',
+      providerSessionRef: 'codex-session-1',
+      displayCallsign: 'CODEX-01',
+      status: 'detached',
+      permissionsJson: JSON.stringify(['workspace.read']),
+      redactionPolicyJson: JSON.stringify({ redactSecrets: true }),
+      capabilitiesJson: JSON.stringify(['workspace.read']),
+      executionHostJson: JSON.stringify({ type: 'workspace_terminal', hostId: null, platform: null }),
+      subscriptionsJson: JSON.stringify(['project.events']),
+      deliveryChannelJson: JSON.stringify({ type: 'mcp_poll', channelId: null }),
+      attachSource: 'collab_terminal_adapter',
+      bindingVersion: 1,
+      activeMutationLeaseId: 'lease-1',
+      activeTransactionId: 'txn-1',
+      attachedAt: new Date('2026-08-22T00:00:00.000Z'),
+      lastHeartbeatAt: new Date('2026-08-22T00:00:00.000Z'),
+      detachedAt: new Date('2026-08-22T00:01:00.000Z'),
+      createdAt: new Date('2026-08-22T00:00:00.000Z'),
+      updatedAt: new Date('2026-08-22T00:01:00.000Z'),
+      endedAt: null,
+    };
+    prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([existing]);
+    prisma.codeSiteAgentSession.update.mockImplementationOnce(async ({ data }) => ({ ...existing, ...data }));
+    prisma.codeSiteMutationLease.findFirst.mockResolvedValueOnce({
+      id: 'lease-1',
+      projectId: 'project-1',
+      agentSessionId: existing.id,
+      status: 'active',
+    });
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValueOnce({
+      id: 'txn-1',
+      projectId: 'project-1',
+      mutationLeaseId: 'lease-1',
+      agentSessionId: existing.id,
+      status: 'open',
+    });
+    const authority = {
+      internalService: true,
+      collaborationMembershipVerified: true,
+      actorUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      runtimeScope: 'shared-workspace',
+    };
+    const body = {
+      ownerUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeSessionId: 'runtime-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'codex-session-1',
+      activeMutationLeaseId: 'lease-1',
+      activeTransactionId: 'txn-1',
+      capabilities: ['workspace.read'],
+      subscriptions: ['project.events'],
+      deliveryChannel: { type: 'mcp_poll' },
+    };
+
+    await expect(attachAgentSession('acme', 'project-1', body, authority)).resolves.toMatchObject({
+      resumed: true,
+      session: { id: 'agent-attached-1', displayCallsign: 'CODEX-01', status: 'attached' },
+      event: { eventType: 'agent_resumed' },
+    });
+
+    prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([existing]);
+    await expect(attachAgentSession('acme', 'project-1', {
+      ...body,
+      activeTransactionId: 'txn-forged',
+    }, authority)).rejects.toMatchObject({
+      status: 403,
+      code: 'agent_session_resume_identity_mismatch',
+      detail: expect.objectContaining({ mismatches: ['activeTransactionId'] }),
+    });
+  });
+
+  it('requires verified collaboration authority and forbids external delivery endpoints', async () => {
+    const body = {
+      ownerUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'codex-session-1',
+    };
+    await expect(attachAgentSession('acme', 'project-1', body, {
+      internalService: true,
+      collaborationMembershipVerified: false,
+      actorUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      runtimeScope: 'shared-workspace',
+    })).rejects.toMatchObject({ status: 403, code: 'agent_attach_authority_forbidden' });
+
+    await expect(attachAgentSession('acme', 'project-1', {
+      ...body,
+      deliveryChannel: { type: 'mcp_poll', url: 'https://attacker.test/callback' },
+    }, {
+      internalService: true,
+      collaborationMembershipVerified: true,
+      actorUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      runtimeScope: 'shared-workspace',
+    })).rejects.toMatchObject({ status: 400, code: 'agent_delivery_external_endpoint_forbidden' });
+  });
+
+  it('fails closed for every mismatched resume identity before membership or event writes', async () => {
+    const existing = {
+      id: 'agent-attached-1',
+      projectId: 'project-1',
+      workspaceSlug: 'acme',
+      ownerUserId: 'user-1',
+      collaborationUserId: 'member-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeSessionId: 'runtime-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'codex-session-1',
+      activeMutationLeaseId: null,
+      activeTransactionId: null,
+      endedAt: null,
+    };
+    const base = {
+      ownerUserId: 'user-1',
+      collaborationUserId: 'member-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeSessionId: 'runtime-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'codex-session-1',
+    };
+    const mismatches = [
+      ['ownerUserId', 'user-forged'],
+      ['collaborationUserId', 'member-forged'],
+      ['effectiveWorkspaceUserId', 'effective-forged'],
+      ['terminalSessionId', 'terminal-forged'],
+      ['runtimeSessionId', 'runtime-forged'],
+      ['runtimeScope', 'scope-forged'],
+      ['agentProvider', 'claude'],
+      ['providerSessionRef', 'provider-forged'],
+      ['activeMutationLeaseId', 'lease-forged'],
+      ['activeTransactionId', 'txn-forged'],
+    ];
+    prisma.codeSiteProject.findFirst.mockResolvedValue({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      status: 'active',
+      createdByUserId: 'user-1',
+      collaborationSessionId: 'collab-session-1',
+      members: [],
+    });
+
+    for (const [field, value] of mismatches) {
+      const body = { ...base, [field]: value };
+      const authority = {
+        internalService: true,
+        collaborationMembershipVerified: true,
+        actorUserId: body.ownerUserId,
+        collaborationUserId: body.collaborationUserId,
+        effectiveWorkspaceUserId: body.effectiveWorkspaceUserId,
+        collaborationSessionId: body.collaborationSessionId,
+        runtimeScope: body.runtimeScope,
+      };
+      prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([existing]);
+      await expect(attachAgentSession('acme', 'project-1', body, authority)).rejects.toMatchObject({
+        status: 403,
+        code: 'agent_session_resume_identity_mismatch',
+        detail: expect.objectContaining({ mismatches: expect.arrayContaining([field]) }),
+      });
+    }
+    expect(prisma.codeSiteProjectMember.upsert).not.toHaveBeenCalled();
+    expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects project collaboration mismatches and revoked members before agent registration', async () => {
+    const body = {
+      ownerUserId: 'user-1',
+      collaborationUserId: 'member-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'codex-session-1',
+    };
+    const authority = {
+      internalService: true,
+      collaborationMembershipVerified: true,
+      actorUserId: 'user-1',
+      collaborationUserId: 'member-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      runtimeScope: 'shared-workspace',
+    };
+    const project = {
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      status: 'active',
+      createdByUserId: 'user-1',
+      collaborationSessionId: 'another-collaboration',
+      members: [],
+    };
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce(project);
+    await expect(attachAgentSession('acme', 'project-1', body, authority)).rejects.toMatchObject({
+      status: 403,
+      code: 'agent_project_collaboration_mismatch',
+    });
+
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      ...project,
+      collaborationSessionId: 'collab-session-1',
+      members: [{
+        userId: 'user-1',
+        role: 'agent',
+        permissionsJson: JSON.stringify(['project:read']),
+        participationStatus: 'disabled',
+        revokedAt: new Date('2026-08-22T00:00:00.000Z'),
+      }],
+    });
+    await expect(attachAgentSession('acme', 'project-1', body, authority)).rejects.toMatchObject({
+      status: 403,
+      code: 'agent_project_membership_revoked',
+    });
+    expect(prisma.codeSiteAgentSession.create).not.toHaveBeenCalled();
+    expect(prisma.codeSiteProjectMember.upsert).not.toHaveBeenCalled();
+  });
+
+  it('recovers a concurrent attach race by resuming the exact database winner', async () => {
+    const existing = {
+      id: 'agent-race-winner',
+      projectId: 'project-1',
+      workspaceSlug: 'acme',
+      ownerUserId: 'user-1',
+      collaborationUserId: 'member-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeSessionId: null,
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      agentRuntime: 'terminal',
+      providerSessionRef: 'codex-session-1',
+      displayCallsign: 'CODEX-01',
+      status: 'attached',
+      permissionsJson: JSON.stringify([]),
+      redactionPolicyJson: JSON.stringify({}),
+      capabilitiesJson: JSON.stringify([]),
+      executionHostJson: JSON.stringify({}),
+      subscriptionsJson: JSON.stringify([]),
+      deliveryChannelJson: JSON.stringify({ type: 'mcp_poll', channelId: null }),
+      activeMutationLeaseId: null,
+      activeTransactionId: null,
+      attachedAt: new Date('2026-08-22T00:00:00.000Z'),
+      endedAt: null,
+    };
+    prisma.codeSiteAgentSession.findMany.mockReset()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([existing]);
+    prisma.codeSiteAgentSession.create.mockRejectedValueOnce(Object.assign(new Error('unique'), { code: 'P2002' }));
+    prisma.codeSiteAgentSession.update.mockImplementationOnce(async ({ data }) => ({ ...existing, ...data }));
+    const body = {
+      ownerUserId: 'user-1',
+      collaborationUserId: 'member-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'codex-session-1',
+    };
+    const result = await attachAgentSession('acme', 'project-1', body, {
+      internalService: true,
+      collaborationMembershipVerified: true,
+      actorUserId: 'user-1',
+      collaborationUserId: 'member-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      runtimeScope: 'shared-workspace',
+    });
+    expect(result).toMatchObject({
+      resumed: true,
+      session: { id: 'agent-race-winner' },
+      event: { eventType: 'agent_resumed' },
+    });
+  });
+
+  it('does not accept mutation authority while creating a coordination-only attachment', async () => {
+    prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([]);
+    const body = {
+      ownerUserId: 'user-1',
+      collaborationUserId: 'member-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'codex-session-1',
+      activeMutationLeaseId: 'lease-forged',
+    };
+    await expect(attachAgentSession('acme', 'project-1', body, {
+      internalService: true,
+      collaborationMembershipVerified: true,
+      actorUserId: 'user-1',
+      collaborationUserId: 'member-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      runtimeScope: 'shared-workspace',
+    })).rejects.toMatchObject({ status: 403, code: 'agent_attach_mutation_context_forbidden' });
+    expect(prisma.codeSiteAgentSession.create).not.toHaveBeenCalled();
+  });
+
+  it('heartbeats and detaches only an exactly bound agent session', async () => {
+    const existing = {
+      id: 'agent-attached-1',
+      projectId: 'project-1',
+      workspaceSlug: 'acme',
+      ownerUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeSessionId: null,
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'codex-session-1',
+      displayCallsign: 'CODEX-01',
+      status: 'attached',
+      permissionsJson: JSON.stringify([]),
+      redactionPolicyJson: JSON.stringify({}),
+      capabilitiesJson: JSON.stringify([]),
+      executionHostJson: JSON.stringify({ type: 'workspace_terminal', hostId: null, platform: null }),
+      subscriptionsJson: JSON.stringify([]),
+      deliveryChannelJson: JSON.stringify({ type: 'mcp_poll', channelId: null }),
+      activeMutationLeaseId: null,
+      activeTransactionId: null,
+      createdAt: new Date('2026-08-22T00:00:00.000Z'),
+      updatedAt: new Date('2026-08-22T00:00:00.000Z'),
+      endedAt: null,
+    };
+    prisma.codeSiteAgentSession.findFirst.mockResolvedValueOnce(existing).mockResolvedValueOnce(existing);
+    prisma.codeSiteAgentSession.update.mockImplementation(async ({ data }) => ({ ...existing, ...data }));
+    const body = {
+      ownerUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'codex-session-1',
+    };
+    const authority = {
+      internalService: true,
+      collaborationMembershipVerified: true,
+      actorUserId: 'user-1',
+      collaborationUserId: 'user-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      runtimeScope: 'shared-workspace',
+    };
+
+    await expect(heartbeatAgentSession('acme', existing.id, body, authority)).resolves.toMatchObject({
+      session: { status: 'attached' },
+      event: { eventType: 'agent_heartbeat' },
+    });
+    await expect(detachAgentSession('acme', existing.id, { ...body, reason: 'websocket_closed' }, authority)).resolves.toMatchObject({
+      session: { status: 'detached' },
+      event: { eventType: 'agent_detached' },
+    });
+
+    prisma.codeSiteAgentSession.findFirst.mockResolvedValueOnce(existing);
+    const { runtimeScope: omittedRuntimeScope, ...incompleteBody } = body;
+    expect(omittedRuntimeScope).toBe('shared-workspace');
+    await expect(heartbeatAgentSession('acme', existing.id, incompleteBody, authority)).rejects.toMatchObject({
+      status: 400,
+      code: 'agent_runtime_scope_required',
+    });
+  });
+
+  describe('environment-bound agent token authority', () => {
+    it.each(['codex', 'claude', 'custom-provider', 'local-agent-runtime'])('authorizes provider-neutral %s sessions', async (agentProvider) => {
+      const session = agentAuthoritySession({ agentProvider });
+      mockBoundAgentAuthoritySession(session);
+
+      const authority = await requireAgentTokenAuthority(
+        'acme',
+        session.id,
+        AGENT_AUTHORITY_TOKEN,
+        { requiredCapability: 'codesite.knowledge.read', now: AGENT_AUTHORITY_NOW },
+      );
+
+      expect(authority).toMatchObject({
+        session: { id: session.id, agentProvider },
+        project: { id: session.projectId, status: 'active' },
+        member: { userId: session.ownerUserId },
+        capabilities: ['codesite.context.read', 'codesite.knowledge.read'],
+        authorizedAt: AGENT_AUTHORITY_NOW,
+      });
+      expect(prisma.codeSiteAgentSession.findFirst).toHaveBeenLastCalledWith({
+        where: {
+          id: session.id,
+          workspaceSlug: 'acme',
+          agentAccessTokenHash: AGENT_AUTHORITY_TOKEN_HASH,
+          endedAt: null,
+        },
+        include: { project: { include: { members: true } } },
+      });
+      expect(prisma.codeSiteAgentSession.findFirst.mock.calls.at(-1)[0].where).not.toHaveProperty('agentProvider');
+    });
+
+    it.each([null, '', 'invalid', 'csa_short', `csa_${'!'.repeat(43)}`, `csa_${'a'.repeat(129)}`])('rejects invalid token syntax %j before database access', async (token) => {
+      prisma.codeSiteAgentSession.findFirst.mockClear();
+      await expect(requireAgentTokenAuthority('acme', 'agent-authority-1', token, {
+        now: AGENT_AUTHORITY_NOW,
+      })).rejects.toMatchObject({ status: 403, code: 'agent_access_token_invalid' });
+      expect(prisma.codeSiteAgentSession.findFirst).not.toHaveBeenCalled();
+    });
+
+    it('binds a valid token hash to the exact path session and workspace', async () => {
+      const session = agentAuthoritySession();
+      mockBoundAgentAuthoritySession(session);
+      const otherToken = `csa_${'y'.repeat(43)}`;
+
+      for (const [workspaceSlug, sessionId, token] of [
+        ['acme', session.id, otherToken],
+        ['acme', 'agent-other', AGENT_AUTHORITY_TOKEN],
+        ['other-workspace', session.id, AGENT_AUTHORITY_TOKEN],
+        ['', session.id, AGENT_AUTHORITY_TOKEN],
+        ['acme', '', AGENT_AUTHORITY_TOKEN],
+      ]) {
+        await expect(requireAgentTokenAuthority(workspaceSlug, sessionId, token, {
+          now: AGENT_AUTHORITY_NOW,
+        })).rejects.toMatchObject({ status: 403, code: 'agent_access_token_invalid' });
+      }
+    });
+
+    it.each([
+      [null, 'missing'],
+      [new Date(AGENT_AUTHORITY_NOW.getTime() - 1), 'expired'],
+      [new Date(AGENT_AUTHORITY_NOW.getTime()), 'boundary-expired'],
+      ['not-a-date', 'invalid'],
+    ])('rejects %s token expiry state', async (agentAccessTokenExpiresAt) => {
+      const session = agentAuthoritySession({ agentAccessTokenExpiresAt });
+      mockBoundAgentAuthoritySession(session);
+      await expect(requireAgentTokenAuthority('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        now: AGENT_AUTHORITY_NOW,
+      })).rejects.toMatchObject({ status: 403, code: 'agent_access_token_expired' });
+    });
+
+    it.each(['registered', 'detached', 'ended', 'revoked'])('rejects non-attached session status %s', async (status) => {
+      const session = agentAuthoritySession({ status });
+      mockBoundAgentAuthoritySession(session);
+      await expect(requireAgentTokenAuthority('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        now: AGENT_AUTHORITY_NOW,
+      })).rejects.toMatchObject({ status: 403, code: 'agent_session_not_attached' });
+    });
+
+    it('requires the session to remain unended in the token-bound query', async () => {
+      const session = agentAuthoritySession({ endedAt: new Date(AGENT_AUTHORITY_NOW.getTime() - 1_000) });
+      mockBoundAgentAuthoritySession(session);
+      await expect(requireAgentTokenAuthority('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        now: AGENT_AUTHORITY_NOW,
+      })).rejects.toMatchObject({ status: 403, code: 'agent_access_token_invalid' });
+      expect(prisma.codeSiteAgentSession.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+        where: expect.objectContaining({ endedAt: null }),
+      }));
+    });
+
+    it.each([
+      [null, 'missing'],
+      ['not-a-date', 'invalid'],
+      [new Date(AGENT_AUTHORITY_NOW.getTime() - 5 * 60_000 - 1), 'stale'],
+      [new Date(AGENT_AUTHORITY_NOW.getTime() + 1), 'future'],
+    ])('rejects %s heartbeat freshness state', async (lastHeartbeatAt) => {
+      const session = agentAuthoritySession({ lastHeartbeatAt });
+      mockBoundAgentAuthoritySession(session);
+      await expect(requireAgentTokenAuthority('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        now: AGENT_AUTHORITY_NOW,
+      })).rejects.toMatchObject({ status: 403, code: 'agent_session_heartbeat_stale' });
+    });
+
+    it('accepts heartbeat freshness exactly at the five-minute boundary', async () => {
+      const session = agentAuthoritySession({
+        lastHeartbeatAt: new Date(AGENT_AUTHORITY_NOW.getTime() - 5 * 60_000),
+      });
+      mockBoundAgentAuthoritySession(session);
+      await expect(requireAgentTokenAuthority('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        now: AGENT_AUTHORITY_NOW,
+      })).resolves.toMatchObject({ session: { id: session.id } });
+    });
+
+    it.each([null, 'paused', 'archived'])('rejects inactive project status %j', async (projectStatus) => {
+      const session = agentAuthoritySession();
+      if (projectStatus == null) {
+        session.project = null;
+      } else {
+        session.project.status = projectStatus;
+      }
+      mockBoundAgentAuthoritySession(session);
+      await expect(requireAgentTokenAuthority('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        now: AGENT_AUTHORITY_NOW,
+      })).rejects.toMatchObject({ status: 403, code: 'codesite_project_inactive' });
+    });
+
+    it.each([
+      [{ project: { members: [] } }, 'missing'],
+      [{ member: { revokedAt: new Date(AGENT_AUTHORITY_NOW) } }, 'revoked'],
+      [{ member: { participationStatus: 'disabled' } }, 'disabled'],
+      [{ member: { permissionsJson: JSON.stringify(['agent:attach']) } }, 'without-read-permission'],
+    ])('rejects %s project membership', async (overrides) => {
+      const session = agentAuthoritySession(overrides);
+      mockBoundAgentAuthoritySession(session);
+      await expect(requireAgentTokenAuthority('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        now: AGENT_AUTHORITY_NOW,
+      })).rejects.toMatchObject({ status: 403, code: 'agent_project_membership_revoked' });
+    });
+
+    it('allows an active role-derived read membership when permissions are empty', async () => {
+      const session = agentAuthoritySession({ member: { permissionsJson: JSON.stringify([]) } });
+      mockBoundAgentAuthoritySession(session);
+      await expect(requireAgentTokenAuthority('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        now: AGENT_AUTHORITY_NOW,
+      })).resolves.toMatchObject({ member: { role: 'agent' } });
+    });
+
+    it('enforces an optional exact capability without provider-specific inference', async () => {
+      const session = agentAuthoritySession({ capabilitiesJson: JSON.stringify(['codesite.context.read']) });
+      mockBoundAgentAuthoritySession(session);
+
+      await expect(requireAgentTokenAuthority('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        requiredCapability: 'codesite.knowledge.read',
+        now: AGENT_AUTHORITY_NOW,
+      })).rejects.toMatchObject({
+        status: 403,
+        code: 'agent_capability_required',
+        detail: { requiredCapabilities: ['codesite.knowledge.read'] },
+      });
+      await expect(requireAgentTokenAuthority('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        now: AGENT_AUTHORITY_NOW,
+      })).resolves.toMatchObject({ capabilities: ['codesite.context.read'] });
+    });
+
+    it.each([null, 'not-json', JSON.stringify({ capability: 'codesite.context.read' })])('denies required capability against malformed capability state %j', async (capabilitiesJson) => {
+      const session = agentAuthoritySession({ capabilitiesJson });
+      mockBoundAgentAuthoritySession(session);
+      await expect(requireAgentTokenAuthority('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        requiredCapability: 'codesite.context.read',
+        now: AGENT_AUTHORITY_NOW,
+      })).rejects.toMatchObject({ status: 403, code: 'agent_capability_required' });
+    });
+  });
+
+  it('returns bounded route-relevant context with scoped token and recipient isolation', async () => {
+    const token = `csa_${'a'.repeat(43)}`;
+    const now = Date.now();
+    const session = {
+      id: 'agent-attached-1',
+      projectId: 'project-1',
+      workspaceSlug: 'acme',
+      ownerUserId: 'user-1',
+      collaborationUserId: 'member-1',
+      effectiveWorkspaceUserId: 'shared-owner',
+      collaborationSessionId: 'collab-session-1',
+      terminalSessionId: 'terminal-1',
+      runtimeSessionId: null,
+      runtimeScope: 'shared-workspace',
+      agentProvider: 'codex',
+      providerSessionRef: 'provider-private-ref',
+      displayCallsign: 'CODEX-01',
+      status: 'attached',
+      capabilitiesJson: JSON.stringify(['codesite.context.read']),
+      subscriptionsJson: JSON.stringify(['agent.inbox']),
+      activeMutationLeaseId: null,
+      activeTransactionId: null,
+      agentAccessTokenExpiresAt: new Date(now + 60_000),
+      lastHeartbeatAt: new Date(now - 1_000),
+      endedAt: null,
+      project: {
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Shared project',
+        request: 'Coordinate the active route.',
+        status: 'active',
+        controlPlanJson: JSON.stringify({ requiredChecks: ['tests'], secret: 'control-secret' }),
+        zonePolicyJson: JSON.stringify({ noFlyZones: ['secrets/**'] }),
+        members: [{
+          userId: 'user-1',
+          role: 'agent',
+          permissionsJson: JSON.stringify(['project:read']),
+          participationStatus: 'enabled',
+          revokedAt: null,
+        }],
+      },
+    };
+    prisma.codeSiteAgentSession.findFirst.mockResolvedValueOnce(session);
+    prisma.codeSiteExecutionPlan.findMany.mockResolvedValueOnce([{
+      id: 'plan-1',
+      agentSessionId: session.id,
+      displayCallsign: 'CODEX-01',
+      mission: 'Inspect the producer contract',
+      domain: 'contracts',
+      status: 'active',
+      routeJson: JSON.stringify(['contracts/**']),
+      blockedZonesJson: JSON.stringify([]),
+    }]);
+    prisma.codeSiteMutationLease.findMany.mockResolvedValueOnce([]);
+    prisma.codeSiteMutationTransaction.findMany.mockResolvedValueOnce([]);
+    prisma.codeSiteAgentInboxItem.findMany.mockResolvedValueOnce([{
+      id: 'inbox-1',
+      kind: 'impact_notice',
+      status: 'unread',
+      requiresResponse: true,
+      eventId: 'event-1',
+      documentId: null,
+      redactedPayloadJson: JSON.stringify({ summary: 'Contract changed', token: 'payload-token', prompt: 'private-prompt' }),
+      createdAt: new Date(now - 2_000),
+    }]);
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValueOnce([]);
+
+    const context = await getRelevantAgentContext('acme', session.id, token);
+    const serialized = JSON.stringify(context);
+    expect(context).toMatchObject({
+      contextVersion: 'synthi.codesite.agentContext.v1',
+      agent: { id: session.id, ownerUserId: 'user-1', provider: 'codex' },
+      project: { id: 'project-1', workspaceSlug: 'acme' },
+      workstreams: [{ id: 'plan-1', route: ['contracts/**'] }],
+      inbox: [{ id: 'inbox-1', payload: { summary: 'Contract changed' } }],
+    });
+    expect(context.bytes).toBeLessThanOrEqual(64 * 1024);
+    expect(serialized).not.toContain(token);
+    expect(serialized).not.toContain('provider-private-ref');
+    expect(serialized).not.toContain('payload-token');
+    expect(serialized).not.toContain('private-prompt');
+    expect(serialized).not.toContain('control-secret');
+    expect(prisma.codeSiteAgentSession.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        id: session.id,
+        workspaceSlug: 'acme',
+        agentAccessTokenHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+    }));
+    expect(prisma.codeSiteAgentInboxItem.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        OR: [{ agentSessionId: session.id }, { recipientUserId: 'user-1' }],
+      }),
+      take: 32,
+    }));
+  });
+
+  it('rejects invalid, expired, detached, and stale-heartbeat agent context credentials', async () => {
+    await expect(getRelevantAgentContext('acme', 'agent-1', 'invalid')).rejects.toMatchObject({
+      status: 403,
+      code: 'agent_access_token_invalid',
+    });
+    const token = `csa_${'b'.repeat(43)}`;
+    const base = {
+      id: 'agent-1',
+      workspaceSlug: 'acme',
+      status: 'attached',
+      agentAccessTokenExpiresAt: new Date(Date.now() + 60_000),
+      lastHeartbeatAt: new Date(Date.now() - 10 * 60_000),
+      endedAt: null,
+    };
+    prisma.codeSiteAgentSession.findFirst.mockResolvedValueOnce(base);
+    await expect(getRelevantAgentContext('acme', 'agent-1', token)).rejects.toMatchObject({
+      status: 403,
+      code: 'agent_session_heartbeat_stale',
+    });
+  });
+
+  describe('registered direct channels', () => {
+    const CHANNEL_CAPS = [
+      'codesite.context.read',
+      'codesite.channels.open',
+    ];
+
+    function channelSession(overrides = {}) {
+      return agentAuthoritySession({
+        capabilitiesJson: JSON.stringify(CHANNEL_CAPS),
+        ...overrides,
+      });
+    }
+
+    function bindTwoSessions(sessionA, sessionB) {
+      prisma.codeSiteAgentSession.findFirst.mockImplementation(async ({ where } = {}) => {
+        if (!where || where.endedAt !== null) return null;
+        // Token-authenticated lookups carry agentAccessTokenHash; internal
+        // lookups (e.g. resolving the channel target) do not.
+        const hashOk = (hash) => !where.agentAccessTokenHash || where.agentAccessTokenHash === hash;
+        const workspaceOk = !where.workspaceSlug || where.workspaceSlug === sessionA.workspaceSlug;
+        if (where.id === sessionA.id && workspaceOk && hashOk(AGENT_AUTHORITY_TOKEN_HASH)) return sessionA;
+        if (where.id === sessionB.id && workspaceOk
+          && (hashOk(AGENT_AUTHORITY_TOKEN_HASH_B) || hashOk(AGENT_AUTHORITY_TOKEN_HASH))) return sessionB;
+        return null;
+      });
+    }
+
+    function mockProjectChannelFindFirst(channel) {
+      prisma.codeSiteAgentChannel.findFirst.mockImplementation(async ({ where } = {}) => (
+        where?.id === channel.id ? channel : null));
+    }
+
+    const projectRow = {
+      id: 'project-authority-1',
+      workspaceSlug: 'acme',
+      status: 'active',
+      channelMode: 'direct_preferred',
+    };
+
+    beforeEach(() => {
+      __resetRateLimits();
+      prisma.codeSiteProject.findFirst.mockResolvedValue(projectRow);
+      prisma.codeSiteAgentChannel.findUnique.mockImplementation(async ({ where }) => (
+        where?.id === 'channel-9' ? {
+          id: 'channel-9', projectId: 'project-authority-1', workspaceSlug: 'acme',
+          fromSessionId: 'agent-authority-1', toSessionId: 'agent-authority-2',
+          status: 'active', purpose: 'patch_negotiation', transport: 'websocket',
+          fromEndpointRef: 'ws://127.0.0.1:9101/agent-a', toEndpointRef: 'ws://127.0.0.1:9202/agent-b',
+          channelTokenHash: 'sha256:' + 'c'.repeat(64), maxDurationMs: 1_800_000,
+          grantExpiresAt: null, openedAt: new Date(AGENT_AUTHORITY_NOW), closedAt: null,
+          summaryDigest: null, messageCount: 0, createdAt: new Date(AGENT_AUTHORITY_NOW),
+        } : null));
+      prisma.codeSiteAgentChannel.updateMany.mockResolvedValue({ count: 1 });
+      prisma.codeSiteAgentChannel.create.mockImplementation(async ({ data }) => ({
+        id: 'channel-1', createdAt: new Date(AGENT_AUTHORITY_NOW), messageCount: 0, ...data,
+      }));
+      prisma.codeSiteAgentChannel.update.mockImplementation(async ({ where, data }) => ({
+        id: where.id, messageCount: 0,
+        fromSessionId: 'agent-authority-1', toSessionId: 'agent-authority-2',
+        projectId: 'project-authority-1', workspaceSlug: 'acme',
+        purpose: 'coordination', transport: 'websocket', maxDurationMs: 1_800_000,
+        grantExpiresAt: null, openedAt: new Date(AGENT_AUTHORITY_NOW), closedAt: null,
+        summaryDigest: null, createdAt: new Date(AGENT_AUTHORITY_NOW),
+        ...data,
+      }));
+    });
+
+    it('rate limits channel requests by verified stable identity after token validation', async () => {
+      // The URL session id and the stored id must agree for verification to
+      // succeed (fail-closed). The anti-rotation property this test proves is
+      // that the rate-limit BUCKET key derives from the verified session's
+      // stable identity (id + owner), not from any caller-supplied string.
+      const session = channelSession();
+      bindTwoSessions(session, channelSession({ id: 'agent-authority-2' }));
+
+      await expect(requireAgentChannelRateAuthority('acme', 'rotated-id-1', AGENT_AUTHORITY_TOKEN))
+        .rejects.toMatchObject({ status: 403, code: 'agent_access_token_invalid' });
+      expect(agentChannelRateLimitKey(session)).toBe(`${session.id}:${session.ownerUserId}`);
+    });
+
+    it('requests a channel inside the mode ladder and records the event', async () => {
+      const alice = channelSession();
+      const ben = channelSession({ id: 'agent-authority-2' });
+      bindTwoSessions(alice, ben);
+      prisma.codeSiteAgentChannel.findFirst.mockResolvedValue(null);
+      prisma.codeSiteAgentChannel.count.mockResolvedValue(0);
+
+      const channel = await requestAgentChannel('acme', alice.id, AGENT_AUTHORITY_TOKEN, {
+        toSessionId: ben.id,
+        transport: 'websocket',
+        purpose: 'patch_negotiation',
+        endpointRef: 'ws://127.0.0.1:9101/agent-a',
+      }, { now: AGENT_AUTHORITY_NOW });
+
+      expect(channel).toMatchObject({
+        status: 'requested',
+        transport: 'websocket',
+        fromSessionId: alice.id,
+        toSessionId: ben.id,
+      });
+      expect(prisma.codeSiteAgentChannel.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          status: 'requested',
+          transport: 'websocket',
+          fromEndpointRef: 'ws://127.0.0.1:9101/agent-a',
+        }),
+      }));
+      expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ eventType: 'channel_requested' }),
+      }));
+    });
+
+    it("refuses transports the project's mode does not allow", async () => {
+      const alice = channelSession();
+      const ben = channelSession({ id: 'agent-authority-2' });
+      bindTwoSessions(alice, ben);
+      // mediated_only allows no direct transports.
+      prisma.codeSiteProject.findFirst.mockResolvedValue({ ...projectRow, channelMode: 'mediated_only' });
+
+      await expect(requestAgentChannel('acme', alice.id, AGENT_AUTHORITY_TOKEN, {
+        toSessionId: ben.id,
+        transport: 'websocket',
+      }, { now: AGENT_AUTHORITY_NOW })).rejects.toMatchObject({
+        code: 'channel_transport_not_allowed_in_mode',
+      });
+    });
+
+    it('enforces a workspace floor that forbids weaker modes', async () => {
+      const alice = channelSession();
+      const ben = channelSession({ id: 'agent-authority-2' });
+      bindTwoSessions(alice, ben);
+      process.env.SYNTHI_CODESITE_MIN_CHANNEL_MODE = 'registered_direct';
+      try {
+        await expect(requestAgentChannel('acme', alice.id, AGENT_AUTHORITY_TOKEN, {
+          toSessionId: ben.id,
+          transport: 'websocket',
+        }, { now: AGENT_AUTHORITY_NOW })).rejects.toMatchObject({
+          code: 'codesite_channel_mode_below_workspace_floor',
+        });
+      } finally {
+        delete process.env.SYNTHI_CODESITE_MIN_CHANNEL_MODE;
+      }
+    });
+
+    it('refuses self-pairing and targets without the channels capability', async () => {
+      const alice = channelSession();
+      bindTwoSessions(alice, channelSession({ id: 'agent-authority-2' }));
+
+      await expect(requestAgentChannel('acme', alice.id, AGENT_AUTHORITY_TOKEN, {
+        toSessionId: alice.id,
+        transport: 'websocket',
+      }, { now: AGENT_AUTHORITY_NOW })).rejects.toMatchObject({ code: 'channel_self_pairing_forbidden' });
+
+      const noCapTarget = channelSession({ id: 'agent-authority-2', capabilitiesJson: JSON.stringify(['codesite.context.read']) });
+      bindTwoSessions(alice, noCapTarget);
+      await expect(requestAgentChannel('acme', alice.id, AGENT_AUTHORITY_TOKEN, {
+        toSessionId: noCapTarget.id,
+        transport: 'websocket',
+      }, { now: AGENT_AUTHORITY_NOW })).rejects.toMatchObject({ code: 'channel_responder_capability_missing' });
+    });
+
+    it('blocks duplicate active pairs and enforces the concurrency cap', async () => {
+      const alice = channelSession();
+      const ben = channelSession({ id: 'agent-authority-2' });
+      bindTwoSessions(alice, ben);
+
+      prisma.codeSiteAgentChannel.findFirst.mockResolvedValue({ id: 'channel-existing' });
+      await expect(requestAgentChannel('acme', alice.id, AGENT_AUTHORITY_TOKEN, {
+        toSessionId: ben.id,
+        transport: 'websocket',
+      }, { now: AGENT_AUTHORITY_NOW })).rejects.toMatchObject({ code: 'channel_already_active' });
+
+      prisma.codeSiteAgentChannel.findFirst.mockResolvedValue(null);
+      prisma.codeSiteAgentChannel.count.mockResolvedValue(3);
+      await expect(requestAgentChannel('acme', alice.id, AGENT_AUTHORITY_TOKEN, {
+        toSessionId: ben.id,
+        transport: 'websocket',
+      }, { now: AGENT_AUTHORITY_NOW })).rejects.toMatchObject({ code: 'channel_concurrency_cap_reached' });
+    });
+
+    it('accept mints a single-use token, stores only its hash, and activates', async () => {
+      const alice = channelSession();
+      const ben = channelSession({ id: 'agent-authority-2' });
+      bindTwoSessions(alice, ben);
+      const requested = {
+        id: 'channel-9',
+        projectId: 'project-authority-1',
+        workspaceSlug: 'acme',
+        fromSessionId: alice.id,
+        toSessionId: ben.id,
+        status: 'requested',
+        purpose: 'patch_negotiation',
+        transport: 'websocket',
+        fromEndpointRef: 'ws://127.0.0.1:9101/agent-a',
+        toEndpointRef: null,
+        channelTokenHash: null,
+        maxDurationMs: 1_800_000,
+        grantExpiresAt: new Date(Date.now() + 60_000),
+        openedAt: null,
+        closedAt: null,
+        summaryDigest: null,
+        messageCount: 0,
+      };
+      mockProjectChannelFindFirst(requested);
+
+      const result = await acceptAgentChannel('acme', ben.id, AGENT_AUTHORITY_TOKEN, 'channel-9', {
+        endpointRef: 'ws://127.0.0.1:9202/agent-b',
+      }, { now: AGENT_AUTHORITY_NOW });
+
+      expect(result.channelToken).toMatch(/^csc_[A-Za-z0-9_-]+$/);
+      expect(result.status).toBe('active');
+      expect(result.toEndpointRef).toBe('ws://127.0.0.1:9202/agent-b');
+      const updateData = prisma.codeSiteAgentChannel.updateMany.mock.calls.at(-1)[0].data;
+      // `fromHash|toHash` - the mock row has no request-time hash so the
+      // from-half is the empty-string hash; the to-half must hash the minted
+      // token. The raw token never appears in the stored value.
+      const [fromHash, toHash] = updateData.channelTokenHash.split('|');
+      expect(fromHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+      expect(toHash).toBe(`sha256:${createHash('sha256').update(result.channelToken).digest('hex')}`);
+      expect(updateData.channelTokenHash).not.toContain(result.channelToken.slice(4));
+      expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ eventType: 'channel_accepted' }),
+      }));
+    });
+
+    it('only the responder can accept; expired grants expire the channel', async () => {
+      const alice = channelSession();
+      const ben = channelSession({ id: 'agent-authority-2' });
+      bindTwoSessions(alice, ben);
+      mockProjectChannelFindFirst({
+        id: 'channel-9', projectId: 'project-authority-1', workspaceSlug: 'acme',
+        fromSessionId: alice.id, toSessionId: ben.id, status: 'requested',
+        transport: 'websocket', purpose: 'x', maxDurationMs: 1_800_000,
+        grantExpiresAt: new Date(AGENT_AUTHORITY_NOW.getTime() - 1_000),
+        messageCount: 0, channelTokenHash: null,
+      });
+
+      await expect(acceptAgentChannel('acme', alice.id, AGENT_AUTHORITY_TOKEN, 'channel-9', {}, { now: AGENT_AUTHORITY_NOW }))
+        .rejects.toMatchObject({ code: 'channel_responder_mismatch' });
+      await expect(acceptAgentChannel('acme', ben.id, AGENT_AUTHORITY_TOKEN, 'channel-9', {}, { now: AGENT_AUTHORITY_NOW }))
+        .rejects.toMatchObject({ code: 'channel_grant_expired' });
+      expect(prisma.codeSiteAgentChannel.update).toHaveBeenCalledWith(expect.objectContaining({
+        data: { status: 'expired' },
+      }));
+    });
+
+    it('reject records a declined event; close is participant-gated and stores the digest', async () => {
+      const alice = channelSession();
+      const ben = channelSession({ id: 'agent-authority-2' });
+      bindTwoSessions(alice, ben);
+      mockProjectChannelFindFirst({
+        id: 'channel-7', projectId: 'project-authority-1', workspaceSlug: 'acme',
+        fromSessionId: alice.id, toSessionId: ben.id, status: 'requested',
+        transport: 'sse', purpose: 'x', maxDurationMs: 1_800_000,
+        grantExpiresAt: new Date(Date.now() + 60_000), messageCount: 0,
+      });
+
+      const rejected = await rejectAgentChannel('acme', ben.id, AGENT_AUTHORITY_TOKEN, 'channel-7', {
+        reasonCode: 'busy',
+      }, { now: AGENT_AUTHORITY_NOW });
+      expect(rejected.status).toBe('rejected');
+      expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ eventType: 'channel_rejected' }),
+      }));
+
+      mockProjectChannelFindFirst({
+        id: 'channel-8', projectId: 'project-authority-1', workspaceSlug: 'acme',
+        fromSessionId: alice.id, toSessionId: ben.id, status: 'active',
+        transport: 'websocket', purpose: 'x', maxDurationMs: 1_800_000,
+        grantExpiresAt: null, messageCount: 12, channelTokenHash: 'sha256:' + 'a'.repeat(64),
+      });
+      // A non-participant cannot close it.
+      const mallory = channelSession({ id: 'agent-authority-3' });
+      bindTwoSessions(alice, mallory);
+      await expect(closeAgentChannel('acme', mallory.id, AGENT_AUTHORITY_TOKEN, 'channel-8', {}, { now: AGENT_AUTHORITY_NOW }))
+        .rejects.toMatchObject({ code: 'channel_participant_mismatch' });
+
+      bindTwoSessions(alice, ben);
+      const closed = await closeAgentChannel('acme', alice.id, AGENT_AUTHORITY_TOKEN, 'channel-8', {
+        summaryDigest: 'sha256:' + 'b'.repeat(64),
+        messageCount: 12,
+      }, { now: AGENT_AUTHORITY_NOW });
+      expect(closed.status).toBe('closed');
+      expect(closed.summaryDigest).toBe('sha256:' + 'b'.repeat(64));
+      expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ eventType: 'channel_closed' }),
+      }));
+    });
+
+    it('kill switch refuses all channel operations when enabled', async () => {
+      process.env.SYNTHI_CODESITE_CHANNELS_DISABLED = '1';
+      try {
+        const alice = channelSession();
+        const ben = channelSession({ id: 'agent-authority-2' });
+        bindTwoSessions(alice, ben);
+        await expect(requestAgentChannel('acme', alice.id, AGENT_AUTHORITY_TOKEN, {
+          toSessionId: ben.id,
+          transport: 'websocket',
+        }, { now: AGENT_AUTHORITY_NOW })).rejects.toMatchObject({ code: 'codesite_channels_disabled' });
+        expect(prisma.codeSiteAgentChannel.create).not.toHaveBeenCalled();
+      } finally {
+        delete process.env.SYNTHI_CODESITE_CHANNELS_DISABLED;
+      }
+    });
+
+    it('refuses responders on a different project (no cross-project pairing)', async () => {
+      const alice = channelSession();
+      const crossProject = channelSession({ id: 'agent-cross-project', projectId: 'project-OTHER' });
+      prisma.codeSiteAgentSession.findFirst.mockImplementation(async ({ where } = {}) => {
+        if (!where || where.endedAt !== null) return null;
+        if (where.id === alice.id) return alice;
+        // Internal target lookup carries projectId; a session from another
+        // project must not resolve.
+        if (where.id === crossProject.id && (!where.projectId || where.projectId === crossProject.projectId)) {
+          return null;
+        }
+        return null;
+      });
+      await expect(requestAgentChannel('acme', alice.id, AGENT_AUTHORITY_TOKEN, {
+        toSessionId: crossProject.id,
+        transport: 'websocket',
+      }, { now: AGENT_AUTHORITY_NOW })).rejects.toMatchObject({ code: 'agent_session_not_found' });
+    });
+
+    it('expires an active channel past maxDurationMs and records the sweep', async () => {
+      const alice = channelSession();
+      const ben = channelSession({ id: 'agent-authority-2' });
+      bindTwoSessions(alice, ben);
+      const staleOpened = new Date(AGENT_AUTHORITY_NOW.getTime() - 3_600_000);
+      prisma.codeSiteAgentChannel.findFirst.mockResolvedValueOnce({
+        id: 'channel-stale', projectId: 'project-authority-1', workspaceSlug: 'acme',
+        fromSessionId: alice.id, toSessionId: ben.id,
+        status: 'active', purpose: 'patch_negotiation', transport: 'websocket',
+        channelTokenHash: `sha256:${'d'.repeat(64)}`,
+        openedAt: staleOpened, maxDurationMs: 60_000, closedAt: null, messageCount: 3,
+      });
+      prisma.codeSiteAgentChannel.update.mockResolvedValueOnce({
+        id: 'channel-stale', projectId: 'project-authority-1', workspaceSlug: 'acme',
+        fromSessionId: alice.id, toSessionId: ben.id,
+        status: 'expired', transport: 'websocket', messageCount: 3,
+        openedAt: staleOpened, maxDurationMs: 60_000,
+      });
+      const projection = await closeAgentChannel('acme', alice.id, AGENT_AUTHORITY_TOKEN, 'channel-stale', {}, { now: AGENT_AUTHORITY_NOW });
+      expect(projection.status).toBe('expired');
+      expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          eventType: 'channel_closed',
+          detailsJson: expect.stringContaining('channel_duration_expired'),
+        }),
+      }));
+    });
+
+    it('close is idempotent for the second participant', async () => {
+      const alice = channelSession();
+      const ben = channelSession({ id: 'agent-authority-2' });
+      bindTwoSessions(alice, ben);
+      prisma.codeSiteAgentChannel.findFirst.mockResolvedValueOnce({
+        id: 'channel-closed', projectId: 'project-authority-1', workspaceSlug: 'acme',
+        fromSessionId: alice.id, toSessionId: ben.id,
+        status: 'closed', transport: 'websocket', messageCount: 5,
+        summaryDigest: `sha256:${'e'.repeat(64)}`,
+      });
+      const projection = await closeAgentChannel('acme', ben.id, AGENT_AUTHORITY_TOKEN_B, 'channel-closed', {}, { now: AGENT_AUTHORITY_NOW });
+      expect(projection.status).toBe('closed');
+      expect(prisma.codeSiteAgentChannel.update).not.toHaveBeenCalled();
+    });
+
+    it('violation reports flip the channel and record channel_violation', async () => {
+      const alice = channelSession();
+      const ben = channelSession({ id: 'agent-authority-2' });
+      bindTwoSessions(alice, ben);
+      prisma.codeSiteAgentChannel.findFirst.mockResolvedValueOnce({
+        id: 'channel-live', projectId: 'project-authority-1', workspaceSlug: 'acme',
+        fromSessionId: alice.id, toSessionId: ben.id,
+        status: 'active', transport: 'websocket', messageCount: 2,
+      });
+      prisma.codeSiteAgentChannel.update.mockResolvedValueOnce({
+        id: 'channel-live', status: 'violation', messageCount: 2,
+      });
+      const projection = await reportAgentChannelViolation('acme', alice.id, AGENT_AUTHORITY_TOKEN, 'channel-live', {
+        violationCode: 'frame_mac_invalid',
+      }, { now: AGENT_AUTHORITY_NOW });
+      expect(projection.status).toBe('violation');
+      expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          eventType: 'channel_violation',
+          detailsJson: expect.stringContaining('frame_mac_invalid'),
+        }),
+      }));
+    });
+  });
+
+  describe('provider-neutral shared knowledge control plane', () => {
+    function bindKnowledgeAuthority(overrides = {}) {
+      const now = Date.now();
+      const session = agentAuthoritySession({
+        capabilitiesJson: JSON.stringify([
+          'codesite.context.read',
+          'codesite.knowledge.read',
+          'codesite.knowledge.write',
+          'codesite.inbox.respond',
+        ]),
+        terminalSessionId: 'terminal-authority-1',
+        agentAccessTokenExpiresAt: new Date(now + 60_000),
+        lastHeartbeatAt: new Date(now - 1_000),
+        ...overrides,
+      });
+      mockBoundAgentAuthoritySession(session);
+      return session;
+    }
+
+    function knowledgeRow(overrides = {}) {
+      return {
+        id: 'knowledge-1',
+        projectId: 'project-authority-1',
+        kind: 'discovery',
+        status: 'verified',
+        title: 'Rotation contract changed',
+        summary: 'The sequence field is now mandatory.',
+        payloadJson: JSON.stringify({
+          source: {
+            actorType: 'agent',
+            actorId: 'agent-authority-1',
+            agentSessionId: 'agent-authority-1',
+            terminalSessionId: 'terminal-authority-1',
+          },
+          tags: ['contract'],
+          verification: 'verified',
+        }),
+        scopeJson: JSON.stringify({
+          visibility: 'project',
+          references: {
+            paths: ['contracts/rotation-event.json'],
+            symbols: [],
+            contracts: ['rotation-event.v2'],
+            runtimeSessionIds: [],
+            agentSessionIds: [],
+            workstreamIds: [],
+            transactionIds: [],
+          },
+          tags: ['contract'],
+        }),
+        redactionClass: 'project_fact',
+        confidence: 0.98,
+        verificationStatus: 'verified',
+        createdByUserId: 'user-agent-owner',
+        createdByAgentSessionId: 'agent-authority-1',
+        ownerUserId: null,
+        ownerAgentSessionId: null,
+        sourceKnowledgeItemId: null,
+        targetTransactionId: null,
+        dedupeKey: 'knowledge:discovery:test',
+        evidenceRefsJson: JSON.stringify(['test:rotation-contract:passed']),
+        expiresAt: null,
+        resolvedAt: null,
+        createdAt: new Date('2026-08-22T04:00:00.000Z'),
+        updatedAt: new Date('2026-08-22T04:01:00.000Z'),
+        references: [],
+        ...overrides,
+      };
+    }
+
+    it('records a discovery and automatically creates an impact notice for an affected different-provider agent', async () => {
+      const producer = bindKnowledgeAuthority({ agentProvider: 'arbitrary-research-agent' });
+      const consumer = {
+        id: 'consumer-agent',
+        projectId: producer.projectId,
+        ownerUserId: 'consumer-user',
+        agentProvider: 'another-vendor-agent',
+        status: 'attached',
+        endedAt: null,
+        subscriptionsJson: '[]',
+      };
+      prisma.codeSiteAgentSession.findMany.mockResolvedValue([producer, consumer]);
+      prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([]);
+      prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([{
+        id: 'consumer-txn',
+        projectId: producer.projectId,
+        agentSessionId: consumer.id,
+        status: 'open',
+        readSetJson: '[]',
+        observedReadSetJson: '[]',
+        writeSetJson: '[]',
+        observedWriteSetJson: '[]',
+        semanticDependencyRefsJson: JSON.stringify(['contract:rotation-event.v2']),
+      }]);
+      prisma.codeSiteKnowledgeItem.create.mockImplementation(async ({ data }) => ({
+        ...data,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }));
+      prisma.codeSiteKnowledgeItem.update.mockImplementation(async ({ where, data }) => ({
+        id: where.id,
+        ...data,
+        updatedAt: new Date(),
+      }));
+
+      const result = await createAgentKnowledgeItem('acme', producer.id, AGENT_AUTHORITY_TOKEN, {
+        kind: 'discovery',
+        title: 'Rotation contract changed',
+        summary: 'The sequence field is now mandatory.',
+        status: 'verified',
+        references: {
+          paths: ['contracts/rotation-event.json'],
+          contracts: ['rotation-event.v2'],
+        },
+        evidenceRefs: ['test:rotation-contract:passed'],
+        confidence: 0.98,
+      });
+
+      expect(result).toMatchObject({
+        knowledge: { kind: 'discovery', projectId: producer.projectId },
+        impacts: [{
+          knowledge: { kind: 'impact_notice', recipientAgentSessionIds: [consumer.id] },
+          inboxItem: { agentSessionId: consumer.id, requiresResponse: true },
+        }],
+        duplicate: false,
+      });
+      expect(prisma.codeSiteAgentInboxItem.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          agentSessionId: consumer.id,
+          recipientUserId: consumer.ownerUserId,
+          kind: 'impact_notice',
+        }),
+      }));
+      const persisted = prisma.codeSiteKnowledgeItem.create.mock.calls.map(([call]) => call.data);
+      expect(persisted).toHaveLength(2);
+      expect(JSON.stringify(persisted)).not.toMatch(/arbitrary-research-agent|another-vendor-agent|providerSessionRef/i);
+      expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ eventType: 'impact_notice_created' }),
+      }));
+      const coordinationEvents = prisma.codeSiteEvent.create.mock.calls
+        .map(([call]) => call.data)
+        .filter((event) => ['discovery_recorded', 'impact_notice_created'].includes(event.eventType));
+      expect(coordinationEvents).toHaveLength(2);
+      expect(coordinationEvents.every((event) => /^evt_[A-Za-z0-9_-]+$/.test(event.id))).toBe(true);
+    });
+
+    it('derives project and source identity and rejects private prompt material', async () => {
+      const session = bindKnowledgeAuthority();
+      await expect(createAgentKnowledgeItem('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        kind: 'discovery',
+        projectId: 'other-project',
+        title: 'Forged',
+        summary: 'Forged',
+        references: { paths: ['src/a.js'] },
+        evidenceRefs: ['test:1'],
+        confidence: 0.5,
+      })).rejects.toMatchObject({ status: 403, code: 'knowledge_project_mismatch' });
+
+      await expect(createAgentKnowledgeItem('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        kind: 'discovery',
+        title: 'Unsafe',
+        summary: 'Unsafe',
+        source: { rawPrompt: 'private instructions' },
+        references: { paths: ['src/a.js'] },
+        evidenceRefs: ['test:1'],
+        confidence: 0.5,
+      })).rejects.toMatchObject({ code: 'knowledge_private_material_forbidden' });
+      expect(prisma.codeSiteKnowledgeItem.create).not.toHaveBeenCalled();
+    });
+
+    it('returns only relevant project knowledge and keeps owner-private items isolated', async () => {
+      const session = bindKnowledgeAuthority({
+        id: 'consumer-agent',
+        ownerUserId: 'consumer-user',
+        subscriptionsJson: JSON.stringify(['contract:rotation-event.v2']),
+        project: {
+          id: 'project-authority-1',
+          workspaceSlug: 'acme',
+          status: 'active',
+          members: [{
+            userId: 'consumer-user',
+            role: 'agent',
+            permissionsJson: JSON.stringify(['project:read']),
+            participationStatus: 'enabled',
+            revokedAt: null,
+          }],
+        },
+      });
+      const relevant = knowledgeRow({ createdByAgentSessionId: 'producer-agent', createdByUserId: 'producer-user' });
+      const privateRow = knowledgeRow({
+        id: 'private-knowledge',
+        createdByAgentSessionId: 'producer-agent',
+        createdByUserId: 'producer-user',
+        redactionClass: 'owner_private',
+        scopeJson: JSON.stringify({
+          visibility: 'owner_private',
+          references: JSON.parse(relevant.scopeJson).references,
+          tags: [],
+        }),
+      });
+      const unrelated = knowledgeRow({
+        id: 'unrelated',
+        createdByAgentSessionId: 'producer-agent',
+        createdByUserId: 'producer-user',
+        scopeJson: JSON.stringify({
+          visibility: 'project',
+          references: {
+            paths: ['src/unrelated.js'], symbols: [], contracts: [], runtimeSessionIds: [],
+            agentSessionIds: [], workstreamIds: [], transactionIds: [],
+          },
+          tags: [],
+        }),
+      });
+      prisma.codeSiteKnowledgeItem.findMany.mockResolvedValue([privateRow, unrelated, relevant]);
+      prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([]);
+      prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([]);
+      prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([]);
+
+      const items = await getAgentSharedKnowledge('acme', session.id, AGENT_AUTHORITY_TOKEN);
+      expect(items.map((item) => item.id)).toEqual(['knowledge-1']);
+      expect(JSON.stringify(items)).not.toMatch(/private-knowledge|providerSessionRef|rawPrompt/i);
+    });
+
+    it('applies shared-knowledge path and semantic filters in the database query', async () => {
+      const session = bindKnowledgeAuthority({ id: 'consumer-agent' });
+      prisma.codeSiteKnowledgeItem.findMany.mockResolvedValue([knowledgeRow()]);
+      prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([]);
+      prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([]);
+      prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([]);
+
+      await getAgentSharedKnowledge('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        path: 'src/rotation/Spin.cpp',
+        symbol: 'Spin::advance',
+        contract: 'rotation.completed@v2',
+        workstream_id: 'workstream-rotation',
+      });
+
+      const knowledgeQuery = prisma.codeSiteKnowledgeItem.findMany.mock.calls
+        .map(([args]) => args)
+        .find((args) => args?.include?.references);
+      expect(knowledgeQuery.where.AND).toEqual(expect.arrayContaining([
+        { references: { some: { refType: 'path', refKey: { in: ['src/rotation/Spin.cpp'] } } } },
+        { references: { some: { refType: 'symbol', refKey: { in: ['Spin::advance'] } } } },
+        { references: { some: { refType: 'contract', refKey: { in: ['rotation.completed@v2'] } } } },
+        { references: { some: { refType: 'workstream', refKey: { in: ['workstream-rotation'] } } } },
+      ]));
+    });
+
+    it('continues shared-knowledge scans beyond a full page until relevant rows are found', async () => {
+      const session = bindKnowledgeAuthority({
+        id: 'consumer-agent',
+        subscriptionsJson: JSON.stringify(['contract:rotation-event.v2']),
+      });
+      const unrelated = knowledgeRow({
+        id: 'unrelated-page-one',
+        createdByAgentSessionId: 'producer-agent',
+        createdByUserId: 'producer-user',
+        scopeJson: JSON.stringify({
+          visibility: 'project',
+          references: {
+            paths: ['src/unrelated.js'], symbols: [], contracts: [], runtimeSessionIds: [],
+            agentSessionIds: [], workstreamIds: [], transactionIds: [],
+          },
+          tags: [],
+        }),
+      });
+      const relevant = knowledgeRow({
+        id: 'relevant-page-two',
+        createdByAgentSessionId: 'producer-agent',
+        createdByUserId: 'producer-user',
+      });
+      let knowledgePage = 0;
+      prisma.codeSiteKnowledgeItem.findMany.mockImplementation(async ({ include } = {}) => {
+        if (!include?.references) return [];
+        knowledgePage += 1;
+        if (knowledgePage === 1) return [unrelated];
+        if (knowledgePage === 2) return [relevant];
+        return [];
+      });
+      prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([]);
+      prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([]);
+      prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([]);
+
+      const items = await getAgentSharedKnowledge('acme', session.id, AGENT_AUTHORITY_TOKEN, { limit: 1 });
+
+      expect(items.map((item) => item.id)).toEqual(['relevant-page-two']);
+      const knowledgeCalls = prisma.codeSiteKnowledgeItem.findMany.mock.calls
+        .map(([args]) => args)
+        .filter((args) => args?.include?.references);
+      expect(knowledgeCalls).toHaveLength(2);
+      expect(knowledgeCalls.every((args) => args.take === 1)).toBe(true);
+      expect(knowledgeCalls[1].where.AND).toEqual(expect.arrayContaining([
+        expect.objectContaining({ OR: expect.any(Array) }),
+      ]));
+    });
+
+    it('hydrates relevant discoveries into fresh agent and resume context', async () => {
+      const session = bindKnowledgeAuthority({
+        id: 'consumer-agent',
+        subscriptionsJson: JSON.stringify(['contract:rotation-event.v2']),
+        project: {
+          id: 'project-authority-1',
+          workspaceSlug: 'acme',
+          status: 'active',
+          title: 'Shared rotation project',
+          request: 'Coordinate producer and consumer changes.',
+          controlPlanJson: '{}',
+          zonePolicyJson: '{}',
+          members: [{
+            userId: 'user-agent-owner',
+            role: 'agent',
+            permissionsJson: JSON.stringify(['project:read']),
+            participationStatus: 'enabled',
+            revokedAt: null,
+          }],
+        },
+      });
+      prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([]);
+      prisma.codeSiteMutationLease.findMany.mockResolvedValue([]);
+      prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([]);
+      prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([]);
+      prisma.codeSiteInspectionRun.findMany.mockResolvedValue([]);
+      prisma.codeSiteKnowledgeItem.findMany.mockResolvedValue([
+        knowledgeRow({ createdByAgentSessionId: 'producer-agent', createdByUserId: 'producer-user' }),
+      ]);
+
+      const context = await getRelevantAgentContext('acme', session.id, AGENT_AUTHORITY_TOKEN);
+      expect(context.sharedKnowledge).toMatchObject({
+        phaseAvailable: true,
+        discoveries: [{ id: 'knowledge-1', references: { contracts: ['rotation-event.v2'] } }],
+        leads: [],
+        skills: [],
+        handoffs: [],
+        impactNotices: [],
+      });
+      expect(context.bytes).toBeLessThanOrEqual(64 * 1024);
+    });
+
+    it('records a recipient-bound impact response without mutating transaction state', async () => {
+      const session = bindKnowledgeAuthority({ id: 'consumer-agent' });
+      const impact = knowledgeRow({
+        id: 'impact-1',
+        kind: 'impact_notice',
+        status: 'pending',
+        title: 'Contract impact',
+        summary: 'Refresh the consumer transaction.',
+        redactionClass: 'project_notice',
+        payloadJson: JSON.stringify({
+          source: { actorType: 'system', actorId: 'knowledge-1', agentSessionId: null, terminalSessionId: null },
+          tags: [],
+          sourceKnowledgeId: 'knowledge-1',
+          recipientAgentSessionIds: ['consumer-agent'],
+          requiresResponse: true,
+          responseAction: null,
+        }),
+        scopeJson: JSON.stringify({
+          visibility: 'project',
+          references: {
+            paths: [], symbols: [], contracts: ['rotation-event.v2'], runtimeSessionIds: [],
+            agentSessionIds: ['consumer-agent'], workstreamIds: [], transactionIds: ['consumer-txn'],
+          },
+          tags: [],
+        }),
+        sourceKnowledgeItemId: 'knowledge-1',
+        targetTransactionId: 'consumer-txn',
+      });
+      prisma.codeSiteAgentInboxItem.findFirst.mockResolvedValue({
+        id: 'inbox-impact-1',
+        projectId: session.projectId,
+        agentSessionId: session.id,
+        recipientUserId: session.ownerUserId,
+        eventId: 'event-impact-1',
+        documentId: null,
+        knowledgeItemId: impact.id,
+        kind: 'impact_notice',
+        requiresResponse: true,
+        status: 'pending',
+        redactedPayloadJson: JSON.stringify({ knowledgeItemId: impact.id }),
+        responseAction: null,
+        responseJson: null,
+        respondedAt: null,
+        acknowledgedAt: null,
+        createdAt: new Date(),
+        knowledgeItem: impact,
+      });
+      prisma.codeSiteKnowledgeItem.update.mockImplementation(async ({ data }) => ({ ...impact, ...data }));
+
+      const result = await respondToAgentKnowledgeInbox(
+        'acme',
+        session.id,
+        'inbox-impact-1',
+        AGENT_AUTHORITY_TOKEN,
+        { action: 'rebase_requested', reason: 'Contract advanced', evidenceRefs: ['event:source-change'] },
+      );
+      expect(result).toMatchObject({
+        response: { action: 'rebase_requested', targetStatus: 'rebasing' },
+        knowledge: { id: 'impact-1', status: 'rebasing' },
+        duplicate: false,
+      });
+      expect(prisma.codeSiteMutationTransaction.update).not.toHaveBeenCalled();
+      expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ eventType: 'impact_notice_responded', actorId: session.id }),
+      }));
+    });
+
+    it('lists project-visible knowledge for humans while excluding another owner private record', async () => {
+      prisma.codeSiteKnowledgeItem.findMany.mockResolvedValue([
+        knowledgeRow(),
+        knowledgeRow({
+          id: 'private-other',
+          createdByUserId: 'user-2',
+          redactionClass: 'owner_private',
+          scopeJson: JSON.stringify({
+            visibility: 'owner_private',
+            references: JSON.parse(knowledgeRow().scopeJson).references,
+            tags: [],
+          }),
+        }),
+      ]);
+      const items = await listProjectKnowledge('acme', 'project-1', {}, { userId: 'user-1' });
+      expect(items.map((item) => item.id)).toEqual(['knowledge-1']);
+    });
+
+    it('fills a human knowledge page past hidden rows before returning a cursor', async () => {
+      const hidden = knowledgeRow({
+        id: 'private-newest',
+        createdByUserId: 'user-2',
+        updatedAt: new Date('2026-08-22T04:03:00.000Z'),
+        redactionClass: 'owner_private',
+        scopeJson: JSON.stringify({
+          visibility: 'owner_private',
+          references: JSON.parse(knowledgeRow().scopeJson).references,
+          tags: [],
+        }),
+      });
+      const visible = knowledgeRow({
+        id: 'project-after-private',
+        updatedAt: new Date('2026-08-22T04:02:00.000Z'),
+      });
+      prisma.codeSiteKnowledgeItem.findMany
+        .mockResolvedValueOnce([hidden, visible])
+        .mockResolvedValueOnce([visible]);
+
+      const page = await listProjectKnowledgePage(
+        'acme',
+        'project-1',
+        { kind: 'discovery', limit: 1 },
+        { userId: 'user-1' },
+      );
+
+      expect(page.knowledge.map((item) => item.id)).toEqual(['project-after-private']);
+      expect(page).not.toHaveProperty('nextCursor');
+      expect(prisma.codeSiteKnowledgeItem.findMany).toHaveBeenCalledTimes(2);
+      expect(prisma.codeSiteKnowledgeItem.findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+        take: 2,
+        where: expect.objectContaining({
+          AND: expect.arrayContaining([
+            expect.objectContaining({
+              OR: expect.arrayContaining([
+                { updatedAt: { lt: hidden.updatedAt } },
+                { updatedAt: hidden.updatedAt, id: { lt: hidden.id } },
+              ]),
+            }),
+          ]),
+        }),
+      }));
+    });
+
+    it('pages project knowledge with a stable updated-at and id cursor', async () => {
+      const newest = knowledgeRow({
+        id: 'knowledge-newest',
+        updatedAt: new Date('2026-08-22T04:02:00.000Z'),
+      });
+      const older = knowledgeRow({
+        id: 'knowledge-older',
+        updatedAt: new Date('2026-08-22T04:01:00.000Z'),
+      });
+      prisma.codeSiteKnowledgeItem.findMany.mockResolvedValueOnce([newest, older]);
+
+      const firstPage = await listProjectKnowledgePage(
+        'acme',
+        'project-1',
+        { kind: 'discovery', limit: 1 },
+        { userId: 'user-1' },
+      );
+      expect(firstPage.knowledge.map((item) => item.id)).toEqual(['knowledge-newest']);
+      expect(firstPage.nextCursor).toEqual(expect.any(String));
+
+      prisma.codeSiteKnowledgeItem.findMany.mockResolvedValueOnce([older]);
+      const secondPage = await listProjectKnowledgePage(
+        'acme',
+        'project-1',
+        { kind: 'discovery', limit: 1, cursor: firstPage.nextCursor },
+        { userId: 'user-1' },
+      );
+      expect(secondPage).toEqual({ knowledge: [expect.objectContaining({ id: 'knowledge-older' })] });
+      expect(prisma.codeSiteKnowledgeItem.findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+        orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+        take: 2,
+        where: expect.objectContaining({
+          AND: expect.arrayContaining([
+            expect.objectContaining({ projectId: 'project-1' }),
+            expect.objectContaining({ OR: expect.any(Array) }),
+          ]),
+        }),
+      }));
+    });
+
+    it.each(['owner_private', 'restricted'])('does not let a project writer answer a %s question they cannot view', async (visibility) => {
+      const question = knowledgeRow({
+        id: `${visibility}-question`,
+        kind: 'agent_question',
+        status: 'open',
+        createdByUserId: 'user-2',
+        ownerUserId: 'user-2',
+        createdByAgentSessionId: 'agent-2',
+        redactionClass: visibility === 'owner_private' ? 'owner_private' : 'project_fact',
+        scopeJson: JSON.stringify({
+          visibility,
+          references: JSON.parse(knowledgeRow().scopeJson).references,
+          tags: [],
+        }),
+      });
+      prisma.codeSiteKnowledgeItem.findFirst.mockResolvedValue(question);
+
+      await expect(answerProjectQuestion(
+        'acme',
+        'project-1',
+        question.id,
+        { answer: 'Private answer' },
+        { userId: 'reviewer-1' },
+      )).rejects.toMatchObject({ status: 404, code: 'knowledge_question_not_found' });
+      expect(prisma.codeSiteKnowledgeItem.update).not.toHaveBeenCalled();
+      expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+    });
+
+    it.each(['owner_private', 'restricted'])('does not let a project writer review an inaccessible %s answer', async (visibility) => {
+      const question = knowledgeRow({
+        id: `${visibility}-answered-question`,
+        kind: 'agent_question',
+        status: 'answered',
+        createdByUserId: 'user-2',
+        ownerUserId: 'user-2',
+        createdByAgentSessionId: 'agent-2',
+        redactionClass: visibility === 'owner_private' ? 'owner_private' : 'project_fact',
+        scopeJson: JSON.stringify({
+          visibility,
+          references: JSON.parse(knowledgeRow().scopeJson).references,
+          tags: [],
+        }),
+      });
+      prisma.codeSiteKnowledgeItem.findFirst.mockResolvedValue(question);
+
+      await expect(submitProjectQuestionFeedback(
+        'acme',
+        'project-1',
+        question.id,
+        { verdict: 'useful' },
+        { userId: 'reviewer-1' },
+      )).rejects.toMatchObject({ status: 404, code: 'knowledge_question_not_found' });
+      expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+    });
+
+    it('does not let a human answerer review their own answer', async () => {
+      const question = knowledgeRow({
+        id: 'human-self-reviewed-question',
+        kind: 'agent_question',
+        status: 'answered',
+        payloadJson: JSON.stringify({ answeredByUserId: 'reviewer-1' }),
+      });
+      prisma.codeSiteKnowledgeItem.findFirst.mockResolvedValue(question);
+
+      await expect(submitProjectQuestionFeedback(
+        'acme',
+        'project-1',
+        question.id,
+        { verdict: 'useful' },
+        { userId: 'reviewer-1' },
+      )).rejects.toMatchObject({ status: 403, code: 'knowledge_feedback_self_review_forbidden' });
+      expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+    });
+
+    it('does not let an agent answerer review their own answer', async () => {
+      const session = bindKnowledgeAuthority();
+      const question = knowledgeRow({
+        id: 'agent-self-reviewed-question',
+        kind: 'agent_question',
+        status: 'answered',
+        payloadJson: JSON.stringify({ answeredByAgentSessionId: session.id }),
+      });
+      prisma.codeSiteKnowledgeItem.findFirst.mockResolvedValue(question);
+
+      await expect(submitAgentQuestionFeedback(
+        'acme',
+        session.id,
+        question.id,
+        AGENT_AUTHORITY_TOKEN,
+        { verdict: 'useful' },
+      )).rejects.toMatchObject({ status: 403, code: 'knowledge_feedback_self_review_forbidden' });
+      expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+    });
+  });
+
+  it('bounds Dojo pilot refs before writing agent sessions', async () => {
+    const result = await createAgentSession('acme', 'project-1', { userId: 'user-1' }, {
+      displayCallsign: 'PILOT-2',
+      agentProvider: 'codex',
+      agentRuntime: 'tmp-codex-cli',
+      dojoPilotLicenseRef: { ref: 'license:bad-shape' },
+      dojoProofRef: { ref: 'proof:bad-shape' },
+      dojoEvidenceRefs: ['dojo:evidence:1', 'dojo:evidence:1', 'x'.repeat(256)],
+      dojoDecisionDigest: 'x'.repeat(256),
+    });
+
+    expect(prisma.codeSiteAgentSession.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        dojoPilotLicenseRef: null,
+        dojoProofRef: null,
+        dojoEvidenceRefsJson: JSON.stringify(['dojo:evidence:1']),
+        dojoDecisionDigest: null,
+      }),
+    }));
+    expect(result).toMatchObject({
+      displayCallsign: 'PILOT-2',
+      dojoPilotLicenseRef: null,
+      dojoProofRef: null,
+      dojoEvidenceRefs: ['dojo:evidence:1'],
+      dojoDecisionDigest: null,
+    });
+  });
+
+  it('binds agent sessions, execution plans, and clearances to the owning user', async () => {
+    await expect(createAgentSession('acme', 'project-1', { userId: 'user-1' }, {
+      displayCallsign: 'PILOT-3',
+      ownerUserId: 'user-2',
+    })).rejects.toMatchObject({
+      status: 403,
+      code: 'agent_session_owner_forbidden',
+    });
+
+    await expect(createExecutionPlan('acme', 'project-1', {
+      agentSessionId: 'agent-1',
+      route: ['synthi/prisma/**'],
+    }, { userId: 'user-2' })).rejects.toMatchObject({
+      status: 403,
+      code: 'execution_plan_agent_forbidden',
+    });
+
+    await expect(requestMutationLease('acme', 'plan-1', {
+      allowedPaths: ['synthi/prisma/**'],
+    }, { userId: 'user-2' })).rejects.toMatchObject({
+      status: 403,
+      code: 'mutation_lease_agent_forbidden',
+    });
+  });
+
+  it('blocks restricted airspace clearances without executable Dojo proof', async () => {
+    const lease = await requestMutationLease('acme', 'plan-1', {
+      allowedPaths: ['synthi/prisma/**'],
+    });
+
+    expect(lease.status).toBe('blocked');
+    expect(lease.policyDecision.reasonCodes).toEqual(expect.arrayContaining([
+      'dojo_proof_required_for_restricted_airspace',
+      'dojo_proof_ref_required',
+      'dojo_license_ref_required',
+      'dojo_evidence_refs_required',
+      'dojo_implementation_not_executable',
+      'dojo_public_proof_capsule_required',
+      'dojo_public_proof_key_required',
+    ]));
+    expect(prisma.codeSiteMutationLease.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        status: 'blocked',
+        dojoProofRef: null,
+        implementationStatusJson: expect.stringContaining('executable'),
+      }),
+    }));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'clearance_requested',
+        displayCallsign: 'ATLAS-1',
+        actorType: 'agent_session',
+        actorId: 'agent-1',
+        detailsJson: expect.stringContaining('synthi/prisma/**'),
+      }),
+    }));
+  });
+
+  it('blocks restricted airspace clearances with metadata-only Dojo proof refs', async () => {
+    const lease = await requestMutationLease('acme', 'plan-1', {
+      allowedPaths: ['synthi/prisma/**'],
+      dojoProofRef: 'pcap-auth-schema',
+      dojoLicenseRef: 'schema.level_2@2026-06-25',
+      dojoEvidenceRefs: ['dojo:evidence:checkride-1'],
+      dojoLedgerCheckpointHash: 'sha256:ledger',
+      dojoDecisionDigest: 'sha256:decision',
+      implementationStatus: { executable: true, productionRuntime: false },
+    });
+
+    expect(lease.status).toBe('blocked');
+    expect(lease.dojoProofRef).toBe('pcap-auth-schema');
+    expect(lease.policyDecision.reasonCodes).toEqual(expect.arrayContaining([
+      'dojo_public_proof_verification_required',
+      'dojo_public_proof_capsule_required',
+      'dojo_public_proof_key_required',
+    ]));
+  });
+
+  it('holds restricted airspace clearances without approved governance evidence even with verified Dojo proof', async () => {
+    const lease = await requestMutationLease('acme', 'plan-1', {
+      allowedPaths: ['synthi/prisma/**'],
+      ...signedDojoProofFixture(),
+    });
+
+    expect(lease.status).toBe('holding');
+    expect(lease.dojoProofRef).toBe('pcap-auth-schema');
+    expect(lease.dojoDecisionDigest).toMatch(/^sha256:/);
+    expect(lease.policyDecision.reasonCodes).toEqual(expect.arrayContaining([
+      'dojo_clearance_proof_verified',
+      'dojo_public_proof_signature_verified',
+      'pilot_license_health_active',
+      'pilot_license_level_authorized',
+      'governance_approval_required',
+      'governance_permit_or_change_order_required',
+    ]));
+    expect(lease.lease.governancePolicy).toMatchObject({
+      required: true,
+      verified: false,
+    });
+    expect(lease.lease.towerInstruction).toContain('requires an approved work permit');
+  });
+
+  it('allows restricted airspace clearances with verified Dojo proof and an approved permit', async () => {
+    prisma.codeSitePermit.findMany.mockResolvedValueOnce([approvedPermitFixture()]);
+
+    const lease = await requestMutationLease('acme', 'plan-1', {
+      allowedPaths: ['synthi/prisma/**'],
+      ...signedDojoProofFixture(),
+    });
+
+    expect(lease.status).toBe('active');
+    expect(lease.policyDecision.reasonCodes).toEqual(expect.arrayContaining([
+      'dojo_clearance_proof_verified',
+      'dojo_public_proof_signature_verified',
+      'pilot_license_health_active',
+      'pilot_license_level_authorized',
+      'governance_clearance_evidence_verified',
+    ]));
+    expect(lease.pilotLicenseHealth).toMatchObject({
+      status: 'active',
+      level: 'IFR',
+      dojoLicenseRef: 'schema.level_2@2026-06-25',
+    });
+    const storedLease = JSON.parse(prisma.codeSiteMutationLease.create.mock.calls.at(-1)[0].data.leaseJson);
+    expect(storedLease.pilotLicenseHealth).toMatchObject({
+      status: 'active',
+      level: 'IFR',
+      dojoProofRef: 'pcap-auth-schema',
+    });
+    expect(storedLease.governancePolicy).toMatchObject({
+      required: true,
+      verified: true,
+      evidence: {
+        permits: [expect.objectContaining({ id: 'permit-approved', status: 'issued' })],
+      },
+    });
+  });
+
+  it('blocks restricted clearances when the pilot license expired from source drift', async () => {
+    const plan = executionPlanFixture(['synthi/prisma/**']);
+    plan.project.zonePolicyJson = JSON.stringify({
+      zones: [
+        { zoneKey: 'schema', class: 'B', label: 'Schema', paths: ['synthi/prisma/**'], rules: [], risk: 'high' },
+      ],
+      compiler: {
+        sourceDigest: 'sha256:source-v2',
+        policyDigest: 'sha256:policy-v2',
+      },
+    });
+    plan.agentSession = {
+      ...plan.agentSession,
+      dojoPilotLicenseRef: 'schema.level_2@2026-06-25',
+      dojoProofRef: 'pcap-auth-schema',
+      dojoEvidenceRefsJson: JSON.stringify(['dojo:evidence:checkride-1']),
+      pilotLicenseSnapshotJson: JSON.stringify({
+        level: 2,
+        repoScope: 'acme',
+        authorizedAirspace: ['synthi/prisma/**'],
+        requiredRadar: ['api_contract', 'security'],
+        expiresOn: ['source_drift'],
+        sourceDigest: 'sha256:source-v1',
+      }),
+    };
+    prisma.codeSiteExecutionPlan.findFirst.mockResolvedValue(plan);
+
+    const lease = await requestMutationLease('acme', 'plan-1', {
+      allowedPaths: ['synthi/prisma/**'],
+      ...signedDojoProofFixture(),
+    });
+
+    expect(lease.status).toBe('blocked');
+    expect(lease.policyDecision.reasonCodes).toEqual(expect.arrayContaining([
+      'pilot_license_source_drift_expired',
+      'pilot_license_expired',
+    ]));
+    expect(lease.pilotLicenseHealth).toMatchObject({
+      status: 'expired',
+      sourceDrift: {
+        expired: true,
+        sourceDigest: 'sha256:source-v1',
+        currentSourceDigest: 'sha256:source-v2',
+      },
+    });
+  });
+
+  it('allows the verified schema-first leader through restricted collision airspace', async () => {
+    prisma.codeSiteExecutionPlan.findFirst.mockResolvedValue(executionPlanFixture(['synthi/prisma/**']));
+    prisma.codeSitePermit.findMany.mockResolvedValueOnce([approvedPermitFixture()]);
+    prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([{
+      ...executionPlanFixture(['synthi/prisma/**']),
+      id: 'plan-api',
+      displayCallsign: 'API-02',
+      domain: 'backend',
+      mission: 'Implement dependent API',
+      status: 'holding',
+    }]);
+
+    const lease = await requestMutationLease('acme', 'plan-1', {
+      allowedPaths: ['synthi/prisma/**'],
+      ...signedDojoProofFixture(),
+    });
+
+    expect(lease.status).toBe('active');
+    expect(lease.policyDecision.reasonCodes).toEqual(expect.arrayContaining([
+      'schema_first_leader_clearance',
+      'dojo_clearance_proof_verified',
+      'dojo_public_proof_signature_verified',
+    ]));
+    expect(lease.policyDecision.reasonCodes).not.toContain('collision_avoidance_hold');
+    expect(lease.lease.towerInstruction).toContain('Schema-first clearance issued');
+  });
+
+  it('holds high-risk collision clearances before issuing active mutation rights', async () => {
+    prisma.codeSiteExecutionPlan.findFirst.mockResolvedValue({
+      ...executionPlanFixture(['synthi/prisma/**']),
+      displayCallsign: 'API-02',
+      domain: 'backend',
+      mission: 'Implement dependent API',
+    });
+    prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([
+      {
+        ...executionPlanFixture(['synthi/prisma/**']),
+        id: 'plan-schema-active',
+        displayCallsign: 'SCHEMA-01',
+        domain: 'schema',
+        status: 'airborne',
+      },
+    ]);
+
+    const lease = await requestMutationLease('acme', 'plan-1', {
+      allowedPaths: ['synthi/prisma/**'],
+      ...signedDojoProofFixture(),
+    });
+
+    expect(lease.status).toBe('holding');
+    expect(lease.policyDecision.decision).toBe('hold');
+    expect(lease.policyDecision.reasonCodes).toEqual(expect.arrayContaining([
+      'collision_avoidance_hold',
+      'contract_collision',
+      'schema_first_recommended',
+    ]));
+    expect(lease.lease.collisionAvoidance.risk).toEqual(expect.objectContaining({
+      risk: 'contract_collision',
+      severity: 'high',
+      conflictZone: 'synthi/prisma/**',
+      recommendedResolution: expect.objectContaining({ action: 'schema_first' }),
+    }));
+    const eventTypes = prisma.codeSiteEvent.create.mock.calls.map((call) => call[0].data.eventType);
+    expect(eventTypes).toEqual(expect.arrayContaining(['holding_pattern', 'near_miss']));
+  });
+
+  it('allows low-risk clearances without Dojo proof', async () => {
+    prisma.codeSiteExecutionPlan.findFirst.mockResolvedValue(executionPlanFixture(['docs/**']));
+
+    const lease = await requestMutationLease('acme', 'plan-docs', {
+      allowedPaths: ['docs/**'],
+    });
+
+    expect(lease.status).toBe('active');
+    expect(lease.policyDecision.reasonCodes).toContain('route_inside_clearance');
+    expect(lease.policyDecision.reasonCodes).not.toContain('dojo_proof_required_for_restricted_airspace');
+  });
+
+  it('turns mayday declarations into ground stops with suspended leases and inspector dispatch', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValue({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Signup',
+      request: 'Build signup',
+      status: 'active',
+      zonePolicyJson: JSON.stringify({
+        zones: [
+          { zoneKey: 'auth_api', class: 'A', label: 'Auth API', paths: ['api/auth/**'], rules: [], risk: 'critical' },
+          { zoneKey: 'docs', class: 'D', label: 'Docs', paths: ['docs/**'], rules: [], risk: 'low' },
+        ],
+        noFlyZones: [],
+      }),
+      controlPlanJson: JSON.stringify({ strategy: 'schema-first' }),
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+    });
+    prisma.codeSiteMutationLease.findMany.mockResolvedValue([
+      {
+        id: 'lease-api',
+        projectId: 'project-1',
+        executionPlanId: 'plan-api',
+        agentSessionId: 'agent-api',
+        displayCallsign: 'API-01',
+        status: 'active',
+        leaseJson: JSON.stringify({ allowedPaths: ['api/auth/**'] }),
+        issuedAt: new Date('2026-06-29T23:00:00.000Z'),
+        expiresAt: null,
+        revokedAt: null,
+      },
+      {
+        id: 'lease-docs',
+        projectId: 'project-1',
+        executionPlanId: 'plan-docs',
+        agentSessionId: 'agent-docs',
+        displayCallsign: 'DOCS-01',
+        status: 'active',
+        leaseJson: JSON.stringify({ allowedPaths: ['docs/**'] }),
+        issuedAt: new Date('2026-06-29T23:00:00.000Z'),
+        expiresAt: null,
+        revokedAt: null,
+      },
+    ]);
+
+    const incident = await createIncident('acme', 'project-1', {
+      category: 'mayday',
+      severity: 'critical',
+      reason: 'auth bypass detected',
+      displayCallsign: 'API-01',
+      participants: ['API-01'],
+      affectedZones: ['auth_api'],
+      evidenceRefs: ['runtime:event:mayday'],
+    });
+    const eventTypes = prisma.codeSiteEvent.create.mock.calls.map((call) => call[0].data.eventType);
+    const stopWorkBody = JSON.parse(prisma.codeSiteDocument.create.mock.calls.at(-1)[0].data.bodyJson);
+    const inspectionRun = prisma.codeSiteInspectionRun.create.mock.calls.at(-1)[0].data;
+    const inspectionSignals = JSON.parse(inspectionRun.inspectionSignalsJson);
+
+    expect(incident.category).toBe('mayday');
+    expect(incident.maydayWorkflow).toMatchObject({
+      suspendedLeases: 1,
+      inspectorRunId: 'inspection-created',
+      stopWorkDocumentId: 'doc-1',
+      humanResumeRequired: true,
+    });
+    expect(prisma.codeSiteMutationLease.update).toHaveBeenCalledTimes(1);
+    expect(prisma.codeSiteMutationLease.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'lease-api' },
+      data: { status: 'suspended' },
+    }));
+    expect(prisma.codeSitePolicyDecision.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        mutationLeaseId: 'lease-api',
+        decision: 'hold',
+        reasonCodesJson: expect.stringContaining('mayday_ground_stop'),
+      }),
+    }));
+    expect(eventTypes).toEqual(expect.arrayContaining([
+      'mayday',
+      'snapshot_taken',
+      'ground_stop',
+      'landing_requested',
+    ]));
+    expect(inspectionRun).toMatchObject({
+      displayCallsign: 'SEC-01',
+      status: 'requested',
+      changedPathsJson: JSON.stringify(['api/auth/**']),
+    });
+    expect(inspectionSignals.map((signal) => signal.key)).toEqual(expect.arrayContaining(['auth', 'security']));
+    expect(stopWorkBody.resumeGate).toMatchObject({
+      requiresHumanApproval: true,
+      status: 'blocked',
+    });
+    expect(stopWorkBody.suspendedLeaseIds).toEqual(['lease-api']);
+  });
+
+  it('requires human approval and passed inspection evidence before resuming mayday ground stops', async () => {
+    const maydayProject = {
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Signup',
+      request: 'Build signup',
+      status: 'active',
+      createdByUserId: 'user-1',
+      zonePolicyJson: JSON.stringify({ zones: [] }),
+      controlPlanJson: JSON.stringify({}),
+      members: [{
+        id: 'member-tower',
+        projectId: 'project-1',
+        workspaceSlug: 'acme',
+        userId: 'reviewer-1',
+        role: 'admin',
+        permissionsJson: JSON.stringify(['project:read', 'project:write', 'mayday:resume']),
+        participationStatus: 'enabled',
+        revokedAt: null,
+      }],
+      agentSessions: [],
+      executionPlans: [],
+      mutationLeases: [],
+      incidents: [],
+      inspectionRuns: [],
+      proofBundles: [],
+      lineProvenance: [],
+      documents: [],
+      permits: [],
+      documentReviews: [],
+      routeRevisions: [],
+      counterfactualRuns: [],
+      policyDeltas: [],
+      inboxItems: [],
+    };
+    const maydayIncident = {
+      id: 'incident-mayday-1',
+      projectId: 'project-1',
+      project: maydayProject,
+      severity: 'critical',
+      category: 'mayday',
+      participantsJson: JSON.stringify(['API-01']),
+      affectedZonesJson: JSON.stringify(['api/auth/**']),
+      evidenceRefsJson: JSON.stringify(['runtime:event:mayday']),
+      timelineEventRefsJson: JSON.stringify(['event-mayday-1', 'event-ground-stop-1']),
+      policyDeltaJson: JSON.stringify(null),
+      incidentReplayJson: JSON.stringify({
+        eventRefs: ['event-mayday-1', 'event-ground-stop-1'],
+        maydayWorkflow: {
+          suspendedLeases: [{ id: 'lease-api', displayCallsign: 'API-01', status: 'suspended' }],
+          inspectorRunId: 'inspection-mayday-1',
+          stopWorkDocumentId: 'doc-stop-work-1',
+          humanResumeRequired: true,
+          resumeGate: { status: 'blocked', requiresHumanApproval: true },
+        },
+      }),
+      replayDigest: 'sha256:mayday-replay',
+      createdAt: new Date('2026-06-29T23:05:00.000Z'),
+    };
+
+    prisma.codeSiteIncident.findFirst.mockResolvedValue(maydayIncident);
+    prisma.codeSiteDocument.findMany.mockResolvedValue([{
+      id: 'doc-stop-work-1',
+      projectId: 'project-1',
+      kind: 'stop_work',
+      status: 'open',
+      title: 'Ground stop: auth bypass detected',
+      bodyJson: JSON.stringify({
+        incidentId: 'incident-mayday-1',
+        suspendedLeaseIds: ['lease-api'],
+        inspectorRunId: 'inspection-mayday-1',
+        resumeGate: { status: 'blocked', requiresHumanApproval: true },
+      }),
+      blocking: true,
+      createdAt: new Date('2026-06-29T23:05:00.000Z'),
+      resolvedAt: null,
+    }]);
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([{
+      id: 'inspection-mayday-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-api',
+      displayCallsign: 'SEC-01',
+      status: 'passed',
+      changedPathsJson: JSON.stringify(['api/auth/**']),
+      inspectionSignalsJson: JSON.stringify([{ key: 'security', status: 'passed' }]),
+      evidenceRefsJson: JSON.stringify(['runtime:event:inspection-mayday-1']),
+      requestedAt: new Date('2026-06-29T23:06:00.000Z'),
+      completedAt: new Date('2026-06-29T23:07:00.000Z'),
+    }]);
+    prisma.codeSiteMutationLease.findMany.mockResolvedValue([{
+      id: 'lease-api',
+      projectId: 'project-1',
+      executionPlanId: 'plan-api',
+      agentSessionId: 'agent-api',
+      displayCallsign: 'API-01',
+      status: 'suspended',
+      leaseJson: JSON.stringify({ allowedPaths: ['api/auth/**'] }),
+      issuedAt: new Date('2026-06-29T23:00:00.000Z'),
+      expiresAt: null,
+      revokedAt: null,
+    }]);
+
+    await expect(resumeMaydayIncident('acme', 'incident-mayday-1', {
+      approved: false,
+      rationale: 'Missing explicit tower approval',
+      inspectionRunIds: ['inspection-mayday-1'],
+    }, { userId: 'reviewer-1' })).rejects.toMatchObject({
+      status: 400,
+      code: 'mayday_resume_human_approval_required',
+    });
+
+    const result = await resumeMaydayIncident('acme', 'incident-mayday-1', {
+      approved: true,
+      rationale: 'SEC-01 passed inspection and tower approves resume.',
+      inspectionRunIds: ['inspection-mayday-1'],
+      evidenceRefs: ['tower:human-resume-approval'],
+    }, { userId: 'reviewer-1' });
+
+    expect(result.ok).toBe(true);
+    expect(result.resumedLeases).toHaveLength(1);
+    expect(result.resumedLeases[0]).toMatchObject({ id: 'lease-api', status: 'active' });
+    expect(result.stopWorkDocument).toMatchObject({
+      id: 'doc-stop-work-1',
+      status: 'resolved',
+      blocking: false,
+    });
+    expect(result.stopWorkDocument.body.resumeGate).toMatchObject({
+      status: 'approved',
+      approvedByUserId: 'reviewer-1',
+      rationale: 'SEC-01 passed inspection and tower approves resume.',
+      inspectionRunIds: ['inspection-mayday-1'],
+      resumedLeaseIds: ['lease-api'],
+    });
+    expect(result.event).toMatchObject({
+      eventType: 'mayday_resumed',
+      actorType: 'human',
+      actorId: 'reviewer-1',
+    });
+    expect(result.event.evidenceRefs).toEqual(expect.arrayContaining([
+      'tower:human-resume-approval',
+      'runtime:event:inspection-mayday-1',
+      'codesite:incident:incident-mayday-1',
+      'codesite:document:doc-stop-work-1',
+    ]));
+    expect(prisma.codeSitePolicyDecision.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        mutationLeaseId: 'lease-api',
+        decision: 'allow',
+        reasonCodesJson: expect.stringContaining('human_resume_approved'),
+      }),
+    }));
+    expect(prisma.codeSiteIncident.update).toHaveBeenLastCalledWith(expect.objectContaining({
+      where: { id: 'incident-mayday-1' },
+      data: expect.objectContaining({
+        incidentReplayJson: expect.stringContaining('mayday_resumed'),
+      }),
+    }));
+  });
+
+  it('closes near-miss incidents as causal black-box replay packets', async () => {
+    prisma.codeSiteEvent.findMany.mockResolvedValue([
+      {
+        id: 'evt-open',
+        projectId: 'project-1',
+        mutationLeaseId: 'lease-1',
+        eventType: 'transaction_opened',
+        displayCallsign: 'ATLAS-1',
+        actorType: 'agent_session',
+        actorId: 'agent-1',
+        detailsJson: JSON.stringify({ transactionId: 'txn-1', baseSnapshot: 'repo@sha256:base' }),
+        evidenceRefsJson: JSON.stringify(['ev:snapshot']),
+        logicalTime: 1,
+        createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      },
+      {
+        id: 'evt-clearance',
+        projectId: 'project-1',
+        mutationLeaseId: 'lease-1',
+        eventType: 'clearance_issued',
+        displayCallsign: 'ATLAS-1',
+        actorType: 'policy_engine',
+        actorId: 'decision-1',
+        detailsJson: JSON.stringify({ mutationLeaseId: 'lease-1', policyDecisionId: 'decision-1' }),
+        evidenceRefsJson: JSON.stringify(['ev:clearance']),
+        logicalTime: 2,
+        createdAt: new Date('2026-06-29T23:01:00.000Z'),
+      },
+      {
+        id: 'evt-attempt',
+        projectId: 'project-1',
+        mutationLeaseId: 'lease-1',
+        eventType: 'write_attempted',
+        displayCallsign: 'ATLAS-1',
+        actorType: 'transaction',
+        actorId: 'txn-1',
+        detailsJson: JSON.stringify({ transactionId: 'txn-1', path: 'synthi/prisma/schema.prisma', tool: 'file_write' }),
+        evidenceRefsJson: JSON.stringify(['ev:attempt']),
+        logicalTime: 3,
+        createdAt: new Date('2026-06-29T23:02:00.000Z'),
+      },
+      {
+        id: 'evt-denied',
+        projectId: 'project-1',
+        mutationLeaseId: 'lease-1',
+        eventType: 'write_denied',
+        displayCallsign: 'ATLAS-1',
+        actorType: 'policy_engine',
+        actorId: 'decision-2',
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-1',
+          path: 'synthi/prisma/schema.prisma',
+          policyDecisionId: 'decision-2',
+          reasonCodes: ['entered_no_fly_zone'],
+        }),
+        evidenceRefsJson: JSON.stringify(['ev:denied']),
+        logicalTime: 4,
+        createdAt: new Date('2026-06-29T23:03:00.000Z'),
+      },
+      {
+        id: 'evt-inspection',
+        projectId: 'project-1',
+        mutationLeaseId: null,
+        eventType: 'inspection_result',
+        displayCallsign: 'ATLAS-1',
+        actorType: 'inspection_run',
+        actorId: 'inspection-1',
+        detailsJson: JSON.stringify({ changedPaths: ['synthi/prisma/schema.prisma'], inspectionEvidenceRefs: ['ev:inspection'] }),
+        evidenceRefsJson: JSON.stringify(['ev:inspection']),
+        logicalTime: 5,
+        createdAt: new Date('2026-06-29T23:04:00.000Z'),
+      },
+      {
+        id: 'evt-near',
+        projectId: 'project-1',
+        mutationLeaseId: 'lease-1',
+        eventType: 'near_miss',
+        displayCallsign: 'ATLAS-1',
+        actorType: 'policy_engine',
+        actorId: 'decision-3',
+        detailsJson: JSON.stringify({ affectedZones: ['synthi/prisma/**'], prevented: true }),
+        evidenceRefsJson: JSON.stringify(['ev:near-miss']),
+        logicalTime: 6,
+        createdAt: new Date('2026-06-29T23:05:00.000Z'),
+      },
+    ]);
+
+    const incident = await createIncident('acme', 'project-1', {
+      category: 'near_miss',
+      severity: 'warning',
+      summary: 'Schema write prevented before landing.',
+      displayCallsign: 'ATLAS-1',
+      participants: ['ATLAS-1'],
+      affectedZones: ['synthi/prisma/**'],
+      timelineEventRefs: ['evt-open', 'evt-clearance', 'evt-attempt', 'evt-denied', 'evt-inspection', 'evt-near'],
+      evidenceRefs: ['collision:evidence'],
+      policyDelta: { rule: 'schema_first_for_auth' },
+    });
+    const replay = incident.incidentReplay;
+    const replayTypes = replay.causalEvents.map((event) => event.type);
+
+    expect(incident.category).toBe('near_miss');
+    expect(replay.schemaVersion).toBe('synthi.codesite.incidentReplay.v1');
+    expect(replayTypes).toEqual(expect.arrayContaining([
+      'transaction.opened',
+      'clearance.issued',
+      'write.attempted',
+      'write.denied',
+      'inspection.result',
+      'near_miss.detected',
+      'policy_delta.proposed',
+    ]));
+    expect(replay.eventRefs).toEqual(expect.arrayContaining(['evt-open', 'evt-denied', 'evt-near']));
+    expect(replay.evidenceRefs).toEqual(expect.arrayContaining(['collision:evidence', 'ev:denied', 'ev:inspection']));
+    expect(replay.routeContext.affectedZones).toEqual(['synthi/prisma/**']);
+    expect(replay.completeness.totalEvents).toBeGreaterThanOrEqual(7);
+    expect(replay.completeness).toMatchObject({
+      presentEventTypes: expect.arrayContaining(['write.denied', 'near_miss.detected']),
+      missingEventTypes: expect.arrayContaining(['shadow.run']),
+    });
+    expect(incident.timelineEventRefs).toEqual(expect.arrayContaining(['evt-open', 'evt-denied', 'evt-near']));
+  });
+
+  it('turns near-miss incidents into governed deltas and appends later manual rewrites to the counterfactual run', async () => {
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+    prisma.codeSiteCounterfactualRun.findMany.mockResolvedValueOnce([{
+      id: 'cfr-signup-1',
+      projectId: 'project-1',
+      shadowJobRef: 'shadow-job-signup-1',
+      laterManualEditsJson: JSON.stringify([]),
+    }]);
+
+    const incident = await createIncident('acme', 'project-1', {
+      category: 'near_miss',
+      severity: 'high',
+      summary: 'Signup contract drift required a manual generated-client rewrite.',
+      displayCallsign: 'UI-02',
+      participants: ['UI-02', 'SCHEMA-01'],
+      affectedZones: ['packages/schemas/**', 'app/generated/**'],
+      counterfactualRunId: 'cfr-signup-1',
+      evidenceRefs: ['codesite:counterfactual-run:cfr-signup-1', 'runtime:event:signup-drift'],
+      laterManualEdits: [{
+        path: 'app/generated/auth-client.ts',
+        reason: 'manual rewrite after schema drift',
+      }],
+    });
+
+    const deltaCreate = prisma.codeSitePolicyDelta.create.mock.calls.at(-1)[0].data;
+    expect(JSON.parse(deltaCreate.learnedFromIncidentsJson)).toContain('incident-created');
+    expect(JSON.parse(deltaCreate.ruleCandidateJson)).toMatchObject({
+      rule: 'near_miss_replay_requires_airspace_rule',
+    });
+    expect(deltaCreate.promotionState).toBe('proposed');
+    expect(JSON.parse(deltaCreate.replayRefsJson)).toEqual(expect.arrayContaining([
+      'incident:incident-created',
+      'codesite:incident:incident-created',
+      'runtime:event:signup-drift',
+    ]));
+    const manualEditUpdate = prisma.codeSiteCounterfactualRun.update.mock.calls.at(-1)[0];
+    const manualEdits = JSON.parse(manualEditUpdate.data.laterManualEditsJson);
+    expect(manualEditUpdate.where).toEqual({ id: 'cfr-signup-1' });
+    expect(manualEdits[0]).toMatchObject({
+      path: 'app/generated/auth-client.ts',
+      incidentId: 'incident-created',
+      incidentSeverity: 'high',
+      policyDeltaId: 'delta-created',
+    });
+    expect(incident.policyDelta).toMatchObject({
+      id: 'delta-created',
+      promotionState: 'proposed',
+    });
+    expect(incident.incidentReplay.counterfactualManualEditLinks).toMatchObject({
+      linkedRunIds: ['cfr-signup-1'],
+      manualEditCount: 1,
+    });
+  });
+
+  it('does not mark a transaction stale because of its own write event', async () => {
+    prisma.codeSiteEvent.findMany.mockResolvedValue([
+      {
+        id: 'event-own-write',
+        eventType: 'write_allowed',
+        actorId: 'txn-1',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:01:00.000Z'),
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-1',
+          path: 'synthi/prisma/schema.prisma',
+          lineProvenance: [{
+            lineAnchor: 'synthi/prisma/schema.prisma#L12',
+            startLine: 12,
+            endLine: 15,
+            evidenceRefs: ['hunk:evidence'],
+            processAncestry: ['mcp:synthi_codesite_apply_patch'],
+            promptSummary: 'Add auth schema field',
+          }],
+          evidenceRefs: ['write:evidence'],
+        }),
+      },
+    ]);
+
+    const result = await validateTransaction('acme', 'txn-1');
+
+    expect(result.decision.ok).toBe(true);
+    expect(result.decision.reasonCodes).toContain('serializable_validation_passed');
+    expect(result.decision.reasonCodes).not.toContain('stale_read_detected');
+    expect(prisma.codeSiteMutationTransaction.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'txn-1' },
+      data: expect.objectContaining({ status: 'validated' }),
+    }));
+  });
+
+  it('blocks serializable validation when repo read snapshot evidence is skipped', async () => {
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({
+      ...transactionFixture(),
+      readSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+      observedReadSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+      baseSnapshotEvidenceJson: null,
+    });
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+
+    const result = await validateTransaction('acme', 'txn-1');
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toEqual(expect.arrayContaining([
+      'repo_snapshot_required_for_serializable',
+      'repo_snapshot_read_set_coverage_required',
+      'repo_snapshot_repo_wide_evidence_required',
+    ]));
+    expect(result.decision.repoSnapshot.missingReadSet).toEqual(['synthi/prisma/schema.prisma']);
+    expect(prisma.codeSiteMutationTransaction.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'txn-1' },
+      data: expect.objectContaining({ status: 'blocked' }),
+    }));
+  });
+
+  it('blocks serializable validation when snapshot evidence misses observed or semantic reads', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-control-snapshot-coverage-'));
+    await fs.mkdir(path.join(root, 'synthi', 'prisma'), { recursive: true });
+    await fs.writeFile(path.join(root, 'synthi', 'prisma', 'schema.prisma'), 'model User { id String @id }\n', 'utf8');
+    const snapshot = await buildReadSnapshotEvidence(['synthi/prisma/schema.prisma'], { repoRoot: root });
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({
+      ...transactionFixture(),
+      baseSnapshot: snapshot.snapshotDigest,
+      baseSnapshotEvidenceJson: JSON.stringify(snapshot),
+      readSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+      observedReadSetJson: JSON.stringify(['synthi/prisma/schema.prisma', 'openapi/auth.yaml']),
+      semanticDependencyRefsJson: JSON.stringify([{ path: 'packages/schemas/**' }]),
+    });
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+
+    const result = await validateTransaction('acme', 'txn-1');
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toContain('repo_snapshot_read_set_coverage_required');
+    expect(result.decision.reasonCodes).toContain('repo_snapshot_repo_wide_evidence_required');
+    expect(result.decision.repoSnapshot.reasonCodes).toContain('repo_snapshot_read_set_coverage_required');
+    expect(result.decision.repoSnapshot.missingReadSet).toEqual([
+      'openapi/auth.yaml',
+      'packages/schemas/**',
+    ]);
+  });
+
+  it('records CodeSiteFS read observations into the observed read set and event log', async () => {
+    const result = await recordTransactionRead('acme', 'txn-1', {
+      path: 'openapi/auth.yaml',
+      tool: 'file_read',
+      evidenceRefs: ['proof:read-observed'],
+      processAncestry: ['codex:test-read'],
+      codesiteFsEvent: {
+        type: 'read_observed',
+        path: 'openapi/auth.yaml',
+        tool: 'file_read',
+        evidence_refs: ['codesitefs:read:openapi-auth'],
+        details: {
+          process_ancestry: ['bash', 'codex-cli'],
+        },
+      },
+    });
+
+    expect(result.readSet).toEqual(expect.arrayContaining(['openapi/auth.yaml']));
+    expect(result.observedReadSet).toEqual(expect.arrayContaining(['openapi/auth.yaml']));
+    expect(prisma.codeSiteMutationTransaction.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'txn-1' },
+      data: expect.objectContaining({
+        readSetJson: expect.stringContaining('openapi/auth.yaml'),
+        observedReadSetJson: expect.stringContaining('openapi/auth.yaml'),
+      }),
+    }));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'read_observed',
+        actorType: 'codesitefs',
+        evidenceRefsJson: JSON.stringify(['proof:read-observed', 'codesitefs:read:openapi-auth']),
+        detailsJson: expect.stringContaining('codesiteFsEvent'),
+      }),
+    }));
+  });
+
+  it('detects stale reads through route overlap and semantic dependency refs', async () => {
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({
+      ...transactionFixture(),
+      readSetJson: JSON.stringify(['packages/schemas/**']),
+      observedReadSetJson: JSON.stringify(['packages/schemas/auth/signup.ts']),
+      semanticDependencyRefsJson: JSON.stringify([{ path: 'openapi/**' }]),
+    });
+    prisma.codeSiteEvent.findMany.mockResolvedValue([
+      {
+        id: 'event-schema-write',
+        eventType: 'write_allowed',
+        actorId: 'txn-other',
+        displayCallsign: 'BETA-2',
+        createdAt: new Date('2026-06-29T23:02:00.000Z'),
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-other',
+          path: 'packages/schemas/auth/signup.ts',
+        }),
+      },
+      {
+        id: 'event-openapi-commit',
+        eventType: 'transaction_committed',
+        actorId: 'txn-openapi',
+        displayCallsign: 'GAMMA-3',
+        createdAt: new Date('2026-06-29T23:03:00.000Z'),
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-openapi',
+          writeSet: ['openapi/auth.yaml'],
+        }),
+      },
+    ]);
+
+    const result = await validateTransaction('acme', 'txn-1');
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toContain('stale_read_detected');
+    expect(result.decision.staleReads).toEqual(expect.arrayContaining([
+      expect.objectContaining({ eventId: 'event-schema-write' }),
+      expect.objectContaining({ eventId: 'event-openapi-commit' }),
+    ]));
+    expect(prisma.codeSiteMutationTransaction.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'txn-1' },
+      data: expect.objectContaining({ status: 'blocked' }),
+    }));
+  });
+
+  it('invalidates versioned semantic assumptions when a write changes the depended contract', async () => {
+    const activeAssumption = {
+      id: 'asm-signup-v1',
+      projectId: 'project-1',
+      ownerSessionId: 'agent-2',
+      displayCallsign: 'CLAUDE-17',
+      assumptionKey: 'auth.signup.schema.v1',
+      dependsOnJson: JSON.stringify([{ ref: 'auth.signup.schema', version: 'v1' }]),
+      usedByJson: JSON.stringify(['components/auth/SignupForm.tsx']),
+      status: 'active',
+      invalidatedBy: null,
+      invalidatedAt: null,
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+    };
+    prisma.codeSiteAssumptionLease.findMany.mockResolvedValue([activeAssumption]);
+    prisma.codeSiteAssumptionLease.update.mockImplementation(async ({ data }) => ({
+      ...activeAssumption,
+      ...data,
+    }));
+    prisma.codeSiteAgentSession.findMany.mockResolvedValue([{
+      id: 'agent-2',
+      projectId: 'project-1',
+      ownerUserId: 'user-2',
+      displayCallsign: 'CLAUDE-17',
+      agentProvider: 'any-agent-provider',
+      status: 'attached',
+      endedAt: null,
+      subscriptionsJson: '[]',
+    }]);
+    prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([{
+      id: 'txn-consumer',
+      projectId: 'project-1',
+      agentSessionId: 'agent-2',
+      status: 'open',
+      assumptionRefsJson: JSON.stringify(['asm-signup-v1']),
+      readSetJson: JSON.stringify(['components/auth/SignupForm.tsx']),
+      observedReadSetJson: '[]',
+      writeSetJson: '[]',
+      observedWriteSetJson: '[]',
+      semanticDependencyRefsJson: JSON.stringify(['contract:auth.signup.schema']),
+    }]);
+
+    const result = await recordTransactionWrite('acme', 'txn-1', {
+      path: 'synthi/prisma/schema.prisma',
+      semanticRefs: [{ ref: 'auth.signup.schema', version: 'v2' }],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.invalidatedAssumptions).toEqual([
+      expect.objectContaining({
+        id: 'asm-signup-v1',
+        status: 'invalidated',
+        invalidatedBy: 'ATLAS-1',
+      }),
+    ]);
+    expect(prisma.codeSiteAssumptionLease.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'asm-signup-v1' },
+      data: expect.objectContaining({
+        status: 'invalidated',
+        invalidatedBy: 'ATLAS-1',
+      }),
+    }));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'assumption_invalidated',
+        detailsJson: expect.stringContaining('auth.signup.schema'),
+      }),
+    }));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'impact_notice_created',
+        detailsJson: expect.stringContaining('txn-consumer'),
+      }),
+    }));
+    expect(prisma.codeSiteAgentInboxItem.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        agentSessionId: 'agent-2',
+        recipientUserId: 'user-2',
+        kind: 'impact_notice',
+        requiresResponse: true,
+      }),
+    }));
+    expect(prisma.codeSiteKnowledgeItem.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not invalidate an assumption when writing a declared consumer path', async () => {
+    const activeAssumption = {
+      id: 'asm-consumer',
+      projectId: 'project-1',
+      ownerSessionId: 'agent-1',
+      displayCallsign: 'ATLAS-1',
+      assumptionKey: 'auth.signup.schema.v2',
+      dependsOnJson: JSON.stringify([{ ref: 'auth.signup.schema', version: 'v2' }]),
+      usedByJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+      status: 'active',
+      invalidatedBy: null,
+      invalidatedAt: null,
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+    };
+    prisma.codeSiteAssumptionLease.findMany.mockResolvedValue([activeAssumption]);
+
+    const result = await recordTransactionWrite('acme', 'txn-1', {
+      path: 'synthi/prisma/schema.prisma',
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.invalidatedAssumptions).toEqual([]);
+    expect(prisma.codeSiteAssumptionLease.update).not.toHaveBeenCalled();
+    expect(prisma.codeSiteEvent.create).not.toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'assumption_invalidated',
+      }),
+    }));
+  });
+
+  it('blocks further writes when the transaction has invalidated assumptions', async () => {
+    const staleAssumption = {
+      id: 'asm-stale',
+      projectId: 'project-1',
+      ownerSessionId: 'agent-1',
+      displayCallsign: 'ATLAS-1',
+      assumptionKey: 'auth.signup.schema.v1',
+      dependsOnJson: JSON.stringify([{ ref: 'auth.signup.schema', version: 'v1' }]),
+      usedByJson: JSON.stringify(['components/auth/SignupForm.tsx']),
+      status: 'invalidated',
+      invalidatedBy: 'SCHEMA-01',
+      invalidatedAt: new Date('2026-06-29T23:03:00.000Z'),
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+    };
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({
+      ...transactionFixture(),
+      assumptionRefsJson: JSON.stringify(['asm-stale']),
+    });
+    prisma.codeSiteAssumptionLease.findMany.mockResolvedValue([staleAssumption]);
+
+    const result = await recordTransactionWrite('acme', 'txn-1', {
+      path: 'synthi/prisma/schema.prisma',
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.policyDecision.decision).toBe('block');
+    expect(result.policyDecision.reasonCodes).toEqual(expect.arrayContaining([
+      'assumption_invalidated_write_blocked',
+      'rebase_required',
+    ]));
+    expect(prisma.codeSiteMutationTransaction.update).not.toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        observedWriteSetJson: expect.any(String),
+      }),
+    }));
+  });
+
+  it('rejects write recording after a transaction is no longer open', async () => {
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({
+      ...transactionFixture(),
+      status: 'validated',
+      closedAt: new Date('2026-06-29T23:04:00.000Z'),
+    });
+
+    await expect(recordTransactionWrite('acme', 'txn-1', {
+      path: 'synthi/prisma/schema.prisma',
+    })).rejects.toMatchObject({
+      code: 'transaction_not_open',
+      status: 400,
+      detail: expect.objectContaining({
+        transactionId: 'txn-1',
+        status: 'validated',
+      }),
+    });
+    expect(prisma.codeSiteMutationTransaction.update).not.toHaveBeenCalled();
+    expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('records transaction-scoped quarantine lifecycle events', async () => {
+    const event = await recordTransactionQuarantineEvent('acme', 'txn-1', {
+      eventType: 'quarantine_replayed',
+      quarantineId: 'qtn-1',
+      paths: ['docs/review.md'],
+      evidenceRefs: ['codesitefs:quarantine:sha256:evidence'],
+      details: { replayableChangeCount: 1 },
+    });
+
+    expect(event.eventType).toBe('quarantine_replayed');
+    expect(event.actorType).toBe('codesitefs');
+    expect(event.actorId).toBe('qtn-1');
+    expect(event.mutationLeaseId).toBe('lease-1');
+    expect(event.evidenceRefs).toEqual(['codesitefs:quarantine:sha256:evidence']);
+    expect(event.details).toEqual(expect.objectContaining({
+      transactionId: 'txn-1',
+      quarantineId: 'qtn-1',
+      paths: ['docs/review.md'],
+      replayableChangeCount: 1,
+    }));
+  });
+
+  it('rejects unsupported quarantine lifecycle event types', async () => {
+    await expect(recordTransactionQuarantineEvent('acme', 'txn-1', {
+      eventType: 'write_allowed',
+      quarantineId: 'qtn-1',
+    })).rejects.toMatchObject({
+      code: 'invalid_quarantine_event_type',
+      status: 400,
+    });
+    expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects transaction operations from a non-owner workspace actor', async () => {
+    await expect(recordTransactionWrite('acme', 'txn-1', {
+      path: 'synthi/prisma/schema.prisma',
+    }, {
+      userId: 'user-2',
+      email: 'other@example.test',
+    })).rejects.toMatchObject({
+      code: 'transaction_actor_mismatch',
+      status: 403,
+      detail: expect.objectContaining({
+        transactionId: 'txn-1',
+        agentSessionId: 'agent-1',
+        actorUserId: 'user-2',
+      }),
+    });
+    expect(prisma.codeSiteMutationTransaction.update).not.toHaveBeenCalled();
+    expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects transaction opening from a non-owner workspace actor', async () => {
+    await expect(openTransaction('acme', 'lease-1', {}, {
+      userId: 'user-2',
+      email: 'other@example.test',
+    })).rejects.toMatchObject({
+      code: 'mutation_lease_actor_mismatch',
+      status: 403,
+      detail: expect.objectContaining({
+        mutationLeaseId: 'lease-1',
+        agentSessionId: 'agent-1',
+        actorUserId: 'user-2',
+      }),
+    });
+    expect(prisma.codeSiteMutationTransaction.create).not.toHaveBeenCalled();
+    expect(prisma.codeSiteMutationTransaction.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-serializable transaction isolation requests', async () => {
+    await expect(openTransaction('acme', 'lease-1', {
+      isolation: 'read_committed',
+    })).rejects.toMatchObject({
+      code: 'unsupported_transaction_isolation',
+      status: 400,
+      detail: {
+        requestedIsolation: 'read_committed',
+        supportedIsolation: 'serializable',
+      },
+    });
+    expect(prisma.codeSiteMutationTransaction.create).not.toHaveBeenCalled();
+  });
+
+  it.each(['', false, 0])('rejects invalid explicit transaction isolation value %j', async (isolation) => {
+    await expect(openTransaction('acme', 'lease-1', {
+      isolation,
+    })).rejects.toMatchObject({
+      code: 'unsupported_transaction_isolation',
+      status: 400,
+      detail: {
+        requestedIsolation: isolation,
+        supportedIsolation: 'serializable',
+      },
+    });
+    expect(prisma.codeSiteMutationTransaction.create).not.toHaveBeenCalled();
+  });
+
+  it('records a snapshot event when a serializable transaction opens with read snapshot evidence', async () => {
+    const snapshot = {
+      schemaVersion: 'synthi.codesite.readSnapshotEvidence.v1',
+      status: 'recorded',
+      readSet: ['synthi/prisma/schema-contract-read.txt'],
+      fileDigests: [{ path: 'synthi/prisma/schema-contract-read.txt', digest: 'sha256:read-file', size: 32, exists: true }],
+      missingPaths: [],
+      skippedPaths: [],
+      truncated: false,
+      snapshotDigest: 'sha256:snapshot',
+      evidenceDigest: 'sha256:snapshot-evidence',
+    };
+    prisma.codeSiteMutationTransaction.create.mockImplementationOnce(async ({ data }) => ({
+      id: 'txn-snapshot',
+      openedAt: new Date('2026-06-29T23:04:00.000Z'),
+      closedAt: null,
+      proofBundleDigest: null,
+      ...data,
+    }));
+
+    const transaction = await openTransaction('acme', 'lease-1', {
+      baseSnapshot: snapshot.snapshotDigest,
+      baseSnapshotEvidence: snapshot,
+      readSet: ['synthi/prisma/schema-contract-read.txt'],
+      writeSet: ['synthi/prisma/schema.prisma'],
+    });
+
+    expect(transaction.id).toBe('txn-snapshot');
+    const events = prisma.codeSiteEvent.create.mock.calls.map((call) => call[0].data);
+    expect(events.map((event) => event.eventType)).toEqual(expect.arrayContaining([
+      'transaction_opened',
+      'snapshot_taken',
+    ]));
+    const snapshotEvent = events.find((event) => event.eventType === 'snapshot_taken');
+    expect(snapshotEvent).toMatchObject({
+      mutationLeaseId: 'lease-1',
+      displayCallsign: 'ATLAS-1',
+      actorType: 'transaction',
+      actorId: 'txn-snapshot',
+      evidenceRefsJson: JSON.stringify(['codesite:read-snapshot:sha256:snapshot-evidence']),
+    });
+    expect(JSON.parse(snapshotEvent.detailsJson)).toMatchObject({
+      transactionId: 'txn-snapshot',
+      snapshotDigest: 'sha256:snapshot',
+      evidenceDigest: 'sha256:snapshot-evidence',
+      status: 'recorded',
+      readSet: ['synthi/prisma/schema-contract-read.txt'],
+      fileCount: 1,
+      reason: 'serializable_transaction_open',
+    });
+  });
+
+  it('opens serializable transactions with repo-wide snapshot evidence and semantic dependency coverage', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-control-repo-wide-open-'));
+    await fs.mkdir(path.join(root, 'packages', 'schemas'), { recursive: true });
+    await fs.mkdir(path.join(root, 'openapi'), { recursive: true });
+    await fs.writeFile(path.join(root, 'packages', 'schemas', 'auth.ts'), 'export const version = 1;\n', 'utf8');
+    await fs.writeFile(path.join(root, 'openapi', 'auth.yaml'), 'openapi: 3.1.0\n', 'utf8');
+    prisma.codeSiteMutationTransaction.create.mockImplementationOnce(async ({ data }) => ({
+      id: 'txn-repo-wide',
+      openedAt: new Date('2026-06-29T23:04:00.000Z'),
+      closedAt: null,
+      proofBundleDigest: null,
+      ...data,
+    }));
+
+    const transaction = await openTransaction('acme', 'lease-1', {
+      readSet: ['packages/schemas/auth.ts'],
+      semanticDependencyRefs: [{ path: 'openapi/auth.yaml' }],
+      writeSet: ['synthi/prisma/schema.prisma'],
+      repoRoot: root,
+    });
+
+    expect(transaction.id).toBe('txn-repo-wide');
+    expect(transaction.baseSnapshotEvidence).toMatchObject({
+      scope: 'repo_wide',
+      status: 'recorded',
+      repoManifestDigest: expect.stringMatching(/^sha256:/),
+    });
+    expect(transaction.baseSnapshotEvidence.readSet).toEqual(expect.arrayContaining([
+      'packages/schemas/auth.ts',
+      'openapi/auth.yaml',
+    ]));
+  });
+
+  it('blocks serializable validation when the recorded repo read snapshot drifts', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-control-snapshot-'));
+    await fs.mkdir(path.join(root, 'packages', 'schemas'), { recursive: true });
+    await fs.writeFile(path.join(root, 'packages', 'schemas', 'auth.ts'), 'export const version = 1;\n', 'utf8');
+    const snapshot = await buildReadSnapshotEvidence(['packages/schemas/auth.ts'], { repoRoot: root });
+
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({
+      ...transactionFixture(),
+      baseSnapshot: snapshot.snapshotDigest,
+      baseSnapshotEvidenceJson: JSON.stringify(snapshot),
+      readSetJson: JSON.stringify(['packages/schemas/auth.ts']),
+      writeSetJson: JSON.stringify(['components/auth/SignupForm.tsx']),
+      observedWriteSetJson: JSON.stringify([]),
+      mutationLease: {
+        ...transactionFixture().mutationLease,
+        leaseJson: JSON.stringify({
+          allowedPaths: ['components/auth/**'],
+          blockedPaths: [],
+          allowedTools: ['file_write'],
+          requiredRadar: ['typecheck', 'tests'],
+        }),
+      },
+    });
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+    await fs.writeFile(path.join(root, 'packages', 'schemas', 'auth.ts'), 'export const version = 2;\n', 'utf8');
+
+    const result = await validateTransaction('acme', 'txn-1');
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toContain('repo_snapshot_drift_detected');
+    expect(result.decision.repoSnapshot.driftedPaths).toEqual([
+      expect.objectContaining({ path: 'packages/schemas/auth.ts' }),
+    ]);
+    expect(prisma.codeSiteMutationTransaction.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'txn-1' },
+      data: expect.objectContaining({ status: 'blocked' }),
+    }));
+  });
+
+  it('blocks serializable validation on repo-wide raw drift without CodeSite events', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-control-repo-wide-drift-'));
+    await fs.mkdir(path.join(root, 'packages', 'schemas'), { recursive: true });
+    await fs.writeFile(path.join(root, 'packages', 'schemas', 'auth.ts'), 'export const version = 1;\n', 'utf8');
+    const snapshot = await buildReadSnapshotEvidence(['packages/schemas/auth.ts'], {
+      repoRoot: root,
+      scope: 'repo_wide',
+    });
+
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({
+      ...transactionFixture(),
+      baseSnapshot: snapshot.snapshotDigest,
+      baseSnapshotEvidenceJson: JSON.stringify(snapshot),
+      readSetJson: JSON.stringify(['packages/schemas/auth.ts']),
+      observedReadSetJson: JSON.stringify([]),
+      semanticDependencyRefsJson: JSON.stringify([]),
+      writeSetJson: JSON.stringify([]),
+      observedWriteSetJson: JSON.stringify([]),
+    });
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+    await fs.writeFile(path.join(root, 'README.md'), 'raw filesystem drift outside read set\n', 'utf8');
+
+    const result = await validateTransaction('acme', 'txn-1');
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toEqual(expect.arrayContaining([
+      'repo_snapshot_drift_detected',
+      'repo_snapshot_repo_manifest_drift_detected',
+    ]));
+    expect(result.decision.staleReads).toEqual([]);
+  });
+
+  it('allows declared write-set changes while preserving repo-wide raw drift detection', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-control-repo-wide-write-set-'));
+    await fs.mkdir(path.join(root, 'packages', 'schemas'), { recursive: true });
+    await fs.mkdir(path.join(root, 'synthi', 'prisma'), { recursive: true });
+    await fs.writeFile(path.join(root, 'packages', 'schemas', 'auth.ts'), 'export const version = 1;\n', 'utf8');
+    await fs.writeFile(path.join(root, 'synthi', 'prisma', 'schema.prisma'), 'model User { id String @id }\n', 'utf8');
+    const snapshot = await buildReadSnapshotEvidence(['packages/schemas/auth.ts'], {
+      repoRoot: root,
+      scope: 'repo_wide',
+      excludePaths: ['synthi/prisma/schema.prisma'],
+    });
+    const transaction = {
+      ...transactionFixture(),
+      baseSnapshot: snapshot.snapshotDigest,
+      baseSnapshotEvidenceJson: JSON.stringify(snapshot),
+      readSetJson: JSON.stringify(['packages/schemas/auth.ts']),
+      observedReadSetJson: JSON.stringify([]),
+      semanticDependencyRefsJson: JSON.stringify([]),
+      writeSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+      observedWriteSetJson: JSON.stringify([]),
+    };
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue(transaction);
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+
+    await fs.writeFile(path.join(root, 'synthi', 'prisma', 'schema.prisma'), 'model User { id String @id }\nmodel AuditEvent { id String @id }\n', 'utf8');
+
+    const allowed = await validateTransaction('acme', 'txn-1');
+
+    expect(allowed.decision.ok).toBe(true);
+    expect(allowed.decision.reasonCodes).toContain('serializable_validation_passed');
+    expect(allowed.decision.reasonCodes).not.toContain('repo_snapshot_drift_detected');
+
+    prisma.codeSiteMutationTransaction.update.mockClear();
+    await fs.writeFile(path.join(root, 'README.md'), 'raw filesystem drift outside declared write set\n', 'utf8');
+
+    const blocked = await validateTransaction('acme', 'txn-1');
+
+    expect(blocked.decision.ok).toBe(false);
+    expect(blocked.decision.reasonCodes).toEqual(expect.arrayContaining([
+      'repo_snapshot_drift_detected',
+      'repo_snapshot_repo_manifest_drift_detected',
+    ]));
+  });
+
+  it('executes landing inspection commands and records durable radar evidence', async () => {
+    const run = await createInspectionRun('acme', 'project-1', {
+      executionPlanId: 'plan-1',
+      displayCallsign: 'ATLAS-1',
+      changedPaths: ['components/auth/SignupForm.tsx'],
+      execute: true,
+      commands: [{
+        key: 'tests',
+        command: process.execPath,
+        args: ['-e', 'console.log("codesite inspection ok")'],
+        timeoutMs: 5000,
+      }],
+    });
+
+    expect(run.status).toBe('completed');
+    expect(run.inspectionSignals).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        key: 'tests',
+        status: 'passed',
+        exitCode: 0,
+        stdoutTail: expect.stringContaining('codesite inspection ok'),
+        evidenceRefs: expect.arrayContaining([expect.stringMatching(/^test:run:sha256:/)]),
+      }),
+    ]));
+    expect(run.evidenceRefs).toEqual(expect.arrayContaining([expect.stringMatching(/^test:run:sha256:/)]));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'radar_result',
+        actorId: 'inspection-created',
+      }),
+    }));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'inspection_result',
+        actorId: 'inspection-created',
+      }),
+    }));
+  });
+
+  it('classifies landing inspection commands through first-class radar adapters', async () => {
+    const adapters = [
+      ['clearance', /^clearance:run:sha256:/],
+      ['type', /^typecheck:run:sha256:/],
+      ['tests', /^test:run:sha256:/],
+      ['api_contract', /^api-contract:run:sha256:/],
+      ['security', /^security:scan:sha256:/],
+      ['migration', /^migration:plan:sha256:/],
+      ['ui', /^ui:screenshot:sha256:/],
+      ['accessibility', /^accessibility:audit:sha256:/],
+      ['runtime', /^runtime:event:sha256:/],
+      ['performance', /^performance:budget:sha256:/],
+      ['handover', /^handover:packet:sha256:/],
+    ];
+
+    const run = await createInspectionRun('acme', 'project-1', {
+      executionPlanId: 'plan-1',
+      displayCallsign: 'RADAR-STACK-1',
+      changedPaths: ['components/auth/SignupForm.tsx'],
+      execute: true,
+      commands: adapters.map(([adapter]) => ({
+        adapter,
+        command: process.execPath,
+        args: ['-e', `console.log("${adapter} radar ok")`],
+        timeoutMs: 5000,
+      })),
+    });
+
+    expect(run.status).toBe('completed');
+    for (const [adapter, prefix] of adapters) {
+      const signal = run.inspectionSignals.find((item) => item.key === adapter);
+      expect(signal).toMatchObject({
+        key: adapter,
+        status: 'passed',
+        adapter: expect.objectContaining({ key: adapter }),
+      });
+      expect(signal.reasonCodes).toEqual(expect.arrayContaining([
+        `${adapter}_radar_passed`,
+        `${adapter}_adapter_executed`,
+      ]));
+      expect(signal.evidenceRefs).toEqual(expect.arrayContaining([expect.stringMatching(prefix)]));
+      expect(run.evidenceRefs).toEqual(expect.arrayContaining([expect.stringMatching(prefix)]));
+    }
+  });
+
+  it('canonicalizes manual adapter signals and required-radar aliases', async () => {
+    const manualRun = await createInspectionRun('acme', 'project-1', {
+      executionPlanId: 'plan-1',
+      displayCallsign: 'RADAR-MANUAL-1',
+      changedPaths: ['components/auth/SignupForm.tsx'],
+      inspectionSignals: [{
+        adapter: 'visual',
+        status: 'passed',
+        evidenceRefs: ['ui:screenshot:sha256:manual'],
+      }],
+      evidenceRefs: ['ui:screenshot:sha256:manual'],
+    });
+    expect(manualRun.inspectionSignals).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        key: 'ui',
+        status: 'passed',
+        adapter: expect.objectContaining({ key: 'ui' }),
+        evidenceRefs: ['ui:screenshot:sha256:manual'],
+      }),
+    ]));
+
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({
+      ...transactionFixture(),
+      writeSetJson: JSON.stringify(['components/auth/SignupForm.tsx']),
+      observedWriteSetJson: JSON.stringify(['components/auth/SignupForm.tsx']),
+      mutationLease: {
+        ...transactionFixture().mutationLease,
+        leaseJson: JSON.stringify({
+          allowedPaths: ['components/auth/**'],
+          blockedPaths: [],
+          allowedTools: ['file_write'],
+          requiredRadar: ['visual'],
+        }),
+      },
+    });
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([{
+      id: 'inspection-visual',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'RADAR-MANUAL-1',
+      status: 'completed',
+      changedPathsJson: JSON.stringify(['components/auth/**']),
+      inspectionSignalsJson: JSON.stringify([{
+        adapter: 'visual',
+        status: 'passed',
+        evidenceRefs: ['ui:screenshot:sha256:manual'],
+      }]),
+      evidenceRefsJson: JSON.stringify(['ui:screenshot:sha256:manual']),
+      requestedAt: new Date('2026-06-29T23:02:00.000Z'),
+      completedAt: new Date('2026-06-29T23:03:00.000Z'),
+    }]);
+
+    const result = await validateTransaction('acme', 'txn-1');
+
+    expect(result.decision.ok).toBe(true);
+    expect(result.decision.reasonCodes).toContain('serializable_validation_passed');
+  });
+
+  it('accepts persisted governance permits as durable governance radar evidence', async () => {
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({
+      ...transactionFixture(),
+      writeSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+      observedWriteSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+      mutationLease: {
+        ...transactionFixture().mutationLease,
+        leaseJson: JSON.stringify({
+          allowedPaths: ['synthi/prisma/**'],
+          blockedPaths: [],
+          allowedTools: ['file_write'],
+          requiredRadar: ['governance'],
+        }),
+      },
+    });
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([{
+      id: 'inspection-governance',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'SCHEMA-01',
+      status: 'completed',
+      changedPathsJson: JSON.stringify(['synthi/prisma/**']),
+      inspectionSignalsJson: JSON.stringify([{
+        key: 'governance',
+        status: 'passed',
+        evidenceRefs: ['codesite:permit:permit-approved'],
+      }]),
+      evidenceRefsJson: JSON.stringify(['codesite:permit:permit-approved']),
+      requestedAt: new Date('2026-06-29T23:02:00.000Z'),
+      completedAt: new Date('2026-06-29T23:03:00.000Z'),
+    }]);
+
+    const result = await validateTransaction('acme', 'txn-1');
+
+    expect(result.decision.ok).toBe(true);
+    expect(result.decision.reasonCodes).toContain('serializable_validation_passed');
+  });
+
+  it('returns source-state since a transaction without mutating validation state', async () => {
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue({
+      ...transactionFixture(),
+      readSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+      observedReadSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+    });
+    prisma.codeSiteEvent.findMany.mockResolvedValue([
+      {
+        id: 'event-other-write',
+        eventType: 'write_allowed',
+        actorId: 'txn-other',
+        displayCallsign: 'BETA-2',
+        createdAt: new Date('2026-06-29T23:02:00.000Z'),
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-other',
+          path: 'synthi/prisma/schema.prisma',
+        }),
+      },
+    ]);
+
+    const result = await getSourceStateSince('acme', 'txn-1');
+
+    expect(result.sourceState.changedPaths).toEqual(['synthi/prisma/schema.prisma']);
+    expect(result.sourceState.staleReads).toEqual([expect.objectContaining({
+      eventId: 'event-other-write',
+      displayCallsign: 'BETA-2',
+    })]);
+    expect(prisma.codeSiteMutationTransaction.update).not.toHaveBeenCalled();
+    expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('resumes project events by logical time instead of lexicographic ids', async () => {
+    prisma.codeSiteEvent.findFirst.mockResolvedValue({
+      id: 'z-last-emitted',
+      logicalTime: 7,
+    });
+    prisma.codeSiteEvent.findMany.mockResolvedValue([
+      {
+        id: 'a-later-event',
+        projectId: 'project-1',
+        mutationLeaseId: null,
+        eventType: 'inspection_result',
+        displayCallsign: 'INSPECT-1',
+        actorType: 'inspection',
+        actorId: 'inspection-1',
+        detailsJson: JSON.stringify({ status: 'completed' }),
+        evidenceRefsJson: JSON.stringify(['runtime:event:inspection-1']),
+        logicalTime: 8,
+        createdAt: new Date('2026-06-29T23:05:00.000Z'),
+      },
+    ]);
+
+    const events = await getEvents('acme', 'project-1', 'z-last-emitted');
+
+    expect(events).toEqual([expect.objectContaining({
+      id: 'a-later-event',
+      logicalTime: 8,
+      details: { status: 'completed' },
+    })]);
+    expect(prisma.codeSiteEvent.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        projectId: 'project-1',
+        logicalTime: { gt: 7 },
+      },
+      orderBy: [{ logicalTime: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+    }));
+  });
+
+  it('records CodeSiteFS denied write evidence before returning a block decision', async () => {
+    const result = await recordTransactionWrite('acme', 'txn-1', {
+      path: 'synthi/prisma/schema.prisma',
+      tool: 'file_write',
+      codesiteFsEvent: {
+        type: 'write_denied',
+        transaction_id: 'txn-1',
+        path: 'synthi/prisma/schema.prisma',
+        details: {
+          reason_codes: ['outside_clearance_route'],
+          process_ancestry: ['collab-server', 'exec'],
+        },
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.policyDecision).toMatchObject({
+      decision: 'block',
+      reasonCodes: ['outside_clearance_route'],
+    });
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'write_attempted',
+        detailsJson: expect.stringContaining('codesiteFsEvent'),
+      }),
+    }));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'write_denied',
+        actorType: 'codesitefs',
+        detailsJson: expect.stringContaining('outside_clearance_route'),
+      }),
+    }));
+  });
+
+  it('blocks unmanaged CodeSiteFS preflight writes when no active clearance covers the path', async () => {
+    prisma.codeSiteMutationLease.findMany.mockResolvedValue([]);
+
+    const result = await preflightCodeSiteFsWrite('acme', 'project-1', {
+      path: 'backend/collab-server/permissionMiddleware.js',
+      source: 'runtime_pod_terminal',
+      tool: 'terminal_exec',
+      processAncestry: ['runtime-pod', 'bash'],
+      evidenceRefs: ['runtime:event:terminal-write-1'],
+    }, { userId: 'user-1' });
+
+    expect(result).toMatchObject({
+      ok: false,
+      disposition: 'write_denied',
+      path: 'backend/collab-server/permissionMiddleware.js',
+      reasonCodes: ['active_clearance_required'],
+      matchedLease: null,
+      policyDecision: {
+        decision: 'block',
+        reasonCodes: ['active_clearance_required'],
+      },
+    });
+    expect(prisma.codeSitePolicyDecision.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        mutationLeaseId: null,
+        decision: 'block',
+        inputDigest: expect.any(String),
+        decisionJson: expect.stringContaining('runtime_pod_terminal'),
+      }),
+    }));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'write_denied',
+        actorType: 'codesitefs',
+        evidenceRefsJson: JSON.stringify(['runtime:event:terminal-write-1']),
+        detailsJson: expect.stringContaining('active_clearance_required'),
+      }),
+    }));
+  });
+
+  it('allows CodeSiteFS preflight writes when an active lease matches path and tool', async () => {
+    prisma.codeSiteMutationLease.findMany.mockResolvedValue([{
+      id: 'lease-terminal-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      agentSessionId: 'agent-1',
+      displayCallsign: 'RUNTIME-1',
+      status: 'active',
+      leaseJson: JSON.stringify({
+        allowedPaths: ['backend/collab-server/**'],
+        allowedTools: ['terminal_exec'],
+      }),
+      issuedAt: new Date('2026-06-29T23:00:00.000Z'),
+      expiresAt: null,
+      revokedAt: null,
+      agentSession: {
+        id: 'agent-1',
+        projectId: 'project-1',
+        ownerUserId: 'user-1',
+        displayCallsign: 'RUNTIME-1',
+      },
+    }]);
+
+    const result = await preflightCodeSiteFsWrite('acme', 'project-1', {
+      path: 'backend/collab-server/terminalService.js',
+      source: 'runtime_pod_terminal',
+      tool: 'terminal_exec',
+    }, { userId: 'user-1' });
+
+    expect(result).toMatchObject({
+      ok: true,
+      disposition: 'write_allowed',
+      path: 'backend/collab-server/terminalService.js',
+      reasonCodes: ['inside_clearance_route'],
+      matchedLease: {
+        id: 'lease-terminal-1',
+        displayCallsign: 'RUNTIME-1',
+      },
+      policyDecision: {
+        decision: 'allow',
+        mutationLeaseId: 'lease-terminal-1',
+      },
+    });
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        mutationLeaseId: 'lease-terminal-1',
+        eventType: 'write_allowed',
+        actorType: 'codesitefs',
+        detailsJson: expect.stringContaining('inside_clearance_route'),
+      }),
+    }));
+  });
+
+  it('records allowed write line provenance for the causal line inspector', async () => {
+    const result = await recordTransactionWrite('acme', 'txn-1', {
+      path: 'synthi/prisma/schema.prisma',
+      tool: 'file_write',
+      evidenceRefs: ['write:evidence'],
+      codesiteFsEvent: {
+        type: 'write_allowed',
+        evidence_refs: ['fs:event:evidence'],
+        details: {
+          process_ancestry: ['mcp:synthi_codesite_apply_patch'],
+          lineProvenance: [{
+            startLine: 7,
+            endLine: 9,
+            evidenceRefs: ['hunk:evidence'],
+            promptSummary: 'Update schema field',
+          }],
+        },
+      },
+    });
+    const allowedEvent = prisma.codeSiteEvent.create.mock.calls
+      .map((call) => call[0])
+      .find((call) => call.data.eventType === 'write_allowed');
+    const details = JSON.parse(allowedEvent.data.detailsJson);
+
+    expect(result.ok).toBe(true);
+    expect(details).toMatchObject({
+      transactionId: 'txn-1',
+      path: 'synthi/prisma/schema.prisma',
+      evidenceRefs: ['write:evidence', 'fs:event:evidence'],
+      processAncestry: ['mcp:synthi_codesite_apply_patch'],
+    });
+    expect(details.lineProvenance).toEqual([expect.objectContaining({
+      filePath: 'synthi/prisma/schema.prisma',
+      lineAnchor: 'synthi/prisma/schema.prisma#L7',
+      startLine: 7,
+      endLine: 9,
+      evidenceRefs: ['hunk:evidence'],
+      promptSummary: 'Update schema field',
+    })]);
+    expect(prisma.codeSiteLineProvenance.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        projectId: 'project-1',
+        transactionId: 'txn-1',
+        filePath: 'synthi/prisma/schema.prisma',
+        lineAnchor: 'synthi/prisma/schema.prisma#L7',
+        startLine: 7,
+        endLine: 9,
+        displayCallsign: 'ATLAS-1',
+        evidenceRefsJson: expect.stringContaining('event:'),
+        processAncestryJson: expect.stringContaining('mcp:synthi_codesite_apply_patch'),
+        promptSummary: 'Update schema field',
+      }),
+    });
+  });
+
+  it('previews transaction writes without mutating write sets, events, or policy decisions', async () => {
+    const result = await dryRunTransactionWrites('acme', 'txn-1', {
+      files: [
+        { path: 'synthi/prisma/schema.prisma' },
+        { path: 'secrets/prod.env' },
+      ],
+    });
+
+    expect(result.results).toEqual([
+      expect.objectContaining({
+        ok: true,
+        path: 'synthi/prisma/schema.prisma',
+        tool: 'file_write',
+      }),
+      expect.objectContaining({
+        ok: false,
+        path: 'secrets/prod.env',
+        reasonCodes: expect.arrayContaining(['entered_no_fly_zone']),
+        policyDecision: expect.objectContaining({ decision: 'block' }),
+      }),
+    ]);
+    expect(prisma.codeSiteMutationTransaction.update).not.toHaveBeenCalled();
+    expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+    expect(prisma.codeSitePolicyDecision.create).not.toHaveBeenCalled();
+  });
+
+  it('gates agent inbox reads and acknowledgements to the owning user session', async () => {
+    await expect(getAgentInbox('acme', 'agent-1', { userId: 'user-2' })).rejects.toMatchObject({
+      status: 403,
+      code: 'agent_inbox_forbidden',
+    });
+    expect(prisma.codeSiteAgentInboxItem.findMany).not.toHaveBeenCalled();
+
+    const inbox = await getAgentInbox('acme', 'agent-1', { userId: 'user-1' });
+    const acknowledged = await acknowledgeInboxItem('acme', 'agent-1', 'evt-1', { userId: 'user-1' });
+
+    expect(inbox).toEqual([]);
+    expect(acknowledged).toMatchObject({ status: 'acknowledged', eventId: 'evt-1' });
+    expect(prisma.codeSiteAgentInboxItem.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'inbox-1' },
+      data: expect.objectContaining({ status: 'acknowledged' }),
+    }));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        projectId: 'project-1',
+        eventType: 'transponder_update',
+        actorType: 'agent_session',
+        actorId: 'agent-1',
+        detailsJson: expect.stringContaining('inbox_acknowledged'),
+      }),
+    }));
+  });
+
+  it('summarizes documents and inbox payloads in project-wide snapshots', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Signup',
+      request: 'Build signup',
+      status: 'active',
+      zonePolicyJson: JSON.stringify({ zones: [] }),
+      controlPlanJson: JSON.stringify({}),
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+      agentSessions: [],
+      executionPlans: [],
+      mutationLeases: [],
+      mutationTxns: [],
+      assumptions: [],
+      policyDecisions: [],
+      events: [],
+      incidents: [],
+      inspectionRuns: [],
+      proofBundles: [],
+      lineProvenance: [],
+      documents: [{
+        id: 'doc-private',
+        projectId: 'project-1',
+        kind: 'rfi',
+        status: 'open',
+        title: 'Private RFI',
+        bodyJson: JSON.stringify({ question: 'private payload' }),
+        blocking: true,
+        createdAt: new Date('2026-06-29T23:04:00.000Z'),
+        resolvedAt: null,
+      }],
+      counterfactualRuns: [],
+      policyDeltas: [],
+      inboxItems: [{
+        id: 'inbox-private',
+        projectId: 'project-1',
+        agentSessionId: 'agent-2',
+        recipientUserId: 'user-2',
+        eventId: 'evt-private',
+        documentId: 'doc-private',
+        kind: 'rfi',
+        requiresResponse: true,
+        status: 'pending',
+        redactedPayloadJson: JSON.stringify({ body: { question: 'recipient-only' } }),
+        createdAt: new Date('2026-06-29T23:04:00.000Z'),
+        acknowledgedAt: null,
+      }],
+    });
+
+    const project = await getProject('acme', 'project-1');
+
+    expect(project.documents[0]).toMatchObject({
+      id: 'doc-private',
+      title: 'Private RFI',
+      blocking: true,
+    });
+    expect(project.documents[0]).not.toHaveProperty('body');
+    expect(project.inboxItems[0]).toMatchObject({
+      id: 'inbox-private',
+      agentSessionId: 'agent-2',
+      eventId: 'evt-private',
+      payloadAvailable: true,
+    });
+    expect(project.inboxItems[0]).not.toHaveProperty('redactedPayload');
+    expect(project.inboxItems[0]).not.toHaveProperty('recipientUserId');
+  });
+
+  it('publishes a redacted multi-owner agent registry with heartbeat-derived presence', async () => {
+    const now = Date.now();
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Shared work',
+      request: 'Coordinate agents',
+      status: 'active',
+      zonePolicyJson: '{}',
+      controlPlanJson: '{}',
+      createdAt: new Date(now - 60_000),
+      updatedAt: new Date(now),
+      members: [],
+      agentSessions: [
+        {
+          id: 'agent-1',
+          projectId: 'project-1',
+          ownerUserId: 'owner-1',
+          collaborationUserId: 'member-1',
+          terminalSessionId: 'terminal-1',
+          agentProvider: 'codex',
+          providerSessionRef: 'provider-private-one',
+          displayCallsign: 'CODEX-01',
+          status: 'attached',
+          executionHostJson: JSON.stringify({ type: 'workspace_terminal' }),
+          subscriptionsJson: JSON.stringify(['project.events', 'agent.inbox']),
+          lastHeartbeatAt: new Date(now - 10_000),
+          attachedAt: new Date(now - 20_000),
+          createdAt: new Date(now - 20_000),
+        },
+        {
+          id: 'agent-2',
+          projectId: 'project-1',
+          ownerUserId: 'owner-2',
+          collaborationUserId: 'member-2',
+          terminalSessionId: 'terminal-2',
+          agentProvider: 'claude',
+          providerSessionRef: 'provider-private-two',
+          displayCallsign: 'CLAUDE-02',
+          status: 'attached',
+          executionHostJson: JSON.stringify({ type: 'workspace_terminal' }),
+          subscriptionsJson: JSON.stringify(['project.events']),
+          lastHeartbeatAt: new Date(now - 10 * 60_000),
+          attachedAt: new Date(now - 11 * 60_000),
+          createdAt: new Date(now - 11 * 60_000),
+        },
+      ],
+      executionPlans: [], mutationLeases: [], mutationTxns: [], assumptions: [],
+      policyDecisions: [], events: [], incidents: [], inspectionRuns: [], proofBundles: [],
+      lineProvenance: [], documents: [], permits: [], documentReviews: [], routeRevisions: [],
+      counterfactualRuns: [], policyDeltas: [], inboxItems: [],
+    });
+
+    const project = await getProject('acme', 'project-1');
+
+    expect(project.agentRegistry).toEqual([
+      expect.objectContaining({
+        displayCallsign: 'CODEX-01',
+        provider: 'codex',
+        ownerUserId: 'owner-1',
+        terminalSessionId: 'terminal-1',
+        subscriptions: ['project.events', 'agent.inbox'],
+        providerSessionBound: true,
+        presence: 'online',
+      }),
+      expect.objectContaining({
+        displayCallsign: 'CLAUDE-02',
+        provider: 'claude',
+        ownerUserId: 'owner-2',
+        providerSessionBound: true,
+        presence: 'offline',
+        presenceReason: 'heartbeat_stale',
+      }),
+    ]);
+    expect(project.agentSessions[0]).not.toHaveProperty('providerSessionRef');
+    expect(project.agentSessions[0].providerSessionBound).toBe(true);
+    expect(JSON.stringify(project)).not.toContain('provider-private-one');
+    expect(JSON.stringify(project)).not.toContain('provider-private-two');
+  });
+
+  it('keeps proof bundle commit trailers complete in project snapshots', async () => {
+    const transaction = transactionFixture();
+    const proofBundle = {
+      id: 'proof-1',
+      projectId: 'project-1',
+      transactionId: 'txn-1',
+      commitSha: null,
+      readSetDigest: 'sha256:read',
+      writeSetDigest: 'sha256:write',
+      invariantsJson: JSON.stringify(['clearance.diff.inside_route']),
+      evidenceRefsJson: JSON.stringify(['runtime:event:inspection-1']),
+      dojoEvidenceRefsJson: JSON.stringify([]),
+      repoStateJson: JSON.stringify(repoStateFixture()),
+      incidentReplayDigest: 'sha256:incident',
+      bundleDigest: 'sha256:bundle',
+      createdAt: new Date('2026-06-29T23:04:00.000Z'),
+    };
+    const relatedIncident = {
+      id: 'incident-proof-1',
+      projectId: 'project-1',
+      severity: 'medium',
+      category: 'black_box',
+      participantsJson: JSON.stringify(['ATLAS-1']),
+      affectedZonesJson: JSON.stringify(['schema']),
+      incidentReplayJson: JSON.stringify({
+        transactionId: 'txn-1',
+        proofBundle: { id: 'proof-1' },
+      }),
+      replayDigest: 'sha256:incident',
+      timelineEventRefsJson: JSON.stringify([]),
+      policyDeltaJson: JSON.stringify(null),
+      evidenceRefsJson: JSON.stringify(['codesite:proof-bundle:proof-1', 'codesite:transaction:txn-1']),
+      createdAt: new Date('2026-06-29T23:03:30.000Z'),
+    };
+    const unrelatedIncident = {
+      id: 'incident-other',
+      projectId: 'project-1',
+      severity: 'critical',
+      category: 'black_box',
+      participantsJson: JSON.stringify(['BETA-2']),
+      affectedZonesJson: JSON.stringify(['api']),
+      incidentReplayJson: JSON.stringify({
+        transactionId: 'txn-other',
+        proofBundle: { id: 'proof-other' },
+      }),
+      replayDigest: 'sha256:other',
+      timelineEventRefsJson: JSON.stringify([]),
+      policyDeltaJson: JSON.stringify(null),
+      evidenceRefsJson: JSON.stringify(['codesite:proof-bundle:proof-other', 'codesite:transaction:txn-other']),
+      createdAt: new Date('2026-06-29T23:03:45.000Z'),
+    };
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Signup',
+      request: 'Build signup',
+      status: 'active',
+      zonePolicyJson: JSON.stringify({ zones: [] }),
+      controlPlanJson: JSON.stringify({}),
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+      agentSessions: [],
+      executionPlans: [],
+      mutationLeases: [transaction.mutationLease],
+      mutationTxns: [transaction],
+      assumptions: [],
+      policyDecisions: [],
+      events: [],
+      incidents: [unrelatedIncident, relatedIncident],
+      inspectionRuns: [{
+        id: 'inspection-1',
+        projectId: 'project-1',
+        executionPlanId: 'plan-1',
+        displayCallsign: 'ATLAS-1',
+        status: 'completed',
+        changedPathsJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+        inspectionSignalsJson: JSON.stringify([]),
+        evidenceRefsJson: JSON.stringify(['runtime:event:inspection-1']),
+        requestedAt: new Date('2026-06-29T23:02:00.000Z'),
+        completedAt: new Date('2026-06-29T23:03:00.000Z'),
+      }],
+      proofBundles: [proofBundle],
+      lineProvenance: [],
+      documents: [],
+      counterfactualRuns: [],
+      policyDeltas: [],
+      inboxItems: [],
+    });
+
+    const project = await getProject('acme', 'project-1');
+
+    expect(project.proofBundles[0].trailers).toMatchObject({
+      'CodeSite-Project': 'project-1',
+      'CodeSite-Flight': 'ATLAS-1',
+      'CodeSite-Clearance': 'lease-1',
+      'CodeSite-Landing': 'completed',
+      'CodeSite-Transaction': 'txn-1',
+    });
+    const expectedPortable = buildProofBundle({
+      project: { id: 'project-1', workspaceSlug: 'acme' },
+      transaction: {
+        id: 'txn-1',
+        projectId: 'project-1',
+        mutationLeaseId: 'lease-1',
+        readSet: [],
+        writeSet: ['synthi/prisma/schema.prisma'],
+        invariants: ['clearance.diff.inside_route'],
+        baseSnapshot: transaction.baseSnapshot,
+        baseSnapshotEvidence: null,
+      },
+      mutationLease: { id: 'lease-1', displayCallsign: 'ATLAS-1' },
+      proofBundle: {
+        ...proofBundle,
+        invariants: ['clearance.diff.inside_route'],
+        evidenceRefs: ['runtime:event:inspection-1'],
+        dojoEvidenceRefs: [],
+        repoState: repoStateFixture(),
+        incidentReplayDigest: 'sha256:incident',
+      },
+      incidents: [relatedIncident],
+      landingRuns: [{ status: 'completed' }],
+    });
+    expect(project.proofBundles[0].trailers['CodeSite-Proof-Digest']).toBe(expectedPortable.portableDigest);
+    expect(project.proofBundles[0].trailers['CodeSite-Base-Snapshot']).toBe(transaction.baseSnapshot);
+  });
+
+  it('routes tower-mediated documents with recursive redaction and inbox ACL metadata', async () => {
+    const result = await createDocument('acme', 'project-1', {
+      kind: 'rfi',
+      title: 'Need schema owner approval',
+      fromSessionId: 'agent-1',
+      toSessionId: 'agent-2',
+      executionPlanId: 'plan-1',
+      blocking: true,
+      body: {
+        question: 'Can signup payload include displayName?',
+        databaseUrl: 'DATABASE_URL=postgres://user:pass@localhost:5432/app',
+        bearerHeader: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.signature',
+        cliHistory: 'codex run --with-env DATABASE_URL=postgres://user:pass@localhost/app',
+        attachments: [{ name: 'raw-session.txt', content: 'local session memory' }],
+        nested: {
+          apiKey: 'sk-secret-value-123456',
+          privatePrompt: 'raw local prompt',
+        },
+      },
+    }, { userId: 'user-1' });
+    const documentCreate = prisma.codeSiteDocument.create.mock.calls.at(-1)[0];
+    const savedBody = JSON.parse(documentCreate.data.bodyJson);
+
+    expect(result.inboxItems).toHaveLength(1);
+    expect(savedBody.nested.apiKey).toBe('[redacted]');
+    expect(savedBody.nested.privatePrompt).toBe('[redacted]');
+    expect(savedBody.databaseUrl).toBe('[redacted]');
+    expect(savedBody.bearerHeader).toBe('[redacted]');
+    expect(savedBody.cliHistory).toBe('[redacted]');
+    expect(savedBody.attachments).toBeUndefined();
+    expect(savedBody.routing).toMatchObject({
+      fromSessionId: 'agent-1',
+      toSessionIds: ['agent-2'],
+      projectRefs: { executionPlanId: 'plan-1' },
+    });
+    expect(prisma.codeSiteAgentInboxItem.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        agentSessionId: 'agent-2',
+        recipientUserId: 'user-2',
+        requiresResponse: true,
+      }),
+    }));
+  });
+
+  it('blocks tower documents when recipient policy opts out, mutes sender, or hides affected zones', async () => {
+    prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([{
+      id: 'agent-2',
+      projectId: 'project-1',
+      ownerUserId: 'user-2',
+      displayCallsign: 'BETA-2',
+      redactionPolicyJson: JSON.stringify({ acceptsTowerMessages: false }),
+    }]);
+    await expect(createDocument('acme', 'project-1', {
+      kind: 'rfi',
+      fromSessionId: 'agent-1',
+      toSessionId: 'agent-2',
+      executionPlanId: 'plan-1',
+    }, { userId: 'user-1' })).rejects.toMatchObject({
+      status: 400,
+      code: 'document_recipient_policy_blocked',
+      detail: {
+        blockedRecipients: [expect.objectContaining({
+          agentSessionId: 'agent-2',
+          reasonCodes: ['recipient_opted_out'],
+        })],
+      },
+    });
+
+    prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([{
+      id: 'agent-2',
+      projectId: 'project-1',
+      ownerUserId: 'user-2',
+      displayCallsign: 'BETA-2',
+      redactionPolicyJson: JSON.stringify({ mutedAgentSessionIds: ['agent-1'] }),
+    }]);
+    await expect(createDocument('acme', 'project-1', {
+      kind: 'rfi',
+      fromSessionId: 'agent-1',
+      toSessionId: 'agent-2',
+      executionPlanId: 'plan-1',
+    }, { userId: 'user-1' })).rejects.toMatchObject({
+      status: 400,
+      code: 'document_recipient_policy_blocked',
+      detail: {
+        blockedRecipients: [expect.objectContaining({
+          agentSessionId: 'agent-2',
+          reasonCodes: ['sender_muted'],
+        })],
+      },
+    });
+
+    prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([{
+      id: 'agent-2',
+      projectId: 'project-1',
+      ownerUserId: 'user-2',
+      displayCallsign: 'BETA-2',
+      redactionPolicyJson: JSON.stringify({ visibleZones: ['docs/**'] }),
+    }]);
+    await expect(createDocument('acme', 'project-1', {
+      kind: 'rfi',
+      fromSessionId: 'agent-1',
+      toSessionId: 'agent-2',
+      affectedZones: ['synthi/prisma/**'],
+    }, { userId: 'user-1' })).rejects.toMatchObject({
+      status: 400,
+      code: 'document_recipient_policy_blocked',
+      detail: {
+        blockedRecipients: [expect.objectContaining({
+          agentSessionId: 'agent-2',
+          reasonCodes: ['affected_zone_not_visible'],
+          affectedZones: ['synthi/prisma/**'],
+          visibleZones: ['docs/**'],
+        })],
+      },
+    });
+
+    expect(prisma.codeSiteDocument.create).not.toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ title: 'Blocked policy message' }),
+    }));
+  });
+
+  it('blocks document delivery when a participant session owner is no longer a workspace member', async () => {
+    prisma.workspace.findUnique.mockResolvedValueOnce({
+      slug: 'acme',
+      memberships: [{ userId: 'user-1', role: 'member' }],
+    });
+
+    await expect(createDocument('acme', 'project-1', {
+      kind: 'rfi',
+      fromSessionId: 'agent-1',
+      toSessionId: 'agent-2',
+      executionPlanId: 'plan-1',
+    }, { userId: 'user-1' })).rejects.toMatchObject({
+      status: 400,
+      code: 'document_session_owner_not_workspace_member',
+      detail: { userIds: ['user-2'] },
+    });
+  });
+
+  it('applies recipient document kind and payload redaction policy before inbox delivery', async () => {
+    prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([{
+      id: 'agent-2',
+      projectId: 'project-1',
+      ownerUserId: 'user-2',
+      displayCallsign: 'BETA-2',
+      redactionPolicyJson: JSON.stringify({ allowedDocumentKinds: ['rfi'] }),
+    }]);
+    await expect(createDocument('acme', 'project-1', {
+      kind: 'change_order',
+      fromSessionId: 'agent-1',
+      toSessionId: 'agent-2',
+      executionPlanId: 'plan-1',
+    }, { userId: 'user-1' })).rejects.toMatchObject({
+      status: 400,
+      code: 'document_recipient_policy_blocked',
+      detail: {
+        blockedRecipients: [expect.objectContaining({
+          reasonCodes: ['document_kind_not_allowed'],
+        })],
+      },
+    });
+
+    prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([{
+      id: 'agent-2',
+      projectId: 'project-1',
+      ownerUserId: 'user-2',
+      displayCallsign: 'BETA-2',
+      redactionPolicyJson: JSON.stringify({
+        allowedDocumentKinds: ['rfi'],
+        visibleZones: ['synthi/prisma/**'],
+        allowAttachments: false,
+        redactedFields: ['internalNotes'],
+      }),
+    }]);
+
+    const result = await createDocument('acme', 'project-1', {
+      kind: 'rfi',
+      title: 'Schema RFI',
+      fromSessionId: 'agent-1',
+      toSessionId: 'agent-2',
+      affectedZones: ['synthi/prisma/**'],
+      body: {
+        question: 'Can this migration land?',
+        internalNotes: 'visible only to tower',
+        attachments: [{ name: 'raw-plan.txt', content: 'local scratchpad' }],
+        nested: {
+          privatePrompt: 'raw prompt transcript',
+        },
+      },
+    }, { userId: 'user-1' });
+    const inboxCreate = prisma.codeSiteAgentInboxItem.create.mock.calls.at(-1)[0];
+    const payload = JSON.parse(inboxCreate.data.redactedPayloadJson);
+
+    expect(result.inboxItems).toHaveLength(1);
+    expect(payload.body.question).toBe('Can this migration land?');
+    expect(payload.body.internalNotes).toBe('[redacted]');
+    expect(payload.body.attachments).toBeUndefined();
+    expect(payload.body.nested.privatePrompt).toBe('[redacted]');
+    expect(payload.redaction).toMatchObject({
+      policyApplied: true,
+      recipientSessionId: 'agent-2',
+    });
+  });
+
+  it('records outbound inbox delivery attempts for configured webhook, A2A, and provider callback targets', async () => {
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 202 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const previousAllowedOrigins = process.env.SYNTHI_CODESITE_DELIVERY_ALLOWED_ORIGINS;
+    process.env.SYNTHI_CODESITE_DELIVERY_ALLOWED_ORIGINS = 'https://hooks.example.test, https://a2a.example.test, https://provider.example.test';
+    prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([{
+      id: 'agent-2',
+      projectId: 'project-1',
+      ownerUserId: 'user-2',
+      agentProvider: 'codex',
+      agentRuntime: 'cloud',
+      providerSessionRef: 'provider-session-42',
+      displayCallsign: 'BETA-2',
+      redactionPolicyJson: JSON.stringify({
+        allowedDocumentKinds: ['rfi'],
+        deliveryTargets: [
+          { mode: 'webhook', endpoint: 'https://hooks.example.test/codesite?token=secret' },
+          { mode: 'a2a', endpoint: 'https://a2a.example.test/inbox', label: 'a2a-adapter' },
+          { mode: 'provider_callback', endpoint: 'https://provider.example.test/callback', provider: 'codex' },
+        ],
+      }),
+    }]);
+
+    try {
+      await createDocument('acme', 'project-1', {
+        kind: 'rfi',
+        title: 'Schema RFI',
+        fromSessionId: 'agent-1',
+        toSessionId: 'agent-2',
+        executionPlanId: 'plan-1',
+        body: {
+          question: 'Can this migration land?',
+          privatePrompt: 'raw local prompt',
+        },
+      }, { userId: 'user-1' });
+    } finally {
+      vi.unstubAllGlobals();
+      if (previousAllowedOrigins === undefined) {
+        delete process.env.SYNTHI_CODESITE_DELIVERY_ALLOWED_ORIGINS;
+      } else {
+        process.env.SYNTHI_CODESITE_DELIVERY_ALLOWED_ORIGINS = previousAllowedOrigins;
+      }
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const postedPayload = JSON.parse(fetchMock.mock.calls[0][1].body);
+    // Workstream F.2: every outbound request carries a signed envelope.
+    const firstHeaders = fetchMock.mock.calls[0][1].headers;
+    expect(firstHeaders['x-codesite-signature']).toMatch(/^sha256=[a-f0-9]{64}$/);
+    expect(firstHeaders['x-codesite-nonce']).toBeTruthy();
+    expect(firstHeaders['x-codesite-timestamp']).toMatch(/^\d+$/);
+    expect(postedPayload.deliveryMode).toBe('webhook');
+    expect(postedPayload.payload.body.privatePrompt).toBe('[redacted]');
+    expect(postedPayload.payload.delivery.modes).toEqual(expect.arrayContaining([
+      'durable_inbox',
+      'sse_stream',
+      'mcp_poll',
+      'webhook',
+      'a2a',
+      'provider_callback',
+    ]));
+    expect(postedPayload.payload.delivery.modes).not.toContain('repo_local_projection');
+    expect(postedPayload.payload.delivery.recipient).toMatchObject({
+      agentSessionId: 'agent-2',
+      provider: 'codex',
+      runtime: 'cloud',
+      providerSessionBound: true,
+    });
+    expect(postedPayload.payload.delivery.recipient).not.toHaveProperty('providerSessionRef');
+    const payloadUpdate = prisma.codeSiteAgentInboxItem.update.mock.calls.at(-1)[0];
+    const storedPayload = JSON.parse(payloadUpdate.data.redactedPayloadJson);
+    expect(storedPayload.delivery.adapterStatus).toBe('delivered');
+    expect(storedPayload.delivery.recipient).toMatchObject({ providerSessionBound: true });
+    expect(storedPayload.delivery.recipient).not.toHaveProperty('providerSessionRef');
+    expect(storedPayload.delivery.targets[0].endpoint).toBe('https://hooks.example.test/codesite');
+    expect(storedPayload.delivery.attempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ mode: 'webhook', status: 'delivered', httpStatus: 202 }),
+      expect.objectContaining({ mode: 'a2a', status: 'delivered', httpStatus: 202 }),
+      expect.objectContaining({ mode: 'provider_callback', status: 'delivered', httpStatus: 202 }),
+    ]));
+  });
+
+  it('refuses external delivery entirely when no origin allowlist is configured (fail-closed)', async () => {
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 202 }));
+    vi.stubGlobal('fetch', fetchMock);
+    delete process.env.SYNTHI_CODESITE_DELIVERY_ALLOWED_ORIGINS;
+    delete process.env.SYNTHI_CODESITE_DELIVERY_ALLOWED_ORIGINS_JSON;
+    prisma.codeSiteAgentSession.findMany.mockResolvedValueOnce([{
+      id: 'agent-2',
+      projectId: 'project-1',
+      ownerUserId: 'user-2',
+      agentProvider: 'codex',
+      displayCallsign: 'BETA-2',
+      redactionPolicyJson: JSON.stringify({
+        allowedDocumentKinds: ['rfi'],
+        deliveryTargets: [
+          { mode: 'webhook', endpoint: 'https://unreviewed.example.test/hook' },
+        ],
+      }),
+    }]);
+
+    try {
+      await createDocument('acme', 'project-1', {
+        kind: 'rfi',
+        title: 'Unreviewed webhook blocked',
+        fromSessionId: 'agent-1',
+        toSessionId: 'agent-2',
+        executionPlanId: 'plan-1',
+        body: { question: 'Still delivered durably?' },
+      }, { userId: 'user-1' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    // The durable inbox item is still created, but the external adapter is
+    // skipped and no outbound HTTP happens.
+    expect(fetchMock).not.toHaveBeenCalled();
+    const payloadUpdate = prisma.codeSiteAgentInboxItem.update.mock.calls.at(-1)[0];
+    const storedPayload = JSON.parse(payloadUpdate.data.redactedPayloadJson);
+    expect(storedPayload.delivery.adapterStatus).toBe('attempted');
+    expect(storedPayload.delivery.attempts[0]).toMatchObject({
+      mode: 'webhook',
+      status: 'skipped',
+      reason: 'delivery_allowlist_not_configured',
+    });
+  });
+
+  it('rejects cross-agent documents without sender ownership or project references', async () => {
+    await expect(createDocument('acme', 'project-1', {
+      kind: 'rfi',
+      toSessionId: 'agent-2',
+      executionPlanId: 'plan-1',
+    }, { userId: 'user-1' })).rejects.toMatchObject({
+      status: 403,
+      code: 'document_sender_session_required',
+    });
+
+    await expect(createDocument('acme', 'project-1', {
+      kind: 'rfi',
+      fromSessionId: 'agent-1',
+      toSessionId: 'agent-2',
+      executionPlanId: 'plan-1',
+    }, { userId: 'user-2' })).rejects.toMatchObject({
+      status: 403,
+      code: 'document_sender_forbidden',
+    });
+
+    await expect(createDocument('acme', 'project-1', {
+      kind: 'rfi',
+      fromSessionId: 'agent-1',
+      toSessionId: 'agent-2',
+    }, { userId: 'user-1' })).rejects.toMatchObject({
+      status: 400,
+      code: 'document_project_reference_required',
+    });
+  });
+
+  it('issues construction permits against real project, plan, lease, and document refs', async () => {
+    const result = await createPermit('acme', 'project-1', {
+      permitType: 'schema_work_permit',
+      executionPlanId: 'plan-1',
+      mutationLeaseId: 'lease-1',
+      documentId: 'doc-1',
+      allowedPaths: ['synthi/prisma/**', 'packages/schemas/**'],
+      blockedPaths: ['infra/prod/**'],
+      affectedZones: ['schema'],
+      contractRefs: ['auth.signup.v2'],
+      evidenceRefs: ['evidence:permit-review'],
+    }, { userId: 'user-1' });
+    const permitCreate = prisma.codeSitePermit.create.mock.calls.at(-1)[0].data;
+    const scope = JSON.parse(permitCreate.scopeJson);
+    const approval = JSON.parse(permitCreate.approvalJson);
+    const eventCreate = prisma.codeSiteEvent.create.mock.calls.at(-1)[0].data;
+
+    expect(result.permit).toMatchObject({
+      id: 'permit-created',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      mutationLeaseId: 'lease-1',
+      documentId: 'doc-1',
+      permitType: 'schema_work_permit',
+      status: 'issued',
+    });
+    expect(scope).toMatchObject({
+      executionPlanId: 'plan-1',
+      mutationLeaseId: 'lease-1',
+      allowedPaths: ['synthi/prisma/**', 'packages/schemas/**'],
+      blockedPaths: ['infra/prod/**'],
+      affectedZones: ['schema'],
+      contractRefs: ['auth.signup.v2'],
+    });
+    expect(approval).toMatchObject({
+      approved: true,
+      approvedByUserId: 'user-1',
+    });
+    expect(eventCreate).toMatchObject({
+      eventType: 'tower_instruction',
+      actorType: 'permit',
+      actorId: 'permit-created',
+      evidenceRefsJson: JSON.stringify(['evidence:permit-review']),
+    });
+  });
+
+  it('records document reviews as measured governance decisions', async () => {
+    const result = await reviewDocument('acme', 'doc-1', {
+      decision: 'approved',
+      summary: 'Schema reroute approved by tower',
+      routeRevisionId: 'route-revision-1',
+      reviewTimeMs: 90_000,
+      baselineReviewTimeMs: 300_000,
+      evidenceRefs: ['evidence:review-session'],
+    }, { userId: 'reviewer-1' });
+    const reviewCreate = prisma.codeSiteDocumentReview.create.mock.calls.at(-1)[0].data;
+    const reviewBody = JSON.parse(reviewCreate.bodyJson);
+    const documentUpdate = prisma.codeSiteDocument.update.mock.calls.at(-1)[0].data;
+    const eventCreate = prisma.codeSiteEvent.create.mock.calls.at(-1)[0].data;
+
+    expect(result.review).toMatchObject({
+      id: 'review-created',
+      projectId: 'project-1',
+      documentId: 'doc-1',
+      reviewerUserId: 'reviewer-1',
+      status: 'completed',
+      decision: 'approved',
+    });
+    expect(reviewBody).toMatchObject({
+      summary: 'Schema reroute approved by tower',
+      routeRevisionId: 'route-revision-1',
+      reviewTimeMs: 90_000,
+      baselineReviewTimeMs: 300_000,
+    });
+    expect(documentUpdate.status).toBe('approved');
+    expect(documentUpdate.resolvedAt).toBeInstanceOf(Date);
+    expect(eventCreate).toMatchObject({
+      eventType: 'tower_instruction',
+      actorType: 'document_review',
+      actorId: 'review-created',
+      evidenceRefsJson: JSON.stringify(['evidence:review-session']),
+    });
+  });
+
+  it('proposes, approves, and applies route revisions with affected clearance holds', async () => {
+    prisma.codeSiteMutationLease.findMany.mockResolvedValueOnce([{
+      id: 'lease-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      agentSessionId: 'agent-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'active',
+      leaseJson: JSON.stringify({ allowedPaths: ['synthi/prisma/**'] }),
+      issuedAt: new Date('2026-06-29T23:00:00.000Z'),
+      expiresAt: null,
+      revokedAt: null,
+    }]);
+
+    const proposed = await proposeRouteRevision('acme', 'plan-1', {
+      title: 'Route auth schema through shared package',
+      proposedRoute: ['synthi/prisma/**', 'packages/schemas/**'],
+      affectedZones: ['schema'],
+      contractRefs: ['auth.signup.v2'],
+      evidenceRefs: ['evidence:route-proposal'],
+    }, { userId: 'user-1' });
+    const revisionCreate = prisma.codeSiteRouteRevision.create.mock.calls.at(-1)[0].data;
+    expect(proposed.routeRevision).toMatchObject({
+      id: 'route-revision-created',
+      status: 'proposed',
+      previousRoute: ['synthi/prisma/**'],
+      proposedRoute: ['synthi/prisma/**', 'packages/schemas/**'],
+    });
+    expect(proposed.changeOrder).toMatchObject({
+      id: 'doc-1',
+      kind: 'change_order',
+      status: 'pending_review',
+    });
+    expect(JSON.parse(revisionCreate.affectedLeasesJson)).toEqual([
+      expect.objectContaining({ id: 'lease-1', status: 'active', displayCallsign: 'ATLAS-1' }),
+    ]);
+
+    prisma.codeSiteRouteRevision.findFirst.mockResolvedValueOnce({
+      id: 'route-revision-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      documentId: 'doc-1',
+      status: 'proposed',
+      previousRouteJson: JSON.stringify(['synthi/prisma/**']),
+      proposedRouteJson: JSON.stringify(['synthi/prisma/**', 'packages/schemas/**']),
+      affectedLeasesJson: JSON.stringify([{ id: 'lease-1', status: 'active', displayCallsign: 'ATLAS-1' }]),
+      approvalJson: JSON.stringify({ required: true }),
+      evidenceRefsJson: JSON.stringify(['evidence:route-proposal']),
+      proposedByUserId: 'user-1',
+      approvedByUserId: null,
+      appliedAt: null,
+      createdAt: new Date('2026-06-29T23:05:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:05:00.000Z'),
+      project: {
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Signup',
+        request: 'Build signup',
+        status: 'active',
+        createdByUserId: 'user-1',
+        members: [{
+          id: 'member-reviewer',
+          projectId: 'project-1',
+          workspaceSlug: 'acme',
+          userId: 'reviewer-1',
+          role: 'admin',
+          permissionsJson: JSON.stringify(['project:read', 'project:write']),
+          participationStatus: 'enabled',
+          revokedAt: null,
+        }],
+        agentSessions: [],
+      },
+      executionPlan: executionPlanFixture(),
+      document: null,
+    });
+    const reviewed = await reviewRouteRevision('acme', 'route-revision-1', {
+      decision: 'approved',
+      rationale: 'Schema-first reroute reduces stale frontend assumptions.',
+      evidenceRefs: ['evidence:route-review'],
+    }, { userId: 'reviewer-1' });
+    const revisionUpdate = prisma.codeSiteRouteRevision.update.mock.calls.at(-1)[0].data;
+    expect(reviewed.routeRevision).toMatchObject({
+      id: 'route-revision-1',
+      status: 'approved',
+      approvedByUserId: 'reviewer-1',
+    });
+    expect(JSON.parse(revisionUpdate.approvalJson)).toMatchObject({
+      decision: 'approved',
+      approved: true,
+      reviewedByUserId: 'reviewer-1',
+    });
+
+    prisma.codeSiteMutationLease.findMany.mockResolvedValueOnce([{
+      id: 'lease-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      agentSessionId: 'agent-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'active',
+      leaseJson: JSON.stringify({ allowedPaths: ['synthi/prisma/**'] }),
+      issuedAt: new Date('2026-06-29T23:00:00.000Z'),
+      expiresAt: null,
+      revokedAt: null,
+    }]);
+    const applied = await applyRouteRevision('acme', 'route-revision-1', {
+      evidenceRefs: ['evidence:route-apply'],
+    }, { userId: 'user-1' });
+    const planUpdate = prisma.codeSiteExecutionPlan.update.mock.calls.at(-1)[0].data;
+    const leaseUpdate = prisma.codeSiteMutationLease.update.mock.calls.at(-1);
+    const policyDecision = prisma.codeSitePolicyDecision.create.mock.calls.at(-1)[0].data;
+
+    expect(applied.executionPlan).toMatchObject({
+      id: 'plan-1',
+      status: 'rerouted',
+      route: ['synthi/prisma/**', 'packages/schemas/**'],
+    });
+    expect(planUpdate).toMatchObject({
+      routeJson: JSON.stringify(['synthi/prisma/**', 'packages/schemas/**']),
+      status: 'rerouted',
+    });
+    expect(leaseUpdate).toEqual([expect.objectContaining({
+      where: { id: 'lease-1' },
+      data: { status: 'suspended', revokedAt: null },
+    })]);
+    expect(policyDecision).toMatchObject({
+      mutationLeaseId: 'lease-1',
+      decision: 'hold',
+      reasonCodesJson: JSON.stringify(['route_revision_applied', 'clearance_reissue_required']),
+    });
+    expect(applied.affectedLeases[0]).toMatchObject({ id: 'lease-1', status: 'suspended' });
+  });
+
+  it('blocks proof-carrying commits until landing inspection evidence covers the write set', async () => {
+    prisma.codeSiteEvent.findMany.mockResolvedValue([
+      {
+        id: 'event-own-write',
+        eventType: 'write_allowed',
+        actorId: 'txn-1',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:01:00.000Z'),
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-1',
+          path: 'synthi/prisma/schema.prisma',
+          lineProvenance: [{
+            lineAnchor: 'synthi/prisma/schema.prisma#L12',
+            startLine: 12,
+            endLine: 15,
+            evidenceRefs: ['hunk:evidence'],
+            processAncestry: ['mcp:synthi_codesite_apply_patch'],
+            promptSummary: 'Add auth schema field',
+          }],
+          evidenceRefs: ['write:evidence'],
+        }),
+      },
+    ]);
+
+    const result = await commitTransaction('acme', 'txn-1');
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toEqual(expect.arrayContaining([
+      'inspection_path_coverage_required',
+      'inspection_signal_required',
+      'inspection_evidence_required',
+    ]));
+    expect(prisma.codeSiteProofBundle.create).not.toHaveBeenCalled();
+    expect(prisma.codeSiteMutationTransaction.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'txn-1' },
+      data: expect.objectContaining({
+        status: 'blocked',
+        commitDecisionJson: expect.stringContaining('inspection_evidence_required'),
+      }),
+    }));
+  });
+
+  it('lands proof-carrying commits only after passed inspections become proof evidence', async () => {
+    const replayEvents = [
+      {
+        id: 'event-transaction-opened',
+        eventType: 'transaction_opened',
+        mutationLeaseId: 'lease-1',
+        actorId: 'txn-1',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:00:00.000Z'),
+        detailsJson: JSON.stringify({ transactionId: 'txn-1', baseSnapshot: 'base' }),
+      },
+      {
+        id: 'event-snapshot',
+        eventType: 'snapshot_taken',
+        mutationLeaseId: 'lease-1',
+        actorId: 'txn-1',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:00:05.000Z'),
+        detailsJson: JSON.stringify({ transactionId: 'txn-1', snapshotDigest: 'sha256:snapshot', readSet: ['synthi/prisma/schema.prisma'] }),
+      },
+      {
+        id: 'event-assumption',
+        eventType: 'assumption_recorded',
+        mutationLeaseId: 'lease-1',
+        actorId: 'txn-1',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:00:10.000Z'),
+        detailsJson: JSON.stringify({ transactionId: 'txn-1', assumptionId: 'assumption-1' }),
+      },
+      {
+        id: 'event-clearance',
+        eventType: 'clearance_issued',
+        mutationLeaseId: 'lease-1',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:00:15.000Z'),
+        detailsJson: JSON.stringify({ allowedPaths: ['synthi/prisma/**'] }),
+      },
+      {
+        id: 'event-write-attempted',
+        eventType: 'write_attempted',
+        mutationLeaseId: 'lease-1',
+        actorId: 'txn-1',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:00:20.000Z'),
+        detailsJson: JSON.stringify({ transactionId: 'txn-1', path: 'synthi/prisma/schema.prisma' }),
+      },
+      {
+        id: 'event-write-denied',
+        eventType: 'write_denied',
+        mutationLeaseId: 'lease-1',
+        actorId: 'txn-1',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:00:25.000Z'),
+        detailsJson: JSON.stringify({ transactionId: 'txn-1', path: 'secrets/prod.env' }),
+      },
+      {
+        id: 'event-shadow',
+        eventType: 'shadow_run',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:00:30.000Z'),
+        detailsJson: JSON.stringify({ affectedZones: ['synthi/prisma/**'], counterfactualRunId: 'cfr-1' }),
+      },
+      {
+        id: 'event-arbiter',
+        eventType: 'arbiter_verdict',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:00:35.000Z'),
+        detailsJson: JSON.stringify({ affectedZones: ['synthi/prisma/**'], selected: 'schema-first' }),
+      },
+      {
+        id: 'event-near-miss',
+        eventType: 'near_miss',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:00:40.000Z'),
+        detailsJson: JSON.stringify({ affectedZones: ['synthi/prisma/**'], incidentId: 'incident-1' }),
+      },
+      {
+        id: 'event-policy-delta',
+        eventType: 'policy_delta_proposed',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:00:45.000Z'),
+        detailsJson: JSON.stringify({ affectedZones: ['synthi/prisma/**'], policyDeltaId: 'delta-1' }),
+      },
+      {
+        id: 'event-aborted',
+        eventType: 'transaction_aborted',
+        mutationLeaseId: 'lease-1',
+        actorId: 'txn-aborted',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:00:50.000Z'),
+        detailsJson: JSON.stringify({ transactionId: 'txn-aborted', reason: 'serializable_snapshot_required' }),
+      },
+      {
+        id: 'event-inspection-result',
+        eventType: 'inspection_result',
+        mutationLeaseId: 'lease-1',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:00:55.000Z'),
+        detailsJson: JSON.stringify({ changedPaths: ['synthi/prisma/schema.prisma'], inspectionRunId: 'inspection-1' }),
+      },
+      {
+        id: 'event-read-observed',
+        eventType: 'read_observed',
+        mutationLeaseId: 'lease-1',
+        actorId: 'txn-1',
+        actorType: 'codesitefs',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:00:58.000Z'),
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-1',
+          path: 'synthi/prisma/schema.prisma',
+          tool: 'file_read',
+          codesiteFsEvent: {
+            type: 'read_observed',
+            path: 'synthi/prisma/schema.prisma',
+            tool: 'file_read',
+          },
+          evidenceRefs: ['read:evidence'],
+        }),
+        evidenceRefsJson: JSON.stringify(['read:evidence']),
+      },
+      {
+        id: 'event-own-write',
+        eventType: 'write_allowed',
+        actorId: 'txn-1',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:01:00.000Z'),
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-1',
+          path: 'synthi/prisma/schema.prisma',
+          lineProvenance: [{
+            lineAnchor: 'synthi/prisma/schema.prisma#L12',
+            startLine: 12,
+            endLine: 15,
+            evidenceRefs: ['hunk:evidence'],
+            processAncestry: ['mcp:synthi_codesite_apply_patch'],
+            promptSummary: 'Add auth schema field',
+          }],
+          evidenceRefs: ['write:evidence'],
+        }),
+      },
+    ];
+    prisma.codeSiteEvent.findMany.mockImplementation(async (query = {}) => {
+      const eventType = query.where?.eventType;
+      if (typeof eventType === 'string') return replayEvents.filter((event) => event.eventType === eventType);
+      if (Array.isArray(eventType?.in)) return replayEvents.filter((event) => eventType.in.includes(event.eventType));
+      return replayEvents;
+    });
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([{
+      id: 'inspection-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'completed',
+      changedPathsJson: JSON.stringify(['synthi/prisma/**']),
+      inspectionSignalsJson: JSON.stringify([
+        { key: 'typecheck', status: 'passed', evidenceRefs: ['runtime:event:typecheck-1'] },
+        { key: 'tests', status: 'passed', evidenceRefs: ['runtime:event:tests-1'] },
+      ]),
+      evidenceRefsJson: JSON.stringify(['runtime:event:inspection-1']),
+      requestedAt: new Date('2026-06-29T23:02:00.000Z'),
+      completedAt: new Date('2026-06-29T23:03:00.000Z'),
+    }]);
+
+    const result = await commitTransaction('acme', 'txn-1', { commitSha: 'abc123', repoState: repoStateFixture() });
+    const proofCreate = prisma.codeSiteProofBundle.create.mock.calls.at(-1)[0];
+    const proofUpdates = prisma.codeSiteProofBundle.update.mock.calls.map((call) => call[0]);
+    const replayProofUpdate = proofUpdates.find((call) => call.data.incidentReplayDigest);
+    const finalSignatureUpdate = proofUpdates.filter((call) => call.data.proofSignatureJson).at(-1);
+    const evidenceRefs = JSON.parse(proofCreate.data.evidenceRefsJson);
+    const incidentCreate = prisma.codeSiteIncident.create.mock.calls.at(-1)[0];
+    const incidentUpdate = prisma.codeSiteIncident.update.mock.calls.at(-1)[0];
+    const replay = JSON.parse(incidentUpdate.data.incidentReplayJson);
+    const eventTypes = prisma.codeSiteEvent.create.mock.calls.map((call) => call[0].data.eventType);
+
+    expect(result.transaction.status).toBe('committed');
+    expect(result.proofBundle.commitSha).toBe('abc123');
+    expect(result.proofBundle.incidentReplayDigest).toMatch(/^sha256:/);
+    expect(result.proofBundle.incidentReplayDigest).not.toBe(result.proofBundle.bundleDigest);
+    expect(result.proofBundle.landingStatus).toBe('completed');
+    expect(result.proofBundle.portableDigest).toMatch(/^sha256:/);
+    expect(result.proofBundle.trailers).toMatchObject({
+      'CodeSite-Project': 'project-1',
+      'CodeSite-Flight': 'ATLAS-1',
+      'CodeSite-Clearance': 'lease-1',
+      'CodeSite-Landing': 'completed',
+      'CodeSite-Transaction': 'txn-1',
+      'CodeSite-Lease': 'lease-1',
+      'CodeSite-Read-Set': expect.stringMatching(/^sha256:/),
+      'CodeSite-Write-Set': expect.stringMatching(/^sha256:/),
+      'CodeSite-Black-Box': expect.stringMatching(/^sha256:/),
+      'CodeSite-Proof-Digest': expect.stringMatching(/^sha256:/),
+      'CodeSite-Proof-Signature': expect.stringMatching(/^hmac-sha256:/),
+    });
+    expect(result.proofBundle.trailers['CodeSite-Proof-Digest']).toBe(result.proofBundle.portableDigest);
+    expect(JSON.parse(finalSignatureUpdate.data.proofSignatureJson).payloadDigest).toBe(result.proofBundle.portableDigest);
+    expect(result.proofBundle.trailers['CodeSite-Black-Box']).toBe(result.proofBundle.incidentReplayDigest);
+    expect(proofCreate.data.landingStatus).toBe('completed');
+    expect(replayProofUpdate).toMatchObject({
+      where: { id: 'proof-created' },
+      data: {
+        incidentReplayDigest: result.proofBundle.incidentReplayDigest,
+        landingStatus: 'completed',
+      },
+    });
+    expect(finalSignatureUpdate.data).toMatchObject({
+      proofSignatureJson: expect.stringContaining('proofSignature.v1'),
+      signatureKeyId: expect.any(String),
+    });
+    expect(incidentCreate.data).toMatchObject({
+      projectId: 'project-1',
+      severity: 'low',
+      category: 'black_box',
+    });
+    expect(JSON.parse(incidentCreate.data.participantsJson)).toEqual(['ATLAS-1']);
+    expect(replay).toMatchObject({
+      schemaVersion: 'synthi.codesite.incidentReplay.v1',
+      category: 'black_box',
+      transactionId: 'txn-1',
+      transaction: expect.objectContaining({
+        id: 'txn-1',
+        status: 'committed',
+        writeSet: ['synthi/prisma/schema.prisma'],
+      }),
+      proofBundle: expect.objectContaining({
+        id: 'proof-created',
+        bundleDigest: expect.stringMatching(/^sha256:/),
+      }),
+      handover: expect.objectContaining({
+        proofBundleId: 'proof-created',
+        exportPaths: expect.arrayContaining([
+          expect.stringContaining('handover.md'),
+          expect.stringContaining('proof-created.proof.json'),
+        ]),
+      }),
+    });
+    expect(replay.causalEvents.map((event) => event.type)).toEqual(expect.arrayContaining([
+      'transaction.opened',
+      'assumption.recorded',
+      'clearance.issued',
+      'read.observed',
+      'write.attempted',
+      'write.denied',
+      'snapshot.taken',
+      'shadow.run',
+      'arbiter.verdict',
+      'inspection.result',
+      'near_miss.detected',
+      'policy_delta.proposed',
+      'write.allowed',
+      'transaction.committed',
+      'transaction.aborted',
+      'black_box.closed',
+    ]));
+    expect(replay.completeness).toMatchObject({
+      score: 1,
+      missingEventTypes: [],
+      missingEvidence: [],
+    });
+    expect(eventTypes).toEqual(expect.arrayContaining(['transaction_committed', 'black_box_closed']));
+    expect(evidenceRefs).toEqual(expect.arrayContaining([
+      'runtime:event:inspection-1',
+      'runtime:event:typecheck-1',
+      'runtime:event:tests-1',
+      'codesite:inspection:inspection-1',
+      expect.stringMatching(/^codesite:repo-state:sha256:/),
+      'codesite:transaction:txn-1',
+      'codesite:lease:lease-1',
+    ]));
+    expect(JSON.parse(proofCreate.data.repoStateJson)).toMatchObject({
+      evidenceDigest: expect.stringMatching(/^sha256:/),
+      repoIdentity: expect.objectContaining({
+        identityDigest: expect.stringMatching(/^sha256:/),
+        gitTopLevelMatchesRepoRoot: true,
+      }),
+      writeFileDigests: [expect.objectContaining({ path: 'synthi/prisma/schema.prisma' })],
+    });
+    expect(prisma.codeSiteLineProvenance.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        proofBundleId: 'proof-created',
+        filePath: 'synthi/prisma/schema.prisma',
+        lineAnchor: 'synthi/prisma/schema.prisma#L12',
+        startLine: 12,
+        endLine: 15,
+        evidenceRefsJson: expect.stringContaining('hunk:evidence'),
+        processAncestryJson: expect.stringContaining('mcp:synthi_codesite_apply_patch'),
+        promptSummary: 'Add auth schema field',
+      }),
+    }));
+  });
+
+  it('serializes overlapping proof-carrying commit races and blocks the stale loser', async () => {
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-control-race-snapshot-'));
+    await fs.mkdir(path.join(repoRoot, 'synthi', 'prisma'), { recursive: true });
+    await fs.writeFile(path.join(repoRoot, 'synthi', 'prisma', 'schema.prisma'), 'model User { id String @id }\n', 'utf8');
+    const snapshot = await buildReadSnapshotEvidence(['synthi/prisma/schema.prisma'], {
+      repoRoot,
+      scope: 'repo_wide',
+    });
+    const openedAt = new Date('2026-06-29T23:00:00.000Z');
+    const transactions = new Map([
+      ['txn-race-a', {
+        ...transactionFixture(),
+        id: 'txn-race-a',
+        readSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+        observedReadSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+        writeSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+        observedWriteSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+        baseSnapshot: snapshot.snapshotDigest,
+        baseSnapshotEvidenceJson: JSON.stringify(snapshot),
+        openedAt,
+      }],
+      ['txn-race-b', {
+        ...transactionFixture(),
+        id: 'txn-race-b',
+        readSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+        observedReadSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+        writeSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+        observedWriteSetJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+        baseSnapshot: snapshot.snapshotDigest,
+        baseSnapshotEvidenceJson: JSON.stringify(snapshot),
+        openedAt,
+      }],
+    ]);
+    const events = [
+      {
+        id: 'event-write-a',
+        projectId: 'project-1',
+        eventType: 'write_allowed',
+        actorId: 'txn-race-a',
+        displayCallsign: 'ATLAS-1',
+        createdAt: openedAt,
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-race-a',
+          path: 'synthi/prisma/schema.prisma',
+          lineProvenance: [{
+            lineAnchor: 'synthi/prisma/schema.prisma#L12-L15',
+            startLine: 12,
+            endLine: 15,
+            evidenceRefs: ['hunk:evidence:a'],
+          }],
+          evidenceRefs: ['write:evidence:a'],
+        }),
+      },
+      {
+        id: 'event-write-b',
+        projectId: 'project-1',
+        eventType: 'write_allowed',
+        actorId: 'txn-race-b',
+        displayCallsign: 'ATLAS-1',
+        createdAt: openedAt,
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-race-b',
+          path: 'synthi/prisma/schema.prisma',
+          lineProvenance: [{
+            lineAnchor: 'synthi/prisma/schema.prisma#L12-L15',
+            startLine: 12,
+            endLine: 15,
+            evidenceRefs: ['hunk:evidence:b'],
+          }],
+          evidenceRefs: ['write:evidence:b'],
+        }),
+      },
+    ];
+    const proofBundles = new Map();
+    let eventSeq = 0;
+    let proofSeq = 0;
+
+    prisma.codeSiteMutationTransaction.findFirst.mockImplementation(async ({ where } = {}) => {
+      const transaction = transactions.get(where?.id);
+      return transaction ? { ...transaction } : null;
+    });
+    prisma.codeSiteMutationTransaction.update.mockImplementation(async ({ where, data }) => {
+      const current = transactions.get(where.id);
+      const next = { ...current, ...data };
+      transactions.set(where.id, next);
+      return { ...next };
+    });
+    prisma.codeSiteMutationTransaction.updateMany.mockImplementation(async ({ where, data }) => {
+      const current = transactions.get(where.id);
+      const allowedStatuses = where.status?.in || [];
+      if (!current || !allowedStatuses.includes(current.status) || current.proofBundleDigest !== where.proofBundleDigest) {
+        return { count: 0 };
+      }
+      transactions.set(where.id, { ...current, ...data });
+      return { count: 1 };
+    });
+    prisma.codeSiteEvent.count.mockImplementation(async ({ where } = {}) => (
+      events.filter((event) => !where?.projectId || event.projectId === where.projectId).length
+    ));
+    prisma.codeSiteEvent.create.mockImplementation(async ({ data }) => {
+      const event = {
+        id: `event-${data.eventType}-${eventSeq += 1}`,
+        createdAt: new Date(`2026-06-29T23:04:${String(eventSeq).padStart(2, '0')}.000Z`),
+        ...data,
+      };
+      events.push(event);
+      return event;
+    });
+    prisma.codeSiteEvent.findMany.mockImplementation(async (query = {}) => {
+      const eventType = query.where?.eventType;
+      const createdAfter = query.where?.createdAt?.gt;
+      return events.filter((event) => {
+        if (query.where?.projectId && event.projectId !== query.where.projectId) return false;
+        if (typeof eventType === 'string' && event.eventType !== eventType) return false;
+        if (Array.isArray(eventType?.in) && !eventType.in.includes(event.eventType)) return false;
+        if (createdAfter && !(event.createdAt > createdAfter)) return false;
+        return true;
+      });
+    });
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([{
+      id: 'inspection-race',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'completed',
+      changedPathsJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+      inspectionSignalsJson: JSON.stringify([
+        { key: 'typecheck', status: 'passed', evidenceRefs: ['runtime:event:typecheck-race'] },
+        { key: 'tests', status: 'passed', evidenceRefs: ['runtime:event:tests-race'] },
+      ]),
+      evidenceRefsJson: JSON.stringify(['runtime:event:inspection-race']),
+      requestedAt: new Date('2026-06-29T23:02:00.000Z'),
+      completedAt: new Date('2026-06-29T23:03:00.000Z'),
+    }]);
+    prisma.codeSiteProofBundle.create.mockImplementation(async ({ data }) => {
+      const bundle = {
+        id: `proof-race-${proofSeq += 1}`,
+        createdAt: new Date(`2026-06-29T23:05:0${proofSeq}.000Z`),
+        ...data,
+      };
+      proofBundles.set(bundle.id, bundle);
+      return bundle;
+    });
+    prisma.codeSiteProofBundle.update.mockImplementation(async ({ where, data }) => {
+      const current = proofBundles.get(where.id);
+      const next = {
+        ...current,
+        ...data,
+        project: { id: 'project-1', workspaceSlug: 'acme', zonePolicyJson: JSON.stringify({ zones: [] }) },
+        transaction: {
+          ...transactions.get(current.transactionId),
+          project: { id: 'project-1', workspaceSlug: 'acme', zonePolicyJson: JSON.stringify({ zones: [] }) },
+          mutationLease: transactionFixture().mutationLease,
+          agentSession: transactionFixture().agentSession,
+        },
+      };
+      proofBundles.set(where.id, next);
+      return next;
+    });
+
+    const [first, second] = await Promise.all([
+      commitTransaction('acme', 'txn-race-a', {
+        commitSha: 'abc123',
+        repoState: repoStateFixture(undefined, {
+          transactionId: 'txn-race-a',
+          baseSnapshot: snapshot.snapshotDigest,
+        }),
+      }),
+      commitTransaction('acme', 'txn-race-b', {
+        commitSha: 'def456',
+        repoState: repoStateFixture(undefined, {
+          transactionId: 'txn-race-b',
+          baseSnapshot: snapshot.snapshotDigest,
+        }),
+      }),
+    ]);
+    const results = [first, second];
+    const committed = results.filter((result) => result.transaction?.status === 'committed');
+    const blocked = results.filter((result) => result.transaction?.status === 'blocked');
+    const commitEvents = events.filter((event) => event.eventType === 'transaction_committed');
+
+    expect(committed).toHaveLength(1);
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0].decision.reasonCodes).toContain('stale_read_detected');
+    expect(blocked[0].decision.staleReads).toEqual([expect.objectContaining({
+      eventType: 'transaction_committed',
+      path: null,
+    })]);
+    expect(commitEvents).toHaveLength(1);
+    expect(JSON.parse(commitEvents[0].detailsJson)).toMatchObject({
+      writeSet: ['synthi/prisma/schema.prisma'],
+    });
+    expect(prisma.codeSiteProofBundle.create).toHaveBeenCalledTimes(1);
+    expect(prisma.codeSiteMutationTransaction.updateMany).toHaveBeenCalledTimes(1);
+    expect([...transactions.values()].filter((transaction) => transaction.status === 'committed')).toHaveLength(1);
+    expect([...transactions.values()].filter((transaction) => transaction.status === 'blocked')).toHaveLength(1);
+  });
+
+  it('scores aborted transaction black boxes against the aborted lifecycle', async () => {
+    const transaction = {
+      ...transactionFixture(),
+      id: 'txn-abort',
+      readSetJson: JSON.stringify(['synthi/prisma/schema-contract-read.txt']),
+      observedReadSetJson: JSON.stringify(['synthi/prisma/schema-contract-read.txt']),
+      writeSetJson: JSON.stringify([]),
+      observedWriteSetJson: JSON.stringify([]),
+      baseSnapshotEvidenceJson: JSON.stringify({
+        schemaVersion: 'synthi.codesite.readSnapshotEvidence.v1',
+        snapshotDigest: 'sha256:base-snapshot',
+        readSet: ['synthi/prisma/schema-contract-read.txt'],
+      }),
+    };
+    prisma.codeSiteMutationTransaction.findFirst.mockResolvedValue(transaction);
+    prisma.codeSiteMutationTransaction.update.mockImplementation(async ({ data }) => ({
+      ...transaction,
+      ...data,
+    }));
+    prisma.codeSiteEvent.findMany.mockResolvedValue([
+      {
+        id: 'event-open-abort',
+        projectId: 'project-1',
+        mutationLeaseId: 'lease-1',
+        eventType: 'transaction_opened',
+        displayCallsign: 'ATLAS-1',
+        actorType: 'transaction',
+        actorId: 'txn-abort',
+        detailsJson: JSON.stringify({ transactionId: 'txn-abort', baseSnapshot: 'sha256:base-snapshot' }),
+        evidenceRefsJson: JSON.stringify(['ev:open']),
+        logicalTime: 1,
+        createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      },
+      {
+        id: 'event-clearance-abort',
+        projectId: 'project-1',
+        mutationLeaseId: 'lease-1',
+        eventType: 'clearance_issued',
+        displayCallsign: 'ATLAS-1',
+        actorType: 'policy_engine',
+        actorId: 'decision-1',
+        detailsJson: JSON.stringify({ mutationLeaseId: 'lease-1' }),
+        evidenceRefsJson: JSON.stringify(['ev:clearance']),
+        logicalTime: 2,
+        createdAt: new Date('2026-06-29T23:00:10.000Z'),
+      },
+      {
+        id: 'event-snapshot-abort',
+        projectId: 'project-1',
+        mutationLeaseId: 'lease-1',
+        eventType: 'snapshot_taken',
+        displayCallsign: 'ATLAS-1',
+        actorType: 'transaction',
+        actorId: 'txn-abort',
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-abort',
+          snapshotDigest: 'sha256:base-snapshot',
+          readSet: ['synthi/prisma/schema-contract-read.txt'],
+        }),
+        evidenceRefsJson: JSON.stringify(['ev:snapshot']),
+        logicalTime: 3,
+        createdAt: new Date('2026-06-29T23:00:20.000Z'),
+      },
+      {
+        id: 'event-near-abort',
+        projectId: 'project-1',
+        mutationLeaseId: 'lease-1',
+        eventType: 'near_miss',
+        displayCallsign: 'ATLAS-1',
+        actorType: 'policy_engine',
+        actorId: 'decision-near',
+        detailsJson: JSON.stringify({ affectedZones: ['synthi/prisma/**'], prevented: true }),
+        evidenceRefsJson: JSON.stringify(['ev:near']),
+        logicalTime: 4,
+        createdAt: new Date('2026-06-29T23:00:30.000Z'),
+      },
+    ]);
+
+    await abortTransaction('acme', 'txn-abort', { reason: 'serializable_snapshot_changed' });
+
+    const incidentUpdate = prisma.codeSiteIncident.update.mock.calls.at(-1)[0];
+    const replay = JSON.parse(incidentUpdate.data.incidentReplayJson);
+
+    expect(replay.transaction).toMatchObject({
+      id: 'txn-abort',
+      status: 'aborted',
+    });
+    expect(replay.causalEvents.map((event) => event.type)).toEqual(expect.arrayContaining([
+      'transaction.opened',
+      'clearance.issued',
+      'snapshot.taken',
+      'near_miss.detected',
+      'transaction.aborted',
+      'black_box.closed',
+    ]));
+    expect(replay.completeness).toMatchObject({
+      score: 1,
+      requiredEventTypes: expect.arrayContaining([
+        'transaction.opened',
+        'clearance.issued',
+        'snapshot.taken',
+        'near_miss.detected',
+        'transaction.aborted',
+        'black_box.closed',
+      ]),
+      missingEventTypes: [],
+    });
+    expect(replay.completeness.requiredEventTypes).not.toContain('transaction.committed');
+  });
+
+  it('scores committed black-box handovers incomplete without proof bundle evidence', async () => {
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+
+    const incident = await createIncident('acme', 'project-1', {
+      category: 'black_box',
+      severity: 'low',
+      summary: 'Committed transaction handover without proof evidence.',
+      participants: ['ATLAS-1'],
+      affectedZones: ['synthi/prisma/**'],
+      transactionContext: {
+        id: 'txn-1',
+        projectId: 'project-1',
+        mutationLeaseId: 'lease-1',
+        displayCallsign: 'ATLAS-1',
+        status: 'committed',
+      },
+      handover: {
+        status: 'committed',
+        changedPaths: ['synthi/prisma/schema.prisma'],
+        exportPaths: ['projects/project-1/handover.md'],
+      },
+    });
+
+    expect(incident.category).toBe('black_box');
+    expect(incident.incidentReplay.completeness.score).toBeLessThan(1);
+    expect(incident.incidentReplay.completeness.requiredEvidence).toEqual(expect.arrayContaining([
+      'proof_bundle_id',
+      'proof_bundle_digest',
+      'proof_bundle_evidence_refs',
+      'handover_proof_bundle_id',
+      'handover_proof_bundle_digest',
+      'proof_bundle_export_path',
+      'proof_trailers_export_path',
+    ]));
+    expect(incident.incidentReplay.completeness.missingEvidence).toEqual(expect.arrayContaining([
+      'proof_bundle_id',
+      'proof_bundle_digest',
+      'proof_bundle_export_path',
+      'proof_trailers_export_path',
+    ]));
+  });
+
+  it('attaches a final git commit only when proof bundle trailers match', async () => {
+    const transaction = {
+      ...transactionFixture(),
+      status: 'committed',
+      closedAt: new Date('2026-06-29T23:05:00.000Z'),
+    };
+    const bundle = {
+      id: 'proof-created',
+      projectId: 'project-1',
+      transactionId: 'txn-1',
+      commitSha: null,
+      readSetDigest: 'sha256:read',
+      writeSetDigest: 'sha256:write',
+      invariantsJson: JSON.stringify(['clearance.diff.inside_route']),
+      evidenceRefsJson: JSON.stringify(['runtime:event:inspection-1']),
+      dojoEvidenceRefsJson: JSON.stringify([]),
+      repoStateJson: JSON.stringify(repoStateFixture()),
+      incidentReplayDigest: 'sha256:blackbox',
+      landingStatus: 'completed',
+      bundleDigest: 'sha256:bundle',
+      createdAt: new Date('2026-06-29T23:03:00.000Z'),
+      project: {
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Proof project',
+        request: 'Prove it',
+        status: 'active',
+        zonePolicyJson: JSON.stringify({ zones: [] }),
+        controlPlanJson: JSON.stringify({}),
+        createdAt: new Date('2026-06-29T23:00:00.000Z'),
+        updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+      },
+      transaction: {
+        ...transaction,
+        mutationLease: transaction.mutationLease,
+        agentSession: transaction.agentSession,
+      },
+    };
+    const relatedIncident = {
+      id: 'incident-black-box-txn-1',
+      projectId: 'project-1',
+      severity: 'medium',
+      category: 'black_box',
+      participantsJson: JSON.stringify(['ATLAS-1']),
+      affectedZonesJson: JSON.stringify(['schema']),
+      incidentReplayJson: JSON.stringify({
+        transactionId: 'txn-1',
+        proofBundle: { id: 'proof-created' },
+        handover: { proofBundleId: 'proof-created' },
+      }),
+      replayDigest: 'sha256:blackbox',
+      timelineEventRefsJson: JSON.stringify([]),
+      policyDeltaJson: JSON.stringify(null),
+      evidenceRefsJson: JSON.stringify(['codesite:proof-bundle:proof-created', 'codesite:transaction:txn-1']),
+      createdAt: new Date('2026-06-29T23:04:00.000Z'),
+    };
+    const unrelatedIncident = {
+      id: 'incident-black-box-other',
+      projectId: 'project-1',
+      severity: 'critical',
+      category: 'black_box',
+      participantsJson: JSON.stringify(['BETA-2']),
+      affectedZonesJson: JSON.stringify(['api']),
+      incidentReplayJson: JSON.stringify({
+        transactionId: 'txn-other',
+        proofBundle: { id: 'proof-other' },
+        handover: { proofBundleId: 'proof-other' },
+      }),
+      replayDigest: 'sha256:other-blackbox',
+      timelineEventRefsJson: JSON.stringify([]),
+      policyDeltaJson: JSON.stringify(null),
+      evidenceRefsJson: JSON.stringify(['codesite:proof-bundle:proof-other', 'codesite:transaction:txn-other']),
+      createdAt: new Date('2026-06-29T23:04:30.000Z'),
+    };
+    const portable = buildProofBundle({
+      project: { id: 'project-1', workspaceSlug: 'acme' },
+      transaction: {
+        id: 'txn-1',
+        projectId: 'project-1',
+        mutationLeaseId: 'lease-1',
+        readSet: [],
+        writeSet: ['synthi/prisma/schema.prisma'],
+        invariants: ['clearance.diff.inside_route'],
+        baseSnapshot: transaction.baseSnapshot,
+        baseSnapshotEvidence: null,
+      },
+      mutationLease: { id: 'lease-1', displayCallsign: 'ATLAS-1' },
+      proofBundle: {
+        ...bundle,
+        invariants: ['clearance.diff.inside_route'],
+        evidenceRefs: ['runtime:event:inspection-1'],
+        dojoEvidenceRefs: [],
+        repoState: repoStateFixture(),
+        incidentReplayDigest: 'sha256:blackbox',
+      },
+      incidents: [relatedIncident],
+    });
+    bundle.proofSignatureJson = JSON.stringify(portable.proofSignature);
+    bundle.signatureKeyId = portable.proofSignature.keyId;
+    const trailers = proofCommitTrailers(portable);
+    prisma.codeSiteProofBundle.findFirst.mockResolvedValue(bundle);
+    prisma.codeSiteIncident.findMany.mockResolvedValue([unrelatedIncident, relatedIncident]);
+    prisma.codeSiteProofBundle.update.mockImplementation(async ({ data }) => ({
+      ...bundle,
+      ...data,
+    }));
+
+    const result = await attachProofBundleCommit('acme', 'proof-created', {
+      commitSha: 'abc1234',
+      commitMessage: [
+        'Land schema-first proof',
+        '',
+        ...Object.entries(trailers).map(([key, value]) => `${key}: ${value}`),
+      ].join('\n'),
+      trailers: { ...trailers, 'CodeSite-Proof-Digest': 'sha256:forged' },
+      evidenceRefs: ['git:show:abc1234'],
+    }, { userId: 'user-1' });
+
+    expect(result.commitSha).toBe('abc1234');
+    expect(result.evidenceRefs).toEqual(['runtime:event:inspection-1']);
+    expect(result.trailers['CodeSite-Proof-Digest']).toBe(trailers['CodeSite-Proof-Digest']);
+    expect(result.trailers['CodeSite-Proof-Signature']).toBe(trailers['CodeSite-Proof-Signature']);
+    expect(prisma.codeSiteIncident.findMany).toHaveBeenCalledWith({
+      where: { projectId: 'project-1' },
+      orderBy: { createdAt: 'asc' },
+    });
+    expect(prisma.codeSiteProofBundle.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'proof-created' },
+      data: expect.objectContaining({
+        commitSha: 'abc1234',
+      }),
+    }));
+    expect(prisma.codeSiteProofBundle.update.mock.calls[0][0].data).not.toHaveProperty('evidenceRefsJson');
+    const commitEvent = prisma.codeSiteEvent.create.mock.calls
+      .map((call) => call[0].data)
+      .find((event) => event.actorType === 'proof_bundle');
+    expect(commitEvent).toMatchObject({
+      mutationLeaseId: 'lease-1',
+      eventType: 'inspection_result',
+      displayCallsign: 'ATLAS-1',
+      actorId: 'proof-created',
+    });
+    expect(JSON.parse(commitEvent.evidenceRefsJson)).toEqual(expect.arrayContaining([
+      'git:commit:abc1234',
+      expect.stringMatching(/^git:commit-message:sha256:/),
+      'git:show:abc1234',
+    ]));
+    expect(JSON.parse(commitEvent.detailsJson)).toMatchObject({
+      type: 'proof_bundle_commit_attached',
+      proofBundleId: 'proof-created',
+      transactionId: 'txn-1',
+      commitSha: 'abc1234',
+      trailerSource: 'git_commit_message',
+      commitMessageDigest: expect.stringMatching(/^sha256:/),
+      reasonCodes: ['proof_bundle_actual_commit_trailers_verified'],
+    });
+  });
+
+  it('blocks proof-carrying commits when changed paths lack line provenance evidence', async () => {
+    prisma.codeSiteEvent.findMany.mockResolvedValue([
+      {
+        id: 'event-own-write',
+        eventType: 'write_allowed',
+        actorId: 'txn-1',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:01:00.000Z'),
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-1',
+          path: 'synthi/prisma/schema.prisma',
+          evidenceRefs: ['write:evidence'],
+        }),
+      },
+    ]);
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([{
+      id: 'inspection-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'completed',
+      changedPathsJson: JSON.stringify(['synthi/prisma/**']),
+      inspectionSignalsJson: JSON.stringify([
+        { key: 'typecheck', status: 'passed', evidenceRefs: ['runtime:event:typecheck-1'] },
+        { key: 'tests', status: 'passed', evidenceRefs: ['runtime:event:tests-1'] },
+      ]),
+      evidenceRefsJson: JSON.stringify(['runtime:event:inspection-1']),
+      requestedAt: new Date('2026-06-29T23:02:00.000Z'),
+      completedAt: new Date('2026-06-29T23:03:00.000Z'),
+    }]);
+
+    const result = await commitTransaction('acme', 'txn-1', { commitSha: 'abc123', repoState: repoStateFixture() });
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toEqual(expect.arrayContaining([
+      'line_provenance_required',
+      'repo_state_line_range_coverage_required',
+    ]));
+    expect(result.decision.missingLineProvenancePaths).toEqual(['synthi/prisma/schema.prisma']);
+    expect(prisma.codeSiteProofBundle.create).not.toHaveBeenCalled();
+    expect(prisma.codeSiteLineProvenance.create).not.toHaveBeenCalled();
+    expect(prisma.codeSiteMutationTransaction.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'txn-1' },
+      data: expect.objectContaining({
+        status: 'blocked',
+        commitDecisionJson: expect.stringContaining('line_provenance_required'),
+      }),
+    }));
+  });
+
+  it('blocks proof-carrying commits when any write event lacks strict line provenance', async () => {
+    prisma.codeSiteEvent.findMany.mockResolvedValue([
+      {
+        id: 'event-covered-write',
+        eventType: 'write_allowed',
+        actorId: 'txn-1',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:01:00.000Z'),
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-1',
+          path: 'synthi/prisma/schema.prisma',
+          lineProvenance: [{
+            lineAnchor: 'synthi/prisma/schema.prisma#L12-L15',
+            startLine: 12,
+            endLine: 15,
+            evidenceRefs: ['hunk:evidence'],
+          }],
+          evidenceRefs: ['write:evidence:covered'],
+        }),
+      },
+      {
+        id: 'event-uncovered-write',
+        eventType: 'write_allowed',
+        actorId: 'txn-1',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:02:00.000Z'),
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-1',
+          path: 'synthi/prisma/schema.prisma',
+          evidenceRefs: ['write:evidence:uncovered'],
+        }),
+      },
+    ]);
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([{
+      id: 'inspection-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'completed',
+      changedPathsJson: JSON.stringify(['synthi/prisma/**']),
+      inspectionSignalsJson: JSON.stringify([
+        { key: 'typecheck', status: 'passed', evidenceRefs: ['runtime:event:typecheck-1'] },
+        { key: 'tests', status: 'passed', evidenceRefs: ['runtime:event:tests-1'] },
+      ]),
+      evidenceRefsJson: JSON.stringify(['runtime:event:inspection-1']),
+      requestedAt: new Date('2026-06-29T23:02:00.000Z'),
+      completedAt: new Date('2026-06-29T23:03:00.000Z'),
+    }]);
+
+    const result = await commitTransaction('acme', 'txn-1', { commitSha: 'abc123', repoState: repoStateFixture() });
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toEqual(['line_provenance_required']);
+    expect(result.decision.missingLineProvenancePaths).toEqual(['synthi/prisma/schema.prisma']);
+    expect(result.decision.lineProvenance?.uncoveredWriteEvents).toEqual([expect.objectContaining({
+      eventId: 'event-uncovered-write',
+      path: 'synthi/prisma/schema.prisma',
+      missingPathCoverage: true,
+    })]);
+    expect(prisma.codeSiteProofBundle.create).not.toHaveBeenCalled();
+    expect(prisma.codeSiteLineProvenance.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects path-only line provenance without numeric changed ranges', async () => {
+    prisma.codeSiteEvent.findMany.mockResolvedValue([
+      {
+        id: 'event-own-write',
+        eventType: 'write_allowed',
+        actorId: 'txn-1',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:01:00.000Z'),
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-1',
+          path: 'synthi/prisma/schema.prisma',
+          lineProvenance: ['synthi/prisma/schema.prisma#L12'],
+          evidenceRefs: ['write:evidence'],
+        }),
+      },
+    ]);
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([{
+      id: 'inspection-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'completed',
+      changedPathsJson: JSON.stringify(['synthi/prisma/**']),
+      inspectionSignalsJson: JSON.stringify([
+        { key: 'typecheck', status: 'passed', evidenceRefs: ['runtime:event:typecheck-1'] },
+        { key: 'tests', status: 'passed', evidenceRefs: ['runtime:event:tests-1'] },
+      ]),
+      evidenceRefsJson: JSON.stringify(['runtime:event:inspection-1']),
+      requestedAt: new Date('2026-06-29T23:02:00.000Z'),
+      completedAt: new Date('2026-06-29T23:03:00.000Z'),
+    }]);
+
+    const result = await commitTransaction('acme', 'txn-1', { repoState: repoStateFixture() });
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toEqual(expect.arrayContaining([
+      'line_provenance_required',
+      'repo_state_line_range_coverage_required',
+    ]));
+    expect(result.decision.missingLineProvenancePaths).toEqual(['synthi/prisma/schema.prisma']);
+    expect(prisma.codeSiteProofBundle.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects strict line provenance that does not cover repo-state diff ranges', async () => {
+    prisma.codeSiteEvent.findMany.mockResolvedValue([
+      {
+        id: 'event-own-write',
+        eventType: 'write_allowed',
+        actorId: 'txn-1',
+        displayCallsign: 'ATLAS-1',
+        createdAt: new Date('2026-06-29T23:01:00.000Z'),
+        detailsJson: JSON.stringify({
+          transactionId: 'txn-1',
+          path: 'synthi/prisma/schema.prisma',
+          lineProvenance: [{
+            lineAnchor: 'synthi/prisma/schema.prisma#L12-L15',
+            startLine: 12,
+            endLine: 15,
+            evidenceRefs: ['hunk:evidence'],
+          }],
+          evidenceRefs: ['write:evidence'],
+        }),
+      },
+    ]);
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([{
+      id: 'inspection-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'completed',
+      changedPathsJson: JSON.stringify(['synthi/prisma/**']),
+      inspectionSignalsJson: JSON.stringify([
+        { key: 'typecheck', status: 'passed', evidenceRefs: ['runtime:event:typecheck-1'] },
+        { key: 'tests', status: 'passed', evidenceRefs: ['runtime:event:tests-1'] },
+      ]),
+      evidenceRefsJson: JSON.stringify(['runtime:event:inspection-1']),
+      requestedAt: new Date('2026-06-29T23:02:00.000Z'),
+      completedAt: new Date('2026-06-29T23:03:00.000Z'),
+    }]);
+    const forgedRepoState = repoStateFixture([{
+      filePath: 'synthi/prisma/schema.prisma',
+      lineAnchor: 'synthi/prisma/schema.prisma#L40-L42',
+      startLine: 40,
+      endLine: 42,
+      source: 'head_commit_diff',
+    }]);
+
+    const result = await commitTransaction('acme', 'txn-1', { repoState: forgedRepoState });
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toEqual(expect.arrayContaining([
+      'line_provenance_required',
+      'repo_state_line_range_coverage_required',
+    ]));
+    expect(result.decision.lineProvenance?.uncoveredRepoStateRanges).toEqual([expect.objectContaining({
+      filePath: 'synthi/prisma/schema.prisma',
+      startLine: 40,
+      endLine: 42,
+    })]);
+    expect(prisma.codeSiteProofBundle.create).not.toHaveBeenCalled();
+  });
+
+  it('blocks proof-carrying commits when passed inspections lack repo-state evidence', async () => {
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([{
+      id: 'inspection-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'completed',
+      changedPathsJson: JSON.stringify(['synthi/prisma/**']),
+      inspectionSignalsJson: JSON.stringify([
+        { key: 'typecheck', status: 'passed', evidenceRefs: ['runtime:event:typecheck-1'] },
+        { key: 'tests', status: 'passed', evidenceRefs: ['runtime:event:tests-1'] },
+      ]),
+      evidenceRefsJson: JSON.stringify(['runtime:event:inspection-1']),
+      requestedAt: new Date('2026-06-29T23:02:00.000Z'),
+      completedAt: new Date('2026-06-29T23:03:00.000Z'),
+    }]);
+
+    const result = await commitTransaction('acme', 'txn-1');
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toContain('repo_state_evidence_required');
+    expect(prisma.codeSiteProofBundle.create).not.toHaveBeenCalled();
+  });
+
+  it('blocks proof-carrying commits when repo-state evidence lacks managed workspace identity', async () => {
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([passedLandingInspection()]);
+    const repoState = repoStateFixture();
+    repoState.repoIdentity = null;
+    delete repoState.evidenceDigest;
+    repoState.evidenceDigest = digest(repoState);
+
+    const result = await commitTransaction('acme', 'txn-1', { repoState });
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toEqual(expect.arrayContaining([
+      'repo_state_identity_required',
+    ]));
+    expect(result.decision.reasonCodes).not.toContain('repo_state_digest_mismatch');
+    expect(prisma.codeSiteProofBundle.create).not.toHaveBeenCalled();
+  });
+
+  it('blocks replayed repo-state evidence from a different workspace or transaction', async () => {
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([passedLandingInspection()]);
+    const repoState = repoStateFixture(undefined, {
+      workspaceSlug: 'other-workspace',
+      transactionId: 'txn-other',
+    });
+
+    const result = await commitTransaction('acme', 'txn-1', { repoState });
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toEqual(expect.arrayContaining([
+      'repo_state_workspace_mismatch',
+      'repo_state_transaction_mismatch',
+      'repo_state_identity_workspace_mismatch',
+      'repo_state_identity_transaction_mismatch',
+    ]));
+    expect(prisma.codeSiteProofBundle.create).not.toHaveBeenCalled();
+  });
+
+  it('blocks tampered repo-state evidence whose digest no longer matches normalized content', async () => {
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([passedLandingInspection()]);
+    const repoState = repoStateFixture();
+    repoState.writeFileDigests[0].digest = 'sha256:forged-file';
+
+    const result = await commitTransaction('acme', 'txn-1', { repoState });
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toEqual(expect.arrayContaining([
+      'repo_state_digest_mismatch',
+    ]));
+    expect(prisma.codeSiteProofBundle.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects synthetic landing pass strings without executable inspection evidence', async () => {
+    prisma.codeSiteEvent.findMany.mockResolvedValue([]);
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([{
+      id: 'inspection-1',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'completed',
+      changedPathsJson: JSON.stringify(['synthi/prisma/**']),
+      inspectionSignalsJson: JSON.stringify([
+        { key: 'typecheck', status: 'passed', evidenceRefs: ['typecheck:pass'] },
+        { key: 'tests', status: 'passed', evidenceRefs: ['tests:pass'] },
+      ]),
+      evidenceRefsJson: JSON.stringify(['inspection:claimed']),
+      requestedAt: new Date('2026-06-29T23:02:00.000Z'),
+      completedAt: new Date('2026-06-29T23:03:00.000Z'),
+    }]);
+
+    const result = await commitTransaction('acme', 'txn-1', { repoState: repoStateFixture() });
+
+    expect(result.decision.ok).toBe(false);
+    expect(result.decision.reasonCodes).toEqual(expect.arrayContaining([
+      'inspection_signal_required',
+      'inspection_executable_evidence_required',
+    ]));
+    expect(prisma.codeSiteProofBundle.create).not.toHaveBeenCalled();
+  });
+
+  it('returns portable proof material with proof bundle lookups', async () => {
+    const transaction = transactionFixture();
+    prisma.codeSiteProofBundle.findFirst.mockResolvedValue({
+      id: 'proof-1',
+      projectId: 'project-1',
+      transactionId: 'txn-1',
+      commitSha: 'abc123',
+      readSetDigest: 'sha256:read',
+      writeSetDigest: 'sha256:write',
+      invariantsJson: JSON.stringify(['clearance.diff.inside_route']),
+      evidenceRefsJson: JSON.stringify(['test:pass']),
+      dojoEvidenceRefsJson: JSON.stringify(['dojo:proof']),
+      repoStateJson: JSON.stringify(repoStateFixture()),
+      incidentReplayDigest: 'sha256:incident',
+      bundleDigest: 'sha256:bundle',
+      createdAt: new Date('2026-06-29T23:10:00.000Z'),
+      project: {
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Proof project',
+        request: 'Prove it',
+        status: 'active',
+        zonePolicyJson: JSON.stringify({ zones: [] }),
+        controlPlanJson: JSON.stringify({}),
+        createdAt: new Date('2026-06-29T23:00:00.000Z'),
+        updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+      },
+      transaction: {
+        ...transaction,
+        mutationLease: transaction.mutationLease,
+      },
+    });
+    prisma.codeSiteIncident.findMany.mockResolvedValue([]);
+    prisma.codeSiteLineProvenance.findMany.mockResolvedValue([{
+      id: 'line-1',
+      projectId: 'project-1',
+      transactionId: 'txn-1',
+      filePath: 'synthi/prisma/schema.prisma',
+      lineAnchor: 'L1',
+      startLine: 1,
+      endLine: 3,
+      displayCallsign: 'ATLAS-1',
+      reasonRef: 'transaction:txn-1',
+      evidenceRefsJson: JSON.stringify(['proof:proof-1']),
+      dojoSourceRefsJson: JSON.stringify(['dojo:evidence:line-1']),
+      proofBundleId: 'proof-1',
+      processAncestryJson: JSON.stringify([]),
+      promptSummary: 'CodeSite transaction commit',
+      createdAt: new Date('2026-06-29T23:11:00.000Z'),
+    }]);
+    prisma.codeSiteInspectionRun.findMany.mockResolvedValue([{
+      id: 'inspection-landing',
+      projectId: 'project-1',
+      executionPlanId: 'plan-1',
+      displayCallsign: 'ATLAS-1',
+      status: 'landed-with-punch',
+      changedPathsJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+      inspectionSignalsJson: JSON.stringify([]),
+      evidenceRefsJson: JSON.stringify(['inspection:landing']),
+      requestedAt: new Date('2026-06-29T23:08:00.000Z'),
+      completedAt: new Date('2026-06-29T23:09:00.000Z'),
+    }]);
+
+    const proof = await getProofBundle('acme', 'proof-1');
+
+    expect(proof.bundleDigest).toBe('sha256:bundle');
+    expect(proof.portableProofBundle).toMatchObject({
+      schemaVersion: 'synthi.codesite.proofBundle.v1',
+      projectId: 'project-1',
+      transactionId: 'txn-1',
+      mutationLeaseId: 'lease-1',
+      landingStatus: 'landed-with-punch',
+      readSetDigest: 'sha256:read',
+      writeSetDigest: 'sha256:write',
+      repoState: expect.objectContaining({
+        evidenceDigest: expect.stringMatching(/^sha256:/),
+        repoIdentity: expect.objectContaining({
+          identityDigest: expect.stringMatching(/^sha256:/),
+          gitTopLevelMatchesRepoRoot: true,
+        }),
+      }),
+      lineProvenance: [expect.objectContaining({
+        filePath: 'synthi/prisma/schema.prisma',
+        startLine: 1,
+        endLine: 3,
+        reasonRef: 'transaction:txn-1',
+        evidenceRefs: ['proof:proof-1'],
+        dojoSourceRefs: ['dojo:evidence:line-1'],
+      })],
+    });
+    expect(proof.portableProofBundle.portableDigest).toMatch(/^sha256:/);
+  });
+
+  it('looks up line provenance by line number and returns causal context', async () => {
+    const transaction = transactionFixture();
+    const proofBundle = {
+      id: 'proof-1',
+      projectId: 'project-1',
+      transactionId: 'txn-1',
+      commitSha: 'abc123',
+      readSetDigest: 'sha256:read',
+      writeSetDigest: 'sha256:write',
+      invariantsJson: JSON.stringify(['clearance.diff.inside_route']),
+      evidenceRefsJson: JSON.stringify(['test:checkout']),
+      dojoEvidenceRefsJson: JSON.stringify([]),
+      repoStateJson: JSON.stringify(null),
+      incidentReplayDigest: 'sha256:incident',
+      bundleDigest: 'sha256:bundle',
+      createdAt: new Date('2026-06-29T23:10:00.000Z'),
+    };
+    prisma.codeSiteLineProvenance.findMany.mockResolvedValueOnce([
+      {
+        id: 'line-match',
+        projectId: 'project-1',
+        transactionId: 'txn-1',
+        filePath: 'synthi/prisma/schema.prisma',
+        lineAnchor: 'synthi/prisma/schema.prisma#L12-L15',
+        startLine: 12,
+        endLine: 15,
+        displayCallsign: 'ATLAS-1',
+        reasonRef: 'event:event-1',
+        evidenceRefsJson: JSON.stringify(['hunk:evidence']),
+        dojoSourceRefsJson: JSON.stringify([]),
+        proofBundleId: 'proof-1',
+        processAncestryJson: JSON.stringify(['mcp:synthi_codesite_apply_patch']),
+        promptSummary: 'Add auth schema field',
+        createdAt: new Date('2026-06-29T23:11:00.000Z'),
+        transaction: {
+          ...transaction,
+          proofBundles: [proofBundle],
+        },
+      },
+    ]).mockResolvedValueOnce([]);
+
+    const rows = await getLineProvenance('acme', {
+      projectId: 'project-1',
+      filePath: 'synthi/prisma/schema.prisma',
+      lineNumber: 13,
+    });
+
+    expect(prisma.codeSiteLineProvenance.findMany).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      where: expect.objectContaining({
+        projectId: 'project-1',
+        filePath: 'synthi/prisma/schema.prisma',
+        startLine: { lte: 13 },
+        OR: [
+          { endLine: { gte: 13 } },
+          { endLine: null },
+        ],
+      }),
+      include: expect.objectContaining({ transaction: expect.any(Object) }),
+      take: 50,
+    }));
+    expect(prisma.codeSiteLineProvenance.findMany).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      where: expect.objectContaining({
+        projectId: 'project-1',
+        filePath: 'synthi/prisma/schema.prisma',
+        startLine: null,
+      }),
+      include: expect.objectContaining({ transaction: expect.any(Object) }),
+      take: 200,
+    }));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: 'line-match',
+      startLine: 12,
+      endLine: 15,
+      transaction: { id: 'txn-1', mutationLeaseId: 'lease-1' },
+      mutationLease: { id: 'lease-1', displayCallsign: 'ATLAS-1' },
+      agentSession: { id: 'agent-1', ownerUserId: 'user-1' },
+      proofBundles: [expect.objectContaining({ id: 'proof-1', bundleDigest: 'sha256:bundle' })],
+    });
+  });
+
+  it('scores shadow merge strategies from semantic repo signals and persists a rich counterfactual scene', async () => {
+    const zonePolicy = {
+      zones: [
+        { zoneKey: 'schema', label: 'Schema contract', class: 'B', paths: ['packages/schemas/**'], rules: ['api_contract_radar_required'] },
+        { zoneKey: 'api', label: 'Auth API', class: 'B', paths: ['api/auth/**'], rules: ['api_contract_radar_required'] },
+        { zoneKey: 'ui', label: 'Signup UI', class: 'C', paths: ['app/signup/**'], rules: [] },
+      ],
+      semanticGraph: {
+        files: [
+          'packages/schemas/auth.ts',
+          'api/auth/signup.ts',
+          'app/signup/page.tsx',
+          'tests/auth/signup.test.ts',
+        ],
+        importEdges: [
+          { from: 'api/auth/signup.ts', imports: ['packages/schemas/auth.ts'] },
+          { from: 'app/signup/page.tsx', imports: ['packages/schemas/auth.ts'] },
+        ],
+        testOwnership: [
+          { testPath: 'tests/auth/signup.test.ts', covers: ['packages/schemas/auth.ts', 'api/auth/signup.ts'] },
+        ],
+        migrationLocks: [],
+        packageExports: [{ packageName: '@acme/contracts', root: 'packages/schemas', exports: ['packages/schemas/auth.ts'] }],
+        generatedClients: ['app/generated/auth-client.ts'],
+      },
+    };
+    prisma.codeSiteProject.findFirst
+      .mockResolvedValueOnce({
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Signup coordination',
+        request: 'Coordinate signup schema and UI',
+        status: 'active',
+        zonePolicyJson: JSON.stringify(zonePolicy),
+        controlPlanJson: JSON.stringify({}),
+        executionPlans: [
+          {
+            id: 'plan-schema',
+            projectId: 'project-1',
+            agentSessionId: 'agent-schema',
+            displayCallsign: 'SCHEMA-01',
+            mission: 'Change signup contract',
+            domain: 'schema',
+            status: 'preflight',
+            routeJson: JSON.stringify(['packages/schemas/auth.ts']),
+            blockedZonesJson: JSON.stringify([]),
+            abortJson: JSON.stringify([]),
+            requestedToolsJson: JSON.stringify(['file_write', 'npm_test']),
+            estimatedDurationMs: 120000,
+            filedAt: new Date('2026-06-29T23:00:00.000Z'),
+            closedAt: null,
+          },
+          {
+            id: 'plan-ui',
+            projectId: 'project-1',
+            agentSessionId: 'agent-ui',
+            displayCallsign: 'UI-02',
+            mission: 'Build signup UI',
+            domain: 'frontend',
+            status: 'preflight',
+            routeJson: JSON.stringify(['app/signup/page.tsx']),
+            blockedZonesJson: JSON.stringify([]),
+            abortJson: JSON.stringify([]),
+            requestedToolsJson: JSON.stringify(['file_write', 'npm_test']),
+            estimatedDurationMs: 120000,
+            filedAt: new Date('2026-06-29T23:00:00.000Z'),
+            closedAt: null,
+          },
+        ],
+        mutationLeases: [],
+        incidents: [{
+          id: 'incident-auth-1',
+          severity: 'medium',
+          category: 'near_miss',
+          participantsJson: JSON.stringify(['UI-02']),
+          affectedZonesJson: JSON.stringify(['packages/schemas/**']),
+          evidenceRefsJson: JSON.stringify(['incident:auth-schema']),
+        }],
+        inspectionRuns: [{
+          id: 'inspection-auth-1',
+          status: 'passed',
+          changedPathsJson: JSON.stringify(['packages/schemas/auth.ts']),
+          inspectionSignalsJson: JSON.stringify([{ key: 'auth.signup.test', status: 'passed' }]),
+          evidenceRefsJson: JSON.stringify(['test:auth-signup']),
+        }],
+      })
+      .mockResolvedValueOnce({
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Signup coordination',
+        request: 'Coordinate signup schema and UI',
+        status: 'active',
+        zonePolicyJson: JSON.stringify(zonePolicy),
+        controlPlanJson: JSON.stringify({}),
+      });
+    prisma.codeSiteCounterfactualRun.create.mockImplementation(async ({ data }) => ({
+      id: 'cfr-shadow-1',
+      shadowJobRef: data.shadowJobRef,
+      baseSnapshot: data.baseSnapshot,
+      createdAt: new Date('2026-06-29T23:12:00.000Z'),
+      ...data,
+    }));
+
+    const result = await withEnvCleared([
+      'SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON',
+      'SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND',
+      'SYNTHI_CODESITE_SHADOW_RUNNER_ARGS_JSON',
+      'SYNTHI_CODESITE_SHADOW_RUNNER_CWD',
+      'SYNTHI_CODESITE_REQUIRE_SHADOW_RUNNER_EVIDENCE',
+      'SYNTHI_CODESITE_SHADOW_RUNNER_EVIDENCE_REQUIRED',
+      'SYNTHI_CODESITE_SHADOW_MERGE_PROOF_MATURITY',
+    ], () => shadowMergeSimulate('acme', 'project-1', {
+      strategies: ['schema-first', 'frontend/backend parallel', 'single fullstack agent', 'test-first'],
+    }));
+
+    expect(result.selected).toBe('schema-first');
+    expect(result.universes.map((universe) => universe.strategy)).toContain('frontend-backend-parallel');
+    expect(result.universes.map((universe) => universe.strategy)).toContain('single-fullstack-agent');
+    const schemaUniverse = result.universes.find((universe) => universe.strategy === 'schema-first');
+    const parallelUniverse = result.universes.find((universe) => universe.strategy === 'frontend-backend-parallel');
+    expect(schemaUniverse.avoidedRisks).toContain('semantic_collision');
+    expect(schemaUniverse.requiredTowerActions).toContain('refresh_downstream_assumptions');
+    expect(schemaUniverse.sourceSignals).toMatchObject({
+      importGraphEdges: 2,
+      testOwners: 1,
+      priorIncidents: 1,
+      inspectionRuns: 1,
+      contractRiskCount: 1,
+    });
+    expect(parallelUniverse.unresolvedRisks).toContain('semantic_collision');
+    expect(result.evidenceRefs).toContain('codesite:incident:incident-auth-1');
+    expect(result.evidenceRefs).toContain('codesite:inspection:inspection-auth-1');
+    expect(result.evidenceRefs.some((ref) => ref.startsWith('codesite:repo-policy:'))).toBe(true);
+    expect(prisma.codeSiteCounterfactualRun.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        shadowJobRef: expect.stringMatching(/^codesite-shadow:/),
+        baseSnapshot: expect.stringMatching(/^repo@/),
+        validityStrength: 'strong',
+        evidenceRefsJson: expect.stringContaining('codesite:repo-policy:'),
+        universesJson: expect.stringContaining('frontend-backend-parallel'),
+        arbiterVerdictJson: expect.stringContaining('policyDeltaCandidates'),
+      }),
+    }));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'shadow_run',
+        actorType: 'counterfactual',
+      }),
+    }));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'arbiter_verdict',
+        detailsJson: expect.stringContaining('schema-first'),
+      }),
+    }));
+  });
+
+  it('blocks read-only project members from persisting shadow merge simulations', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Signup coordination',
+      request: 'Coordinate signup schema and UI',
+      status: 'active',
+      createdByUserId: 'user-1',
+      zonePolicyJson: JSON.stringify({ zones: [] }),
+      controlPlanJson: JSON.stringify({}),
+      members: [{
+        id: 'member-viewer',
+        projectId: 'project-1',
+        workspaceSlug: 'acme',
+        userId: 'viewer-1',
+        role: 'viewer',
+        permissionsJson: JSON.stringify(['project:read']),
+        redactionPolicyJson: null,
+        participationStatus: 'enabled',
+        revokedAt: null,
+      }],
+      agentSessions: [],
+      executionPlans: [],
+      mutationLeases: [],
+      incidents: [],
+      inspectionRuns: [],
+    });
+
+    await expect(shadowMergeSimulate('acme', 'project-1', {
+      strategies: ['schema-first'],
+    }, { userId: 'viewer-1' })).rejects.toMatchObject({
+      status: 403,
+      code: 'codesite_project_write_forbidden',
+    });
+    expect(prisma.codeSiteCounterfactualRun.create).not.toHaveBeenCalled();
+    expect(prisma.codeSiteEvent.create).not.toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ eventType: 'shadow_run' }),
+    }));
+  });
+
+  it('blocks simulator fallback when explicit shadow runner evidence is required', async () => {
+    const project = {
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Strict counterfactual',
+      request: 'Require runner evidence before accepting shadow merge proof',
+      status: 'active',
+      zonePolicyJson: JSON.stringify({ zones: [] }),
+      controlPlanJson: JSON.stringify({}),
+      members: [],
+      agentSessions: [],
+      executionPlans: [],
+      mutationLeases: [],
+      incidents: [],
+      inspectionRuns: [],
+    };
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce(project);
+
+    await withEnvCleared([
+      'SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON',
+      'SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND',
+      'SYNTHI_CODESITE_SHADOW_RUNNER_ARGS_JSON',
+      'SYNTHI_CODESITE_SHADOW_RUNNER_CWD',
+      'SYNTHI_CODESITE_REQUIRE_SHADOW_RUNNER_EVIDENCE',
+      'SYNTHI_CODESITE_SHADOW_RUNNER_EVIDENCE_REQUIRED',
+      'SYNTHI_CODESITE_SHADOW_MERGE_PROOF_MATURITY',
+    ], async () => {
+      await expect(shadowMergeSimulate('acme', 'project-1', {
+        strategies: ['schema-first'],
+        requireExternalRunnerEvidence: true,
+      })).rejects.toMatchObject({
+        status: 400,
+        code: 'shadow_runner_evidence_required',
+        detail: expect.objectContaining({
+          status: 'blocked',
+          failureCode: 'shadow_runner_not_configured',
+          reasonCodes: expect.arrayContaining([
+            'shadow_runner_evidence_required',
+            'shadow_runner_not_configured',
+            'control_plane_shadow_simulator_fallback_blocked',
+          ]),
+        }),
+      });
+    });
+
+    expect(prisma.codeSiteCounterfactualRun.create).not.toHaveBeenCalled();
+    const eventCall = prisma.codeSiteEvent.create.mock.calls.find((call) => call[0].data.eventType === 'ground_stop');
+    expect(eventCall).toBeTruthy();
+    const details = JSON.parse(eventCall[0].data.detailsJson);
+    expect(details).toMatchObject({
+      type: 'shadow_runner_evidence_policy',
+      status: 'blocked',
+      decision: 'block',
+      failureCode: 'shadow_runner_not_configured',
+      shadowExecutionMode: 'control_plane_simulator',
+      fallback: {
+        attempted: 'control_plane_simulator',
+        allowed: false,
+      },
+    });
+    expect(details.reasonCodes).toEqual(expect.arrayContaining([
+      'shadow_runner_evidence_required',
+      'shadow_runner_not_configured',
+      'control_plane_shadow_simulator_fallback_blocked',
+    ]));
+    expect(JSON.parse(eventCall[0].data.evidenceRefsJson).some((ref) =>
+      ref.startsWith('codesite:shadow-runner-policy:'))).toBe(true);
+  });
+
+  it('honors env-required shadow runner evidence and records failed runner evidence', async () => {
+    const project = {
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Strict counterfactual',
+      request: 'Require runner evidence before accepting shadow merge proof',
+      status: 'active',
+      zonePolicyJson: JSON.stringify({ zones: [] }),
+      controlPlanJson: JSON.stringify({}),
+      members: [],
+      agentSessions: [],
+      executionPlans: [],
+      mutationLeases: [],
+      incidents: [],
+      inspectionRuns: [],
+    };
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce(project);
+
+    await withEnv({
+      SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON: JSON.stringify([
+        process.execPath,
+        '-e',
+        "process.stderr.write('shadow runner failed'); process.exit(2);",
+      ]),
+      SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND: null,
+      SYNTHI_CODESITE_SHADOW_RUNNER_ARGS_JSON: null,
+      SYNTHI_CODESITE_SHADOW_RUNNER_CWD: null,
+      SYNTHI_CODESITE_REQUIRE_SHADOW_RUNNER_EVIDENCE: '1',
+      SYNTHI_CODESITE_SHADOW_RUNNER_EVIDENCE_REQUIRED: null,
+      SYNTHI_CODESITE_SHADOW_MERGE_PROOF_MATURITY: null,
+    }, async () => {
+      await expect(shadowMergeSimulate('acme', 'project-1', {
+        strategies: ['schema-first'],
+      })).rejects.toMatchObject({
+        status: 400,
+        code: 'shadow_runner_evidence_required',
+        detail: expect.objectContaining({
+          status: 'blocked',
+          failureCode: 'shadow_runner_execution_failed',
+          shadowExecutionStatus: 'failed',
+          reasonCodes: expect.arrayContaining([
+            'shadow_runner_evidence_required',
+            'shadow_runner_execution_failed',
+            'control_plane_shadow_simulator_fallback_blocked',
+          ]),
+        }),
+      });
+    });
+
+    expect(prisma.codeSiteCounterfactualRun.create).not.toHaveBeenCalled();
+    const eventCall = prisma.codeSiteEvent.create.mock.calls.find((call) => call[0].data.eventType === 'ground_stop');
+    expect(eventCall).toBeTruthy();
+    const details = JSON.parse(eventCall[0].data.detailsJson);
+    const eventEvidenceRefs = JSON.parse(eventCall[0].data.evidenceRefsJson);
+    expect(details).toMatchObject({
+      type: 'shadow_runner_evidence_policy',
+      failureCode: 'shadow_runner_execution_failed',
+      shadowExecutionStatus: 'failed',
+      shadowExecutionMode: 'external_runner',
+    });
+    expect(eventEvidenceRefs.some((ref) => ref.startsWith('codesite:shadow-runner-failed:'))).toBe(true);
+    expect(eventEvidenceRefs.some((ref) => ref.startsWith('codesite:shadow-runner-policy:'))).toBe(true);
+  });
+
+  it('executes configured shadow runner and records execution-backed counterfactual evidence', async () => {
+    const previousRunnerCommand = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON;
+    const runnerPath = codesiteScriptPath('codesite-shadow-runner.mjs');
+    process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON = JSON.stringify([process.execPath, runnerPath]);
+
+    try {
+      const zonePolicy = {
+        zones: [
+          { zoneKey: 'schema', label: 'Schema contract', class: 'B', paths: ['packages/schemas/**'], rules: ['api_contract_radar_required'] },
+          { zoneKey: 'api', label: 'Auth API', class: 'B', paths: ['api/auth/**'], rules: ['api_contract_radar_required'] },
+          { zoneKey: 'ui', label: 'Signup UI', class: 'C', paths: ['app/signup/**'], rules: [] },
+        ],
+        semanticGraph: {
+          files: [
+            'packages/schemas/auth.ts',
+            'api/auth/signup.ts',
+            'app/signup/page.tsx',
+            'tests/auth/signup.test.ts',
+          ],
+          importEdges: [
+            { from: 'api/auth/signup.ts', imports: ['packages/schemas/auth.ts'] },
+            { from: 'app/signup/page.tsx', imports: ['packages/schemas/auth.ts'] },
+          ],
+          testOwnership: [
+            { testPath: 'tests/auth/signup.test.ts', covers: ['packages/schemas/auth.ts', 'api/auth/signup.ts'] },
+          ],
+          migrationLocks: [],
+          packageExports: [{ packageName: '@acme/contracts', root: 'packages/schemas', exports: ['packages/schemas/auth.ts'] }],
+          generatedClients: ['app/generated/auth-client.ts'],
+        },
+      };
+      const project = {
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Signup coordination',
+        request: 'Coordinate signup schema and UI',
+        status: 'active',
+        zonePolicyJson: JSON.stringify(zonePolicy),
+        controlPlanJson: JSON.stringify({}),
+        executionPlans: [
+          {
+            id: 'plan-schema',
+            projectId: 'project-1',
+            agentSessionId: 'agent-schema',
+            displayCallsign: 'SCHEMA-01',
+            mission: 'Change signup contract',
+            domain: 'schema',
+            status: 'preflight',
+            routeJson: JSON.stringify(['packages/schemas/auth.ts']),
+            blockedZonesJson: JSON.stringify([]),
+            abortJson: JSON.stringify([]),
+            requestedToolsJson: JSON.stringify(['file_write', 'npm_test']),
+            estimatedDurationMs: 120000,
+            filedAt: new Date('2026-06-29T23:00:00.000Z'),
+            closedAt: null,
+          },
+          {
+            id: 'plan-ui',
+            projectId: 'project-1',
+            agentSessionId: 'agent-ui',
+            displayCallsign: 'UI-02',
+            mission: 'Build signup UI',
+            domain: 'frontend',
+            status: 'preflight',
+            routeJson: JSON.stringify(['app/signup/page.tsx']),
+            blockedZonesJson: JSON.stringify([]),
+            abortJson: JSON.stringify([]),
+            requestedToolsJson: JSON.stringify(['file_write', 'npm_test']),
+            estimatedDurationMs: 120000,
+            filedAt: new Date('2026-06-29T23:00:00.000Z'),
+            closedAt: null,
+          },
+        ],
+        mutationLeases: [],
+        incidents: [],
+        inspectionRuns: [],
+      };
+      prisma.codeSiteProject.findFirst.mockResolvedValueOnce(project).mockResolvedValueOnce(project);
+      prisma.codeSiteCounterfactualRun.create.mockImplementation(async ({ data }) => ({
+        id: 'cfr-shadow-executed',
+        shadowJobRef: data.shadowJobRef,
+        baseSnapshot: data.baseSnapshot,
+        createdAt: new Date('2026-06-29T23:12:00.000Z'),
+        ...data,
+      }));
+
+      const result = await shadowMergeSimulate('acme', 'project-1', {
+        strategies: ['schema-first', 'frontend-backend-parallel', 'single-fullstack-agent'],
+        requireExternalRunnerEvidence: true,
+      });
+
+      expect(result.reason.shadowExecutionMode).toBe('external_runner');
+      expect(result.shadowExecution).toMatchObject({
+        status: 'completed',
+        runner: expect.any(String),
+        executionMode: 'risk_budget_evaluation',
+      });
+      expect(result.shadowExecution.evidenceRefs.some((ref) => ref.startsWith('codesite:shadow-runner:'))).toBe(true);
+      expect(result.evidenceRefs.some((ref) => ref.startsWith('codesite:shadow-runner:'))).toBe(true);
+      expect(result.universes.every((universe) => universe.execution?.status)).toBe(true);
+      expect(result.universes.some((universe) => universe.execution.status === 'near_miss')).toBe(true);
+      expect(result.universes.some((universe) => universe.execution.status === 'passed')).toBe(true);
+      expect(prisma.codeSiteCounterfactualRun.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          validityStrength: 'executed',
+          evidenceRefsJson: expect.stringContaining('codesite:shadow-runner:'),
+          universesJson: expect.stringContaining('shadow_universe_executed'),
+          arbiterVerdictJson: expect.stringContaining('external_runner'),
+        }),
+      }));
+    } finally {
+      if (previousRunnerCommand === undefined) {
+        delete process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON;
+      } else {
+        process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON = previousRunnerCommand;
+      }
+    }
+  });
+
+  it('executes real shadow-universe repo commands in isolated worktrees', async () => {
+    const previousRunnerCommand = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON;
+    const previousAllowedRoot = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_ROOT;
+    const previousAllowInline = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOW_INLINE_COMMANDS;
+    const previousAuthSecret = process.env.AUTH_SECRET;
+    const previousDatabaseUrl = process.env.DATABASE_URL;
+    const runnerPath = codesiteScriptPath('codesite-shadow-runner.mjs');
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-shadow-repo-'));
+    const repoRoot = path.join(root, 'repo');
+    process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON = JSON.stringify([process.execPath, runnerPath]);
+    process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_ROOT = root;
+    process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOW_INLINE_COMMANDS = '1';
+    process.env.AUTH_SECRET = 'shadow-runner-test-secret';
+    process.env.DATABASE_URL = 'postgresql://shadow-runner-secret@example.invalid/db';
+
+    try {
+      await fs.mkdir(path.join(repoRoot, 'scripts'), { recursive: true });
+      await fs.writeFile(path.join(repoRoot, 'contract.txt'), 'v1\n', 'utf8');
+      await fs.writeFile(path.join(repoRoot, 'scripts', 'check-contract.mjs'), [
+        "import fs from 'node:fs';",
+        'if (process.env.AUTH_SECRET || process.env.DATABASE_URL) {',
+        "  console.error('shadow command received server secret environment');",
+        '  process.exit(1);',
+        '}',
+        "const contract = fs.readFileSync('contract.txt', 'utf8').trim();",
+        "if (contract !== 'v2') {",
+        "  console.error(`contract check failed: expected v2, received ${contract}`);",
+        '  process.exit(1);',
+        '}',
+        "console.log('contract check passed: v2');",
+        '',
+      ].join('\n'), 'utf8');
+
+      const zonePolicy = {
+        zones: [
+          { zoneKey: 'contract', label: 'Shared contract', class: 'B', paths: ['contract.txt'], rules: ['api_contract_radar_required'] },
+          { zoneKey: 'consumer', label: 'Consumer', class: 'C', paths: ['app/**'], rules: [] },
+        ],
+        semanticGraph: {
+          files: ['contract.txt', 'app/index.ts', 'scripts/check-contract.mjs'],
+          importEdges: [{ from: 'app/index.ts', imports: ['contract.txt'] }],
+          testOwnership: [{ testPath: 'scripts/check-contract.mjs', covers: ['contract.txt'] }],
+        },
+      };
+      const project = {
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Contract coordination',
+        request: 'Land shared contract before consumers update',
+        status: 'active',
+        zonePolicyJson: JSON.stringify(zonePolicy),
+        controlPlanJson: JSON.stringify({}),
+        executionPlans: [
+          {
+            id: 'plan-contract',
+            projectId: 'project-1',
+            agentSessionId: 'agent-contract',
+            displayCallsign: 'CONTRACT-01',
+            mission: 'Change shared contract',
+            domain: 'schema',
+            status: 'preflight',
+            routeJson: JSON.stringify(['contract.txt']),
+            blockedZonesJson: JSON.stringify([]),
+            abortJson: JSON.stringify([]),
+            requestedToolsJson: JSON.stringify(['file_write', 'npm_test']),
+            estimatedDurationMs: 120000,
+            filedAt: new Date('2026-06-29T23:00:00.000Z'),
+            closedAt: null,
+          },
+          {
+            id: 'plan-consumer',
+            projectId: 'project-1',
+            agentSessionId: 'agent-consumer',
+            displayCallsign: 'APP-02',
+            mission: 'Update consumer',
+            domain: 'frontend',
+            status: 'preflight',
+            routeJson: JSON.stringify(['app/index.ts']),
+            blockedZonesJson: JSON.stringify([]),
+            abortJson: JSON.stringify([]),
+            requestedToolsJson: JSON.stringify(['file_write', 'npm_test']),
+            estimatedDurationMs: 120000,
+            filedAt: new Date('2026-06-29T23:00:00.000Z'),
+            closedAt: null,
+          },
+        ],
+        mutationLeases: [],
+        incidents: [],
+        inspectionRuns: [],
+      };
+      prisma.codeSiteProject.findFirst.mockResolvedValueOnce(project).mockResolvedValueOnce(project);
+      prisma.codeSiteCounterfactualRun.create.mockImplementation(async ({ data }) => ({
+        id: 'cfr-shadow-repo-executed',
+        shadowJobRef: data.shadowJobRef,
+        baseSnapshot: data.baseSnapshot,
+        createdAt: new Date('2026-06-29T23:12:00.000Z'),
+        ...data,
+      }));
+
+      const result = await shadowMergeSimulate('acme', 'project-1', {
+        strategies: ['schema-first', 'frontend-backend-parallel'],
+        shadowExecutionPlan: {
+          repoRoot,
+          commands: [{
+            label: 'contract-check',
+            command: process.execPath,
+            args: ['scripts/check-contract.mjs'],
+          }],
+          universes: {
+            'schema-first': {
+              patches: [{ path: 'contract.txt', content: 'v2\n' }],
+            },
+          },
+        },
+      });
+
+      expect(result.reason.shadowExecutionMode).toBe('external_runner');
+      expect(result.shadowExecution).toMatchObject({
+        status: 'completed',
+        executionMode: 'repo_command_execution',
+      });
+      const schemaFirst = result.universes.find((universe) => universe.strategy === 'schema-first');
+      const parallel = result.universes.find((universe) => universe.strategy === 'frontend-backend-parallel');
+      expect(schemaFirst.execution).toMatchObject({
+        status: 'passed',
+        command: 'codesite-shadow-runner:repo-command-execution',
+        exitCode: 0,
+      });
+      expect(parallel.execution).toMatchObject({
+        status: 'near_miss',
+        command: 'codesite-shadow-runner:repo-command-execution',
+        exitCode: 1,
+      });
+      expect(schemaFirst.reasonCodes).toContain('shadow_universe_repo_commands_passed');
+      expect(parallel.reasonCodes).toContain('shadow_universe_repo_commands_failed');
+      expect(schemaFirst.evidenceRefs.some((ref) => ref.includes('codesite:shadow-command:schema-first:contract-check:'))).toBe(true);
+      expect(prisma.codeSiteCounterfactualRun.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          validityStrength: 'executed',
+          universesJson: expect.stringContaining('repo_command_execution'),
+          evidenceRefsJson: expect.stringContaining('codesite:shadow-command:schema-first:contract-check:'),
+        }),
+      }));
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+      if (previousRunnerCommand === undefined) {
+        delete process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON;
+      } else {
+        process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON = previousRunnerCommand;
+      }
+      if (previousAllowedRoot === undefined) {
+        delete process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_ROOT;
+      } else {
+        process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_ROOT = previousAllowedRoot;
+      }
+      if (previousAllowInline === undefined) {
+        delete process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOW_INLINE_COMMANDS;
+      } else {
+        process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOW_INLINE_COMMANDS = previousAllowInline;
+      }
+      if (previousAuthSecret === undefined) {
+        delete process.env.AUTH_SECRET;
+      } else {
+        process.env.AUTH_SECRET = previousAuthSecret;
+      }
+      if (previousDatabaseUrl === undefined) {
+        delete process.env.DATABASE_URL;
+      } else {
+        process.env.DATABASE_URL = previousDatabaseUrl;
+      }
+    }
+  });
+
+  it('blocks shadow runner absolute command paths that only match an allowed basename', async () => {
+    const previousRunnerCommand = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON;
+    const previousAllowedRoot = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_ROOT;
+    const previousAllowInline = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOW_INLINE_COMMANDS;
+    const runnerPath = codesiteScriptPath('codesite-shadow-runner.mjs');
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-shadow-bin-'));
+    const repoRoot = path.join(root, 'repo');
+    const fakeNode = path.join(root, 'node');
+    process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON = JSON.stringify([process.execPath, runnerPath]);
+    process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_ROOT = root;
+    process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOW_INLINE_COMMANDS = '1';
+
+    try {
+      await fs.mkdir(repoRoot, { recursive: true });
+      await fs.writeFile(path.join(repoRoot, 'contract.txt'), 'v1\n', 'utf8');
+      await fs.writeFile(fakeNode, '#!/bin/sh\necho fake node should not run\nexit 0\n', { mode: 0o755 });
+
+      const project = {
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Absolute binary guard',
+        request: 'Do not run path-spoofed binaries',
+        status: 'active',
+        zonePolicyJson: JSON.stringify({ zones: [] }),
+        controlPlanJson: JSON.stringify({}),
+        executionPlans: [],
+        mutationLeases: [],
+        incidents: [],
+        inspectionRuns: [],
+      };
+      prisma.codeSiteProject.findFirst.mockResolvedValueOnce(project).mockResolvedValueOnce(project);
+      prisma.codeSiteCounterfactualRun.create.mockImplementation(async ({ data }) => ({
+        id: 'cfr-shadow-blocked-bin',
+        shadowJobRef: data.shadowJobRef,
+        baseSnapshot: data.baseSnapshot,
+        createdAt: new Date('2026-06-29T23:12:00.000Z'),
+        ...data,
+      }));
+
+      const result = await shadowMergeSimulate('acme', 'project-1', {
+        strategies: ['schema-first'],
+        shadowExecutionPlan: {
+          repoRoot,
+          commands: [{
+            label: 'fake-node',
+            command: fakeNode,
+            args: [],
+          }],
+        },
+      });
+
+      const schemaFirst = result.universes.find((universe) => universe.strategy === 'schema-first');
+      expect(schemaFirst.execution).toMatchObject({
+        status: 'near_miss',
+        command: 'codesite-shadow-runner:repo-command-execution',
+        exitCode: 126,
+        executionMode: 'repo_command_execution',
+      });
+      expect(schemaFirst.reasonCodes).toContain('shadow_universe_repo_commands_failed');
+      expect(JSON.stringify(schemaFirst)).not.toContain('fake node should not run');
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+      if (previousRunnerCommand === undefined) {
+        delete process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON;
+      } else {
+        process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON = previousRunnerCommand;
+      }
+      if (previousAllowedRoot === undefined) {
+        delete process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_ROOT;
+      } else {
+        process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_ROOT = previousAllowedRoot;
+      }
+      if (previousAllowInline === undefined) {
+        delete process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOW_INLINE_COMMANDS;
+      } else {
+        process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOW_INLINE_COMMANDS = previousAllowInline;
+      }
+    }
+  });
+
+  it('keeps inline shadow repo commands disabled by default', async () => {
+    const previousRunnerCommand = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON;
+    const previousAllowedRoot = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_ROOT;
+    const previousAllowInline = process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOW_INLINE_COMMANDS;
+    const runnerPath = codesiteScriptPath('codesite-shadow-runner.mjs');
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codesite-shadow-disabled-'));
+    const repoRoot = path.join(root, 'repo');
+    const markerPath = path.join(repoRoot, 'command-ran.txt');
+    process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON = JSON.stringify([process.execPath, runnerPath]);
+    process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_ROOT = root;
+    delete process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOW_INLINE_COMMANDS;
+
+    try {
+      await fs.mkdir(repoRoot, { recursive: true });
+      await fs.writeFile(path.join(repoRoot, 'write-marker.mjs'), [
+        "import fs from 'node:fs';",
+        "fs.writeFileSync('command-ran.txt', 'executed');",
+        '',
+      ].join('\n'), 'utf8');
+
+      const project = {
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Inline disabled',
+        request: 'Do not execute inline commands by default',
+        status: 'active',
+        zonePolicyJson: JSON.stringify({ zones: [] }),
+        controlPlanJson: JSON.stringify({}),
+        executionPlans: [],
+        mutationLeases: [],
+        incidents: [],
+        inspectionRuns: [],
+      };
+      prisma.codeSiteProject.findFirst.mockResolvedValueOnce(project).mockResolvedValueOnce(project);
+      prisma.codeSiteCounterfactualRun.create.mockImplementation(async ({ data }) => ({
+        id: 'cfr-shadow-inline-disabled',
+        shadowJobRef: data.shadowJobRef,
+        baseSnapshot: data.baseSnapshot,
+        createdAt: new Date('2026-06-29T23:12:00.000Z'),
+        ...data,
+      }));
+
+      const result = await shadowMergeSimulate('acme', 'project-1', {
+        strategies: ['schema-first'],
+        shadowExecutionPlan: {
+          repoRoot,
+          commands: [{
+            label: 'write-marker',
+            command: process.execPath,
+            args: ['write-marker.mjs'],
+          }],
+        },
+      });
+
+      const schemaFirst = result.universes.find((universe) => universe.strategy === 'schema-first');
+      expect(schemaFirst.execution).toMatchObject({
+        command: 'codesite-shadow-runner:evaluate-risk-budget',
+        executionMode: 'risk_budget_evaluation',
+      });
+      await expect(fs.access(markerPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+      if (previousRunnerCommand === undefined) {
+        delete process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON;
+      } else {
+        process.env.SYNTHI_CODESITE_SHADOW_RUNNER_COMMAND_JSON = previousRunnerCommand;
+      }
+      if (previousAllowedRoot === undefined) {
+        delete process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_ROOT;
+      } else {
+        process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOWED_ROOT = previousAllowedRoot;
+      }
+      if (previousAllowInline === undefined) {
+        delete process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOW_INLINE_COMMANDS;
+      } else {
+        process.env.SYNTHI_CODESITE_SHADOW_RUNNER_ALLOW_INLINE_COMMANDS = previousAllowInline;
+      }
+    }
+  });
+
+  it('applies promoted counterfactual policy deltas to future tower simulation', async () => {
+    const zonePolicy = {
+      zones: [
+        { zoneKey: 'schema', label: 'Schema contract', class: 'B', paths: ['packages/schemas/**'], rules: ['api_contract_radar_required'] },
+        { zoneKey: 'ui', label: 'Signup UI', class: 'C', paths: ['app/signup/**'], rules: [] },
+      ],
+      semanticGraph: {
+        files: ['packages/schemas/auth.ts', 'app/signup/page.tsx', 'tests/auth/signup.test.ts'],
+        importEdges: [{ from: 'app/signup/page.tsx', imports: ['packages/schemas/auth.ts'] }],
+        testOwnership: [{ testPath: 'tests/auth/signup.test.ts', covers: ['packages/schemas/auth.ts', 'app/signup/page.tsx'] }],
+        migrationLocks: [],
+        packageExports: [{ packageName: '@acme/contracts', root: 'packages/schemas', exports: ['packages/schemas/auth.ts'] }],
+        generatedClients: [],
+      },
+    };
+    const project = {
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Learned coordination',
+      request: 'Coordinate signup schema and UI',
+      status: 'active',
+      zonePolicyJson: JSON.stringify(zonePolicy),
+      controlPlanJson: JSON.stringify({}),
+      executionPlans: [
+        {
+          id: 'plan-schema',
+          projectId: 'project-1',
+          agentSessionId: 'agent-schema',
+          displayCallsign: 'SCHEMA-01',
+          mission: 'Change signup contract',
+          domain: 'schema',
+          status: 'preflight',
+          routeJson: JSON.stringify(['packages/schemas/auth.ts']),
+          blockedZonesJson: JSON.stringify([]),
+          abortJson: JSON.stringify([]),
+          requestedToolsJson: JSON.stringify(['file_write']),
+          filedAt: new Date('2026-06-29T23:00:00.000Z'),
+          closedAt: null,
+        },
+        {
+          id: 'plan-ui',
+          projectId: 'project-1',
+          agentSessionId: 'agent-ui',
+          displayCallsign: 'UI-02',
+          mission: 'Build signup UI',
+          domain: 'frontend',
+          status: 'preflight',
+          routeJson: JSON.stringify(['app/signup/page.tsx']),
+          blockedZonesJson: JSON.stringify([]),
+          abortJson: JSON.stringify([]),
+          requestedToolsJson: JSON.stringify(['file_write']),
+          filedAt: new Date('2026-06-29T23:00:00.000Z'),
+          closedAt: null,
+        },
+      ],
+      mutationLeases: [],
+      incidents: [],
+      inspectionRuns: [],
+    };
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce(project).mockResolvedValueOnce(project);
+    prisma.codeSitePolicyDelta.findMany.mockResolvedValueOnce([
+      {
+        id: 'delta-test-first',
+        projectId: 'older-project',
+        learnedFromIncidentsJson: JSON.stringify(['near-miss-signup-1']),
+        affectedZoneKey: null,
+        ruleCandidateJson: JSON.stringify({
+          rule: 'contract_churn_requires_owned_tests',
+          preferredStrategies: ['test-first'],
+          avoidStrategies: ['schema-first', 'frontend-backend-parallel'],
+          requiredTowerActions: ['run_owned_tests_before_landing'],
+        }),
+        triggerConditionsJson: JSON.stringify([{ risk: 'semantic_collision' }, { path: 'packages/schemas/**' }]),
+        expectedRiskReduction: 0.6,
+        confidence: 0.95,
+        promotionState: 'promoted',
+        replayRefsJson: JSON.stringify(['codesite:counterfactual-run:cfr-old']),
+        createdAt: new Date('2026-06-29T23:12:00.000Z'),
+        promotedAt: new Date('2026-06-29T23:13:00.000Z'),
+      },
+      {
+        id: 'delta-proposed-ignored',
+        projectId: 'older-project',
+        learnedFromIncidentsJson: JSON.stringify([]),
+        affectedZoneKey: null,
+        ruleCandidateJson: JSON.stringify({ preferredStrategies: ['single-fullstack-agent'] }),
+        triggerConditionsJson: JSON.stringify([{ risk: 'semantic_collision' }]),
+        expectedRiskReduction: 0.6,
+        confidence: 0.95,
+        promotionState: 'proposed',
+        replayRefsJson: JSON.stringify([]),
+        createdAt: new Date('2026-06-29T23:12:00.000Z'),
+        promotedAt: null,
+      },
+    ]);
+    prisma.codeSiteCounterfactualRun.create.mockImplementation(async ({ data }) => ({
+      id: 'cfr-shadow-learned',
+      shadowJobRef: data.shadowJobRef,
+      baseSnapshot: data.baseSnapshot,
+      createdAt: new Date('2026-06-29T23:12:00.000Z'),
+      ...data,
+    }));
+
+    const result = await shadowMergeSimulate('acme', 'project-1', {
+      strategies: ['schema-first', 'frontend-backend-parallel', 'test-first'],
+    });
+
+    expect(result.selected).toBe('test-first');
+    expect(result.appliedPolicyDeltas).toEqual(['delta-test-first']);
+    expect(result.evidenceRefs).toContain('codesite:policy-delta:delta-test-first');
+    const testUniverse = result.universes.find((universe) => universe.strategy === 'test-first');
+    expect(testUniverse.reasonCodes).toEqual(expect.arrayContaining([
+      'learned_policy_delta_preferred_strategy',
+      'counterfactual_policy_delta_applied',
+    ]));
+    expect(testUniverse.learnedPolicyDeltaRefs).toEqual(['delta-test-first']);
+    expect(testUniverse.sourceSignals.learnedPolicyDeltas).toBe(1);
+    const schemaUniverse = result.universes.find((universe) => universe.strategy === 'schema-first');
+    expect(schemaUniverse.reasonCodes).toContain('learned_policy_delta_avoided_strategy');
+    expect(schemaUniverse.reasonCodes).not.toContain('learned_policy_delta_preferred_strategy');
+  });
+
+  it('applies semantic collision policy deltas to matching contract-collision schema forecasts', async () => {
+    const zonePolicy = {
+      zones: [
+        { zoneKey: 'schema', label: 'Schema runway', class: 'B', paths: ['synthi/prisma/**'], rules: ['contract_radar_required'] },
+        { zoneKey: 'api', label: 'Auth API', class: 'C', paths: ['synthi/src/app/api/auth/**'], rules: [] },
+      ],
+      semanticGraph: {
+        files: ['synthi/prisma/schema.prisma', 'synthi/src/app/api/auth/route.ts'],
+        importEdges: [{ from: 'synthi/src/app/api/auth/route.ts', imports: ['synthi/prisma/schema.prisma'] }],
+        testOwnership: [],
+        migrationLocks: [],
+        packageExports: [{ packageName: '@synthi/db', root: 'synthi/prisma', exports: ['synthi/prisma/schema.prisma'] }],
+        generatedClients: [],
+      },
+    };
+    const project = {
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Learned schema policy',
+      request: 'Coordinate schema and auth API',
+      status: 'active',
+      zonePolicyJson: JSON.stringify(zonePolicy),
+      controlPlanJson: JSON.stringify({}),
+      executionPlans: [
+        {
+          id: 'plan-schema',
+          projectId: 'project-1',
+          agentSessionId: 'agent-schema',
+          displayCallsign: 'SCHEMA-01',
+          mission: 'Change Prisma contract',
+          domain: 'schema',
+          status: 'preflight',
+          routeJson: JSON.stringify(['synthi/prisma/schema.prisma']),
+          blockedZonesJson: JSON.stringify([]),
+          abortJson: JSON.stringify([]),
+          requestedToolsJson: JSON.stringify(['file_write']),
+          filedAt: new Date('2026-06-29T23:00:00.000Z'),
+          closedAt: null,
+        },
+        {
+          id: 'plan-api',
+          projectId: 'project-1',
+          agentSessionId: 'agent-api',
+          displayCallsign: 'API-02',
+          mission: 'Update auth API',
+          domain: 'backend',
+          status: 'preflight',
+          routeJson: JSON.stringify(['synthi/src/app/api/auth/route.ts']),
+          blockedZonesJson: JSON.stringify([]),
+          abortJson: JSON.stringify([]),
+          requestedToolsJson: JSON.stringify(['file_write']),
+          filedAt: new Date('2026-06-29T23:00:00.000Z'),
+          closedAt: null,
+        },
+      ],
+      mutationLeases: [],
+      incidents: [],
+      inspectionRuns: [],
+    };
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce(project);
+    prisma.codeSitePolicyDelta.findMany.mockResolvedValueOnce([
+      {
+        id: 'delta-schema-semantic-risk',
+        projectId: 'older-project',
+        learnedFromIncidentsJson: JSON.stringify(['near-miss-schema-1']),
+        affectedZoneKey: 'synthi/prisma/schema.prisma',
+        ruleCandidateJson: JSON.stringify({
+          rule: 'schema_first_policy_reduced_rework',
+          preferredStrategies: ['schema-first'],
+          avoidStrategies: ['frontend-backend-parallel'],
+          requiredTowerActions: ['issue_schema_clearance_before_dependents'],
+        }),
+        triggerConditionsJson: JSON.stringify([{ path: 'synthi/prisma/schema.prisma' }, { risk: 'semantic_collision' }]),
+        expectedRiskReduction: 0.4,
+        confidence: 0.92,
+        promotionState: 'active',
+        replayRefsJson: JSON.stringify(['codesite:counterfactual-run:cfr-schema']),
+        createdAt: new Date('2026-06-29T23:12:00.000Z'),
+        promotedAt: new Date('2026-06-29T23:13:00.000Z'),
+      },
+    ]);
+    prisma.codeSiteCounterfactualRun.create.mockImplementation(async ({ data }) => ({
+      id: 'cfr-schema-learned',
+      shadowJobRef: data.shadowJobRef,
+      baseSnapshot: data.baseSnapshot,
+      createdAt: new Date('2026-06-29T23:12:00.000Z'),
+      ...data,
+    }));
+
+    const result = await shadowMergeSimulate('acme', 'project-1', {
+      strategies: ['schema_first', 'frontend_backend_parallel'],
+    });
+
+    expect(result.selected).toBe('schema-first');
+    expect(result.appliedPolicyDeltas).toEqual(['delta-schema-semantic-risk']);
+    expect(result.evidenceRefs).toContain('codesite:policy-delta:delta-schema-semantic-risk');
+    const schemaUniverse = result.universes.find((universe) => universe.strategy === 'schema-first');
+    expect(schemaUniverse.learnedPolicyDeltaRefs).toEqual(['delta-schema-semantic-risk']);
+    expect(schemaUniverse.reasonCodes).toEqual(expect.arrayContaining([
+      'counterfactual_policy_delta_applied',
+      'learned_policy_delta_preferred_strategy',
+    ]));
+  });
+
+  it('surfaces Regret Memory policy hints in public collision prediction', async () => {
+    const zonePolicy = {
+      zones: [
+        { zoneKey: 'schema', label: 'Schema contract', class: 'B', paths: ['packages/schemas/**'], rules: ['api_contract_radar_required'] },
+        { zoneKey: 'ui', label: 'Signup UI', class: 'C', paths: ['app/signup/**'], rules: [] },
+      ],
+      semanticGraph: {
+        files: ['packages/schemas/auth.ts', 'app/signup/page.tsx'],
+        importEdges: [{ from: 'app/signup/page.tsx', imports: ['packages/schemas/auth.ts'] }],
+        testOwnership: [],
+        migrationLocks: [],
+        packageExports: [{ packageName: '@acme/contracts', root: 'packages/schemas', exports: ['packages/schemas/auth.ts'] }],
+        generatedClients: [],
+      },
+    };
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Learned collision forecast',
+      request: 'Coordinate signup schema and UI',
+      status: 'active',
+      zonePolicyJson: JSON.stringify(zonePolicy),
+      controlPlanJson: JSON.stringify({}),
+      members: [],
+      agentSessions: [],
+      executionPlans: [
+        {
+          id: 'plan-schema',
+          projectId: 'project-1',
+          agentSessionId: 'agent-schema',
+          displayCallsign: 'SCHEMA-01',
+          mission: 'Change signup contract',
+          domain: 'schema',
+          status: 'preflight',
+          routeJson: JSON.stringify(['packages/schemas/auth.ts']),
+          blockedZonesJson: JSON.stringify([]),
+          abortJson: JSON.stringify([]),
+          requestedToolsJson: JSON.stringify(['file_write']),
+          filedAt: new Date('2026-06-29T23:00:00.000Z'),
+          closedAt: null,
+        },
+        {
+          id: 'plan-ui',
+          projectId: 'project-1',
+          agentSessionId: 'agent-ui',
+          displayCallsign: 'UI-02',
+          mission: 'Build signup UI',
+          domain: 'frontend',
+          status: 'preflight',
+          routeJson: JSON.stringify(['app/signup/page.tsx']),
+          blockedZonesJson: JSON.stringify([]),
+          abortJson: JSON.stringify([]),
+          requestedToolsJson: JSON.stringify(['file_write']),
+          filedAt: new Date('2026-06-29T23:00:00.000Z'),
+          closedAt: null,
+        },
+      ],
+      mutationLeases: [],
+      incidents: [],
+      inspectionRuns: [],
+    });
+    prisma.codeSitePolicyDelta.findMany.mockResolvedValueOnce([{
+      id: 'delta-schema-first',
+      projectId: 'project-1',
+      learnedFromIncidentsJson: JSON.stringify(['near-miss-signup-schema']),
+      affectedZoneKey: null,
+      ruleCandidateJson: JSON.stringify({
+        rule: 'schema_first_policy_reduced_rework',
+        preferredStrategies: ['schema-first'],
+        requiredTowerActions: ['issue_schema_clearance_before_dependents'],
+      }),
+      triggerConditionsJson: JSON.stringify([{ risk: 'semantic_collision' }, { path: 'packages/schemas/**' }]),
+      expectedRiskReduction: 0.42,
+      confidence: 0.88,
+      promotionState: 'promoted',
+      replayRefsJson: JSON.stringify(['codesite:counterfactual-run:cfr-forecast']),
+      createdAt: new Date('2026-06-29T23:12:00.000Z'),
+      promotedAt: new Date('2026-06-29T23:13:00.000Z'),
+    }]);
+    prisma.codeSiteFleetNotam.findMany.mockResolvedValueOnce([]);
+
+    const forecast = await collisionPredict('acme', 'project-1');
+
+    expect(forecast.regretMemoryPolicyHints).toEqual([
+      expect.objectContaining({
+        policyDeltaId: 'delta-schema-first',
+        rule: 'schema_first_policy_reduced_rework',
+        confidence: 0.88,
+      }),
+    ]);
+    expect(forecast.risks.some((risk) =>
+      risk.regretMemoryPolicyHints?.some((hint) => hint.policyDeltaId === 'delta-schema-first'))).toBe(true);
+  });
+
+  it('requires policy deltas to start proposed before promotion governance', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+    });
+
+    await expect(createPolicyDelta('acme', 'project-1', {
+      promotionState: 'active',
+      ruleCandidate: { rule: 'test_first_for_contract_churn', preferredStrategies: ['test-first'] },
+      confidence: 0.9,
+    })).rejects.toMatchObject({
+      code: 'policy_delta_create_must_start_proposed',
+      status: 400,
+    });
+    expect(prisma.codeSitePolicyDelta.create).not.toHaveBeenCalled();
+  });
+
+  it('blocks policy delta promotion without replay validation evidence', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+    });
+    prisma.codeSitePolicyDelta.findFirst.mockResolvedValueOnce({
+      id: 'delta-1',
+      projectId: 'project-1',
+      learnedFromIncidentsJson: JSON.stringify([]),
+      affectedZoneKey: null,
+      ruleCandidateJson: JSON.stringify({ rule: 'test_first_for_contract_churn', preferredStrategies: ['test-first'] }),
+      triggerConditionsJson: JSON.stringify([]),
+      expectedRiskReduction: 0.4,
+      confidence: 0.9,
+      promotionState: 'proposed',
+      replayRefsJson: JSON.stringify([]),
+      createdAt: new Date('2026-06-29T23:13:00.000Z'),
+      promotedAt: null,
+    });
+
+    await expect(promotePolicyDelta('acme', 'project-1', 'delta-1', {}, { userId: 'reviewer-1' }))
+      .rejects.toMatchObject({
+        code: 'policy_delta_promotion_not_validated',
+        status: 400,
+        detail: {
+          reasonCodes: expect.arrayContaining([
+            'policy_delta_replay_validation_required',
+            'policy_delta_replay_ref_required',
+            'policy_delta_validation_evidence_required',
+          ]),
+        },
+      });
+    expect(prisma.codeSitePolicyDelta.update).not.toHaveBeenCalled();
+  });
+
+  it('promotes policy deltas only after replay validation and reviewer attribution', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValueOnce({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+    });
+    prisma.codeSitePolicyDelta.findFirst.mockResolvedValueOnce({
+      id: 'delta-1',
+      projectId: 'project-1',
+      learnedFromIncidentsJson: JSON.stringify(['near-miss-1']),
+      affectedZoneKey: null,
+      ruleCandidateJson: JSON.stringify({ rule: 'test_first_for_contract_churn', preferredStrategies: ['test-first'] }),
+      triggerConditionsJson: JSON.stringify([{ risk: 'semantic_collision' }]),
+      expectedRiskReduction: 0.4,
+      confidence: 0.9,
+      promotionState: 'proposed',
+      replayRefsJson: JSON.stringify(['codesite:counterfactual-run:cfr-1']),
+      createdAt: new Date('2026-06-29T23:13:00.000Z'),
+      promotedAt: null,
+    });
+    prisma.codeSiteCounterfactualRun.findMany.mockResolvedValueOnce([{
+      id: 'cfr-1',
+      projectId: 'project-1',
+      shadowJobRef: 'shadow-job-1',
+    }]);
+
+    const result = await promotePolicyDelta('acme', 'project-1', 'delta-1', {
+      targetState: 'active',
+      validation: {
+        status: 'passed',
+        evidenceRefs: ['replay:evidence:delta-1'],
+      },
+    }, { userId: 'reviewer-1' });
+
+    expect(result.promotionState).toBe('active');
+    const update = prisma.codeSitePolicyDelta.update.mock.calls[0][0];
+    expect(update.data.promotionState).toBe('active');
+    expect(JSON.parse(update.data.replayRefsJson)).toContain('codesite:counterfactual-run:cfr-1');
+    expect(JSON.parse(update.data.ruleCandidateJson).promotion).toMatchObject({
+      reviewedBy: 'reviewer-1',
+      validationStatus: 'passed',
+      evidenceRefs: ['replay:evidence:delta-1'],
+    });
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'policy_delta_promoted',
+        actorId: 'delta-1',
+      }),
+    }));
+  });
+
+  it('holds matching lease requests when active counterfactual policy requires sequencing', async () => {
+    const plan = executionPlanFixture(['src/components/SignupForm.tsx']);
+    plan.domain = 'frontend';
+    plan.project.zonePolicyJson = JSON.stringify({
+      zones: [
+        { zoneKey: 'signup-ui', class: 'C', label: 'Signup UI', paths: ['src/components/**'], rules: [], risk: 'medium' },
+      ],
+      noFlyZones: ['secrets/**'],
+    });
+    prisma.codeSiteExecutionPlan.findFirst.mockResolvedValueOnce(plan);
+    prisma.codeSitePolicyDelta.findMany.mockResolvedValueOnce([
+      {
+        id: 'delta-sequence-ui',
+        projectId: 'older-project',
+        learnedFromIncidentsJson: JSON.stringify(['near-miss-ui-1']),
+        affectedZoneKey: 'Signup-UI',
+        ruleCandidateJson: JSON.stringify({
+          rule: 'sequence_frontend_after_contract_rfi',
+          decision: 'hold',
+          requiredRadar: ['visual'],
+          requiredTowerActions: ['sequence_after_contract_response'],
+        }),
+        triggerConditionsJson: JSON.stringify([{ path: 'src/components/**' }]),
+        expectedRiskReduction: 0.3,
+        confidence: 0.9,
+        promotionState: 'active',
+        replayRefsJson: JSON.stringify(['codesite:counterfactual-run:cfr-ui']),
+        createdAt: new Date('2026-06-29T23:12:00.000Z'),
+        promotedAt: new Date('2026-06-29T23:13:00.000Z'),
+      },
+    ]);
+
+    const lease = await requestMutationLease('acme', 'plan-1', {
+      allowedPaths: ['src/components/SignupForm.tsx'],
+      allowedTools: ['file_write'],
+      requiredRadar: ['tests'],
+    }, { userId: 'user-1' });
+
+    expect(lease.status).toBe('holding');
+    expect(lease.lease.requiredRadar).toEqual(expect.arrayContaining(['tests', 'visual']));
+    expect(lease.lease.counterfactualPolicy).toMatchObject({
+      appliedPolicyDeltas: ['delta-sequence-ui'],
+      reasonCodes: expect.arrayContaining(['counterfactual_policy_delta_hold']),
+    });
+    expect(lease.policyDecision.reasonCodes).toEqual(expect.arrayContaining([
+      'counterfactual_policy_delta_applied',
+      'counterfactual_policy_delta_hold',
+    ]));
+  });
+
+  it('treats migration-only simulator pressure as a single runway problem', async () => {
+    const zonePolicy = {
+      zones: [
+        {
+          zoneKey: 'migrations',
+          label: 'Migration runway',
+          class: 'A',
+          paths: ['prisma/migrations/**'],
+          rules: ['single_migration_runway_lock', 'migration_radar_required'],
+        },
+      ],
+      semanticGraph: {
+        files: [
+          'prisma/migrations/202607010001_init/migration.sql',
+          'prisma/migrations/202607010002_accounts/migration.sql',
+        ],
+        importEdges: [],
+        testOwnership: [],
+        migrationLocks: ['prisma/migrations/**'],
+        packageExports: [],
+        generatedClients: [],
+      },
+    };
+    prisma.codeSiteProject.findFirst
+      .mockResolvedValueOnce({
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Migration coordination',
+        request: 'Coordinate two migrations',
+        status: 'active',
+        zonePolicyJson: JSON.stringify(zonePolicy),
+        controlPlanJson: JSON.stringify({}),
+        executionPlans: [
+          {
+            id: 'plan-migration-a',
+            projectId: 'project-1',
+            displayCallsign: 'DB-01',
+            mission: 'Add auth table',
+            domain: 'backend',
+            status: 'preflight',
+            routeJson: JSON.stringify(['prisma/migrations/202607010001_init/migration.sql']),
+            blockedZonesJson: JSON.stringify([]),
+            abortJson: JSON.stringify([]),
+            requestedToolsJson: JSON.stringify(['file_write', 'npm_test']),
+            estimatedDurationMs: 120000,
+            filedAt: new Date('2026-06-29T23:00:00.000Z'),
+            closedAt: null,
+          },
+          {
+            id: 'plan-migration-b',
+            projectId: 'project-1',
+            displayCallsign: 'DB-02',
+            mission: 'Add accounts table',
+            domain: 'backend',
+            status: 'preflight',
+            routeJson: JSON.stringify(['prisma/migrations/202607010002_accounts/migration.sql']),
+            blockedZonesJson: JSON.stringify([]),
+            abortJson: JSON.stringify([]),
+            requestedToolsJson: JSON.stringify(['file_write', 'npm_test']),
+            estimatedDurationMs: 120000,
+            filedAt: new Date('2026-06-29T23:00:00.000Z'),
+            closedAt: null,
+          },
+        ],
+        mutationLeases: [],
+        incidents: [],
+        inspectionRuns: [],
+      })
+      .mockResolvedValueOnce({
+        id: 'project-1',
+        workspaceSlug: 'acme',
+        title: 'Migration coordination',
+        request: 'Coordinate two migrations',
+        status: 'active',
+        zonePolicyJson: JSON.stringify(zonePolicy),
+        controlPlanJson: JSON.stringify({}),
+      });
+    prisma.codeSiteCounterfactualRun.create.mockImplementation(async ({ data }) => ({
+      id: 'cfr-shadow-migration',
+      shadowJobRef: data.shadowJobRef,
+      baseSnapshot: data.baseSnapshot,
+      createdAt: new Date('2026-06-29T23:12:00.000Z'),
+      ...data,
+    }));
+
+    const result = await shadowMergeSimulate('acme', 'project-1', { strategies: [] });
+
+    expect(result.selected).toBe('single-fullstack-agent');
+    const selected = result.universes.find((universe) => universe.strategy === result.selected);
+    const schema = result.universes.find((universe) => universe.strategy === 'schema-first');
+    expect(selected.requiredTowerActions).toContain('single_migration_runway_lock');
+    expect(selected.avoidedRisks).toContain('migration_collision');
+    expect(selected.sourceSignals).toMatchObject({
+      migrationRiskCount: 1,
+      migrationLocks: 1,
+      contractRiskCount: 0,
+    });
+    expect(schema.unresolvedRisks).toContain('migration_collision');
+  });
+
+  it('records arbiter verdict events for counterfactual runs', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValue({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Counterfactual project',
+      request: 'Choose safest route',
+      status: 'active',
+      zonePolicyJson: JSON.stringify({ zones: [] }),
+      controlPlanJson: JSON.stringify({}),
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+    });
+    prisma.codeSiteCounterfactualRun.create.mockResolvedValue({
+      id: 'cfr-1',
+      projectId: 'project-1',
+      shadowJobRef: 'shadow-job-1',
+      baseSnapshot: 'repo@sha256:base',
+      universesJson: JSON.stringify([{ strategy: 'schema-first' }]),
+      arbiterVerdictJson: JSON.stringify({ selected: 'schema-first' }),
+      userChoiceJson: JSON.stringify(null),
+      laterManualEditsJson: JSON.stringify([]),
+      validityStrength: 'simulated',
+      evidenceRefsJson: JSON.stringify(['shadow:job:shadow-job-1']),
+      createdAt: new Date('2026-06-29T23:12:00.000Z'),
+    });
+    prisma.codeSiteEvent.count.mockResolvedValue(7);
+
+    const result = await createCounterfactualRun('acme', 'project-1', {
+      shadowJobRef: 'shadow-job-1',
+      baseSnapshot: 'repo@sha256:base',
+      universes: [{ strategy: 'schema-first' }],
+      arbiterVerdict: { selected: 'schema-first' },
+      validityStrength: 'simulated',
+      evidenceRefs: ['shadow:job:shadow-job-1'],
+    });
+
+    expect(result.id).toBe('cfr-1');
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'shadow_run',
+        actorId: 'cfr-1',
+      }),
+    }));
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'arbiter_verdict',
+        actorId: 'cfr-1',
+        evidenceRefsJson: JSON.stringify(['shadow:job:shadow-job-1']),
+        detailsJson: expect.stringContaining('schema-first'),
+      }),
+    }));
+  });
+
+  it('derives mature Regret Memory policy deltas from a complete counterfactual choice scene', async () => {
+    prisma.codeSiteProject.findFirst.mockResolvedValue({
+      id: 'project-1',
+      workspaceSlug: 'acme',
+      title: 'Counterfactual project',
+      request: 'Choose safest route',
+      status: 'active',
+      zonePolicyJson: JSON.stringify({ zones: [] }),
+      controlPlanJson: JSON.stringify({}),
+      createdAt: new Date('2026-06-29T23:00:00.000Z'),
+      updatedAt: new Date('2026-06-29T23:00:00.000Z'),
+    });
+    prisma.codeSiteCounterfactualRun.create.mockImplementation(async ({ data }) => ({
+      id: 'cfr-mature-learning',
+      projectId: 'project-1',
+      shadowJobRef: data.shadowJobRef,
+      baseSnapshot: data.baseSnapshot,
+      createdAt: new Date('2026-06-29T23:12:00.000Z'),
+      ...data,
+    }));
+
+    const result = await createCounterfactualRun('acme', 'project-1', {
+      shadowJobRef: 'shadow-job-regret-1',
+      repoSnapshot: 'repo@sha256:complete-scene',
+      choices: [
+        {
+          universe: 'schema-first',
+          result: 'passed',
+          affectedRoutes: ['packages/schemas/auth.ts'],
+          reworkRiskReduction: 0.52,
+          staleAssumptions: 0,
+          inspectionCost: 3,
+        },
+        {
+          universe: 'frontend-backend-parallel',
+          result: 'near_miss',
+          affectedRoutes: ['app/signup/page.tsx', 'api/auth/signup.ts'],
+          unresolvedRisks: ['semantic_collision'],
+          predictedCollisionRisk: 0.78,
+          staleAssumptions: 3,
+          incidents: ['near_miss_signup_schema_drift_001', 'near_miss_profile_payload_002'],
+        },
+      ],
+      arbiterVerdict: { selected: 'schema-first', humanOverride: null },
+      humanOverride: null,
+      nearMisses: ['near_miss_signup_schema_drift_001', 'near_miss_profile_payload_002'],
+      laterManualEdits: [{
+        path: 'app/generated/auth-client.ts',
+        reason: 'manual rewrite refreshed downstream generated client after schema contract churn',
+        incidentRefs: ['near_miss_profile_payload_002'],
+      }],
+      airspaceClassFeedback: [{
+        path: 'packages/schemas/auth.ts',
+        outcome: 'too_loose',
+        reason: 'class mismatch allowed dependent work before schema stability',
+      }],
+      inspectionFindings: [{
+        path: 'api/auth/signup.ts',
+        adapter: 'api_contract',
+        caughtRealIssue: true,
+        status: 'blocked_regression',
+      }],
+      towerReroutes: [{
+        path: 'app/signup/page.tsx',
+        savedWork: 4,
+        reason: 'reroute avoided repeated UI rewrite',
+      }],
+      clearanceViolations: [{
+        path: 'app/signup/page.tsx',
+        callsign: 'UI-02',
+        violation: true,
+        reason: 'outside_clearance_write',
+      }],
+      blackBoxPatterns: [{
+        path: 'packages/schemas/auth.ts',
+        pattern: 'contract_escape_without_generated_client_refresh',
+        promoteToRule: true,
+      }],
+      validityStrength: 'executed',
+      evidenceRefs: ['shadow:job:shadow-job-regret-1', 'codesite:incident:near_miss_signup_schema_drift_001'],
+    });
+
+    expect(result.baseSnapshot).toBe('repo@sha256:complete-scene');
+    expect(result.universes).toHaveLength(2);
+    expect(result.userChoice).toBe(null);
+    const runCreate = prisma.codeSiteCounterfactualRun.create.mock.calls[0][0].data;
+    expect(JSON.parse(runCreate.arbiterVerdictJson).counterfactualLearning).toMatchObject({
+      inferredCandidateCount: 8,
+    });
+    const createdDeltas = prisma.codeSitePolicyDelta.create.mock.calls.map((call) => call[0].data);
+    const rules = createdDeltas.map((data) => JSON.parse(data.ruleCandidateJson).rule);
+    expect(rules).toEqual(expect.arrayContaining([
+      'flight_split_reduced_collision',
+      'recurring_near_miss_airspace_rule',
+      'calibrate_airspace_class_from_counterfactual_outcome',
+      'inspector_real_issue_gate',
+      'prefer_tower_reroute_that_saved_work',
+      'enforce_clearance_after_agent_violation',
+      'schema_first_policy_reduced_rework',
+      'promote_black_box_pattern_to_airspace_rule',
+    ]));
+    expect(new Set(createdDeltas.map((data) => data.promotionState))).toEqual(new Set(['proposed']));
+    expect(createdDeltas.every((data) => JSON.parse(data.triggerConditionsJson).length > 0)).toBe(true);
+    expect(createdDeltas.every((data) => data.confidence >= 0.65)).toBe(true);
+    expect(createdDeltas.some((data) =>
+      JSON.parse(data.learnedFromIncidentsJson).includes('near_miss_profile_payload_002'))).toBe(true);
+    expect(createdDeltas.some((data) =>
+      JSON.parse(data.replayRefsJson).includes('shadow:job:shadow-job-regret-1'))).toBe(true);
+  });
+
+  it('builds incident replay timelines from referenced events', async () => {
+    prisma.codeSiteIncident.findFirst.mockResolvedValue({
+      id: 'incident-1',
+      projectId: 'project-1',
+      severity: 'warning',
+      category: 'near_miss',
+      participantsJson: JSON.stringify(['ATLAS-1']),
+      affectedZonesJson: JSON.stringify(['synthi/prisma/**']),
+      incidentReplayJson: JSON.stringify({ events: ['write_allowed'], summary: 'Predicted collision' }),
+      replayDigest: 'sha256:replay',
+      timelineEventRefsJson: JSON.stringify(['evt-1']),
+      policyDeltaJson: JSON.stringify(null),
+      evidenceRefsJson: JSON.stringify(['collision:evidence']),
+      createdAt: new Date('2026-06-29T23:12:00.000Z'),
+      project: {
+        events: [{
+          id: 'evt-1',
+          projectId: 'project-1',
+          mutationLeaseId: 'lease-1',
+          eventType: 'write_allowed',
+          displayCallsign: 'ATLAS-1',
+          actorType: 'transaction',
+          actorId: 'txn-1',
+          detailsJson: JSON.stringify({ path: 'synthi/prisma/schema.prisma' }),
+          evidenceRefsJson: JSON.stringify([]),
+          logicalTime: 1,
+          createdAt: new Date('2026-06-29T23:11:00.000Z'),
+        }],
+      },
+    });
+
+    const replay = await getIncidentReplay('acme', 'incident-1');
+
+    expect(replay.replayDigest).toBe('sha256:replay');
+    expect(replay.timeline).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: 'codesite_event',
+        event: expect.objectContaining({
+          type: 'write.allowed',
+          path: 'synthi/prisma/schema.prisma',
+        }),
+      }),
+      expect.objectContaining({
+        source: 'incident_record',
+      }),
+    ]));
+    expect(replay.completeness.observedEventTypes).toEqual(expect.arrayContaining(['write.allowed']));
+  });
+});
+describe('agent-token inbox access', () => {
+  const inboxItem = {
+    id: 'agent-inbox-1',
+    projectId: 'project-authority-1',
+    agentSessionId: 'agent-authority-1',
+    recipientUserId: 'user-agent-owner',
+    eventId: 'evt-agent-1',
+    documentId: 'document-authority-1',
+    knowledgeItemId: null,
+    kind: 'impact_notice',
+    requiresResponse: false,
+    status: 'pending',
+    redactedPayloadJson: JSON.stringify({ summary: 'Contract changed' }),
+    createdAt: new Date('2026-08-22T11:59:00.000Z'),
+    acknowledgedAt: null,
+    responseAction: null,
+    respondedAt: null,
+  };
+
+  function mockInboxStores() {
+    prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([inboxItem]);
+    prisma.codeSiteAgentInboxItem.findFirst.mockResolvedValue(inboxItem);
+    prisma.codeSiteAgentInboxItem.update.mockImplementation(async ({ data }) => ({
+      ...inboxItem,
+      ...data,
+    }));
+    prisma.codeSiteEvent.create.mockImplementation(async ({ data }) => ({
+      ...data,
+      createdAt: new Date('2026-08-22T12:00:01.000Z'),
+    }));
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ now: AGENT_AUTHORITY_NOW });
+    vi.clearAllMocks();
+    prisma.codeSiteProjectMember.findUnique.mockResolvedValue(null);
+    prisma.codeSiteProjectMember.findFirst.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+    it('authorizes its own session to read projected inbox items', async () => {
+    const session = agentAuthoritySession();
+    mockBoundAgentAuthoritySession(session);
+    mockInboxStores();
+
+    await expect(getAgentInboxForAgent('acme', session.id, AGENT_AUTHORITY_TOKEN))
+      .resolves.toEqual([
+        expect.objectContaining({
+          id: inboxItem.id,
+          agentSessionId: session.id,
+          eventId: inboxItem.eventId,
+          status: 'pending',
+          redactedPayload: { summary: 'Contract changed' },
+        }),
+      ]);
+    expect(prisma.codeSiteAgentInboxItem.findMany).toHaveBeenCalledWith({
+      where: { agentSessionId: session.id },
+      orderBy: { createdAt: 'asc' },
+    });
+  });
+
+  it.each(['wrong-token', '', `csa_${'x'.repeat(43)}`])(
+    'rejects %j before reading another session inbox',
+    async (token) => {
+      const session = agentAuthoritySession({ id: 'agent-inbox-target' });
+      mockBoundAgentAuthoritySession(session);
+      prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([]);
+
+      await expect(getAgentInboxForAgent('acme', session.id, token)).rejects.toMatchObject({
+        status: 403,
+        code: 'agent_access_token_invalid',
+      });
+      expect(prisma.codeSiteAgentInboxItem.findMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not let session A read session B with A token', async () => {
+    const session = agentAuthoritySession();
+    const otherSession = agentAuthoritySession({ id: 'agent-inbox-b', projectId: 'project-authority-b' });
+    prisma.codeSiteAgentSession.findFirst.mockImplementation(async ({ where } = {}) => (
+      where?.id === session.id
+        && where?.workspaceSlug === session.workspaceSlug
+        && where?.agentAccessTokenHash === AGENT_AUTHORITY_TOKEN_HASH
+        ? session
+        : null
+    ));
+    prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([{ ...inboxItem, agentSessionId: otherSession.id }]);
+
+    await expect(getAgentInboxForAgent('acme', otherSession.id, AGENT_AUTHORITY_TOKEN)).rejects.toMatchObject({
+      status: 403,
+      code: 'agent_access_token_invalid',
+    });
+    expect(prisma.codeSiteAgentInboxItem.findMany).not.toHaveBeenCalled();
+  });
+
+  it('acknowledges its own inbox item and records the causal event', async () => {
+    const session = agentAuthoritySession();
+    mockBoundAgentAuthoritySession(session);
+    mockInboxStores();
+
+    await expect(acknowledgeInboxItemForAgent(
+      'acme',
+      session.id,
+      inboxItem.eventId,
+      AGENT_AUTHORITY_TOKEN,
+    )).resolves.toMatchObject({
+      id: inboxItem.id,
+      eventId: inboxItem.eventId,
+      status: 'acknowledged',
+    });
+
+    expect(prisma.codeSiteAgentInboxItem.update).toHaveBeenCalledWith({
+      where: { id: inboxItem.id },
+      data: expect.objectContaining({ status: 'acknowledged', acknowledgedAt: expect.any(Date) }),
+    });
+    expect(prisma.codeSiteEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        projectId: session.projectId,
+        eventType: 'transponder_update',
+        actorType: 'agent_session',
+        actorId: session.id,
+        detailsJson: expect.stringContaining('inbox_acknowledged'),
+      }),
+    }));
+  });
+
+  it('returns a clean not-found error for an unknown inbox event id', async () => {
+    const session = agentAuthoritySession();
+    mockBoundAgentAuthoritySession(session);
+    mockInboxStores();
+    prisma.codeSiteAgentInboxItem.findFirst.mockResolvedValue(null);
+
+    await expect(acknowledgeInboxItemForAgent('acme', session.id, 'missing-event', AGENT_AUTHORITY_TOKEN))
+      .rejects.toMatchObject({ status: 404, code: 'inbox_item_not_found' });
+    expect(prisma.codeSiteAgentInboxItem.update).not.toHaveBeenCalled();
+    expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('listProjectChannels keyset pagination', () => {
+  const baseTime = new Date('2026-06-30T12:00:00.000Z');
+
+  function channelFixture(id, createdAt, status = 'active') {
+    return {
+      id,
+      projectId: 'project-pagination',
+      workspaceSlug: 'acme',
+      fromSessionId: `${id}-from`,
+      toSessionId: `${id}-to`,
+      status,
+      transport: 'websocket',
+      messageCount: 0,
+      createdAt,
+    };
+  }
+
+  function makeKeysetFindMany(rows) {
+    return vi.fn(async ({ where = {}, take = 100 } = {}) => {
+      const statusFilter = Object.hasOwn(where, 'status') ? { status: where.status } : null;
+      const keyset = Array.isArray(where?.OR) ? { OR: where.OR } : null;
+      return rows
+        .filter((row) => !statusFilter || row.status === statusFilter.status)
+        .filter((row) => {
+          if (!keyset) return true;
+          const [beforeDate, sameDateBeforeId] = keyset.OR;
+          const beforeCreatedAt = beforeDate.createdAt.lt;
+          return row.createdAt < beforeCreatedAt
+            || (row.createdAt.getTime() === beforeCreatedAt.getTime() && row.id < sameDateBeforeId.id.lt);
+        })
+        .sort((left, right) => right.createdAt - left.createdAt || right.id.localeCompare(left.id))
+        .slice(0, take);
+    });
+  }
+
+  beforeEach(() => {
+    prisma.codeSiteProject.findFirst.mockResolvedValue({
+      id: 'project-pagination',
+      workspaceSlug: 'acme',
+      members: [],
+    });
+  });
+
+  it('pages beyond the first page without overlap and omits the final cursor', async () => {
+    const rows = [
+      channelFixture('channel-5', new Date(baseTime.getTime() + 4000)),
+      channelFixture('channel-4', new Date(baseTime.getTime() + 3000)),
+      channelFixture('channel-3', new Date(baseTime.getTime() + 2000)),
+      channelFixture('channel-2', new Date(baseTime.getTime() + 1000)),
+      channelFixture('channel-1', baseTime),
+    ];
+    prisma.codeSiteAgentChannel.findMany = makeKeysetFindMany(rows);
+
+    const firstPage = await listProjectChannels('acme', 'project-pagination', null, { limit: '2' });
+    expect(firstPage.channels.map((channel) => channel.id)).toEqual(['channel-5', 'channel-4']);
+    expect(firstPage.nextCursor).toBeTruthy();
+
+    const secondPage = await listProjectChannels('acme', 'project-pagination', null, {
+      cursor: firstPage.nextCursor,
+      limit: '2',
+    });
+    expect(secondPage.channels.map((channel) => channel.id)).toEqual(['channel-3', 'channel-2']);
+    expect(secondPage.nextCursor).toBeTruthy();
+
+    const thirdPage = await listProjectChannels('acme', 'project-pagination', null, {
+      cursor: secondPage.nextCursor,
+      limit: '2',
+    });
+    expect(thirdPage.channels.map((channel) => channel.id)).toEqual(['channel-1']);
+    expect(thirdPage).not.toHaveProperty('nextCursor');
+
+    const allIds = [...firstPage.channels, ...secondPage.channels, ...thirdPage.channels].map((c) => c.id);
+    expect(new Set(allIds)).toHaveLength(5);
+    expect(prisma.codeSiteAgentChannel.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: 3,
+    }));
+  });
+
+  it('rejects an unreadable cursor as a clean codesite bad request', async () => {
+    prisma.codeSiteAgentChannel.findMany = makeKeysetFindMany([channelFixture('channel-1', baseTime)]);
+
+    await expect(listProjectChannels('acme', 'project-pagination', null, { cursor: 'tampered' }))
+      .rejects.toMatchObject({ status: 400, code: 'invalid_cursor' });
+    expect(prisma.codeSiteAgentChannel.findMany).not.toHaveBeenCalled();
+  });
+
+  it('composes the status filter with the cursor keyset', async () => {
+    const rows = [
+      channelFixture('requested-latest', new Date(baseTime.getTime() + 3000), 'requested'),
+      channelFixture('active-2', new Date(baseTime.getTime() + 2000), 'active'),
+      channelFixture('active-1', new Date(baseTime.getTime() + 1000), 'active'),
+      channelFixture('other-requested', baseTime, 'requested'),
+    ];
+    prisma.codeSiteAgentChannel.findMany = makeKeysetFindMany(rows);
+
+    const firstPage = await listProjectChannels('acme', 'project-pagination', null, {
+      status: 'active',
+      limit: '1',
+    });
+    expect(firstPage.channels.map((channel) => channel.status)).toEqual(['active']);
+
+    const secondPage = await listProjectChannels('acme', 'project-pagination', null, {
+      status: 'active',
+      limit: '1',
+      cursor: firstPage.nextCursor,
+    });
+    expect(secondPage.channels.map((channel) => channel.id)).toEqual(['active-1']);
+    expect(secondPage).not.toHaveProperty('nextCursor');
+    expect(prisma.codeSiteAgentChannel.findMany.mock.calls.at(-1)[0].where.status)
+      .toBe('active');
+  });
+
+  it('uses the id tiebreak deterministically when creation times match', async () => {
+    const rows = [
+      channelFixture('channel-z', baseTime),
+      channelFixture('channel-a', baseTime),
+      channelFixture('channel-m', baseTime),
+    ];
+    prisma.codeSiteAgentChannel.findMany = makeKeysetFindMany(rows);
+
+    const firstPage = await listProjectChannels('acme', 'project-pagination', null, { limit: '2' });
+    expect(firstPage.channels.map((channel) => channel.id)).toEqual(['channel-z', 'channel-m']);
+
+    const secondPage = await listProjectChannels('acme', 'project-pagination', null, {
+      limit: '2',
+      cursor: firstPage.nextCursor,
+    });
+    expect(secondPage.channels.map((channel) => channel.id)).toEqual(['channel-a']);
+  });
+});

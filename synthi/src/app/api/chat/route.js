@@ -2,7 +2,14 @@ import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/app/auth';
 import { withInternalAiAuth } from '@/lib/internalAiAuth';
+import { requireRuntimeWorkspaceAccess } from '@/lib/workspaceAccess';
 import { TOOL_DECLARATIONS, executeTool, isComplexTask } from './toolDefinitions.js';
+import { buildExternalTools, isExternalToolName, callExternalTool } from './externalTools.js';
+import { resolveActor } from '@/lib/integrations/session';
+import { routeChatAgentTask, selectExplicitExternalToolNames } from '@/lib/agent-routing/chat-tool-routing';
+import { ATOMIC_AGENT_PROTOCOL } from '@/lib/agent-routing/workspace-agent-protocol';
+import { loadSelectedSkillInstructions } from '@/lib/agent-routing/selective-skill-loader';
+import { formatSelectedSkillExecutionContext } from '@/lib/agent-routing/skill-execution-context';
 
 const encoder = new TextEncoder();
 
@@ -55,6 +62,7 @@ function waitForCommandApproval(id, command) {
                 clearTimeout(timeout);
                 resolve(approved);
             },
+            userId,
             command,
             timestamp: Date.now(),
         });
@@ -402,16 +410,11 @@ If the context is insufficient to answer the question, say so clearly rather tha
 // Tells Gemini about its tools so it actually uses them.
 const AGENTIC_SYSTEM_PROMPT = `${CODE_INTEL_SYSTEM_PROMPT}
 
-TOOL USE:
-You have access to the following tools to help answer the user's request. USE THEM proactively when they would help you give a better answer:
+MANDATORY ATOMIC AGENT PROTOCOL:
+${ATOMIC_AGENT_PROTOCOL}
 
-- read_file(path): Read the contents of a file in the workspace.
-- search_workspace(query): Search for text/symbols across the workspace.
-- list_directory(path): List files and folders in a directory.
-- create_file(path, content): Create a new file in the workspace. The file will be presented to the user for review with Apply/Reject buttons before being written to disk. Always use this tool when creating new files — it is the preferred way to create files.
-- create_directory(path): Create a directory in the workspace. Parent directories are created automatically. Use this instead of mkdir via the terminal.
-- run_command(command): Execute a shell command in the user's live terminal (they can see it running). Use this ONLY for: git operations, installing packages, running builds/tests/linting, and other CLI tasks. Do NOT use this for creating or writing files. The user must approve command execution before it runs. IMPORTANT: Each call opens a new terminal tab, so chain related commands with && (e.g. "git add . && git commit -m 'msg' && git push"). Only use separate calls when you need output from one command to decide the next.
-- web_search(query, num_results?): Search the internet and return real, up-to-date results with titles, URLs, and snippets.
+TOOL USE:
+You receive only the tool declarations selected for this atomic task. Use a declared tool proactively when it helps, but never assume that an undeclared tool exists or ask to use one. If no declared tool is needed, answer directly.
 
 IMPORTANT TOOL GUIDELINES:
 - FILE CREATION: When the user asks you to create NEW files (pages, components, modules, scripts, stylesheets, configs), ALWAYS use the create_file tool. Call create_file(path, content) for EACH new file with its full content. The system will present the files to the user for review with Apply/Reject buttons. Do NOT use echo, touch, cat, printf, or run_command to create files. Do NOT generate FILE: blocks in your text — use the create_file tool instead.
@@ -436,6 +439,23 @@ WEB SEARCH GUIDELINES:
 - When the user asks to add an image, icon, font, or any external resource from the web, use web_search to find a real, working URL. NEVER guess or fabricate URLs.
 - After searching, use the actual URLs from the results — do NOT modify or make up URLs.
 `;
+
+// Keep the execution-facing instruction compact and capability-neutral. The
+// legacy prompt above is retained for non-agentic compatibility, but it must
+// never be sent to a routed tool-calling agent because it enumerates tools
+// outside that agent's selected declaration subset.
+const ATOMIC_AGENTIC_SYSTEM_PROMPT = `${CODE_INTEL_SYSTEM_PROMPT}
+
+MANDATORY ATOMIC AGENT PROTOCOL:
+${ATOMIC_AGENT_PROTOCOL}
+
+TOOL USE:
+You receive only the function declarations selected for this atomic task. Use a
+declared function when it helps; never assume an undeclared capability exists.
+Read actual workspace output before modifying existing files. For new files,
+use a declared workspace write function rather than a shell command. Respect
+approval flows for destructive actions, report only actual tool output, and
+state the limitation if the needed capability was not declared.`;
 
 
 /**
@@ -712,7 +732,7 @@ const fetchCollabFileContent = async (slug, filePath, signal, userId) => {
         const url = `${COLLAB_BASE}/file-content/${encodeURIComponent(slug)}/${safePath}`;
         const headers = {};
         if (userId) headers['x-user-id'] = userId;
-        const res = await fetch(url, { method: 'GET', signal, headers });
+        const res = await fetch(url, { method: 'GET', signal, headers: withInternalAiAuth(headers) });
         if (!res.ok) return null;
         return await res.text();
     } catch (e) {
@@ -733,7 +753,7 @@ const fetchRepoFileList = async (slug, signal, userId) => {
         const url = `${COLLAB_BASE}/git/${encodeURIComponent(slug)}/files-meta`;
         const headers = {};
         if (userId) headers['x-user-id'] = userId;
-        const res = await fetch(url, { method: 'GET', signal, headers });
+        const res = await fetch(url, { method: 'GET', signal, headers: withInternalAiAuth(headers) });
         if (!res.ok) return [];
         const data = await res.json();
         return Array.isArray(data?.files) ? data.files : [];
@@ -857,7 +877,11 @@ const streamGeminiWithTools = async ({
     conversationHistory = [],
     attachments = [],
     workspacePath = '',
+    runtimeScope = '',
+    filesystemUserId = null,
     userId = null,
+    codeSiteContext = null,
+    taskDescription = '',
     signal,
     maxRetries = 3,
 }) => {
@@ -868,9 +892,76 @@ const streamGeminiWithTools = async ({
     const endpoint = `${GEMINI_BASE}/models/${encodeURIComponent(targetModel)}:generateContent?key=${key}`;
     const streamEndpoint = `${GEMINI_BASE}/models/${encodeURIComponent(targetModel)}:streamGenerateContent?alt=sse&key=${key}`;
 
-    const systemInstruction = { parts: [{ text: AGENTIC_SYSTEM_PROMPT }] };
     const generationConfig = { maxOutputTokens: getMaxOutputTokens(targetModel), temperature: 0.2 };
-    const tools = [{ functionDeclarations: TOOL_DECLARATIONS }];
+    // Built-in tools + user-connected external MCP tools (degrade gracefully).
+    // The frontend sends the workspace slug as `workspacePath` (AIChatWindow.jsx:128);
+    // buildExternalTools gates workspace tools behind membership (R1-9).
+    //
+    // External-tool ownership keys on the Prisma User cuid, but `userId` here is the
+    // OAuth provider id (NextAuth JWT strategy, no PrismaAdapter) and is also used for
+    // collab-server repo paths — so resolve the cuid separately and never reassign it.
+    let mcpUserId = null;
+    try {
+        mcpUserId = (await resolveActor())?.userId || null;
+    } catch {
+        mcpUserId = null;
+    }
+    const extTurnState = { count: 0 };
+    const { declarations: extDecls, aliasMap: extAliasMap } =
+        await buildExternalTools({ userId: mcpUserId, workspaceSlug: workspacePath || null });
+    const routing = routeChatAgentTask({ taskDescription });
+    const selectedBuiltInToolIds = new Set(routing.selectedToolIds);
+    const selectedExternalToolIds = new Set(selectExplicitExternalToolNames(
+        taskDescription,
+        extDecls.map((tool) => ({ name: tool.name, description: tool.description })),
+    ));
+    const selectedDeclarations = [
+        ...TOOL_DECLARATIONS.filter((tool) => selectedBuiltInToolIds.has(tool.name)),
+        ...extDecls.filter((tool) => selectedExternalToolIds.has(tool.name)),
+    ];
+    // The router receives metadata only. Full bodies are read only for the
+    // selected repository skills and stay on this server-to-model boundary.
+    const selectedSkillLoad = await loadSelectedSkillInstructions(routing.selectedSkillIds);
+    const selectedSkillContext = formatSelectedSkillExecutionContext(selectedSkillLoad);
+    const systemInstruction = {
+        parts: [{
+            text: [
+                ATOMIC_AGENTIC_SYSTEM_PROMPT,
+                'The immutable server policy above is authoritative. Terminal-launched agents receive matching context through passive workspace instruction documents.',
+                selectedSkillContext,
+            ].filter(Boolean).join('\n\n'),
+        }],
+    };
+    const allowedToolNames = new Set(selectedDeclarations.map((tool) => tool.name));
+    const tools = selectedDeclarations.length
+        ? [{ functionDeclarations: selectedDeclarations }]
+        : undefined;
+    console.info('[Chat API] routed tool execution', {
+        role: routing.role,
+        skillIds: routing.selectedSkillIds,
+        loadedSkillIds: selectedSkillLoad.instructions.map((skill) => skill.id),
+        toolIds: [...allowedToolNames],
+        validation: routing.validation,
+    });
+
+    const runRoutedValidation = async (files) => {
+        if (routing.validation !== 'independent' || !Array.isArray(files) || files.length === 0) {
+            return null;
+        }
+        await writeEvent({ validation: { agent: 'shadow', status: 'running' } });
+        const shadow = await fireShadowRun({
+            workspacePath,
+            userId,
+            userRequest: userContent,
+            files,
+        });
+        await writeEvent({
+            validation: shadow?.jobId
+                ? { agent: 'shadow', status: 'queued', jobId: shadow.jobId }
+                : { agent: 'shadow', status: 'unavailable' },
+        });
+        return shadow;
+    };
 
     // Build contents array
     const contents = [];
@@ -952,12 +1043,7 @@ const streamGeminiWithTools = async ({
                     // independent of text delta stream / progressive parsing
                     if (collectedFiles.length > 0) {
                         await writeEvent({ fileBlocks: collectedFiles.map(f => ({ path: f.path, content: f.content })) });
-                        const shadow = await fireShadowRun({
-                            workspacePath,
-                            userId,
-                            userRequest: userContent,
-                            files: collectedFiles,
-                        });
+                        const shadow = await runRoutedValidation(collectedFiles);
                         if (shadow?.jobId) {
                             await writeEvent({ shadowJob: shadow.jobId, tier: shadow.tier, estimatedCostUsd: shadow.estimated_cost_usd });
                         }
@@ -1005,18 +1091,34 @@ const streamGeminiWithTools = async ({
                 for (const part of fnCalls) {
                     const { name, args } = part.functionCall;
 
-                    if (name === 'run_command') {
-                        const command = (args?.command || '').trim();
+                    // Gemini cannot widen its execution surface by
+                    // hallucinating a function name. Only post-routing
+                    // declarations are executable in this turn.
+                    if (!allowedToolNames.has(name)) {
+                        await writeEvent({ toolCall: { tool: name, args, status: 'rejected' } });
+                        fnResponses.push({
+                            functionResponse: {
+                                name,
+                                response: { error: 'Tool was not selected by the atomic router. Do not retry it.' },
+                            },
+                        });
+                        continue;
+                    }
+
+                    if (name === 'run_command' || name === 'execute_notebook_cells') {
+                        const command = name === 'execute_notebook_cells'
+                            ? `Execute notebook ${args?.notebookPath || ''} on registered Jupyter server`
+                            : (args?.command || '').trim();
 
                         // ── Detect git write commands → DEFER them ──
                         // Git add/commit/push must wait until the user reviews
                         // and applies FILE: block suggestions. We tell Gemini
                         // the command is deferred and continue generating.
-                        if (GIT_WRITE_CMD_RE.test(command)) {
+                        if (name === 'run_command' && GIT_WRITE_CMD_RE.test(command)) {
                             const approvalId = generateApprovalId();
                             deferredCommands.push({ id: approvalId, command, args });
                             // Store for the approve-command endpoint to execute later
-                            deferredCommandsMap.set(approvalId, { command, workspacePath });
+                            deferredCommandsMap.set(approvalId, { command, workspacePath, userId, runtimeScope, filesystemUserId });
                             // Tell Gemini the command is deferred — don't retry
                             fnResponses.push({
                                 functionResponse: {
@@ -1049,7 +1151,7 @@ const streamGeminiWithTools = async ({
                         if (approved) {
                             // User approved — execute the command
                             await writeEvent({ toolCall: { tool: name, args, status: 'running' } });
-                            const result = await executeTool(name, args, workspacePath, signal, { apiKey: key });
+                            const result = await executeTool(name, args, workspacePath, signal, { apiKey: key, userId, runtimeScope, filesystemUserId });
                             const evt = { tool: name, args, status: 'done' };
                             if (result?.sessionId) evt.sessionId = result.sessionId;
                             await writeEvent({ toolCall: evt });
@@ -1092,10 +1194,18 @@ const streamGeminiWithTools = async ({
                                 },
                             },
                         });
+                    } else if (isExternalToolName(name)) {
+                        // External MCP tool (user-connected). Route through the hub.
+                        const extEntry = extAliasMap[name];
+                        const label = extEntry ? `${extEntry.connName}:${extEntry.toolName}` : name;
+                        await writeEvent({ toolCall: { tool: label, args, status: 'running' } });
+                        const result = await callExternalTool(name, args, extAliasMap, { userId: mcpUserId, workspaceSlug: workspacePath || null, codeSiteContext }, extTurnState);
+                        await writeEvent({ toolCall: { tool: label, args, status: result?.error ? 'error' : 'done' } });
+                        fnResponses.push({ functionResponse: { name, response: result } });
                     } else {
                         // Non-command tools execute immediately (read_file, search, etc.)
                         await writeEvent({ toolCall: { tool: name, args, status: 'running' } });
-                        const result = await executeTool(name, args, workspacePath, signal, { apiKey: key });
+                        const result = await executeTool(name, args, workspacePath, signal, { apiKey: key, userId, runtimeScope, filesystemUserId });
                         await writeEvent({ toolCall: { tool: name, args, status: 'done' } });
                         fnResponses.push({ functionResponse: { name, response: result } });
                     }
@@ -1157,12 +1267,7 @@ const streamGeminiWithTools = async ({
             // Emit collected files as structured event — reliable delivery
             if (collectedFiles.length > 0) {
                 await writeEvent({ fileBlocks: collectedFiles.map(f => ({ path: f.path, content: f.content })) });
-                const shadow = await fireShadowRun({
-                    workspacePath,
-                    userId,
-                    userRequest: userContent,
-                    files: collectedFiles,
-                });
+                const shadow = await runRoutedValidation(collectedFiles);
                 if (shadow?.jobId) {
                     await writeEvent({ shadowJob: shadow.jobId, tier: shadow.tier, estimatedCostUsd: shadow.estimated_cost_usd });
                 }
@@ -1765,6 +1870,17 @@ const withTimeoutSignal = (requestSignal, timeoutMs = UPSTREAM_TIMEOUT_MS) => {
 };
 
 export async function POST(request) {
+    let userId = null;
+    try {
+        const session = await getServerSession(authOptions);
+        userId = session?.user?.id || session?.user?.email || null;
+    } catch (e) {
+        console.warn('[Chat] Could not resolve userId from session:', e?.message || e);
+    }
+    if (!userId) {
+        return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
+    }
+
     let body;
     try {
         body = await request.json();
@@ -1785,6 +1901,9 @@ export async function POST(request) {
         provider: providerOverride = '',
         // Code intelligence integration
         workspacePath = '',
+        runtimeScope = '',
+        filesystemUserId = null,
+        codeSiteContext = null,
         useCodeIntel = true, // Enable by default when workspacePath is provided
         maxContextTokens = 30000,
         conversationHistory = [],
@@ -1795,23 +1914,24 @@ export async function POST(request) {
 
     const provider = (providerOverride && String(providerOverride).toLowerCase()) || inferProvider(model);
 
-    // ── Resolve userId from server session ──────────────────────────
-    // The collab server needs x-user-id to resolve per-user repos at
-    // repos/{slug}/{userId}/.  Without this, all file reads fail with
-    // ENOENT — the root cause of "No response received" on AI features.
-    let userId = null;
-    try {
-        const session = await getServerSession(authOptions);
-        userId = session?.user?.id || session?.user?.email || null;
-    } catch (e) {
-        console.warn('[Chat] Could not resolve userId from session:', e.message);
+    let authorizedWorkspacePath = String(workspacePath || '').trim();
+    if (authorizedWorkspacePath) {
+        const access = await requireRuntimeWorkspaceAccess(authorizedWorkspacePath);
+        if (!access.ok) {
+            return NextResponse.json(
+                { error: access.error || 'Workspace access denied' },
+                { status: access.status || 403 },
+            );
+        }
+        authorizedWorkspacePath = access.workspace?.slug || authorizedWorkspacePath;
+        userId = access.session?.user?.id || access.email || userId;
     }
 
     // TTFT optimization: Fetch code intel and hydrate from collab IN PARALLEL
     // This reduces latency by running both operations concurrently
-    const codeIntelPromise = (useCodeIntel && workspacePath && prompt)
+    const codeIntelPromise = (useCodeIntel && authorizedWorkspacePath && prompt)
         ? fetchCodeIntelContext({
-            workspacePath,
+            workspacePath: authorizedWorkspacePath,
             query: prompt,
             maxTokens: maxContextTokens,
             conversationHistory,
@@ -1823,7 +1943,7 @@ export async function POST(request) {
         : Promise.resolve(null);
     
     const hydratePromise = hydrateFromCollab({
-        workspacePath,
+        workspacePath: authorizedWorkspacePath,
         focusPath,
         code,
         files,
@@ -1844,7 +1964,7 @@ export async function POST(request) {
     // ensures the LLM sees full file content for RAG-sourced files,
     // not just the text blob summary.
     let finalFiles = hydratedFiles;
-    if (codeIntelContext?.sources?.length && workspacePath) {
+    if (codeIntelContext?.sources?.length && authorizedWorkspacePath) {
         const existingPaths = new Set(
             (hydratedFiles || []).map((f) => f?.path || f?.name).filter(Boolean)
         );
@@ -1864,7 +1984,7 @@ export async function POST(request) {
             const ragHydrated = [];
             for (const ragPath of ragNewPaths.slice(0, 8)) {
                 try {
-                    const content = await fetchCollabFileContent(workspacePath, ragPath, request.signal, userId);
+                    const content = await fetchCollabFileContent(authorizedWorkspacePath, ragPath, request.signal, userId);
                     if (typeof content === 'string' && content) {
                         const trimmed = content.length > MAX_FILE_CHARS ? content.slice(0, MAX_FILE_CHARS) : content;
                         ragHydrated.push({
@@ -1927,11 +2047,11 @@ export async function POST(request) {
         const shouldUseTools =
             provider === 'gemini' && (
                 useTools === true ||
-                (useTools === 'auto' && workspacePath && isComplexTask(prompt, (files || []).length))
+                (useTools === 'auto' && authorizedWorkspacePath && isComplexTask(prompt, (files || []).length))
             );
 
         let stream;
-        if (shouldUseTools && workspacePath) {
+        if (shouldUseTools && authorizedWorkspacePath) {
             console.log('[Chat API] Using agentic tool-calling path (provider=gemini)');
             stream = await streamGeminiWithTools({
                 model,
@@ -1939,8 +2059,12 @@ export async function POST(request) {
                 userContent,
                 conversationHistory,
                 attachments,
-                workspacePath,
+                workspacePath: authorizedWorkspacePath,
+                runtimeScope,
+                filesystemUserId,
                 userId,
+                codeSiteContext: codeSiteContext && typeof codeSiteContext === 'object' && !Array.isArray(codeSiteContext) ? codeSiteContext : null,
+                taskDescription: prompt,
                 signal,
             });
         } else if (provider === 'anthropic') {

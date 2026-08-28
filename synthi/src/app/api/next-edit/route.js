@@ -7,6 +7,7 @@ import {
   REPLACE_DIVIDER,
 } from '@/lib/nextEdit';
 import { withInternalAiAuth } from '@/lib/internalAiAuth';
+import { resolveActor } from '@/lib/integrations/session';
 import { renderCodeIntelHints } from '@/utils/aiContextBroker';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -63,7 +64,9 @@ const NEP_PRE_MODEL_BUDGET_MS = 500;
 // prompt only contains the cached files the client knows about — the very
 // constraint the Phase 2 design ("predictions can chase a refactor across
 // files") was meant to lift.
-const COLLAB_URL = process.env.COLLAB_URL
+const COLLAB_URL = process.env.COLLAB_SERVER_URL
+  || process.env.COLLAB_URL
+  || process.env.NEXT_PUBLIC_COLLAB_SERVER_URL
   || process.env.NEXT_PUBLIC_COLLAB_URL
   || 'http://localhost:1234';
 const NEP_IMPACT_CONTENT_TOPN = 4;
@@ -437,6 +440,9 @@ const extractText = (resp) => {
 };
 
 export async function POST(request) {
+  const actor = await resolveActor();
+  if (!actor) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
   let body;
   try {
     body = await request.json();

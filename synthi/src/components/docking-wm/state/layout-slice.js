@@ -44,6 +44,7 @@ import {
   validateLayout,
 } from "../utils/layout-query";
 import { getEditorPanes, getEditorPaneIds } from "../utils/editor-panes";
+import { matchesPanelInstance, shouldDeduplicatePanel } from '../utils/panel-dedupe';
 
 // ─── Initial State ──────────────────────────────────────
 
@@ -86,17 +87,14 @@ const layoutSlice = createSlice({
         insertIndex,
       } = action.payload;
 
-      // ── Dedup guard: never allow two tabs of the same panelType ──
-      // Check docked tabs first
-      for (const [nodeId, node] of Object.entries(state.nodes)) {
-        if (node.type !== "tabgroup") continue;
-        for (const existingTabId of node.tabs || []) {
-          const existingTab = state.tabs[existingTabId];
-          if (existingTab && existingTab.panelType === panelType) {
-            // For extension-view, also match on containerId
-            if (panelType === "extension-view") {
-              if (existingTab.data?.containerId !== data?.containerId) continue;
-            }
+      if (shouldDeduplicatePanel(panelType)) {
+        // Check docked tabs first
+        for (const [nodeId, node] of Object.entries(state.nodes)) {
+          if (node.type !== "tabgroup") continue;
+          for (const existingTabId of node.tabs || []) {
+            const existingTab = state.tabs[existingTabId];
+            if (!matchesPanelInstance(panelType, data, existingTab)) continue;
+
             // Tab already exists — focus it instead of creating a duplicate
             let next = { ...state, focusedTabGroupId: nodeId };
             const group = next.nodes[nodeId];
@@ -112,14 +110,10 @@ const layoutSlice = createSlice({
             return next;
           }
         }
-      }
-      // Check floating windows
-      for (const fw of Object.values(state.floating || {})) {
-        const floatTab = state.tabs[fw.tabId];
-        if (floatTab && floatTab.panelType === panelType) {
-          if (panelType === "extension-view") {
-            if (floatTab.data?.containerId !== data?.containerId) continue;
-          }
+        // Check floating windows
+        for (const fw of Object.values(state.floating || {})) {
+          const floatTab = state.tabs[fw.tabId];
+          if (!matchesPanelInstance(panelType, data, floatTab)) continue;
           // Already floating — bring to front
           return bringFloatToFront(state, fw.id);
         }
@@ -136,6 +130,31 @@ const layoutSlice = createSlice({
       if (!groupId) return state;
 
       return addTabToGroup(newState, groupId, tab.id, insertIndex, true);
+    },
+
+    /**
+     * Open a panel directly as a FLOATING, movable/dockable window (not a docked
+     * tab). Used for GUI dev-tool surfaces that should pop up floating.
+     * Payload: { panelType, title, icon, data, closable?, x?, y?, width?, height? }
+     */
+    openFloatingPanel(state, action) {
+      const {
+        panelType,
+        title,
+        icon,
+        data,
+        closable = true,
+        x = 140,
+        y = 120,
+        width = 1000,
+        height = 680,
+      } = action.payload;
+
+      const tab = createTab({ panelType, title, icon, closable, data });
+      const withTab = { ...state, tabs: { ...state.tabs, [tab.id]: tab } };
+      // floatTab no-ops the group removal for an ungrouped tab, then creates the
+      // floating-window descriptor (reusing its z-index + singleton dedup).
+      return floatTab(withTab, tab.id, { x, y, width, height });
     },
 
     /**
@@ -450,6 +469,7 @@ export const {
   resizeSplitAction,
   toggleMaximizeAction,
   floatTabAction,
+  openFloatingPanel,
   dockFloatAction,
   updateFloatAction,
   bringFloatToFrontAction,

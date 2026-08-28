@@ -1,0 +1,22 @@
+pub mod approval;
+pub mod audit;
+pub mod command_broker;
+pub mod desktop;
+pub mod full_access;
+pub mod http;
+pub mod ipc;
+pub mod lifecycle;
+pub mod mutation;
+pub mod pair;
+pub mod policy;
+pub mod port_adapter;
+pub mod preview;
+pub mod process_adapter;
+pub mod scanner;
+pub mod session;
+pub mod update;
+pub mod workspace;
+
+pub const APP_PROTOCOL_VERSION: &str = "local-support-mvp.1";
+pub const POLICY_VERSION: &str = "2026.07.05";
+pub const SCANNER_VERSION: &str = "scanner-2026.07.05";

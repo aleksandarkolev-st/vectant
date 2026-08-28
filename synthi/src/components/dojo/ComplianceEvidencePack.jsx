@@ -1,0 +1,69 @@
+'use client';
+
+import { Download, PackageCheck } from 'lucide-react';
+
+const panelStyle = {
+  borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, var(--text-primary) 3%), color-mix(in srgb, var(--bg-app) 54%, transparent))',
+  borderRadius: 'var(--radius-panel)',
+  boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent)',
+};
+
+export default function ComplianceEvidencePack({ pack, onExport, busy = false }) {
+  const artifacts = pack?.artifacts || [];
+  const missing = pack?.missingArtifacts || [];
+
+  return (
+    <section className="rounded-md border p-4" style={panelStyle} data-testid="compliance-evidence-pack">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="flex items-center gap-2 text-sm font-semibold">
+            <PackageCheck size={15} aria-hidden="true" />
+            Compliance Pack
+          </h2>
+          <p className="mt-1 truncate text-xs" style={{ color: 'var(--text-muted)' }}>{pack?.packId || 'No pack ID'}</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{artifacts.length} artifacts</span>
+          <button
+            type="button"
+            className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs disabled:cursor-not-allowed disabled:opacity-45"
+            style={panelStyle}
+            disabled={!onExport || busy}
+            data-testid="compliance-pack-export"
+            onClick={() => onExport?.(pack)}
+            title={!onExport ? 'Action handler unavailable' : 'Export compliance pack'}
+          >
+            <Download size={13} aria-hidden="true" />
+            Export pack
+          </button>
+        </div>
+      </div>
+
+      {artifacts.length ? (
+        <div className="grid gap-2">
+          {artifacts.map((artifact) => (
+            <article key={artifact.artifactId || artifact.title} className="rounded-md border p-3" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)' }}>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="truncate text-sm font-semibold">{artifact.title}</h3>
+                  <p className="mt-1 truncate text-xs" style={{ color: 'var(--text-muted)' }}>{artifact.artifactId}</p>
+                </div>
+                <span className="rounded-md border px-2 py-1 text-xs" style={panelStyle}>{artifact.status}</span>
+              </div>
+              {artifact.digest ? <p className="mt-3 truncate text-xs" style={{ color: 'var(--text-muted)' }}>{artifact.digest}</p> : null}
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No compliance artifacts are available.</p>
+      )}
+
+      {missing.length ? (
+        <div className="mt-3 rounded-md border p-3 text-xs" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 82%, transparent)', color: 'var(--accent-warning)' }}>
+          Missing: {missing.join(', ')}
+        </div>
+      ) : null}
+    </section>
+  );
+}

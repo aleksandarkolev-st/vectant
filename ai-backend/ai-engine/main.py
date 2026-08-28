@@ -42,6 +42,9 @@ from analyzer import get_analyzer
 from analyzer import supported_languages
 
 from llm.providers import ProviderSelectionError, get_provider
+from llm.providers import get_provider
+from program_review import assess_program_risk
+from program_manifest_gen import generate_manifest
 from llm.prompts import SPLIT_GUI_PROMPT, UNIVERSAL_SPLIT_PROMPT
 from llm.structural_prompts import format_heal_prompt
 from build_manifest import (
@@ -291,7 +294,7 @@ app = FastAPI()
 def _parse_allowed_origins() -> List[str]:
     raw = os.environ.get(
         "AI_ENGINE_ALLOWED_ORIGINS",
-        "http://localhost:3000,https://beta.synthi.app",
+        "http://localhost:3000,https://beta.vectant.dev",
     )
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
@@ -1518,13 +1521,20 @@ async def refactor_split(req: AnalyzeAiRequest):
         "lang": req.lang,
     }
 
+
+INTERNAL_SPLIT_URL = "http://localhost:8000/refactor/split"
+
+
 @app.post("/refactor/split_file")
 def split_file(
     file_path: str,
-    api_url: str = "http://localhost:8000/refactor/split",
-    workspace_root: Optional[str] = None,
 ):
-    root = workspace_root or os.environ.get("SPLIT_WORKSPACE_ROOT") or os.getcwd()
+    """Split a file under the server-configured workspace.
+
+    The workspace root and internal split endpoint are intentionally fixed on
+    the server so callers cannot redirect filesystem access or HTTP requests.
+    """
+    root = os.environ.get("SPLIT_WORKSPACE_ROOT") or os.getcwd()
     try:
         source_path = resolve_under_workspace(root, file_path)
     except ValueError as exc:
@@ -1532,7 +1542,7 @@ def split_file(
 
     if not source_path.exists() or not source_path.is_file():
         print(f"File not found: {file_path}")
-        return
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
 
     with source_path.open('r') as f:
         content = f.read()
@@ -1552,7 +1562,7 @@ def split_file(
     
     print(f"Sending {source_path} to AI for analysis...")
     try:
-        response = requests.post(api_url, json=payload, timeout=30)
+        response = requests.post(INTERNAL_SPLIT_URL, json=payload, timeout=30)
         response.raise_for_status()
         result = response.json().get("result")
         
@@ -1591,8 +1601,11 @@ def split_file(
             print("\nExplanation:")
             print(data["explanation"])
             
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error: {e}")
+        raise HTTPException(status_code=502, detail=f"Split request failed: {e}")
 
 
 # ============================================================
@@ -3302,6 +3315,8 @@ except ImportError as e:
 try:
     from shadow import shadow_router
     app.include_router(shadow_router)
+    from shadow.telemetry_api import router as counterfactual_router
+    app.include_router(counterfactual_router)
     logger.info("Shadow verification module loaded")
 except ImportError as e:
     logger.warning(f"Shadow verification module not available: {e}")
@@ -3710,6 +3725,12 @@ class AIRuntimeErrorRequest(BaseModel):
     error_output: Optional[str] = None
     auto_apply: Optional[bool] = True  # default True for runtime healing
     module: Optional[str] = None  # HMR module identifier
+
+
+# ``from __future__ import annotations`` defers the nested diagnostic model
+# reference. Rebuild here so FastAPI can generate OpenAPI at runtime instead
+# of failing on the first `/openapi.json` request.
+AIRuntimeErrorRequest.model_rebuild()
 
 
 @app.post("/heal/ai/analyze")
@@ -4519,6 +4540,180 @@ def _fix_to_dict(fix) -> dict:
 
 # ── Diagnosis ─────────────────────────────────────────────────────────
 
+_FAILURE_DISTILLER_PRIVATE_RESPONSE_KEYS = frozenset({
+    "workspace_path", "workspacePath", "capsule_path", "capsulePath",
+    "manifest_path", "manifestPath", "artifact_path", "artifactPath", "integrity_path",
+})
+
+
+def _public_failure_distiller_response(value):
+    """Keep host filesystem topology out of workspace-scoped agent responses."""
+    if isinstance(value, dict):
+        return {key: _public_failure_distiller_response(item) for key, item in value.items() if key not in _FAILURE_DISTILLER_PRIVATE_RESPONSE_KEYS}
+    if isinstance(value, list):
+        return [_public_failure_distiller_response(item) for item in value]
+    return value
+
+
+@app.post("/heal/agentic/distill")
+async def distill_failure(request: Request):
+    """Reduce a supported failing command into an evidence-backed capsule."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    try:
+        return _public_failure_distiller_response(await get_failure_distiller().distill(await request.json()))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/observations")
+async def capture_failure_observation(request: Request):
+    """Capture normalized runtime-adapter evidence for a later distillation."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    try:
+        return _public_failure_distiller_response(get_failure_distiller().capture_observation(await request.json()))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/heal/agentic/distill/observations")
+async def list_failure_observations(workspace_ref: str):
+    """List unexpired, redacted adapter observation references for one workspace."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    try:
+        return _public_failure_distiller_response(get_failure_distiller().list_observations({"workspaceRef": workspace_ref}))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/run")
+async def run_distilled_failure(request: Request):
+    """Run a logical capsule and report whether it is still the same failure."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    body = await request.json()
+    try:
+        distiller = get_failure_distiller()
+        return _public_failure_distiller_response(await distiller.run(distiller.resolve_capsule_path(body), body.get("workspaceRef", body.get("workspace_ref"))))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/explain")
+async def explain_distilled_failure(request: Request):
+    """Return machine-readable evidence for a retained or removed capsule unit."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    body = await request.json()
+    try:
+        distiller = get_failure_distiller()
+        return _public_failure_distiller_response(distiller.explain(distiller.resolve_capsule_path(body), str(body.get("unit", "")), body.get("workspaceRef", body.get("workspace_ref"))))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/materialize")
+async def materialize_distilled_failure(request: Request):
+    """Physically materialize a verified logical capsule without touching its source workspace."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    try:
+        body = await request.json()
+        distiller = get_failure_distiller()
+        return _public_failure_distiller_response(await distiller.materialize({**body, "capsulePath": distiller.resolve_capsule_path(body)}))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/delete")
+async def delete_distilled_failure(request: Request):
+    """Permanently delete an explicitly selected capsule and retain an audit event."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    body = await request.json()
+    try:
+        distiller = get_failure_distiller()
+        return _public_failure_distiller_response(distiller.discard(distiller.resolve_capsule_path(body), body.get("workspaceRef", body.get("workspace_ref"))))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/purge-expired")
+async def purge_expired_distilled_failures(request: Request):
+    """Apply the capsule retention policy and retain deletion audit evidence."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    body = await request.json()
+    try:
+        return get_failure_distiller().purge_expired(
+            body.get("workspaceRoot", body.get("workspace_root", "")),
+            workspace_ref=body.get("workspaceRef", body.get("workspace_ref")),
+        )
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/vivarium-export")
+async def export_distilled_failure_to_vivarium(request: Request):
+    """Create a deterministic sanitized Vivarium scenario manifest for a capsule."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    body = await request.json()
+    try:
+        distiller = get_failure_distiller()
+        return _public_failure_distiller_response(distiller.export_vivarium_manifest(distiller.resolve_capsule_path(body), body.get("workspaceRef", body.get("workspace_ref"))))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/vivarium-promote")
+async def promote_distilled_failure_to_vivarium(request: Request):
+    """Promote an original-world-validated capsule into a versioned Vivarium artifact."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    body = await request.json()
+    try:
+        distiller = get_failure_distiller()
+        return _public_failure_distiller_response(distiller.promote_vivarium_scenario(distiller.resolve_capsule_path(body), str(body.get("mode", "regression")), body.get("workspaceRef", body.get("workspace_ref"))))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/validate-patch")
+async def validate_distilled_patch(request: Request):
+    """Map a capsule patch through provenance and validate it in the source world."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    try:
+        body = await request.json()
+        distiller = get_failure_distiller()
+        return _public_failure_distiller_response(await distiller.validate_patch({**body, "capsulePath": distiller.resolve_capsule_path(body)}))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/request-apply")
+async def request_distilled_patch_apply(request: Request):
+    """Issue an approval-bound request for an exactly validated patch."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    try:
+        body = await request.json()
+        distiller = get_failure_distiller()
+        return _public_failure_distiller_response(distiller.request_patch_apply({**body, "capsulePath": distiller.resolve_capsule_path(body)}))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/heal/agentic/distill/apply-approved")
+async def apply_approved_distilled_patch(request: Request):
+    """Apply a reviewed, unexpired, original-world-validated patch."""
+    from analyzer.proactive.healing.failure_distiller import DistillationError, get_failure_distiller
+    try:
+        body = await request.json()
+        distiller = get_failure_distiller()
+        return _public_failure_distiller_response(distiller.apply_approved_patch({**body, "capsulePath": distiller.resolve_capsule_path(body)}))
+    except DistillationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/heal/agentic/distill/metrics")
+async def failure_distiller_metrics():
+    """Return reduction, execution-cost, and round-trip validation metrics."""
+    from analyzer.proactive.healing.failure_distiller import get_failure_distiller
+    return {"ok": True, "metrics": get_failure_distiller().metrics()}
+
+
 @app.post("/heal/agentic/diagnose")
 async def agentic_diagnose(request: Request):
     """Root-cause diagnosis from error text."""
@@ -4802,6 +4997,40 @@ def root():
             "agentic_self_healing",
         ],
     }
+
+
+class ProgramRiskRequest(BaseModel):
+    manifest: dict
+    scan_summary: Optional[dict] = None
+    source_image_ref: Optional[str] = None
+    description: Optional[str] = None
+
+
+@app.post("/programs/risk-review")
+async def programs_risk_review(req: ProgramRiskRequest):
+    """Advisory residual-risk score for a community-app submission that already
+    passed the Phase-1 hard gates + CVE scan. Returns {risk_score, flags, rationale};
+    fail-closed (max risk) inside assess_program_risk on any provider/parse failure.
+    Never a load-bearing security control — the orchestrator only uses it to decide
+    auto-approve vs. manual review among already-clean submissions."""
+    return await assess_program_risk({
+        "manifest": req.manifest,
+        "scan_summary": req.scan_summary,
+        "source_image_ref": req.source_image_ref,
+        "description": req.description,
+    })
+
+
+class ProgramManifestGenRequest(BaseModel):
+    files: dict
+    workspace_name: Optional[str] = None
+
+
+@app.post("/programs/generate-manifest")
+async def programs_generate_manifest(req: ProgramManifestGenRequest):
+    """Draft a vectant.programs.json from the workspace's key files. Fail-closed
+    inside generate_manifest; the Next.js caller re-validates before offering/saving."""
+    return await generate_manifest({"files": req.files, "workspace_name": req.workspace_name})
 
 
 @app.get("/health")

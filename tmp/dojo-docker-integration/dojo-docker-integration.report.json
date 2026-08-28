@@ -1,0 +1,835 @@
+{
+  "schema_version": "synthi.dojo.dockerIntegrationReport.v1",
+  "generated_at": "2026-07-05T00:43:31.238Z",
+  "compose_file": "docker-compose.yml",
+  "command_evaluation": {
+    "compose_up_ran": true,
+    "compose_up_exit_code": 0,
+    "compose_ps_exit_code": 0,
+    "compose_config_exit_code": 0,
+    "compose_up_error": null,
+    "compose_ps_error": null,
+    "compose_config_error": null
+  },
+  "compose_env": {
+    "NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS": {
+      "value": "1",
+      "default_applied": true
+    },
+    "FRONTEND_HOST_PORT": {
+      "value": "3100",
+      "default_applied": true
+    },
+    "COLLAB_HOST_PORT": {
+      "value": "11234",
+      "default_applied": true
+    },
+    "YSWEET_HOST_PORT": {
+      "value": "18180",
+      "default_applied": true
+    },
+    "REDIS_HOST_PORT": {
+      "value": "16379",
+      "default_applied": true
+    },
+    "SIGNALING_HOST_PORT": {
+      "value": "19000",
+      "default_applied": true
+    },
+    "AI_GATEWAY_HOST_PORT": {
+      "value": "17071",
+      "default_applied": true
+    },
+    "AI_ENGINE_HOST_PORT": {
+      "value": "18081",
+      "default_applied": true
+    },
+    "POSTGRES_HOST_PORT": {
+      "value": "15432",
+      "default_applied": true
+    },
+    "TURN_HOST_PORT": {
+      "value": "13478",
+      "default_applied": true
+    },
+    "TURN_RELAY_HOST_PORT_RANGE": {
+      "value": "49352-49400",
+      "default_applied": true
+    },
+    "MCP_METRICS_HOST_PORT": {
+      "value": "19464",
+      "default_applied": true
+    },
+    "SYNTHI_DOJO_DOCKER_WORKSPACE_URL": {
+      "value": "http://127.0.0.1:3100/workspace",
+      "default_applied": true
+    },
+    "SYNTHI_DOJO_DOCKER_PORTS_URL": {
+      "value": "http://127.0.0.1:11234/ports",
+      "default_applied": true
+    }
+  },
+  "configured_services": [
+    "ai-engine",
+    "redis",
+    "y-sweet",
+    "collab-server",
+    "signaling-server",
+    "worker",
+    "mcp",
+    "ai-gateway",
+    "coturn",
+    "postgres",
+    "frontend"
+  ],
+  "service_rows": [
+    {
+      "Command": "\"python run_server.py\"",
+      "CreatedAt": "2026-07-05 00:43:59 +0000 UTC",
+      "ExitCode": 0,
+      "Health": "",
+      "ID": "418e5f639b9b",
+      "Image": "codesite-atc-session-ai-engine",
+      "Labels": "com.docker.compose.container-number=1,com.docker.compose.depends_on=,com.docker.compose.oneoff=False,com.docker.compose.project=codesite-atc-session,com.docker.compose.project.config_files=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/docker-compose.yml,com.docker.compose.project.working_dir=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session,com.docker.compose.service=ai-engine,com.docker.compose.version=5.1.1,com.docker.compose.config-hash=67258d245738ca4d59806b147e250bfcecffd1696409d096242a091f289f863d,com.docker.compose.image=sha256:4fe48b12911c1ac4d0e3426596239286f3d671c9edecdd7157f3339f3d08595d,com.docker.compose.replace=ai-engine-1,desktop.docker.io/ports.scheme=v2,desktop.docker.io/ports/8000/tcp=127.0.0.1:18081,desktop.docker.io/wsl-distro=Ubuntu",
+      "LocalVolumes": "1",
+      "Mounts": "codesite-atc-s…",
+      "Name": "codesite-atc-session-ai-engine-1",
+      "Names": "codesite-atc-session-ai-engine-1",
+      "Networks": "codesite-atc-session_default",
+      "Ports": "127.0.0.1:18081->8000/tcp",
+      "Project": "codesite-atc-session",
+      "Publishers": [
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 8000,
+          "PublishedPort": 18081,
+          "Protocol": "tcp"
+        }
+      ],
+      "RunningFor": "32 seconds ago",
+      "Service": "ai-engine",
+      "Size": "0B",
+      "State": "running",
+      "Status": "Up 11 seconds"
+    },
+    {
+      "Command": "\"docker-entrypoint.s…\"",
+      "CreatedAt": "2026-07-05 00:44:01 +0000 UTC",
+      "ExitCode": 0,
+      "Health": "",
+      "ID": "a5351965d11d",
+      "Image": "codesite-atc-session-ai-gateway",
+      "Labels": "com.docker.compose.image=sha256:50fea89568fbd0b2b901c78319852555d5f7105868cbf2a0772d676a1497505f,com.docker.compose.oneoff=False,com.docker.compose.project=codesite-atc-session,com.docker.compose.replace=ai-gateway-1,com.docker.compose.service=ai-gateway,desktop.docker.io/ports.scheme=v2,desktop.docker.io/wsl-distro=Ubuntu,com.docker.compose.config-hash=400d00c32e19def358d59a9399fd6370854dd6d1f6ddb27309afe30535904f29,com.docker.compose.container-number=1,com.docker.compose.depends_on=ai-engine:service_started:false,com.docker.compose.project.config_files=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/docker-compose.yml,com.docker.compose.project.working_dir=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session,com.docker.compose.version=5.1.1,desktop.docker.io/ports/7070/tcp=127.0.0.1:17071",
+      "LocalVolumes": "0",
+      "Mounts": "",
+      "Name": "codesite-atc-session-ai-gateway-1",
+      "Names": "codesite-atc-session-ai-gateway-1",
+      "Networks": "codesite-atc-session_default",
+      "Ports": "127.0.0.1:17071->7070/tcp",
+      "Project": "codesite-atc-session",
+      "Publishers": [
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 7070,
+          "PublishedPort": 17071,
+          "Protocol": "tcp"
+        }
+      ],
+      "RunningFor": "30 seconds ago",
+      "Service": "ai-gateway",
+      "Size": "0B",
+      "State": "running",
+      "Status": "Up 10 seconds"
+    },
+    {
+      "Command": "\"docker-entrypoint.s…\"",
+      "CreatedAt": "2026-07-05 00:44:08 +0000 UTC",
+      "ExitCode": 0,
+      "Health": "",
+      "ID": "8d9c42dfdad4",
+      "Image": "codesite-atc-session-collab-server",
+      "Labels": "com.docker.compose.replace=collab-server-1,desktop.docker.io/binds/1/Source=/var/run/docker.sock,desktop.docker.io/binds/1/SourceKind=dockerSocketProxied,com.docker.compose.project=codesite-atc-session,com.docker.compose.service=collab-server,desktop.docker.io/ports.scheme=v2,desktop.docker.io/wsl-distro=Ubuntu,com.docker.compose.config-hash=a217078dda4abb417a60385717ae0d8da8d5ab9bf6214f2e160e2332afd25f6b,com.docker.compose.image=sha256:d8c9144b57468814f3144ffa1cb03e2ed4ee8a3b01260dedd4cb1b7251062159,com.docker.compose.project.working_dir=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session,com.docker.compose.container-number=1,com.docker.compose.depends_on=y-sweet:service_healthy:false,ai-engine:service_started:false,redis:service_healthy:false,com.docker.compose.oneoff=False,com.docker.compose.project.config_files=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/docker-compose.yml,com.docker.compose.version=5.1.1,desktop.docker.io/binds/1/Target=/var/run/docker.sock,desktop.docker.io/ports/1234/tcp=127.0.0.1:11234",
+      "LocalVolumes": "1",
+      "Mounts": "codesite-atc-s…,/run/desktop/m…",
+      "Name": "codesite-atc-session-collab-server-1",
+      "Names": "codesite-atc-session-collab-server-1",
+      "Networks": "codesite-atc-session_default",
+      "Ports": "127.0.0.1:11234->1234/tcp",
+      "Project": "codesite-atc-session",
+      "Publishers": [
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 1234,
+          "PublishedPort": 11234,
+          "Protocol": "tcp"
+        }
+      ],
+      "RunningFor": "23 seconds ago",
+      "Service": "collab-server",
+      "Size": "0B",
+      "State": "running",
+      "Status": "Up 2 seconds"
+    },
+    {
+      "Command": "\"docker-entrypoint.s…\"",
+      "CreatedAt": "2026-07-05 00:43:59 +0000 UTC",
+      "ExitCode": 0,
+      "Health": "",
+      "ID": "2474a9255a30",
+      "Image": "coturn/coturn:4.7.0-r2@sha256:203b9bf51e84199f91025d411a7bcc7358d50c43a4d9c588079e282a3bbf4ba1",
+      "Labels": "desktop.docker.io/ports/49179/udp=127.0.0.1:49379,desktop.docker.io/ports/49180/udp=127.0.0.1:49380,desktop.docker.io/ports/49194/udp=127.0.0.1:49394,desktop.docker.io/ports.scheme=v2,desktop.docker.io/ports/49164/udp=127.0.0.1:49364,desktop.docker.io/ports/49192/udp=127.0.0.1:49392,org.opencontainers.image.source=https://github.com/coturn/coturn,com.docker.compose.oneoff=False,desktop.docker.io/ports/49154/udp=127.0.0.1:49354,desktop.docker.io/ports/49169/udp=127.0.0.1:49369,desktop.docker.io/ports/49172/udp=127.0.0.1:49372,desktop.docker.io/ports/49185/udp=127.0.0.1:49385,desktop.docker.io/ports/49186/udp=127.0.0.1:49386,desktop.docker.io/ports/49165/udp=127.0.0.1:49365,com.docker.compose.container-number=1,desktop.docker.io/ports/49153/udp=127.0.0.1:49353,desktop.docker.io/ports/49168/udp=127.0.0.1:49368,desktop.docker.io/ports/49190/udp=127.0.0.1:49390,desktop.docker.io/ports/49196/udp=127.0.0.1:49396,desktop.docker.io/ports/49200/udp=127.0.0.1:49400,desktop.docker.io/ports/3478/tcp=127.0.0.1:13478,desktop.docker.io/ports/49157/udp=127.0.0.1:49357,desktop.docker.io/ports/49166/udp=127.0.0.1:49366,desktop.docker.io/ports/49167/udp=127.0.0.1:49367,desktop.docker.io/ports/49193/udp=127.0.0.1:49393,desktop.docker.io/ports/49197/udp=127.0.0.1:49397,com.docker.compose.version=5.1.1,desktop.docker.io/ports/49177/udp=127.0.0.1:49377,desktop.docker.io/ports/49183/udp=127.0.0.1:49383,desktop.docker.io/ports/49195/udp=127.0.0.1:49395,desktop.docker.io/ports/49170/udp=127.0.0.1:49370,desktop.docker.io/ports/49189/udp=127.0.0.1:49389,desktop.docker.io/wsl-distro=Ubuntu,com.docker.compose.project.config_files=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/docker-compose.yml,desktop.docker.io/ports/49155/udp=127.0.0.1:49355,desktop.docker.io/ports/49156/udp=127.0.0.1:49356,desktop.docker.io/ports/49161/udp=127.0.0.1:49361,desktop.docker.io/ports/49178/udp=127.0.0.1:49378,desktop.docker.io/ports/49198/udp=127.0.0.1:49398,com.docker.compose.config-hash=0d8f145979cfdd24c54c1d11b017b753fb575c617b461f80aea219aef2d47bf5,desktop.docker.io/ports/49162/udp=127.0.0.1:49362,desktop.docker.io/ports/49163/udp=127.0.0.1:49363,desktop.docker.io/ports/49171/udp=127.0.0.1:49371,com.docker.compose.depends_on=,com.docker.compose.image=sha256:203b9bf51e84199f91025d411a7bcc7358d50c43a4d9c588079e282a3bbf4ba1,com.docker.compose.replace=coturn-1,desktop.docker.io/ports/49175/udp=127.0.0.1:49375,desktop.docker.io/ports/49191/udp=127.0.0.1:49391,desktop.docker.io/ports/49160/udp=127.0.0.1:49360,org.opencontainers.image.revision=242467faba87b434fa901841ec72c4fe3da79d5d,org.opencontainers.image.version=4.7.0-r2,desktop.docker.io/ports/3478/udp=127.0.0.1:13478,com.docker.compose.service=coturn,desktop.docker.io/ports/49173/udp=127.0.0.1:49373,desktop.docker.io/ports/49174/udp=127.0.0.1:49374,com.docker.compose.project=codesite-atc-session,desktop.docker.io/ports/49176/udp=127.0.0.1:49376,desktop.docker.io/ports/49184/udp=127.0.0.1:49384,desktop.docker.io/ports/49182/udp=127.0.0.1:49382,desktop.docker.io/ports/49187/udp=127.0.0.1:49387,com.docker.compose.project.working_dir=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session,desktop.docker.io/ports/49199/udp=127.0.0.1:49399,desktop.docker.io/ports/49181/udp=127.0.0.1:49381,desktop.docker.io/ports/49188/udp=127.0.0.1:49388,desktop.docker.io/ports/49152/udp=127.0.0.1:49352,desktop.docker.io/ports/49158/udp=127.0.0.1:49358,desktop.docker.io/ports/49159/udp=127.0.0.1:49359",
+      "LocalVolumes": "1",
+      "Mounts": "bd7de0da9b6533…",
+      "Name": "codesite-atc-session-coturn-1",
+      "Names": "codesite-atc-session-coturn-1",
+      "Networks": "codesite-atc-session_default",
+      "Ports": "127.0.0.1:13478->3478/tcp, 127.0.0.1:13478->3478/udp, 127.0.0.1:49352->49152/udp, 127.0.0.1:49353->49153/udp, 127.0.0.1:49354->49154/udp, 127.0.0.1:49355->49155/udp, 127.0.0.1:49356->49156/udp, 127.0.0.1:49357->49157/udp, 127.0.0.1:49358->49158/udp, 127.0.0.1:49359->49159/udp, 127.0.0.1:49360->49160/udp, 127.0.0.1:49361->49161/udp, 127.0.0.1:49362->49162/udp, 127.0.0.1:49363->49163/udp, 127.0.0.1:49364->49164/udp, 127.0.0.1:49365->49165/udp, 127.0.0.1:49366->49166/udp, 127.0.0.1:49367->49167/udp, 127.0.0.1:49368->49168/udp, 127.0.0.1:49369->49169/udp, 127.0.0.1:49370->49170/udp, 127.0.0.1:49371->49171/udp, 127.0.0.1:49372->49172/udp, 127.0.0.1:49373->49173/udp, 127.0.0.1:49374->49174/udp, 127.0.0.1:49375->49175/udp, 127.0.0.1:49376->49176/udp, 127.0.0.1:49377->49177/udp, 127.0.0.1:49378->49178/udp, 127.0.0.1:49379->49179/udp, 127.0.0.1:49380->49180/udp, 127.0.0.1:49381->49181/udp, 127.0.0.1:49382->49182/udp, 127.0.0.1:49383->49183/udp, 127.0.0.1:49384->49184/udp, 127.0.0.1:49385->49185/udp, 127.0.0.1:49386->49186/udp, 127.0.0.1:49387->49187/udp, 127.0.0.1:49388->49188/udp, 127.0.0.1:49389->49189/udp, 127.0.0.1:49390->49190/udp, 127.0.0.1:49391->49191/udp, 127.0.0.1:49392->49192/udp, 127.0.0.1:49393->49193/udp, 127.0.0.1:49394->49194/udp, 127.0.0.1:49395->49195/udp, 127.0.0.1:49396->49196/udp, 127.0.0.1:49397->49197/udp, 127.0.0.1:49398->49198/udp, 127.0.0.1:49399->49199/udp, 127.0.0.1:49400->49200/udp",
+      "Project": "codesite-atc-session",
+      "Publishers": [
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 3478,
+          "PublishedPort": 13478,
+          "Protocol": "tcp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 3478,
+          "PublishedPort": 13478,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49152,
+          "PublishedPort": 49352,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49153,
+          "PublishedPort": 49353,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49154,
+          "PublishedPort": 49354,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49155,
+          "PublishedPort": 49355,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49156,
+          "PublishedPort": 49356,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49157,
+          "PublishedPort": 49357,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49158,
+          "PublishedPort": 49358,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49159,
+          "PublishedPort": 49359,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49160,
+          "PublishedPort": 49360,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49161,
+          "PublishedPort": 49361,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49162,
+          "PublishedPort": 49362,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49163,
+          "PublishedPort": 49363,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49164,
+          "PublishedPort": 49364,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49165,
+          "PublishedPort": 49365,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49166,
+          "PublishedPort": 49366,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49167,
+          "PublishedPort": 49367,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49168,
+          "PublishedPort": 49368,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49169,
+          "PublishedPort": 49369,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49170,
+          "PublishedPort": 49370,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49171,
+          "PublishedPort": 49371,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49172,
+          "PublishedPort": 49372,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49173,
+          "PublishedPort": 49373,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49174,
+          "PublishedPort": 49374,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49175,
+          "PublishedPort": 49375,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49176,
+          "PublishedPort": 49376,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49177,
+          "PublishedPort": 49377,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49178,
+          "PublishedPort": 49378,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49179,
+          "PublishedPort": 49379,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49180,
+          "PublishedPort": 49380,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49181,
+          "PublishedPort": 49381,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49182,
+          "PublishedPort": 49382,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49183,
+          "PublishedPort": 49383,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49184,
+          "PublishedPort": 49384,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49185,
+          "PublishedPort": 49385,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49186,
+          "PublishedPort": 49386,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49187,
+          "PublishedPort": 49387,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49188,
+          "PublishedPort": 49388,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49189,
+          "PublishedPort": 49389,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49190,
+          "PublishedPort": 49390,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49191,
+          "PublishedPort": 49391,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49192,
+          "PublishedPort": 49392,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49193,
+          "PublishedPort": 49393,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49194,
+          "PublishedPort": 49394,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49195,
+          "PublishedPort": 49395,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49196,
+          "PublishedPort": 49396,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49197,
+          "PublishedPort": 49397,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49198,
+          "PublishedPort": 49398,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49199,
+          "PublishedPort": 49399,
+          "Protocol": "udp"
+        },
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 49200,
+          "PublishedPort": 49400,
+          "Protocol": "udp"
+        }
+      ],
+      "RunningFor": "32 seconds ago",
+      "Service": "coturn",
+      "Size": "0B",
+      "State": "running",
+      "Status": "Up 10 seconds"
+    },
+    {
+      "Command": "\"docker-entrypoint.s…\"",
+      "CreatedAt": "2026-07-05 00:44:07 +0000 UTC",
+      "ExitCode": 0,
+      "Health": "",
+      "ID": "af68bf64e9ef",
+      "Image": "codesite-atc-session-frontend",
+      "Labels": "desktop.docker.io/ports.scheme=v2,desktop.docker.io/ports/3000/tcp=127.0.0.1:3100,com.docker.compose.config-hash=0cbdee7717367b518b710ca3031a441187f785cfbc7d3bed43c3e4fed43c3f54,com.docker.compose.depends_on=y-sweet:service_healthy:false,ai-engine:service_started:false,postgres:service_healthy:false,com.docker.compose.image=sha256:bc50cb78f91cefb37391c9609658230d6f3ee753c2f4bed587371a3cc542336d,com.docker.compose.project=codesite-atc-session,com.docker.compose.replace=frontend-1,desktop.docker.io/wsl-distro=Ubuntu,com.docker.compose.container-number=1,com.docker.compose.oneoff=False,com.docker.compose.project.config_files=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/docker-compose.yml,com.docker.compose.project.working_dir=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session,com.docker.compose.service=frontend,com.docker.compose.version=5.1.1",
+      "LocalVolumes": "0",
+      "Mounts": "",
+      "Name": "codesite-atc-session-frontend-1",
+      "Names": "codesite-atc-session-frontend-1",
+      "Networks": "codesite-atc-session_default",
+      "Ports": "127.0.0.1:3100->3000/tcp",
+      "Project": "codesite-atc-session",
+      "Publishers": [
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 3000,
+          "PublishedPort": 3100,
+          "Protocol": "tcp"
+        }
+      ],
+      "RunningFor": "24 seconds ago",
+      "Service": "frontend",
+      "Size": "0B",
+      "State": "running",
+      "Status": "Up 2 seconds"
+    },
+    {
+      "Command": "\"docker-entrypoint.s…\"",
+      "CreatedAt": "2026-07-05 00:44:17 +0000 UTC",
+      "ExitCode": 0,
+      "Health": "",
+      "ID": "99e7f25bc818",
+      "Image": "codesite-atc-session-mcp",
+      "Labels": "com.docker.compose.depends_on=worker:service_started:false,signaling-server:service_started:false,com.docker.compose.image=sha256:cd36a217233de1dd8dab59b34e7ce530de1de4aa88df7a8c9b0f35a64ffe0df6,com.docker.compose.project=codesite-atc-session,com.docker.compose.project.working_dir=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session,com.docker.compose.service=mcp,desktop.docker.io/wsl-distro=Ubuntu,com.docker.compose.container-number=1,com.docker.compose.oneoff=False,com.docker.compose.project.config_files=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/docker-compose.yml,com.docker.compose.replace=mcp-1,com.docker.compose.version=5.1.1,desktop.docker.io/ports.scheme=v2,desktop.docker.io/ports/9464/tcp=127.0.0.1:19464,com.docker.compose.config-hash=b06710dbdb6cba4fbf4c27d9ddf04bf75348dfd40be0c9ebbcf4387d4d1fc1bc",
+      "LocalVolumes": "0",
+      "Mounts": "",
+      "Name": "codesite-atc-session-mcp-1",
+      "Names": "codesite-atc-session-mcp-1",
+      "Networks": "codesite-atc-session_default",
+      "Ports": "127.0.0.1:19464->9464/tcp",
+      "Project": "codesite-atc-session",
+      "Publishers": [
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 9464,
+          "PublishedPort": 19464,
+          "Protocol": "tcp"
+        }
+      ],
+      "RunningFor": "14 seconds ago",
+      "Service": "mcp",
+      "Size": "0B",
+      "State": "running",
+      "Status": "Up Less than a second"
+    },
+    {
+      "Command": "\"docker-entrypoint.s…\"",
+      "CreatedAt": "2026-07-05 00:43:59 +0000 UTC",
+      "ExitCode": 0,
+      "Health": "healthy",
+      "ID": "bc5ae6efd54a",
+      "Image": "postgres:16-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229",
+      "Labels": "com.docker.compose.container-number=1,com.docker.compose.depends_on=,com.docker.compose.image=sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229,com.docker.compose.project=codesite-atc-session,com.docker.compose.project.config_files=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/docker-compose.yml,com.docker.compose.project.working_dir=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session,com.docker.compose.service=postgres,desktop.docker.io/ports.scheme=v2,com.docker.compose.config-hash=0d89cd408ac8becce9799eb77ef9f4edd9fbd2cb5ed945c154d57819f875809e,com.docker.compose.oneoff=False,com.docker.compose.replace=postgres-1,com.docker.compose.version=5.1.1,desktop.docker.io/ports/5432/tcp=127.0.0.1:15432,desktop.docker.io/wsl-distro=Ubuntu",
+      "LocalVolumes": "1",
+      "Mounts": "codesite-atc-s…",
+      "Name": "codesite-atc-session-postgres-1",
+      "Names": "codesite-atc-session-postgres-1",
+      "Networks": "codesite-atc-session_default",
+      "Ports": "127.0.0.1:15432->5432/tcp",
+      "Project": "codesite-atc-session",
+      "Publishers": [
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 5432,
+          "PublishedPort": 15432,
+          "Protocol": "tcp"
+        }
+      ],
+      "RunningFor": "32 seconds ago",
+      "Service": "postgres",
+      "Size": "0B",
+      "State": "running",
+      "Status": "Up 11 seconds (healthy)"
+    },
+    {
+      "Command": "\"docker-entrypoint.s…\"",
+      "CreatedAt": "2026-07-05 00:43:59 +0000 UTC",
+      "ExitCode": 0,
+      "Health": "healthy",
+      "ID": "8510d9e5a0f1",
+      "Image": "redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99",
+      "Labels": "com.docker.compose.service=redis,desktop.docker.io/ports.scheme=v2,com.docker.compose.oneoff=False,com.docker.compose.project=codesite-atc-session,com.docker.compose.project.working_dir=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session,com.docker.compose.version=5.1.1,desktop.docker.io/ports/6379/tcp=127.0.0.1:16379,desktop.docker.io/wsl-distro=Ubuntu,com.docker.compose.config-hash=e436edfefec5e8572c3454b25dc28a643dcfffa91fdea4648cb6e94097dccdb4,com.docker.compose.container-number=1,com.docker.compose.depends_on=,com.docker.compose.image=sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99,com.docker.compose.project.config_files=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/docker-compose.yml,com.docker.compose.replace=redis-1",
+      "LocalVolumes": "1",
+      "Mounts": "e8f230c5955d56…",
+      "Name": "codesite-atc-session-redis-1",
+      "Names": "codesite-atc-session-redis-1",
+      "Networks": "codesite-atc-session_default",
+      "Ports": "127.0.0.1:16379->6379/tcp",
+      "Project": "codesite-atc-session",
+      "Publishers": [
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 6379,
+          "PublishedPort": 16379,
+          "Protocol": "tcp"
+        }
+      ],
+      "RunningFor": "32 seconds ago",
+      "Service": "redis",
+      "Size": "0B",
+      "State": "running",
+      "Status": "Up 11 seconds (healthy)"
+    },
+    {
+      "Command": "\"signaling-server\"",
+      "CreatedAt": "2026-07-05 00:44:13 +0000 UTC",
+      "ExitCode": 0,
+      "Health": "",
+      "ID": "c551749a152e",
+      "Image": "codesite-atc-session-signaling-server",
+      "Labels": "com.docker.compose.config-hash=79b66dfa5734db0f20edb1e1d7f04e0a7907e63922f0efa506475f8ac5680ba5,com.docker.compose.container-number=1,com.docker.compose.project.config_files=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/docker-compose.yml,com.docker.compose.version=5.1.1,desktop.docker.io/ports.scheme=v2,desktop.docker.io/ports/9000/tcp=127.0.0.1:19000,com.docker.compose.depends_on=redis:service_healthy:false,collab-server:service_started:false,com.docker.compose.image=sha256:760035f6bd7d728a177f4ea69586d6b3627a194c5b18f44afec844e1caaa84ef,com.docker.compose.oneoff=False,com.docker.compose.project=codesite-atc-session,com.docker.compose.project.working_dir=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session,com.docker.compose.replace=signaling-server-1,com.docker.compose.service=signaling-server,desktop.docker.io/wsl-distro=Ubuntu",
+      "LocalVolumes": "0",
+      "Mounts": "",
+      "Name": "codesite-atc-session-signaling-server-1",
+      "Names": "codesite-atc-session-signaling-server-1",
+      "Networks": "codesite-atc-session_default",
+      "Ports": "127.0.0.1:19000->9000/tcp",
+      "Project": "codesite-atc-session",
+      "Publishers": [
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 9000,
+          "PublishedPort": 19000,
+          "Protocol": "tcp"
+        }
+      ],
+      "RunningFor": "18 seconds ago",
+      "Service": "signaling-server",
+      "Size": "0B",
+      "State": "running",
+      "Status": "Up 1 second"
+    },
+    {
+      "Command": "\"worker\"",
+      "CreatedAt": "2026-07-05 00:44:17 +0000 UTC",
+      "ExitCode": 0,
+      "Health": "",
+      "ID": "d483d3780ae7",
+      "Image": "codesite-atc-session-worker",
+      "Labels": "com.docker.compose.image=sha256:7b549d6c72768c079f6967a8fe3819966a6b4d822811ac43b4e882b5a429b84c,com.docker.compose.project=codesite-atc-session,com.docker.compose.project.config_files=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/docker-compose.yml,com.docker.compose.service=worker,com.docker.compose.version=5.1.1,desktop.docker.io/ports.scheme=v2,com.docker.compose.config-hash=45692940f014418e4f41b32d43a178eafdeea8e591c0b0c464327a445d8c8e16,com.docker.compose.depends_on=signaling-server:service_started:false,collab-server:service_started:false,com.docker.compose.project.working_dir=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session,org.opencontainers.image.version=25.10,com.docker.compose.container-number=1,com.docker.compose.oneoff=False,com.docker.compose.replace=worker-1,desktop.docker.io/wsl-distro=Ubuntu,org.opencontainers.image.ref.name=ubuntu",
+      "LocalVolumes": "1",
+      "Mounts": "codesite-atc-s…",
+      "Name": "codesite-atc-session-worker-1",
+      "Names": "codesite-atc-session-worker-1",
+      "Networks": "codesite-atc-session_default",
+      "Ports": "",
+      "Project": "codesite-atc-session",
+      "Publishers": [],
+      "RunningFor": "14 seconds ago",
+      "Service": "worker",
+      "Size": "0B",
+      "State": "running",
+      "Status": "Up 1 second"
+    },
+    {
+      "Command": "\"y-sweet serve /data…\"",
+      "CreatedAt": "2026-07-05 00:43:59 +0000 UTC",
+      "ExitCode": 0,
+      "Health": "healthy",
+      "ID": "116a5cd895ec",
+      "Image": "synthi-y-sweet",
+      "Labels": "org.opencontainers.image.description=A realtime CRDT-based document store, backed by S3.,org.opencontainers.image.title=y-sweet,org.opencontainers.image.url=https://github.com/jamsocket/y-sweet,org.opencontainers.image.version=latest,desktop.docker.io/wsl-distro=Ubuntu,org.opencontainers.image.created=2025-12-04T19:28:53.471Z,com.docker.compose.depends_on=,com.docker.compose.image=sha256:a5ab78b4e090e0d811ed90af09783cc4209ba175b480e48de87087479bbb581e,com.docker.compose.project=codesite-atc-session,com.docker.compose.project.working_dir=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session,com.docker.compose.replace=y-sweet-1,com.docker.compose.version=5.1.1,org.opencontainers.image.revision=4f1909b2c3390ced54d32b82a673f4f7ee8ac780,com.docker.compose.config-hash=33ec240e9ee18bfd335a168bf3060229c5a2848beb7b1b4f007d214376a86e46,com.docker.compose.container-number=1,com.docker.compose.oneoff=False,com.docker.compose.service=y-sweet,org.opencontainers.image.licenses=NOASSERTION,org.opencontainers.image.source=https://github.com/jamsocket/y-sweet,desktop.docker.io/ports/8080/tcp=127.0.0.1:18180,com.docker.compose.project.config_files=/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/docker-compose.yml,desktop.docker.io/ports.scheme=v2",
+      "LocalVolumes": "1",
+      "Mounts": "codesite-atc-s…",
+      "Name": "codesite-atc-session-y-sweet-1",
+      "Names": "codesite-atc-session-y-sweet-1",
+      "Networks": "codesite-atc-session_default",
+      "Ports": "127.0.0.1:18180->8080/tcp",
+      "Project": "codesite-atc-session",
+      "Publishers": [
+        {
+          "URL": "127.0.0.1",
+          "TargetPort": 8080,
+          "PublishedPort": 18180,
+          "Protocol": "tcp"
+        }
+      ],
+      "RunningFor": "32 seconds ago",
+      "Service": "y-sweet",
+      "Size": "0B",
+      "State": "running",
+      "Status": "Up 11 seconds (healthy)"
+    }
+  ],
+  "service_evaluation": {
+    "ok": true,
+    "configured_services": [
+      "ai-engine",
+      "redis",
+      "y-sweet",
+      "collab-server",
+      "signaling-server",
+      "worker",
+      "mcp",
+      "ai-gateway",
+      "coturn",
+      "postgres",
+      "frontend"
+    ],
+    "required_services": [
+      "frontend",
+      "collab-server",
+      "mcp",
+      "worker",
+      "signaling-server",
+      "ai-gateway",
+      "ai-engine",
+      "y-sweet",
+      "postgres",
+      "redis",
+      "coturn"
+    ],
+    "running_services": [
+      "frontend",
+      "collab-server",
+      "mcp",
+      "worker",
+      "signaling-server",
+      "ai-gateway",
+      "ai-engine",
+      "y-sweet",
+      "postgres",
+      "redis",
+      "coturn"
+    ],
+    "missing_services": [],
+    "stopped_services": [],
+    "unhealthy_services": [],
+    "unknown_configured_services": [],
+    "service_states": [
+      {
+        "service": "frontend",
+        "state": "running",
+        "health": "",
+        "status": "Up 2 seconds"
+      },
+      {
+        "service": "collab-server",
+        "state": "running",
+        "health": "",
+        "status": "Up 2 seconds"
+      },
+      {
+        "service": "mcp",
+        "state": "running",
+        "health": "",
+        "status": "Up Less than a second"
+      },
+      {
+        "service": "worker",
+        "state": "running",
+        "health": "",
+        "status": "Up 1 second"
+      },
+      {
+        "service": "signaling-server",
+        "state": "running",
+        "health": "",
+        "status": "Up 1 second"
+      },
+      {
+        "service": "ai-gateway",
+        "state": "running",
+        "health": "",
+        "status": "Up 10 seconds"
+      },
+      {
+        "service": "ai-engine",
+        "state": "running",
+        "health": "",
+        "status": "Up 11 seconds"
+      },
+      {
+        "service": "y-sweet",
+        "state": "running",
+        "health": "healthy",
+        "status": "Up 11 seconds (healthy)"
+      },
+      {
+        "service": "postgres",
+        "state": "running",
+        "health": "healthy",
+        "status": "Up 11 seconds (healthy)"
+      },
+      {
+        "service": "redis",
+        "state": "running",
+        "health": "healthy",
+        "status": "Up 11 seconds (healthy)"
+      },
+      {
+        "service": "coturn",
+        "state": "running",
+        "health": "",
+        "status": "Up 10 seconds"
+      }
+    ]
+  },
+  "endpoint_checks": [
+    {
+      "id": "frontend_workspace",
+      "url": "http://127.0.0.1:3100/workspace",
+      "expected_status": 200,
+      "status": 200,
+      "ok": true,
+      "duration_ms": 123.511,
+      "attempts": 1,
+      "error": null
+    },
+    {
+      "id": "collab_ports",
+      "url": "http://127.0.0.1:11234/ports",
+      "expected_status": 200,
+      "status": 200,
+      "ok": true,
+      "duration_ms": 30.547,
+      "attempts": 1,
+      "error": null
+    }
+  ]
+}

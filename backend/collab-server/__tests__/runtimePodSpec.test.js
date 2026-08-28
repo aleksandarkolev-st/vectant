@@ -1,0 +1,313 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const { buildRuntimeDeployment, buildRuntimeService, isSysboxRuntimeEnabled } = require('../runtimePodSpec');
+const { runtimeResourceId } = require('../runtimeIdentity');
+
+// T1 — the core security invariant: the per-workspace runtime pod runs under the
+// Sysbox RuntimeClass and is NEVER privileged (Sysbox provides the isolation).
+test('runtime deployment uses the sysbox-runc RuntimeClass and is never privileged', () => {
+  const dep = buildRuntimeDeployment({
+    sessionId: 'ws-abc:user-1',
+    userId: 'user-1',
+    metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' },
+  });
+  assert.equal(dep.kind, 'Deployment');
+  const podSpec = dep.spec.template.spec;
+  assert.equal(podSpec.runtimeClassName, 'sysbox-runc');
+  assert.ok(Array.isArray(podSpec.containers) && podSpec.containers.length > 0, 'has at least one container');
+  for (const c of podSpec.containers) {
+    const priv = c.securityContext && c.securityContext.privileged;
+    assert.notEqual(priv, true, `container ${c.name} must not be privileged`);
+  }
+});
+
+// T2 — tenant confinement: the runtime sees only its own workspace dir via subPath.
+test('mounts collab-data-pvc at /workspace confined to the workspace subPath', () => {
+  const dep = buildRuntimeDeployment({
+    sessionId: 'ws-abc:user-1',
+    userId: 'user-1',
+    metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' },
+  });
+  const podSpec = dep.spec.template.spec;
+  const vol = (podSpec.volumes || []).find(
+    (v) => v.persistentVolumeClaim && v.persistentVolumeClaim.claimName === 'collab-data-pvc',
+  );
+  assert.ok(vol, 'collab-data-pvc volume present');
+  const runtime = podSpec.containers.find((c) => c.name === 'runtime');
+  const mount = (runtime.volumeMounts || []).find((m) => m.name === vol.name);
+  assert.ok(mount, 'runtime container mounts the workspace volume');
+  assert.equal(mount.mountPath, '/workspace');
+  assert.equal(mount.subPath, 'repos/my-repo/242593757');
+});
+
+// T3 — pod identity: app:runtime label, deterministic synthi/runtime-id, and
+// hostUsers:false (k8s userns ≥1.30). Selector must match the pod template labels.
+test('runtime pod has hostUsers:false and app:runtime identity labels', () => {
+  const sessionId = 'ws-abc:user-1';
+  const dep = buildRuntimeDeployment({
+    sessionId,
+    userId: 'user-1',
+    metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' },
+  });
+  const tmpl = dep.spec.template;
+  assert.equal(tmpl.spec.hostUsers, false);
+  assert.equal(tmpl.metadata.labels.app, 'runtime');
+  assert.equal(tmpl.metadata.labels['synthi/runtime-id'], runtimeResourceId(sessionId));
+  // the Deployment selector must match the pod labels (else the Deployment is invalid)
+  assert.equal(dep.spec.selector.matchLabels.app, 'runtime');
+  assert.equal(dep.spec.selector.matchLabels['synthi/runtime-id'], runtimeResourceId(sessionId));
+});
+
+// T4 — scheduling: lands on the dedicated sysbox node pool and tolerates its taint
+// (env-driven defaults, SEPARATE from the worker's workspace-pool scheduling).
+test('runtime pod schedules onto the sysbox pool with the sysbox taint toleration', () => {
+  const dep = buildRuntimeDeployment({
+    sessionId: 'ws-abc:user-1',
+    userId: 'user-1',
+    metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' },
+  });
+  const podSpec = dep.spec.template.spec;
+  assert.equal(podSpec.nodeSelector['cloud.google.com/gke-nodepool'], 'sysbox-pool');
+  const tol = (podSpec.tolerations || []).find((t) => t.key === 'workload' && t.value === 'sysbox');
+  assert.ok(tol, 'tolerates workload=sysbox');
+  assert.equal(tol.effect, 'NoSchedule');
+});
+
+// T5 — the runtime container runs the runtime image, and DOCKER_HOST points at the
+// pod's OWN in-pod unix socket (never a host socket / tcp). Workspace identity is
+// threaded through (slug, runtime scope, fs user).
+test('runtime container runs the runtime image and points DOCKER_HOST at its own in-pod socket', () => {
+  const dep = buildRuntimeDeployment({
+    sessionId: 'ws-abc:user-1',
+    userId: 'user-1',
+    metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' },
+  });
+  const runtime = dep.spec.template.spec.containers.find((c) => c.name === 'runtime');
+  assert.ok(runtime.image, 'runtime container has an image');
+  const env = Object.fromEntries((runtime.env || []).map((e) => [e.name, e.value]));
+  assert.match(env.DOCKER_HOST || '', /^unix:\/\//, 'DOCKER_HOST is an in-pod unix socket');
+  assert.equal(env.SYNTHI_WORKSPACE_SLUG, 'my-repo');
+  assert.equal(env.SYNTHI_RUNTIME_SCOPE, 'ws-abc:user-1');
+  assert.equal(env.SYNTHI_RUNTIME_FS_USER_ID, '242593757');
+});
+
+// T6 — dark-launch flag: the Sysbox runtime backend is OFF unless RUNTIME_BACKEND
+// is exactly 'sysbox-pod'. Read at call time so it can be toggled at runtime/tests.
+test('isSysboxRuntimeEnabled is gated on RUNTIME_BACKEND=sysbox-pod (default off)', () => {
+  const prev = process.env.RUNTIME_BACKEND;
+  try {
+    delete process.env.RUNTIME_BACKEND;
+    assert.equal(isSysboxRuntimeEnabled(), false);
+    process.env.RUNTIME_BACKEND = 'sysbox-pod';
+    assert.equal(isSysboxRuntimeEnabled(), true);
+    process.env.RUNTIME_BACKEND = 'host-socket';
+    assert.equal(isSysboxRuntimeEnabled(), false);
+  } finally {
+    if (prev === undefined) delete process.env.RUNTIME_BACKEND;
+    else process.env.RUNTIME_BACKEND = prev;
+  }
+});
+
+// S2-T8 — the runtime Deployment and the worker Deployment for the SAME session
+// must NOT share a name (both would otherwise be `runtimeResourceId(sessionId)` and
+// 409-collide). The runtime name is derived from the session id (for traceability)
+// but distinct; the `synthi/runtime-id` label still ties it to the session.
+test('runtime Deployment name is distinct from the worker resource id', () => {
+  const sessionId = 'ws-abc:user-1';
+  const dep = buildRuntimeDeployment({
+    sessionId,
+    userId: 'user-1',
+    metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' },
+  });
+  const workerName = runtimeResourceId(sessionId);
+  assert.notEqual(dep.metadata.name, workerName, 'runtime name must differ from the worker Deployment name');
+  assert.ok(dep.metadata.name.startsWith(workerName), 'runtime name is derived from the session resource id');
+  assert.equal(dep.spec.template.metadata.labels['synthi/runtime-id'], workerName, 'identity label still ties it to the session');
+});
+
+// S2-T9 — the runtime pod must be managed-by `runtime-spawner`, NOT `workspace-spawner`.
+// The worker culler/count filter on `managed-by=workspace-spawner`; sharing it would
+// make the worker culler delete runtime pods (they carry no lastActive annotation).
+test('runtime pods are managed-by runtime-spawner (not workspace-spawner)', () => {
+  const dep = buildRuntimeDeployment({
+    sessionId: 'ws-abc:user-1',
+    userId: 'user-1',
+    metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' },
+  });
+  assert.equal(dep.metadata.labels['app.kubernetes.io/managed-by'], 'runtime-spawner');
+  assert.equal(dep.spec.template.metadata.labels['app.kubernetes.io/managed-by'], 'runtime-spawner');
+});
+
+// S2-T10 — readiness must mean "dockerd is up", not merely "pod Running". A readiness
+// probe that execs a docker-daemon check lets the existing all-containers-ready watch
+// double as the dockerd-ready gate. Still never privileged (Sysbox provides isolation).
+test('runtime container has a dockerd-readiness probe and stays non-privileged', () => {
+  const dep = buildRuntimeDeployment({
+    sessionId: 'ws-abc:user-1',
+    userId: 'user-1',
+    metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' },
+  });
+  const runtime = dep.spec.template.spec.containers.find((c) => c.name === 'runtime');
+  assert.ok(runtime.readinessProbe, 'runtime container has a readinessProbe');
+  const cmd = (runtime.readinessProbe.exec && runtime.readinessProbe.exec.command) || [];
+  assert.ok(cmd.join(' ').includes('docker'), 'readiness probe checks the docker daemon');
+  assert.notEqual(runtime.securityContext && runtime.securityContext.privileged, true);
+});
+
+// S4-T1 — Slice 4: the runtime pod's preview Service. Headless, selects app=runtime
+// pods, exposes the preview-sidecar port, and is NAMED distinctly from the worker
+// Service (worker Service = runtimeResourceId; runtime must not collide).
+test('buildRuntimeService is a headless Service for the runtime pod on the preview port', () => {
+  const sessionId = 'ws-abc:user-1';
+  const svc = buildRuntimeService(sessionId);
+  assert.equal(svc.kind, 'Service');
+  assert.notEqual(svc.metadata.name, runtimeResourceId(sessionId), 'distinct from the worker Service name');
+  assert.ok(svc.metadata.name.startsWith(runtimeResourceId(sessionId)), 'derived from the session resource id');
+  assert.equal(svc.spec.clusterIP, 'None', 'headless');
+  assert.equal(svc.spec.selector.app, 'runtime');
+  assert.equal(svc.spec.selector['synthi/runtime-id'], runtimeResourceId(sessionId));
+  const port = (svc.spec.ports || []).find((p) => p.name === 'preview-proxy');
+  assert.ok(port, 'exposes the preview-proxy port');
+  assert.ok(Number.isInteger(port.port) && port.port > 0, 'preview-proxy port is a valid port');
+});
+
+test('production preview target template routes to the runtime Service', () => {
+  const configmapPath = path.resolve(__dirname, '../../../k8s/configmap.yaml');
+  const configmap = fs.readFileSync(configmapPath, 'utf8');
+  const match = configmap.match(/SYNTHI_PREVIEW_TARGET_TEMPLATE:\s*"([^"]+)"/);
+  assert.ok(match, 'SYNTHI_PREVIEW_TARGET_TEMPLATE is defined');
+  assert.match(match[1], /\{runtimeId\}-rt\.synthi\.svc\.cluster\.local/, 'preview template targets runtime Service');
+  assert.doesNotMatch(match[1], /^http:\/\/\{runtimeId\}\.synthi\.svc\.cluster\.local/, 'preview template must not target worker Service');
+});
+
+// S4-T2 — DEFERRED (written + skipped): ports opened inside the runtime pod are
+// detected (k8s-exec port monitor) and reachable via the preview sidecar+Service +
+// PREVIEW_TARGET_TEMPLATE. Needs a live Sysbox cluster.
+test('runtime pod opened ports surface in the Ports panel and proxy', { skip: 'integration — blocked on nestybox/sysbox#1006 substrate' }, () => {});
+
+// S5-T1 — Hibernate: docker-data persistence is opt-in (RUNTIME_PERSIST_DOCKER_DATA).
+// Off (default) → only the /workspace mount (ephemeral docker = current behavior).
+// On → an extra /var/lib/docker mount on a per-runtime PVC subPath so the image/build
+// cache survives idle-cull → respawn. Same PVC volume, distinct subPath.
+test('runtime pod persists /var/lib/docker only when RUNTIME_PERSIST_DOCKER_DATA is on', () => {
+  const prev = process.env.RUNTIME_PERSIST_DOCKER_DATA;
+  const args = { sessionId: 'ws-abc:user-1', userId: 'user-1', metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' } };
+  try {
+    delete process.env.RUNTIME_PERSIST_DOCKER_DATA;
+    let runtime = buildRuntimeDeployment(args).spec.template.spec.containers.find((c) => c.name === 'runtime');
+    assert.ok(!runtime.volumeMounts.some((m) => m.mountPath === '/var/lib/docker'), 'no docker-data mount when off');
+    assert.equal(runtime.volumeMounts.length, 1);
+
+    process.env.RUNTIME_PERSIST_DOCKER_DATA = '1';
+    runtime = buildRuntimeDeployment(args).spec.template.spec.containers.find((c) => c.name === 'runtime');
+    const dockerMount = runtime.volumeMounts.find((m) => m.mountPath === '/var/lib/docker');
+    assert.ok(dockerMount, 'docker-data mount present when on');
+    assert.equal(dockerMount.name, runtime.volumeMounts[0].name, 'reuses the same PVC volume (subPath)');
+    assert.match(dockerMount.subPath, /^docker-data\//, 'per-runtime docker-data subPath');
+  } finally {
+    if (prev === undefined) delete process.env.RUNTIME_PERSIST_DOCKER_DATA;
+    else process.env.RUNTIME_PERSIST_DOCKER_DATA = prev;
+  }
+});
+
+// S7-T1 — Pull-through cache: when RUNTIME_REGISTRY_MIRROR is set, the runtime
+// container gets a dockerd `--registry-mirror` arg (the dind entrypoint forwards
+// container args to dockerd); off by default → no args.
+test('runtime pod uses a registry mirror only when RUNTIME_REGISTRY_MIRROR is set', () => {
+  const prev = process.env.RUNTIME_REGISTRY_MIRROR;
+  const args = { sessionId: 'ws-abc:user-1', userId: 'user-1', metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' } };
+  try {
+    delete process.env.RUNTIME_REGISTRY_MIRROR;
+    let runtime = buildRuntimeDeployment(args).spec.template.spec.containers.find((c) => c.name === 'runtime');
+    assert.ok(!runtime.args, 'no dockerd args when mirror unset');
+
+    process.env.RUNTIME_REGISTRY_MIRROR = 'https://europe-west10-docker.pkg.dev';
+    runtime = buildRuntimeDeployment(args).spec.template.spec.containers.find((c) => c.name === 'runtime');
+    assert.ok(Array.isArray(runtime.args) && runtime.args.includes('--registry-mirror=https://europe-west10-docker.pkg.dev'), 'passes --registry-mirror to dockerd');
+  } finally {
+    if (prev === undefined) delete process.env.RUNTIME_REGISTRY_MIRROR;
+    else process.env.RUNTIME_REGISTRY_MIRROR = prev;
+  }
+});
+
+// S6-T2 — Egress controls: an optional per-pod egress bandwidth cap. When
+// RUNTIME_EGRESS_BANDWIDTH is set, the runtime pod template carries the
+// kubernetes.io/egress-bandwidth annotation (GKE Dataplane-V2 bandwidth plugin),
+// bounding data-exfiltration / abuse throughput. Off by default → no annotation
+// (no cap = current behavior). Env read at call time.
+test('runtime pod gets an egress-bandwidth annotation only when RUNTIME_EGRESS_BANDWIDTH is set', () => {
+  const prev = process.env.RUNTIME_EGRESS_BANDWIDTH;
+  const args = { sessionId: 'ws-abc:user-1', userId: 'user-1', metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' } };
+  try {
+    delete process.env.RUNTIME_EGRESS_BANDWIDTH;
+    let tmpl = buildRuntimeDeployment(args).spec.template;
+    assert.ok(
+      !(tmpl.metadata.annotations && tmpl.metadata.annotations['kubernetes.io/egress-bandwidth']),
+      'no egress-bandwidth annotation when unset',
+    );
+
+    process.env.RUNTIME_EGRESS_BANDWIDTH = '50M';
+    tmpl = buildRuntimeDeployment(args).spec.template;
+    assert.equal(tmpl.metadata.annotations['kubernetes.io/egress-bandwidth'], '50M', 'egress-bandwidth annotation set');
+  } finally {
+    if (prev === undefined) delete process.env.RUNTIME_EGRESS_BANDWIDTH;
+    else process.env.RUNTIME_EGRESS_BANDWIDTH = prev;
+  }
+});
+
+// S8-T1 — GPU on-demand: per-spawn metadata.gpu adds a GPU device limit + the GPU
+// node-taint toleration (off by default — never warm, requested per spawn). The
+// sysbox toleration is preserved (GPU pod still runs under sysbox-runc).
+test('runtime pod requests a GPU + tolerates the GPU taint only when metadata.gpu is set', () => {
+  const base = { sessionId: 'ws-abc:user-1', userId: 'user-1', metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' } };
+  let spec = buildRuntimeDeployment(base).spec.template.spec;
+  let runtime = spec.containers.find((c) => c.name === 'runtime');
+  assert.ok(!(runtime.resources.limits || {})['nvidia.com/gpu'], 'no GPU limit by default');
+  assert.ok(!(spec.tolerations || []).some((t) => t.key === 'nvidia.com/gpu'), 'no GPU toleration by default');
+
+  spec = buildRuntimeDeployment({ ...base, metadata: { ...base.metadata, gpu: true } }).spec.template.spec;
+  runtime = spec.containers.find((c) => c.name === 'runtime');
+  assert.equal(runtime.resources.limits['nvidia.com/gpu'], '1', 'requests 1 GPU');
+  assert.ok((spec.tolerations || []).some((t) => t.key === 'nvidia.com/gpu' && t.effect === 'NoSchedule'), 'tolerates the GPU node taint');
+  assert.ok((spec.tolerations || []).some((t) => t.key === 'workload' && t.value === 'sysbox'), 'keeps the sysbox toleration');
+});
+
+// Cost predictability + node protection: the runtime container declares CPU/memory
+// requests (so the cluster autoscaler bin-packs by need, not pod count — without
+// them requests=0 → every pod looks "free" → overcommit/node OOM) and limits (so a
+// single workspace can't starve the node). Defaults sized for 1–2 programs on an
+// n2-standard-4; env-overridable, read at call time.
+test('runtime container declares CPU/memory requests and limits by default', () => {
+  const dep = buildRuntimeDeployment({ sessionId: 'ws-abc:user-1', userId: 'user-1', metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' } });
+  const runtime = dep.spec.template.spec.containers.find((c) => c.name === 'runtime');
+  assert.ok(runtime.resources, 'has a resources block');
+  assert.equal(runtime.resources.requests.cpu, '500m');
+  assert.equal(runtime.resources.requests.memory, '1Gi');
+  assert.equal(runtime.resources.limits.cpu, '2');
+  assert.equal(runtime.resources.limits.memory, '4Gi');
+});
+
+test('runtime CPU/memory requests + limits are env-overridable (read at call time)', () => {
+  const keys = ['RUNTIME_CPU_REQUEST', 'RUNTIME_MEMORY_REQUEST', 'RUNTIME_CPU_LIMIT', 'RUNTIME_MEMORY_LIMIT'];
+  const prev = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  try {
+    process.env.RUNTIME_CPU_REQUEST = '250m';
+    process.env.RUNTIME_MEMORY_REQUEST = '512Mi';
+    process.env.RUNTIME_CPU_LIMIT = '1';
+    process.env.RUNTIME_MEMORY_LIMIT = '2Gi';
+    const runtime = buildRuntimeDeployment({ sessionId: 'ws-abc:user-1', userId: 'user-1', metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' } })
+      .spec.template.spec.containers.find((c) => c.name === 'runtime');
+    assert.equal(runtime.resources.requests.cpu, '250m');
+    assert.equal(runtime.resources.requests.memory, '512Mi');
+    assert.equal(runtime.resources.limits.cpu, '1');
+    assert.equal(runtime.resources.limits.memory, '2Gi');
+  } finally {
+    for (const k of keys) {
+      if (prev[k] === undefined) delete process.env[k];
+      else process.env[k] = prev[k];
+    }
+  }
+});

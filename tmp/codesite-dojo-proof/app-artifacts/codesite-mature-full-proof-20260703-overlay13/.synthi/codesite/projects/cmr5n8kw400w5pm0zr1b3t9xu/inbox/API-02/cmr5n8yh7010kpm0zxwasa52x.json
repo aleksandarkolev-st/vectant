@@ -1,0 +1,47 @@
+{
+  "id": "cmr5n8yhb010mpm0zunqhpi1c",
+  "projectId": "cmr5n8kw400w5pm0zr1b3t9xu",
+  "agentSessionId": "cmr5n8o3x00x8pm0zpba700d2",
+  "recipientUserId": "cmr5n8ilo00vzpm0z7zz9qogd",
+  "eventId": "cmr5n8yh7010kpm0zxwasa52x",
+  "documentId": "cmr5n8yh0010ipm0z88mpt3oc",
+  "kind": "rfi",
+  "requiresResponse": true,
+  "status": "acknowledged",
+  "redactedPayload": {
+    "documentId": "cmr5n8yh0010ipm0z88mpt3oc",
+    "eventId": "cmr5n8yh7010kpm0zxwasa52x",
+    "kind": "rfi",
+    "title": "Confirm schema-first contract before API route",
+    "body": {
+      "question": "Confirm API flight will hold until auth.signup.schema.v1 lands.",
+      "proposedContract": "synthi/prisma/schema-contract-read.txt",
+      "transactionId": "cmr5n8ta300yspm0zf8blsf5p",
+      "routing": {
+        "fromSessionId": "cmr5n8n8800wypm0zhduexqy9",
+        "toSessionIds": [
+          "cmr5n8o3x00x8pm0zpba700d2"
+        ],
+        "projectRefs": {
+          "executionPlanId": "cmr5n8nlb00x4pm0zvb4u0w2j",
+          "mutationLeaseId": "cmr5n8q0i00xspm0zc16y3e69",
+          "transactionId": "cmr5n8ta300yspm0zf8blsf5p",
+          "affectedZones": [
+            "synthi/prisma/schema.prisma"
+          ],
+          "contractRefs": [
+            "synthi/prisma/schema-contract-read.txt"
+          ],
+          "inspectionRunId": null,
+          "incidentId": null
+        }
+      }
+    },
+    "redaction": {
+      "policyApplied": true,
+      "recipientSessionId": "cmr5n8o3x00x8pm0zpba700d2"
+    }
+  },
+  "createdAt": "2026-07-04T00:48:33.167Z",
+  "acknowledgedAt": "2026-07-04T00:48:34.154Z"
+}

@@ -1,0 +1,74 @@
+import { describe, expect, it } from 'vitest';
+import { codeSiteContextFromBody, mergeProgramSession } from '../routeHelpers';
+
+describe('codeSiteContextFromBody', () => {
+  it('accepts object CodeSite context aliases and rejects non-objects', () => {
+    const context = { projectId: 'project-1', transactionId: 'txn-1' };
+    expect(codeSiteContextFromBody({ codeSiteContext: context })).toBe(context);
+    expect(codeSiteContextFromBody({ code_site_context: context })).toBe(context);
+    expect(codeSiteContextFromBody({ codeSiteContext: ['project-1'] })).toBeNull();
+    expect(codeSiteContextFromBody({ codeSiteContext: 'project-1' })).toBeNull();
+    expect(codeSiteContextFromBody(null)).toBeNull();
+  });
+});
+
+describe('mergeProgramSession health surfacing', () => {
+  it('surfaces the live runtime healthState as lastHealthState', () => {
+    const merged = mergeProgramSession(
+      { id: 'ps-1', state: 'starting', lastHealthState: null },
+      { state: 'running', activePorts: [3000], webPort: 3000, healthState: 'ok' },
+    );
+    expect(merged.lastHealthState).toBe('ok');
+    expect(merged.webPort).toBe(3000);
+    expect(merged.activePorts).toEqual([3000]);
+  });
+
+  it('falls back to the persisted lastHealthState when the runtime has none', () => {
+    const merged = mergeProgramSession(
+      { id: 'ps-1', state: 'stopped', lastHealthState: 'unhealthy' },
+      null,
+    );
+    expect(merged.lastHealthState).toBe('unhealthy');
+  });
+
+  it('is null when neither side has a health state', () => {
+    const merged = mergeProgramSession({ id: 'ps-1', state: 'starting' }, { state: 'starting' });
+    expect(merged.lastHealthState).toBeNull();
+  });
+});
+
+describe('mergeProgramSession runtimeScope (Slice 1)', () => {
+  it('carries runtimeScope from the runtime session so the frontend builds /runtime/<scope>/port/N', () => {
+    const merged = mergeProgramSession({ id: 'ps-1' }, { runtimeScope: 'scope-1', activePorts: [3000], webPort: 3000 });
+    expect(merged.runtimeScope).toBe('scope-1');
+  });
+
+  it('is null without a runtime session', () => {
+    expect(mergeProgramSession({ id: 'ps-1' }, null).runtimeScope).toBeNull();
+  });
+});
+
+describe('mergeProgramSession orphan reconciliation (R1)', () => {
+  it('downgrades an active DB session with no live runtime to stopped (zombie)', () => {
+    for (const state of ['starting', 'running', 'restarting']) {
+      expect(mergeProgramSession({ id: 'ps-1', state }, null).state).toBe('stopped');
+    }
+  });
+
+  it('leaves an already-inactive session unchanged when there is no live runtime', () => {
+    expect(mergeProgramSession({ id: 'ps-1', state: 'stopped' }, null).state).toBe('stopped');
+    expect(mergeProgramSession({ id: 'ps-1', state: 'crashed' }, null).state).toBe('crashed');
+  });
+
+  it('still prefers the live runtime state when a runtime session exists', () => {
+    expect(mergeProgramSession({ id: 'ps-1', state: 'starting' }, { state: 'running' }).state).toBe('running');
+  });
+});
+
+describe('mergeProgramSession webGui surfacing (R4 — live thumbnail)', () => {
+  it('surfaces webGui from the live runtime session so the running card can render a thumbnail', () => {
+    expect(mergeProgramSession({ id: 'ps-1' }, { webGui: true }).webGui).toBe(true);
+    expect(mergeProgramSession({ id: 'ps-1' }, { webGui: false }).webGui).toBe(false);
+    expect(mergeProgramSession({ id: 'ps-1' }, null).webGui).toBe(false);
+  });
+});

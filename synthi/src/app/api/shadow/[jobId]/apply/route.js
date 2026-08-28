@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { withInternalAiAuth } from '@/lib/internalAiAuth';
+import { resolveActor } from '@/lib/integrations/session';
 
 /**
  * Synthi Genome — POST /api/shadow/[jobId]/apply
@@ -17,6 +18,9 @@ const AI_ENGINE_BASE =
     process.env.CODE_INTEL_URL || process.env.AI_ENGINE_URL || 'http://localhost:8000';
 
 export async function POST(request, { params }) {
+    const actor = await resolveActor();
+    if (!actor) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
     const { jobId } = await params;
     let body = {};
     try {
@@ -34,7 +38,15 @@ export async function POST(request, { params }) {
             {
                 method: 'POST',
                 headers: withInternalAiAuth({ 'content-type': 'application/json' }),
-                body: JSON.stringify({ universeId: body.universeId }),
+                body: JSON.stringify({
+                    universeId: body.universeId,
+                    openedDiffUniverseIds: Array.isArray(body.openedDiffUniverseIds)
+                        ? body.openedDiffUniverseIds
+                        : [],
+                    openedExplanationUniverseIds: Array.isArray(body.openedExplanationUniverseIds)
+                        ? body.openedExplanationUniverseIds
+                        : [],
+                }),
             }
         );
         const json = await res.json().catch(() => ({}));

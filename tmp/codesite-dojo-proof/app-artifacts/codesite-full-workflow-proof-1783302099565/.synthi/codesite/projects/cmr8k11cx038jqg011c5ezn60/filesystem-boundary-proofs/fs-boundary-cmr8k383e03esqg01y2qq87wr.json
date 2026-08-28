@@ -1,0 +1,102 @@
+{
+  "schemaVersion": "synthi.codesite.filesystemBoundaryProof.v1",
+  "proofId": "fs-boundary-cmr8k383e03esqg01y2qq87wr",
+  "projectId": "cmr8k11cx038jqg011c5ezn60",
+  "workspaceSlug": "codesite-full-workflow-proof-1783302099565",
+  "eventId": "cmr8k383e03esqg01y2qq87wr",
+  "policyDecisionId": "cmr8k383703eqqg01hycp76qa",
+  "eventType": "write_quarantined",
+  "disposition": "write_quarantined",
+  "prevented": true,
+  "quarantined": true,
+  "path": "synthi/prisma/schema.prisma",
+  "transactionId": "cmr8k1okx03bcqg01803em330",
+  "mutationLeaseId": "cmr8k19c003acqg01swot8vyl",
+  "requestedMutationLeaseId": null,
+  "inspectedLeases": [],
+  "displayCallsign": "SCHEMA-01",
+  "leaseState": "matched_clearance",
+  "lease": {
+    "id": "cmr8k19c003acqg01swot8vyl",
+    "displayCallsign": "SCHEMA-01",
+    "status": "active",
+    "allowedPaths": [
+      "synthi/prisma/**"
+    ],
+    "blockedPaths": [
+      "secrets/**"
+    ],
+    "allowedTools": [
+      "file_write"
+    ],
+    "dojoLicenseRef": "schema.level_2@2026-06-25",
+    "dojoProofRef": "pcap-full-workflow-schema"
+  },
+  "reasonCodes": [
+    "raw_terminal_quarantine"
+  ],
+  "reason": "Raw terminal modified quarantined for synthi/prisma/schema.prisma",
+  "zone": {
+    "zoneKey": "class_b",
+    "label": "Shared contract airspace",
+    "class": "B",
+    "paths": [
+      "packages/schemas/**",
+      "openapi/**",
+      "packages/*/src/index.ts",
+      "synthi/prisma/**",
+      "backend/collab-server/permissionMiddleware.js"
+    ],
+    "rules": [
+      "flight_plan_required",
+      "downstream_notification_required",
+      "change_order_for_mutation"
+    ],
+    "risk": "high",
+    "source": "compiled_default",
+    "path": "synthi/prisma/schema.prisma"
+  },
+  "boundary": {
+    "source": "codesitefs",
+    "tool": "raw_terminal",
+    "operation": "raw_terminal",
+    "actorType": "codesitefs",
+    "actorId": "cmr8k383703eqqg01hycp76qa"
+  },
+  "process": {
+    "ancestry": [
+      "mcp:synthi_codesite_apply_patch",
+      "codex:tmp-proof-session",
+      "node",
+      "sh",
+      "npm-run-codesite-proof-full-workflow",
+      "codex",
+      "init"
+    ],
+    "display": "mcp:synthi_codesite_apply_patch <- codex:tmp-proof-session <- node <- sh <- npm-run-codesite-proof-full-workflow <- codex <- init"
+  },
+  "evidence": {
+    "refs": [
+      "event:cmr8k383e03esqg01y2qq87wr",
+      "codesitefs:quarantine:sha256:e93df4389de882ba0c23bd508b5e98062d0fcd781a820214668911f4cb25dea0"
+    ],
+    "lineProvenanceCount": 0,
+    "changedLineRanges": [],
+    "dojoSourceRefs": []
+  },
+  "evidenceRefs": [
+    "event:cmr8k383e03esqg01y2qq87wr",
+    "codesitefs:quarantine:sha256:e93df4389de882ba0c23bd508b5e98062d0fcd781a820214668911f4cb25dea0"
+  ],
+  "quarantine": {
+    "quarantineId": "qtn-cmr8k1okx03bcqg01803em330-1783302202982-22a91e00",
+    "evidenceRef": "codesitefs:quarantine:sha256:e93df4389de882ba0c23bd508b5e98062d0fcd781a820214668911f4cb25dea0",
+    "kind": "modified",
+    "beforeDigest": "sha256:e63f6070ae54fae3ca685e7a714ab9b6ab8a0e79563fe91c316eddce282b8a1f",
+    "afterDigest": "sha256:f35544b0386043c862271efbcccec8b2ea18734b77ce100e5635fc7219f1ce30",
+    "symlinkSanitization": null
+  },
+  "proofComplete": true,
+  "missingProofFields": [],
+  "createdAt": "2026-07-06T01:43:25.370Z"
+}

@@ -1,0 +1,1494 @@
+{
+  "generatedAt": "2026-07-06T01:54:46.363Z",
+  "title": "CodeSite Runtime Boundary Proof",
+  "slug": "codesite-runtime-quarantine-proof-1783302863096",
+  "appBaseUrl": "http://127.0.0.1:3100",
+  "collabBaseUrl": "http://127.0.0.1:11234",
+  "controlPlaneUrl": "http://frontend:3000/api/workspace/codesite-runtime-quarantine-proof-1783302863096/codesite",
+  "project": {
+    "id": "cmr8khd2y03hlqg01dw4edb3w",
+    "title": "Runtime quarantine proof"
+  },
+  "clearance": {
+    "id": "cmr8khlyc03j1qg01n5f4rfad",
+    "callsign": "DOCS-01",
+    "status": "active"
+  },
+  "transaction": {
+    "id": "cmr8khmnu03j7qg01ix2am98f",
+    "status": "open",
+    "writeSet": [
+      "docs/**"
+    ]
+  },
+  "seed": {
+    "exitCode": 0,
+    "stdout": "seeded=baseline\n"
+  },
+  "rawWrite": {
+    "exitCode": 0,
+    "stdout": "overlay=raw-terminal-mutation\n",
+    "stderr": "",
+    "status": 200,
+    "error": null,
+    "surface": null,
+    "codesite": {
+      "active": true,
+      "workspaceSlug": "codesite-runtime-quarantine-proof-1783302863096",
+      "transactionId": "cmr8khmnu03j7qg01ix2am98f",
+      "mutationLeaseId": "cmr8khlyc03j1qg01n5f4rfad",
+      "displayCallsign": "DOCS-01",
+      "agentSessionId": "cmr8khd3o03hxqg019d2jna8s",
+      "agentProvider": null,
+      "agentRuntime": null,
+      "managedAgent": true,
+      "allowedPaths": [
+        "docs/**"
+      ],
+      "blockedPaths": [
+        "secrets/**"
+      ],
+      "allowedTools": [
+        "file_write",
+        "raw_terminal"
+      ],
+      "evidenceRefs": [
+        "proof:runtime-quarantine-live-api"
+      ],
+      "processAncestry": [
+        "codex:runtime-quarantine-proof",
+        "collab-server:exec"
+      ]
+    }
+  },
+  "quarantine": {
+    "changes": [
+      {
+        "path": "docs/allowed-terminal.txt",
+        "kind": "created",
+        "beforeExists": false,
+        "afterExists": true,
+        "beforeDigest": null,
+        "afterDigest": "sha256:93aea9aa920e99ec308849c811cb3d1944ae147804edff7d7afb6bd60d0fb627",
+        "beforeSize": null,
+        "afterSize": 21,
+        "evidenceDigest": "sha256:1938c8c873f129c4cb6641a7650df762222ccc9406daaa4c0174c1f45afbedb9",
+        "quarantineId": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376",
+        "quarantineEvidence": {
+          "path": "docs/allowed-terminal.txt",
+          "kind": "created",
+          "beforeExists": false,
+          "afterExists": true,
+          "beforeDigest": null,
+          "afterDigest": "sha256:93aea9aa920e99ec308849c811cb3d1944ae147804edff7d7afb6bd60d0fb627",
+          "beforeSize": null,
+          "afterSize": 21,
+          "beforeStat": null,
+          "afterStat": {
+            "mode": 33188,
+            "uid": 1001,
+            "gid": 1001,
+            "ino": 431620,
+            "dev": 2096,
+            "mtimeMs": 1783302879625.673,
+            "ctimeMs": 1783302879625.673,
+            "birthtimeMs": 1783302879625.673
+          },
+          "afterText": "docs terminal change\n",
+          "textDiff": {
+            "format": "line-window-v1",
+            "startLine": 1,
+            "beforeLineCount": 1,
+            "afterLineCount": 2,
+            "truncated": false,
+            "lines": [
+              "+docs terminal change",
+              " "
+            ]
+          },
+          "digest": "sha256:0013583e96e15829f62f76ffed79d6b24ae5c66fbb9ca1b4b01e0451ec979575",
+          "evidenceRef": "codesitefs:quarantine:sha256:0013583e96e15829f62f76ffed79d6b24ae5c66fbb9ca1b4b01e0451ec979575",
+          "quarantineId": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376"
+        }
+      },
+      {
+        "path": "src/quarantine-new.txt",
+        "kind": "created",
+        "beforeExists": false,
+        "afterExists": true,
+        "beforeDigest": null,
+        "afterDigest": "sha256:e4992055a1c23c119ddad45245d56849c7bce94f4082a6c4911de02d24f50a90",
+        "beforeSize": null,
+        "afterSize": 21,
+        "evidenceDigest": "sha256:9b49d505d33ac1ee5ef243e7e43302cda895b0e7d76d8d95a0eb327df56a6ad5",
+        "quarantineId": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376",
+        "quarantineEvidence": {
+          "path": "src/quarantine-new.txt",
+          "kind": "created",
+          "beforeExists": false,
+          "afterExists": true,
+          "beforeDigest": null,
+          "afterDigest": "sha256:e4992055a1c23c119ddad45245d56849c7bce94f4082a6c4911de02d24f50a90",
+          "beforeSize": null,
+          "afterSize": 21,
+          "beforeStat": null,
+          "afterStat": {
+            "mode": 33188,
+            "uid": 1001,
+            "gid": 1001,
+            "ino": 431619,
+            "dev": 2096,
+            "mtimeMs": 1783302879625.673,
+            "ctimeMs": 1783302879625.673,
+            "birthtimeMs": 1783302879625.673
+          },
+          "afterText": "new quarantined file\n",
+          "textDiff": {
+            "format": "line-window-v1",
+            "startLine": 1,
+            "beforeLineCount": 1,
+            "afterLineCount": 2,
+            "truncated": false,
+            "lines": [
+              "+new quarantined file",
+              " "
+            ]
+          },
+          "digest": "sha256:35cea86084ed5c30b914219291dbca071887155ffbef5d063d84048f86e55a79",
+          "evidenceRef": "codesitefs:quarantine:sha256:35cea86084ed5c30b914219291dbca071887155ffbef5d063d84048f86e55a79",
+          "quarantineId": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376"
+        }
+      },
+      {
+        "path": "src/raw-terminal-target.txt",
+        "kind": "modified",
+        "beforeExists": true,
+        "afterExists": true,
+        "beforeDigest": "sha256:4b654bd1437066b13498661f3ca14774daf1066d072036beffaf06f0c014250e",
+        "afterDigest": "sha256:07acb9d7e95503413468d0372e3a90a6752da497cde7e9a6e6cfae7f2649c3a1",
+        "beforeSize": 9,
+        "afterSize": 22,
+        "evidenceDigest": "sha256:8ef9a52a5caa427390c8232a86e5fa401de464f3833f2348c2912399e8eecada",
+        "quarantineId": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376",
+        "quarantineEvidence": {
+          "path": "src/raw-terminal-target.txt",
+          "kind": "modified",
+          "beforeExists": true,
+          "afterExists": true,
+          "beforeDigest": "sha256:4b654bd1437066b13498661f3ca14774daf1066d072036beffaf06f0c014250e",
+          "afterDigest": "sha256:07acb9d7e95503413468d0372e3a90a6752da497cde7e9a6e6cfae7f2649c3a1",
+          "beforeSize": 9,
+          "afterSize": 22,
+          "beforeStat": {
+            "mode": 33188,
+            "uid": 1001,
+            "gid": 1001,
+            "ino": 431615,
+            "dev": 2096,
+            "mtimeMs": 1783302879618.4731,
+            "ctimeMs": 1783302879618.4731,
+            "birthtimeMs": 1783302879618.4731
+          },
+          "afterStat": {
+            "mode": 33188,
+            "uid": 1001,
+            "gid": 1001,
+            "ino": 431615,
+            "dev": 2096,
+            "mtimeMs": 1783302879625.673,
+            "ctimeMs": 1783302879625.673,
+            "birthtimeMs": 1783302879618.4731
+          },
+          "beforeText": "baseline\n",
+          "afterText": "raw-terminal-mutation\n",
+          "textDiff": {
+            "format": "line-window-v1",
+            "startLine": 1,
+            "beforeLineCount": 2,
+            "afterLineCount": 2,
+            "truncated": false,
+            "lines": [
+              "-baseline",
+              "+raw-terminal-mutation",
+              " "
+            ]
+          },
+          "digest": "sha256:7ed8e62f9d332aa3c6a3afcb826f5f97537a9b6c7563ca2a51514c8071ee0817",
+          "evidenceRef": "codesitefs:quarantine:sha256:7ed8e62f9d332aa3c6a3afcb826f5f97537a9b6c7563ca2a51514c8071ee0817",
+          "quarantineId": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376"
+        }
+      }
+    ],
+    "recorded": [
+      {
+        "path": "docs/allowed-terminal.txt",
+        "kind": "created",
+        "beforeExists": false,
+        "afterExists": true,
+        "beforeDigest": null,
+        "afterDigest": "sha256:93aea9aa920e99ec308849c811cb3d1944ae147804edff7d7afb6bd60d0fb627",
+        "beforeSize": null,
+        "afterSize": 21,
+        "evidenceDigest": "sha256:1938c8c873f129c4cb6641a7650df762222ccc9406daaa4c0174c1f45afbedb9",
+        "quarantineId": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376",
+        "quarantineEvidence": {
+          "path": "docs/allowed-terminal.txt",
+          "kind": "created",
+          "beforeExists": false,
+          "afterExists": true,
+          "beforeDigest": null,
+          "afterDigest": "sha256:93aea9aa920e99ec308849c811cb3d1944ae147804edff7d7afb6bd60d0fb627",
+          "beforeSize": null,
+          "afterSize": 21,
+          "beforeStat": null,
+          "afterStat": {
+            "mode": 33188,
+            "uid": 1001,
+            "gid": 1001,
+            "ino": 431620,
+            "dev": 2096,
+            "mtimeMs": 1783302879625.673,
+            "ctimeMs": 1783302879625.673,
+            "birthtimeMs": 1783302879625.673
+          },
+          "afterText": "docs terminal change\n",
+          "textDiff": {
+            "format": "line-window-v1",
+            "startLine": 1,
+            "beforeLineCount": 1,
+            "afterLineCount": 2,
+            "truncated": false,
+            "lines": [
+              "+docs terminal change",
+              " "
+            ]
+          },
+          "digest": "sha256:0013583e96e15829f62f76ffed79d6b24ae5c66fbb9ca1b4b01e0451ec979575",
+          "evidenceRef": "codesitefs:quarantine:sha256:0013583e96e15829f62f76ffed79d6b24ae5c66fbb9ca1b4b01e0451ec979575",
+          "quarantineId": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376"
+        },
+        "ok": true,
+        "response": {
+          "ok": false,
+          "quarantined": true,
+          "transaction": {
+            "id": "cmr8khmnu03j7qg01ix2am98f",
+            "projectId": "cmr8khd2y03hlqg01dw4edb3w",
+            "mutationLeaseId": "cmr8khlyc03j1qg01n5f4rfad",
+            "agentSessionId": "cmr8khd3o03hxqg019d2jna8s",
+            "baseSnapshot": "sha256:e5b85c3648a2719793593ad8654815dd34540cc10f02e254330cdbeeab7423b1",
+            "baseSnapshotEvidence": {
+              "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+              "status": "recorded",
+              "scope": "repo_wide",
+              "readSet": [
+                "docs/coordination.md"
+              ],
+              "repoRoot": "/app",
+              "fileDigests": [],
+              "missingPaths": [
+                "docs/coordination.md"
+              ],
+              "skippedPaths": [],
+              "truncated": false,
+              "repoManifestDigest": "sha256:d6685ee2115177cb0d0bfe0271082a90511cfff881924cb155f52647e8a040e8",
+              "repoManifestFileCount": 59,
+              "repoManifestScannedEntries": 93,
+              "repoManifestTruncated": false,
+              "repoManifestSkippedPaths": [],
+              "repoManifestExcludedPaths": [],
+              "limits": {
+                "maxFiles": 512,
+                "maxFileBytes": 2097152,
+                "maxScanEntries": 15000
+              },
+              "generatedAt": "2026-07-06T01:54:37.398Z",
+              "source": "codesite_control_plane",
+              "snapshotDigest": "sha256:e5b85c3648a2719793593ad8654815dd34540cc10f02e254330cdbeeab7423b1",
+              "evidenceDigest": "sha256:cd60fb7cc17c4c68bae42e789e36f54f345949567185a53de29634d28e9acb09"
+            },
+            "isolation": "serializable",
+            "status": "open",
+            "readSet": [
+              "docs/coordination.md"
+            ],
+            "observedReadSet": [],
+            "writeSet": [
+              "docs/**"
+            ],
+            "observedWriteSet": [],
+            "semanticDependencyRefs": [],
+            "invariants": [
+              "clearance.diff.inside_route"
+            ],
+            "assumptionRefs": [],
+            "commitDecision": null,
+            "proofBundleDigest": null,
+            "openedAt": "2026-07-06T01:54:37.435Z",
+            "closedAt": null
+          },
+          "policyDecision": {
+            "id": "cmr8khp5u03jfqg01o09ortsa",
+            "projectId": "cmr8khd2y03hlqg01dw4edb3w",
+            "mutationLeaseId": "cmr8khlyc03j1qg01n5f4rfad",
+            "displayCallsign": "DOCS-01",
+            "decision": "quarantine",
+            "reasonCodes": [
+              "raw_terminal_quarantine"
+            ],
+            "inputDigest": "sha256:aee228ce8ec479fb4a8c458d09b82e224488c27c0e646a965ba50ee7878da44d",
+            "decisionBody": {
+              "path": "docs/allowed-terminal.txt",
+              "zone": {
+                "zoneKey": "docs",
+                "label": "Docs runway",
+                "class": "C",
+                "paths": [
+                  "docs/**"
+                ],
+                "rules": [],
+                "risk": "medium",
+                "source": "custom",
+                "path": "docs/allowed-terminal.txt"
+              },
+              "codesiteFsEvent": {
+                "type": "write_quarantined",
+                "transaction_id": "cmr8khmnu03j7qg01ix2am98f",
+                "mutation_lease_id": "cmr8khlyc03j1qg01n5f4rfad",
+                "display_callsign": "DOCS-01",
+                "workspace_slug": "codesite-runtime-quarantine-proof-1783302863096",
+                "actor_user_id": "cmr8khcmr03hhqg01ohea4a48",
+                "effective_user_id": "cmr8khcmr03hhqg01ohea4a48",
+                "path": "docs/allowed-terminal.txt",
+                "tool": "raw_terminal",
+                "wall_time": "2026-07-06T01:54:39.635Z",
+                "evidence_refs": [
+                  "proof:runtime-quarantine-live-api",
+                  "codesitefs:quarantine:sha256:0013583e96e15829f62f76ffed79d6b24ae5c66fbb9ca1b4b01e0451ec979575"
+                ],
+                "details": {
+                  "reason": "Raw terminal created quarantined for docs/allowed-terminal.txt",
+                  "reason_codes": [
+                    "raw_terminal_quarantine"
+                  ],
+                  "process_ancestry": [
+                    "codex:runtime-quarantine-proof",
+                    "collab-server:exec",
+                    "node"
+                  ],
+                  "process_ancestry_sources": {
+                    "caller_supplied": [
+                      "codex:runtime-quarantine-proof",
+                      "collab-server:exec"
+                    ],
+                    "os_procfs": [
+                      "node"
+                    ]
+                  },
+                  "os_process_ancestry": {
+                    "schemaVersion": "synthi.codesite.processAncestry.v1",
+                    "source": "linux_procfs",
+                    "sourcePath": "/proc",
+                    "platform": "linux",
+                    "wsl": true,
+                    "available": true,
+                    "complete": true,
+                    "direction": "process_to_root",
+                    "collectorPid": 1,
+                    "requestedPid": 1,
+                    "capturedAt": "2026-07-06T01:54:39.635Z",
+                    "labels": [
+                      "node"
+                    ],
+                    "nodes": [
+                      {
+                        "pid": 1,
+                        "ppid": 0,
+                        "comm": "node",
+                        "state": "R",
+                        "argv0Basename": "node",
+                        "argvCount": 3,
+                        "exeBasename": "node",
+                        "uid": 1001,
+                        "gid": 1001,
+                        "startTimeClockTicks": 4808380,
+                        "cmdlineDigest": "sha256:a88a2c85f3fb3c5fd6a9ebb86153e02f9f570a3df375f4c5280198fbd239d746",
+                        "exePathDigest": "sha256:dbf17980b8eb13f5849daf5c7c6aedde6835e73b9458575c227e2ac6f5a9c8bf",
+                        "label": "node"
+                      }
+                    ],
+                    "unavailableReason": null,
+                    "digest": "sha256:eb429cd8b8e3d9fa5a702bf5f6e58cbc38ba866d29629adf34f06b7a6a50a282"
+                  },
+                  "operation": "exec",
+                  "quarantine_id": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376",
+                  "quarantine_root": "/data/repos/codesite-runtime-quarantine-proof-1783302863096/.synthi/codesitefs-quarantine/codesite-runtime-quarantine-proof-1783302863096/cmr8khmnu03j7qg01ix2am98f/qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376",
+                  "original_cwd": "/data/repos/codesite-runtime-quarantine-proof-1783302863096/cmr8khcmr03hhqg01ohea4a48",
+                  "change_kind": "created",
+                  "quarantine_evidence": {
+                    "path": "docs/allowed-terminal.txt",
+                    "kind": "created",
+                    "beforeExists": false,
+                    "afterExists": true,
+                    "beforeDigest": null,
+                    "afterDigest": "sha256:93aea9aa920e99ec308849c811cb3d1944ae147804edff7d7afb6bd60d0fb627",
+                    "beforeSize": null,
+                    "afterSize": 21,
+                    "beforeStat": null,
+                    "afterStat": {
+                      "mode": 33188,
+                      "uid": 1001,
+                      "gid": 1001,
+                      "ino": 431620,
+                      "dev": 2096,
+                      "mtimeMs": 1783302879625.673,
+                      "ctimeMs": 1783302879625.673,
+                      "birthtimeMs": 1783302879625.673
+                    },
+                    "afterText": "docs terminal change\n",
+                    "textDiff": {
+                      "format": "line-window-v1",
+                      "startLine": 1,
+                      "beforeLineCount": 1,
+                      "afterLineCount": 2,
+                      "truncated": false,
+                      "lines": [
+                        "+docs terminal change",
+                        " "
+                      ]
+                    },
+                    "digest": "sha256:0013583e96e15829f62f76ffed79d6b24ae5c66fbb9ca1b4b01e0451ec979575",
+                    "evidenceRef": "codesitefs:quarantine:sha256:0013583e96e15829f62f76ffed79d6b24ae5c66fbb9ca1b4b01e0451ec979575",
+                    "quarantineId": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376"
+                  }
+                }
+              },
+              "towerInstruction": "Write quarantined for docs/allowed-terminal.txt. Review before landing."
+            },
+            "createdAt": "2026-07-06T01:54:40.674Z"
+          }
+        }
+      },
+      {
+        "path": "src/quarantine-new.txt",
+        "kind": "created",
+        "beforeExists": false,
+        "afterExists": true,
+        "beforeDigest": null,
+        "afterDigest": "sha256:e4992055a1c23c119ddad45245d56849c7bce94f4082a6c4911de02d24f50a90",
+        "beforeSize": null,
+        "afterSize": 21,
+        "evidenceDigest": "sha256:9b49d505d33ac1ee5ef243e7e43302cda895b0e7d76d8d95a0eb327df56a6ad5",
+        "quarantineId": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376",
+        "quarantineEvidence": {
+          "path": "src/quarantine-new.txt",
+          "kind": "created",
+          "beforeExists": false,
+          "afterExists": true,
+          "beforeDigest": null,
+          "afterDigest": "sha256:e4992055a1c23c119ddad45245d56849c7bce94f4082a6c4911de02d24f50a90",
+          "beforeSize": null,
+          "afterSize": 21,
+          "beforeStat": null,
+          "afterStat": {
+            "mode": 33188,
+            "uid": 1001,
+            "gid": 1001,
+            "ino": 431619,
+            "dev": 2096,
+            "mtimeMs": 1783302879625.673,
+            "ctimeMs": 1783302879625.673,
+            "birthtimeMs": 1783302879625.673
+          },
+          "afterText": "new quarantined file\n",
+          "textDiff": {
+            "format": "line-window-v1",
+            "startLine": 1,
+            "beforeLineCount": 1,
+            "afterLineCount": 2,
+            "truncated": false,
+            "lines": [
+              "+new quarantined file",
+              " "
+            ]
+          },
+          "digest": "sha256:35cea86084ed5c30b914219291dbca071887155ffbef5d063d84048f86e55a79",
+          "evidenceRef": "codesitefs:quarantine:sha256:35cea86084ed5c30b914219291dbca071887155ffbef5d063d84048f86e55a79",
+          "quarantineId": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376"
+        },
+        "ok": true,
+        "response": {
+          "ok": false,
+          "quarantined": true,
+          "transaction": {
+            "id": "cmr8khmnu03j7qg01ix2am98f",
+            "projectId": "cmr8khd2y03hlqg01dw4edb3w",
+            "mutationLeaseId": "cmr8khlyc03j1qg01n5f4rfad",
+            "agentSessionId": "cmr8khd3o03hxqg019d2jna8s",
+            "baseSnapshot": "sha256:e5b85c3648a2719793593ad8654815dd34540cc10f02e254330cdbeeab7423b1",
+            "baseSnapshotEvidence": {
+              "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+              "status": "recorded",
+              "scope": "repo_wide",
+              "readSet": [
+                "docs/coordination.md"
+              ],
+              "repoRoot": "/app",
+              "fileDigests": [],
+              "missingPaths": [
+                "docs/coordination.md"
+              ],
+              "skippedPaths": [],
+              "truncated": false,
+              "repoManifestDigest": "sha256:d6685ee2115177cb0d0bfe0271082a90511cfff881924cb155f52647e8a040e8",
+              "repoManifestFileCount": 59,
+              "repoManifestScannedEntries": 93,
+              "repoManifestTruncated": false,
+              "repoManifestSkippedPaths": [],
+              "repoManifestExcludedPaths": [],
+              "limits": {
+                "maxFiles": 512,
+                "maxFileBytes": 2097152,
+                "maxScanEntries": 15000
+              },
+              "generatedAt": "2026-07-06T01:54:37.398Z",
+              "source": "codesite_control_plane",
+              "snapshotDigest": "sha256:e5b85c3648a2719793593ad8654815dd34540cc10f02e254330cdbeeab7423b1",
+              "evidenceDigest": "sha256:cd60fb7cc17c4c68bae42e789e36f54f345949567185a53de29634d28e9acb09"
+            },
+            "isolation": "serializable",
+            "status": "open",
+            "readSet": [
+              "docs/coordination.md"
+            ],
+            "observedReadSet": [],
+            "writeSet": [
+              "docs/**"
+            ],
+            "observedWriteSet": [],
+            "semanticDependencyRefs": [],
+            "invariants": [
+              "clearance.diff.inside_route"
+            ],
+            "assumptionRefs": [],
+            "commitDecision": null,
+            "proofBundleDigest": null,
+            "openedAt": "2026-07-06T01:54:37.435Z",
+            "closedAt": null
+          },
+          "policyDecision": {
+            "id": "cmr8khqky03jlqg01r01gjliv",
+            "projectId": "cmr8khd2y03hlqg01dw4edb3w",
+            "mutationLeaseId": "cmr8khlyc03j1qg01n5f4rfad",
+            "displayCallsign": "DOCS-01",
+            "decision": "quarantine",
+            "reasonCodes": [
+              "raw_terminal_quarantine"
+            ],
+            "inputDigest": "sha256:9b44109ae51494877165b9bd1b99844c706b78a298e07ebe827aafb8b9dc42ff",
+            "decisionBody": {
+              "path": "src/quarantine-new.txt",
+              "zone": {
+                "zoneKey": "unclassified",
+                "label": "Unclassified repo airspace",
+                "class": "C",
+                "risk": "medium",
+                "rules": [
+                  "auto_clearance_allowed",
+                  "landing_inspection_required"
+                ],
+                "path": "src/quarantine-new.txt"
+              },
+              "codesiteFsEvent": {
+                "type": "write_quarantined",
+                "transaction_id": "cmr8khmnu03j7qg01ix2am98f",
+                "mutation_lease_id": "cmr8khlyc03j1qg01n5f4rfad",
+                "display_callsign": "DOCS-01",
+                "workspace_slug": "codesite-runtime-quarantine-proof-1783302863096",
+                "actor_user_id": "cmr8khcmr03hhqg01ohea4a48",
+                "effective_user_id": "cmr8khcmr03hhqg01ohea4a48",
+                "path": "src/quarantine-new.txt",
+                "tool": "raw_terminal",
+                "wall_time": "2026-07-06T01:54:41.643Z",
+                "evidence_refs": [
+                  "proof:runtime-quarantine-live-api",
+                  "codesitefs:quarantine:sha256:35cea86084ed5c30b914219291dbca071887155ffbef5d063d84048f86e55a79"
+                ],
+                "details": {
+                  "reason": "Raw terminal created quarantined for src/quarantine-new.txt",
+                  "reason_codes": [
+                    "raw_terminal_quarantine"
+                  ],
+                  "process_ancestry": [
+                    "codex:runtime-quarantine-proof",
+                    "collab-server:exec",
+                    "node"
+                  ],
+                  "process_ancestry_sources": {
+                    "caller_supplied": [
+                      "codex:runtime-quarantine-proof",
+                      "collab-server:exec"
+                    ],
+                    "os_procfs": [
+                      "node"
+                    ]
+                  },
+                  "os_process_ancestry": {
+                    "schemaVersion": "synthi.codesite.processAncestry.v1",
+                    "source": "linux_procfs",
+                    "sourcePath": "/proc",
+                    "platform": "linux",
+                    "wsl": true,
+                    "available": true,
+                    "complete": true,
+                    "direction": "process_to_root",
+                    "collectorPid": 1,
+                    "requestedPid": 1,
+                    "capturedAt": "2026-07-06T01:54:41.643Z",
+                    "labels": [
+                      "node"
+                    ],
+                    "nodes": [
+                      {
+                        "pid": 1,
+                        "ppid": 0,
+                        "comm": "node",
+                        "state": "R",
+                        "argv0Basename": "node",
+                        "argvCount": 3,
+                        "exeBasename": "node",
+                        "uid": 1001,
+                        "gid": 1001,
+                        "startTimeClockTicks": 4808380,
+                        "cmdlineDigest": "sha256:a88a2c85f3fb3c5fd6a9ebb86153e02f9f570a3df375f4c5280198fbd239d746",
+                        "exePathDigest": "sha256:dbf17980b8eb13f5849daf5c7c6aedde6835e73b9458575c227e2ac6f5a9c8bf",
+                        "label": "node"
+                      }
+                    ],
+                    "unavailableReason": null,
+                    "digest": "sha256:eb429cd8b8e3d9fa5a702bf5f6e58cbc38ba866d29629adf34f06b7a6a50a282"
+                  },
+                  "operation": "exec",
+                  "quarantine_id": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376",
+                  "quarantine_root": "/data/repos/codesite-runtime-quarantine-proof-1783302863096/.synthi/codesitefs-quarantine/codesite-runtime-quarantine-proof-1783302863096/cmr8khmnu03j7qg01ix2am98f/qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376",
+                  "original_cwd": "/data/repos/codesite-runtime-quarantine-proof-1783302863096/cmr8khcmr03hhqg01ohea4a48",
+                  "change_kind": "created",
+                  "quarantine_evidence": {
+                    "path": "src/quarantine-new.txt",
+                    "kind": "created",
+                    "beforeExists": false,
+                    "afterExists": true,
+                    "beforeDigest": null,
+                    "afterDigest": "sha256:e4992055a1c23c119ddad45245d56849c7bce94f4082a6c4911de02d24f50a90",
+                    "beforeSize": null,
+                    "afterSize": 21,
+                    "beforeStat": null,
+                    "afterStat": {
+                      "mode": 33188,
+                      "uid": 1001,
+                      "gid": 1001,
+                      "ino": 431619,
+                      "dev": 2096,
+                      "mtimeMs": 1783302879625.673,
+                      "ctimeMs": 1783302879625.673,
+                      "birthtimeMs": 1783302879625.673
+                    },
+                    "afterText": "new quarantined file\n",
+                    "textDiff": {
+                      "format": "line-window-v1",
+                      "startLine": 1,
+                      "beforeLineCount": 1,
+                      "afterLineCount": 2,
+                      "truncated": false,
+                      "lines": [
+                        "+new quarantined file",
+                        " "
+                      ]
+                    },
+                    "digest": "sha256:35cea86084ed5c30b914219291dbca071887155ffbef5d063d84048f86e55a79",
+                    "evidenceRef": "codesitefs:quarantine:sha256:35cea86084ed5c30b914219291dbca071887155ffbef5d063d84048f86e55a79",
+                    "quarantineId": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376"
+                  }
+                }
+              },
+              "towerInstruction": "Write quarantined for src/quarantine-new.txt. Review before landing."
+            },
+            "createdAt": "2026-07-06T01:54:42.514Z"
+          }
+        }
+      },
+      {
+        "path": "src/raw-terminal-target.txt",
+        "kind": "modified",
+        "beforeExists": true,
+        "afterExists": true,
+        "beforeDigest": "sha256:4b654bd1437066b13498661f3ca14774daf1066d072036beffaf06f0c014250e",
+        "afterDigest": "sha256:07acb9d7e95503413468d0372e3a90a6752da497cde7e9a6e6cfae7f2649c3a1",
+        "beforeSize": 9,
+        "afterSize": 22,
+        "evidenceDigest": "sha256:8ef9a52a5caa427390c8232a86e5fa401de464f3833f2348c2912399e8eecada",
+        "quarantineId": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376",
+        "quarantineEvidence": {
+          "path": "src/raw-terminal-target.txt",
+          "kind": "modified",
+          "beforeExists": true,
+          "afterExists": true,
+          "beforeDigest": "sha256:4b654bd1437066b13498661f3ca14774daf1066d072036beffaf06f0c014250e",
+          "afterDigest": "sha256:07acb9d7e95503413468d0372e3a90a6752da497cde7e9a6e6cfae7f2649c3a1",
+          "beforeSize": 9,
+          "afterSize": 22,
+          "beforeStat": {
+            "mode": 33188,
+            "uid": 1001,
+            "gid": 1001,
+            "ino": 431615,
+            "dev": 2096,
+            "mtimeMs": 1783302879618.4731,
+            "ctimeMs": 1783302879618.4731,
+            "birthtimeMs": 1783302879618.4731
+          },
+          "afterStat": {
+            "mode": 33188,
+            "uid": 1001,
+            "gid": 1001,
+            "ino": 431615,
+            "dev": 2096,
+            "mtimeMs": 1783302879625.673,
+            "ctimeMs": 1783302879625.673,
+            "birthtimeMs": 1783302879618.4731
+          },
+          "beforeText": "baseline\n",
+          "afterText": "raw-terminal-mutation\n",
+          "textDiff": {
+            "format": "line-window-v1",
+            "startLine": 1,
+            "beforeLineCount": 2,
+            "afterLineCount": 2,
+            "truncated": false,
+            "lines": [
+              "-baseline",
+              "+raw-terminal-mutation",
+              " "
+            ]
+          },
+          "digest": "sha256:7ed8e62f9d332aa3c6a3afcb826f5f97537a9b6c7563ca2a51514c8071ee0817",
+          "evidenceRef": "codesitefs:quarantine:sha256:7ed8e62f9d332aa3c6a3afcb826f5f97537a9b6c7563ca2a51514c8071ee0817",
+          "quarantineId": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376"
+        },
+        "ok": true,
+        "response": {
+          "ok": false,
+          "quarantined": true,
+          "transaction": {
+            "id": "cmr8khmnu03j7qg01ix2am98f",
+            "projectId": "cmr8khd2y03hlqg01dw4edb3w",
+            "mutationLeaseId": "cmr8khlyc03j1qg01n5f4rfad",
+            "agentSessionId": "cmr8khd3o03hxqg019d2jna8s",
+            "baseSnapshot": "sha256:e5b85c3648a2719793593ad8654815dd34540cc10f02e254330cdbeeab7423b1",
+            "baseSnapshotEvidence": {
+              "schemaVersion": "synthi.codesite.readSnapshotEvidence.v1",
+              "status": "recorded",
+              "scope": "repo_wide",
+              "readSet": [
+                "docs/coordination.md"
+              ],
+              "repoRoot": "/app",
+              "fileDigests": [],
+              "missingPaths": [
+                "docs/coordination.md"
+              ],
+              "skippedPaths": [],
+              "truncated": false,
+              "repoManifestDigest": "sha256:d6685ee2115177cb0d0bfe0271082a90511cfff881924cb155f52647e8a040e8",
+              "repoManifestFileCount": 59,
+              "repoManifestScannedEntries": 93,
+              "repoManifestTruncated": false,
+              "repoManifestSkippedPaths": [],
+              "repoManifestExcludedPaths": [],
+              "limits": {
+                "maxFiles": 512,
+                "maxFileBytes": 2097152,
+                "maxScanEntries": 15000
+              },
+              "generatedAt": "2026-07-06T01:54:37.398Z",
+              "source": "codesite_control_plane",
+              "snapshotDigest": "sha256:e5b85c3648a2719793593ad8654815dd34540cc10f02e254330cdbeeab7423b1",
+              "evidenceDigest": "sha256:cd60fb7cc17c4c68bae42e789e36f54f345949567185a53de29634d28e9acb09"
+            },
+            "isolation": "serializable",
+            "status": "open",
+            "readSet": [
+              "docs/coordination.md"
+            ],
+            "observedReadSet": [],
+            "writeSet": [
+              "docs/**"
+            ],
+            "observedWriteSet": [],
+            "semanticDependencyRefs": [],
+            "invariants": [
+              "clearance.diff.inside_route"
+            ],
+            "assumptionRefs": [],
+            "commitDecision": null,
+            "proofBundleDigest": null,
+            "openedAt": "2026-07-06T01:54:37.435Z",
+            "closedAt": null
+          },
+          "policyDecision": {
+            "id": "cmr8khrw503jrqg01l8wk60d8",
+            "projectId": "cmr8khd2y03hlqg01dw4edb3w",
+            "mutationLeaseId": "cmr8khlyc03j1qg01n5f4rfad",
+            "displayCallsign": "DOCS-01",
+            "decision": "quarantine",
+            "reasonCodes": [
+              "raw_terminal_quarantine"
+            ],
+            "inputDigest": "sha256:1cad3450bb6cfe336909c7441a49a173044693e2160931c6b525d8f3141a95d7",
+            "decisionBody": {
+              "path": "src/raw-terminal-target.txt",
+              "zone": {
+                "zoneKey": "unclassified",
+                "label": "Unclassified repo airspace",
+                "class": "C",
+                "risk": "medium",
+                "rules": [
+                  "auto_clearance_allowed",
+                  "landing_inspection_required"
+                ],
+                "path": "src/raw-terminal-target.txt"
+              },
+              "codesiteFsEvent": {
+                "type": "write_quarantined",
+                "transaction_id": "cmr8khmnu03j7qg01ix2am98f",
+                "mutation_lease_id": "cmr8khlyc03j1qg01n5f4rfad",
+                "display_callsign": "DOCS-01",
+                "workspace_slug": "codesite-runtime-quarantine-proof-1783302863096",
+                "actor_user_id": "cmr8khcmr03hhqg01ohea4a48",
+                "effective_user_id": "cmr8khcmr03hhqg01ohea4a48",
+                "path": "src/raw-terminal-target.txt",
+                "tool": "raw_terminal",
+                "wall_time": "2026-07-06T01:54:43.350Z",
+                "evidence_refs": [
+                  "proof:runtime-quarantine-live-api",
+                  "codesitefs:quarantine:sha256:7ed8e62f9d332aa3c6a3afcb826f5f97537a9b6c7563ca2a51514c8071ee0817"
+                ],
+                "details": {
+                  "reason": "Raw terminal modified quarantined for src/raw-terminal-target.txt",
+                  "reason_codes": [
+                    "raw_terminal_quarantine"
+                  ],
+                  "process_ancestry": [
+                    "codex:runtime-quarantine-proof",
+                    "collab-server:exec",
+                    "node"
+                  ],
+                  "process_ancestry_sources": {
+                    "caller_supplied": [
+                      "codex:runtime-quarantine-proof",
+                      "collab-server:exec"
+                    ],
+                    "os_procfs": [
+                      "node"
+                    ]
+                  },
+                  "os_process_ancestry": {
+                    "schemaVersion": "synthi.codesite.processAncestry.v1",
+                    "source": "linux_procfs",
+                    "sourcePath": "/proc",
+                    "platform": "linux",
+                    "wsl": true,
+                    "available": true,
+                    "complete": true,
+                    "direction": "process_to_root",
+                    "collectorPid": 1,
+                    "requestedPid": 1,
+                    "capturedAt": "2026-07-06T01:54:43.350Z",
+                    "labels": [
+                      "node"
+                    ],
+                    "nodes": [
+                      {
+                        "pid": 1,
+                        "ppid": 0,
+                        "comm": "node",
+                        "state": "R",
+                        "argv0Basename": "node",
+                        "argvCount": 3,
+                        "exeBasename": "node",
+                        "uid": 1001,
+                        "gid": 1001,
+                        "startTimeClockTicks": 4808380,
+                        "cmdlineDigest": "sha256:a88a2c85f3fb3c5fd6a9ebb86153e02f9f570a3df375f4c5280198fbd239d746",
+                        "exePathDigest": "sha256:dbf17980b8eb13f5849daf5c7c6aedde6835e73b9458575c227e2ac6f5a9c8bf",
+                        "label": "node"
+                      }
+                    ],
+                    "unavailableReason": null,
+                    "digest": "sha256:eb429cd8b8e3d9fa5a702bf5f6e58cbc38ba866d29629adf34f06b7a6a50a282"
+                  },
+                  "operation": "exec",
+                  "quarantine_id": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376",
+                  "quarantine_root": "/data/repos/codesite-runtime-quarantine-proof-1783302863096/.synthi/codesitefs-quarantine/codesite-runtime-quarantine-proof-1783302863096/cmr8khmnu03j7qg01ix2am98f/qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376",
+                  "original_cwd": "/data/repos/codesite-runtime-quarantine-proof-1783302863096/cmr8khcmr03hhqg01ohea4a48",
+                  "change_kind": "modified",
+                  "quarantine_evidence": {
+                    "path": "src/raw-terminal-target.txt",
+                    "kind": "modified",
+                    "beforeExists": true,
+                    "afterExists": true,
+                    "beforeDigest": "sha256:4b654bd1437066b13498661f3ca14774daf1066d072036beffaf06f0c014250e",
+                    "afterDigest": "sha256:07acb9d7e95503413468d0372e3a90a6752da497cde7e9a6e6cfae7f2649c3a1",
+                    "beforeSize": 9,
+                    "afterSize": 22,
+                    "beforeStat": {
+                      "mode": 33188,
+                      "uid": 1001,
+                      "gid": 1001,
+                      "ino": 431615,
+                      "dev": 2096,
+                      "mtimeMs": 1783302879618.4731,
+                      "ctimeMs": 1783302879618.4731,
+                      "birthtimeMs": 1783302879618.4731
+                    },
+                    "afterStat": {
+                      "mode": 33188,
+                      "uid": 1001,
+                      "gid": 1001,
+                      "ino": 431615,
+                      "dev": 2096,
+                      "mtimeMs": 1783302879625.673,
+                      "ctimeMs": 1783302879625.673,
+                      "birthtimeMs": 1783302879618.4731
+                    },
+                    "beforeText": "baseline\n",
+                    "afterText": "raw-terminal-mutation\n",
+                    "textDiff": {
+                      "format": "line-window-v1",
+                      "startLine": 1,
+                      "beforeLineCount": 2,
+                      "afterLineCount": 2,
+                      "truncated": false,
+                      "lines": [
+                        "-baseline",
+                        "+raw-terminal-mutation",
+                        " "
+                      ]
+                    },
+                    "digest": "sha256:7ed8e62f9d332aa3c6a3afcb826f5f97537a9b6c7563ca2a51514c8071ee0817",
+                    "evidenceRef": "codesitefs:quarantine:sha256:7ed8e62f9d332aa3c6a3afcb826f5f97537a9b6c7563ca2a51514c8071ee0817",
+                    "quarantineId": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376"
+                  }
+                }
+              },
+              "towerInstruction": "Write quarantined for src/raw-terminal-target.txt. Review before landing."
+            },
+            "createdAt": "2026-07-06T01:54:44.213Z"
+          }
+        }
+      }
+    ]
+  },
+  "workspaceReadback": {
+    "exitCode": 0,
+    "output": "target=baseline\nnew_path=absent\ndoc_path=absent\n"
+  },
+  "controlPlane": {
+    "eventCount": 20,
+    "quarantinedEvents": [
+      {
+        "id": "cmr8khp5z03jhqg01cnzc5ssl",
+        "eventType": "write_quarantined",
+        "path": "docs/allowed-terminal.txt",
+        "reasonCodes": [
+          "raw_terminal_quarantine"
+        ],
+        "evidenceRefs": [
+          "proof:runtime-quarantine-live-api",
+          "codesitefs:quarantine:sha256:0013583e96e15829f62f76ffed79d6b24ae5c66fbb9ca1b4b01e0451ec979575"
+        ],
+        "details": {
+          "transactionId": "cmr8khmnu03j7qg01ix2am98f",
+          "path": "docs/allowed-terminal.txt",
+          "reasonCodes": [
+            "raw_terminal_quarantine"
+          ],
+          "policyDecisionId": "cmr8khp5u03jfqg01o09ortsa",
+          "zone": {
+            "zoneKey": "docs",
+            "label": "Docs runway",
+            "class": "C",
+            "paths": [
+              "docs/**"
+            ],
+            "rules": [],
+            "risk": "medium",
+            "source": "custom",
+            "path": "docs/allowed-terminal.txt"
+          },
+          "codesiteFsEvent": {
+            "type": "write_quarantined",
+            "transaction_id": "cmr8khmnu03j7qg01ix2am98f",
+            "mutation_lease_id": "cmr8khlyc03j1qg01n5f4rfad",
+            "display_callsign": "DOCS-01",
+            "workspace_slug": "codesite-runtime-quarantine-proof-1783302863096",
+            "actor_user_id": "cmr8khcmr03hhqg01ohea4a48",
+            "effective_user_id": "cmr8khcmr03hhqg01ohea4a48",
+            "path": "docs/allowed-terminal.txt",
+            "tool": "raw_terminal",
+            "wall_time": "2026-07-06T01:54:39.635Z",
+            "evidence_refs": [
+              "proof:runtime-quarantine-live-api",
+              "codesitefs:quarantine:sha256:0013583e96e15829f62f76ffed79d6b24ae5c66fbb9ca1b4b01e0451ec979575"
+            ],
+            "details": {
+              "reason": "Raw terminal created quarantined for docs/allowed-terminal.txt",
+              "reason_codes": [
+                "raw_terminal_quarantine"
+              ],
+              "process_ancestry": [
+                "codex:runtime-quarantine-proof",
+                "collab-server:exec",
+                "node"
+              ],
+              "process_ancestry_sources": {
+                "caller_supplied": [
+                  "codex:runtime-quarantine-proof",
+                  "collab-server:exec"
+                ],
+                "os_procfs": [
+                  "node"
+                ]
+              },
+              "os_process_ancestry": {
+                "schemaVersion": "synthi.codesite.processAncestry.v1",
+                "source": "linux_procfs",
+                "sourcePath": "/proc",
+                "platform": "linux",
+                "wsl": true,
+                "available": true,
+                "complete": true,
+                "direction": "process_to_root",
+                "collectorPid": 1,
+                "requestedPid": 1,
+                "capturedAt": "2026-07-06T01:54:39.635Z",
+                "labels": [
+                  "node"
+                ],
+                "nodes": [
+                  {
+                    "pid": 1,
+                    "ppid": 0,
+                    "comm": "node",
+                    "state": "R",
+                    "argv0Basename": "node",
+                    "argvCount": 3,
+                    "exeBasename": "node",
+                    "uid": 1001,
+                    "gid": 1001,
+                    "startTimeClockTicks": 4808380,
+                    "cmdlineDigest": "sha256:a88a2c85f3fb3c5fd6a9ebb86153e02f9f570a3df375f4c5280198fbd239d746",
+                    "exePathDigest": "sha256:dbf17980b8eb13f5849daf5c7c6aedde6835e73b9458575c227e2ac6f5a9c8bf",
+                    "label": "node"
+                  }
+                ],
+                "unavailableReason": null,
+                "digest": "sha256:eb429cd8b8e3d9fa5a702bf5f6e58cbc38ba866d29629adf34f06b7a6a50a282"
+              },
+              "operation": "exec",
+              "quarantine_id": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376",
+              "quarantine_root": "/data/repos/codesite-runtime-quarantine-proof-1783302863096/.synthi/codesitefs-quarantine/codesite-runtime-quarantine-proof-1783302863096/cmr8khmnu03j7qg01ix2am98f/qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376",
+              "original_cwd": "/data/repos/codesite-runtime-quarantine-proof-1783302863096/cmr8khcmr03hhqg01ohea4a48",
+              "change_kind": "created",
+              "quarantine_evidence": {
+                "path": "docs/allowed-terminal.txt",
+                "kind": "created",
+                "beforeExists": false,
+                "afterExists": true,
+                "beforeDigest": null,
+                "afterDigest": "sha256:93aea9aa920e99ec308849c811cb3d1944ae147804edff7d7afb6bd60d0fb627",
+                "beforeSize": null,
+                "afterSize": 21,
+                "beforeStat": null,
+                "afterStat": {
+                  "mode": 33188,
+                  "uid": 1001,
+                  "gid": 1001,
+                  "ino": 431620,
+                  "dev": 2096,
+                  "mtimeMs": 1783302879625.673,
+                  "ctimeMs": 1783302879625.673,
+                  "birthtimeMs": 1783302879625.673
+                },
+                "afterText": "docs terminal change\n",
+                "textDiff": {
+                  "format": "line-window-v1",
+                  "startLine": 1,
+                  "beforeLineCount": 1,
+                  "afterLineCount": 2,
+                  "truncated": false,
+                  "lines": [
+                    "+docs terminal change",
+                    " "
+                  ]
+                },
+                "digest": "sha256:0013583e96e15829f62f76ffed79d6b24ae5c66fbb9ca1b4b01e0451ec979575",
+                "evidenceRef": "codesitefs:quarantine:sha256:0013583e96e15829f62f76ffed79d6b24ae5c66fbb9ca1b4b01e0451ec979575",
+                "quarantineId": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376"
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "cmr8khql303jnqg01x8vvmdc6",
+        "eventType": "write_quarantined",
+        "path": "src/quarantine-new.txt",
+        "reasonCodes": [
+          "raw_terminal_quarantine"
+        ],
+        "evidenceRefs": [
+          "proof:runtime-quarantine-live-api",
+          "codesitefs:quarantine:sha256:35cea86084ed5c30b914219291dbca071887155ffbef5d063d84048f86e55a79"
+        ],
+        "details": {
+          "transactionId": "cmr8khmnu03j7qg01ix2am98f",
+          "path": "src/quarantine-new.txt",
+          "reasonCodes": [
+            "raw_terminal_quarantine"
+          ],
+          "policyDecisionId": "cmr8khqky03jlqg01r01gjliv",
+          "zone": {
+            "zoneKey": "unclassified",
+            "label": "Unclassified repo airspace",
+            "class": "C",
+            "risk": "medium",
+            "rules": [
+              "auto_clearance_allowed",
+              "landing_inspection_required"
+            ],
+            "path": "src/quarantine-new.txt"
+          },
+          "codesiteFsEvent": {
+            "type": "write_quarantined",
+            "transaction_id": "cmr8khmnu03j7qg01ix2am98f",
+            "mutation_lease_id": "cmr8khlyc03j1qg01n5f4rfad",
+            "display_callsign": "DOCS-01",
+            "workspace_slug": "codesite-runtime-quarantine-proof-1783302863096",
+            "actor_user_id": "cmr8khcmr03hhqg01ohea4a48",
+            "effective_user_id": "cmr8khcmr03hhqg01ohea4a48",
+            "path": "src/quarantine-new.txt",
+            "tool": "raw_terminal",
+            "wall_time": "2026-07-06T01:54:41.643Z",
+            "evidence_refs": [
+              "proof:runtime-quarantine-live-api",
+              "codesitefs:quarantine:sha256:35cea86084ed5c30b914219291dbca071887155ffbef5d063d84048f86e55a79"
+            ],
+            "details": {
+              "reason": "Raw terminal created quarantined for src/quarantine-new.txt",
+              "reason_codes": [
+                "raw_terminal_quarantine"
+              ],
+              "process_ancestry": [
+                "codex:runtime-quarantine-proof",
+                "collab-server:exec",
+                "node"
+              ],
+              "process_ancestry_sources": {
+                "caller_supplied": [
+                  "codex:runtime-quarantine-proof",
+                  "collab-server:exec"
+                ],
+                "os_procfs": [
+                  "node"
+                ]
+              },
+              "os_process_ancestry": {
+                "schemaVersion": "synthi.codesite.processAncestry.v1",
+                "source": "linux_procfs",
+                "sourcePath": "/proc",
+                "platform": "linux",
+                "wsl": true,
+                "available": true,
+                "complete": true,
+                "direction": "process_to_root",
+                "collectorPid": 1,
+                "requestedPid": 1,
+                "capturedAt": "2026-07-06T01:54:41.643Z",
+                "labels": [
+                  "node"
+                ],
+                "nodes": [
+                  {
+                    "pid": 1,
+                    "ppid": 0,
+                    "comm": "node",
+                    "state": "R",
+                    "argv0Basename": "node",
+                    "argvCount": 3,
+                    "exeBasename": "node",
+                    "uid": 1001,
+                    "gid": 1001,
+                    "startTimeClockTicks": 4808380,
+                    "cmdlineDigest": "sha256:a88a2c85f3fb3c5fd6a9ebb86153e02f9f570a3df375f4c5280198fbd239d746",
+                    "exePathDigest": "sha256:dbf17980b8eb13f5849daf5c7c6aedde6835e73b9458575c227e2ac6f5a9c8bf",
+                    "label": "node"
+                  }
+                ],
+                "unavailableReason": null,
+                "digest": "sha256:eb429cd8b8e3d9fa5a702bf5f6e58cbc38ba866d29629adf34f06b7a6a50a282"
+              },
+              "operation": "exec",
+              "quarantine_id": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376",
+              "quarantine_root": "/data/repos/codesite-runtime-quarantine-proof-1783302863096/.synthi/codesitefs-quarantine/codesite-runtime-quarantine-proof-1783302863096/cmr8khmnu03j7qg01ix2am98f/qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376",
+              "original_cwd": "/data/repos/codesite-runtime-quarantine-proof-1783302863096/cmr8khcmr03hhqg01ohea4a48",
+              "change_kind": "created",
+              "quarantine_evidence": {
+                "path": "src/quarantine-new.txt",
+                "kind": "created",
+                "beforeExists": false,
+                "afterExists": true,
+                "beforeDigest": null,
+                "afterDigest": "sha256:e4992055a1c23c119ddad45245d56849c7bce94f4082a6c4911de02d24f50a90",
+                "beforeSize": null,
+                "afterSize": 21,
+                "beforeStat": null,
+                "afterStat": {
+                  "mode": 33188,
+                  "uid": 1001,
+                  "gid": 1001,
+                  "ino": 431619,
+                  "dev": 2096,
+                  "mtimeMs": 1783302879625.673,
+                  "ctimeMs": 1783302879625.673,
+                  "birthtimeMs": 1783302879625.673
+                },
+                "afterText": "new quarantined file\n",
+                "textDiff": {
+                  "format": "line-window-v1",
+                  "startLine": 1,
+                  "beforeLineCount": 1,
+                  "afterLineCount": 2,
+                  "truncated": false,
+                  "lines": [
+                    "+new quarantined file",
+                    " "
+                  ]
+                },
+                "digest": "sha256:35cea86084ed5c30b914219291dbca071887155ffbef5d063d84048f86e55a79",
+                "evidenceRef": "codesitefs:quarantine:sha256:35cea86084ed5c30b914219291dbca071887155ffbef5d063d84048f86e55a79",
+                "quarantineId": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376"
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "cmr8khrw903jtqg010tkiuye7",
+        "eventType": "write_quarantined",
+        "path": "src/raw-terminal-target.txt",
+        "reasonCodes": [
+          "raw_terminal_quarantine"
+        ],
+        "evidenceRefs": [
+          "proof:runtime-quarantine-live-api",
+          "codesitefs:quarantine:sha256:7ed8e62f9d332aa3c6a3afcb826f5f97537a9b6c7563ca2a51514c8071ee0817"
+        ],
+        "details": {
+          "transactionId": "cmr8khmnu03j7qg01ix2am98f",
+          "path": "src/raw-terminal-target.txt",
+          "reasonCodes": [
+            "raw_terminal_quarantine"
+          ],
+          "policyDecisionId": "cmr8khrw503jrqg01l8wk60d8",
+          "zone": {
+            "zoneKey": "unclassified",
+            "label": "Unclassified repo airspace",
+            "class": "C",
+            "risk": "medium",
+            "rules": [
+              "auto_clearance_allowed",
+              "landing_inspection_required"
+            ],
+            "path": "src/raw-terminal-target.txt"
+          },
+          "codesiteFsEvent": {
+            "type": "write_quarantined",
+            "transaction_id": "cmr8khmnu03j7qg01ix2am98f",
+            "mutation_lease_id": "cmr8khlyc03j1qg01n5f4rfad",
+            "display_callsign": "DOCS-01",
+            "workspace_slug": "codesite-runtime-quarantine-proof-1783302863096",
+            "actor_user_id": "cmr8khcmr03hhqg01ohea4a48",
+            "effective_user_id": "cmr8khcmr03hhqg01ohea4a48",
+            "path": "src/raw-terminal-target.txt",
+            "tool": "raw_terminal",
+            "wall_time": "2026-07-06T01:54:43.350Z",
+            "evidence_refs": [
+              "proof:runtime-quarantine-live-api",
+              "codesitefs:quarantine:sha256:7ed8e62f9d332aa3c6a3afcb826f5f97537a9b6c7563ca2a51514c8071ee0817"
+            ],
+            "details": {
+              "reason": "Raw terminal modified quarantined for src/raw-terminal-target.txt",
+              "reason_codes": [
+                "raw_terminal_quarantine"
+              ],
+              "process_ancestry": [
+                "codex:runtime-quarantine-proof",
+                "collab-server:exec",
+                "node"
+              ],
+              "process_ancestry_sources": {
+                "caller_supplied": [
+                  "codex:runtime-quarantine-proof",
+                  "collab-server:exec"
+                ],
+                "os_procfs": [
+                  "node"
+                ]
+              },
+              "os_process_ancestry": {
+                "schemaVersion": "synthi.codesite.processAncestry.v1",
+                "source": "linux_procfs",
+                "sourcePath": "/proc",
+                "platform": "linux",
+                "wsl": true,
+                "available": true,
+                "complete": true,
+                "direction": "process_to_root",
+                "collectorPid": 1,
+                "requestedPid": 1,
+                "capturedAt": "2026-07-06T01:54:43.350Z",
+                "labels": [
+                  "node"
+                ],
+                "nodes": [
+                  {
+                    "pid": 1,
+                    "ppid": 0,
+                    "comm": "node",
+                    "state": "R",
+                    "argv0Basename": "node",
+                    "argvCount": 3,
+                    "exeBasename": "node",
+                    "uid": 1001,
+                    "gid": 1001,
+                    "startTimeClockTicks": 4808380,
+                    "cmdlineDigest": "sha256:a88a2c85f3fb3c5fd6a9ebb86153e02f9f570a3df375f4c5280198fbd239d746",
+                    "exePathDigest": "sha256:dbf17980b8eb13f5849daf5c7c6aedde6835e73b9458575c227e2ac6f5a9c8bf",
+                    "label": "node"
+                  }
+                ],
+                "unavailableReason": null,
+                "digest": "sha256:eb429cd8b8e3d9fa5a702bf5f6e58cbc38ba866d29629adf34f06b7a6a50a282"
+              },
+              "operation": "exec",
+              "quarantine_id": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376",
+              "quarantine_root": "/data/repos/codesite-runtime-quarantine-proof-1783302863096/.synthi/codesitefs-quarantine/codesite-runtime-quarantine-proof-1783302863096/cmr8khmnu03j7qg01ix2am98f/qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376",
+              "original_cwd": "/data/repos/codesite-runtime-quarantine-proof-1783302863096/cmr8khcmr03hhqg01ohea4a48",
+              "change_kind": "modified",
+              "quarantine_evidence": {
+                "path": "src/raw-terminal-target.txt",
+                "kind": "modified",
+                "beforeExists": true,
+                "afterExists": true,
+                "beforeDigest": "sha256:4b654bd1437066b13498661f3ca14774daf1066d072036beffaf06f0c014250e",
+                "afterDigest": "sha256:07acb9d7e95503413468d0372e3a90a6752da497cde7e9a6e6cfae7f2649c3a1",
+                "beforeSize": 9,
+                "afterSize": 22,
+                "beforeStat": {
+                  "mode": 33188,
+                  "uid": 1001,
+                  "gid": 1001,
+                  "ino": 431615,
+                  "dev": 2096,
+                  "mtimeMs": 1783302879618.4731,
+                  "ctimeMs": 1783302879618.4731,
+                  "birthtimeMs": 1783302879618.4731
+                },
+                "afterStat": {
+                  "mode": 33188,
+                  "uid": 1001,
+                  "gid": 1001,
+                  "ino": 431615,
+                  "dev": 2096,
+                  "mtimeMs": 1783302879625.673,
+                  "ctimeMs": 1783302879625.673,
+                  "birthtimeMs": 1783302879618.4731
+                },
+                "beforeText": "baseline\n",
+                "afterText": "raw-terminal-mutation\n",
+                "textDiff": {
+                  "format": "line-window-v1",
+                  "startLine": 1,
+                  "beforeLineCount": 2,
+                  "afterLineCount": 2,
+                  "truncated": false,
+                  "lines": [
+                    "-baseline",
+                    "+raw-terminal-mutation",
+                    " "
+                  ]
+                },
+                "digest": "sha256:7ed8e62f9d332aa3c6a3afcb826f5f97537a9b6c7563ca2a51514c8071ee0817",
+                "evidenceRef": "codesitefs:quarantine:sha256:7ed8e62f9d332aa3c6a3afcb826f5f97537a9b6c7563ca2a51514c8071ee0817",
+                "quarantineId": "qtn-cmr8khmnu03j7qg01ix2am98f-1783302879614-c9790376"
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "assertions": {
+    "dockerCollabExecUsed": true,
+    "clearanceIssued": true,
+    "transactionOpened": true,
+    "matchingContextExecCompleted": true,
+    "matchingContextExecReturnedQuarantine": true,
+    "targetPathQuarantinedByRuntimeBoundary": true,
+    "newPathQuarantinedByRuntimeBoundary": true,
+    "docsPathQuarantinedByRuntimeBoundary": true,
+    "sourceWorkspaceUnchanged": true,
+    "controlPlaneRecordedQuarantineEvents": true,
+    "controlPlaneRecordedTargetPath": true,
+    "controlPlaneRecordedNewPath": true,
+    "controlPlaneRecordedDocsPath": true
+  },
+  "status": "validated",
+  "git": {
+    "head": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+    "branch": "codex/codesite-atc-full-from-dev-20260630",
+    "statusShort": "M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.html\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.json\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.png\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.html\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.json\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.png\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.html\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.json\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.png\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-latest.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof-summary.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.html\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-publication.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-handover.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-mobile.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-coordination.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-line-inspector.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-proof-section.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui.png\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.png\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.html\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.json\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.png\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.html\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.json\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.html\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.json\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.html\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.json\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.png\n M tmp/codesite-dojo-proof/codesite-metrics-proof.html\n M tmp/codesite-dojo-proof/codesite-metrics-proof.json\n M tmp/codesite-dojo-proof/codesite-metrics-proof.png\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.html\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.json\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.png\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.html\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.json\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.html\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.json\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-desktop-full.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-panel.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-rejected.png\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.json\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-host-block-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-overlay-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-panel.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.html\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.json\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.png\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.html\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.json\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.png\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.html\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.json\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.html\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.json\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.html\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.json\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.png\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.html\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.json\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.png\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.html\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.json\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.png\n?? .synthi/codesite/"
+  },
+  "commands": [
+    {
+      "name": "proofSuiteGenerator:runtimeQuarantine",
+      "command": "node synthi/scripts/codesite-runtime-quarantine-proof.mjs",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "runner": "command"
+      },
+      "outputTail": [
+        "[runtime-quarantine-proof] seeding source workspace",
+        "[runtime-quarantine-proof] creating project codesite-runtime-quarantine-proof-1783302863096",
+        "[runtime-quarantine-proof] attempting raw shell writes under active CodeSite context",
+        "[runtime-quarantine-proof] reading source workspace after quarantine",
+        "[runtime-quarantine-proof] fetching recorded CodeSite events",
+        "[runtime-quarantine-proof] wrote /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.json",
+        "[runtime-quarantine-proof] wrote /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.html",
+        "[runtime-quarantine-proof] wrote /mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.png"
+      ]
+    }
+  ],
+  "proofSuite": {
+    "runner": "synthi/scripts/codesite-run-mature-proof-suite.mjs",
+    "stampedAt": "2026-07-06T01:54:46.363Z",
+    "proofFile": "tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.json"
+  },
+  "ok": true
+}

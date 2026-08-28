@@ -26,12 +26,16 @@ import {
   selectSidebarAutoCollapseDelay,
 } from '@/redux/uiSlice';
 import { useThemePicker } from '@/components/ThemePicker';
+import { useViewport } from '@/hooks/useViewport';
 import StatusIslandPresetDialog from '@/components/StatusIslandPresetDialog';
 import { toast } from 'sonner';
+import JupyterConnectionSettings from '@/components/notebook/JupyterConnectionSettings';
 import { Key, Eye, EyeOff, Check, Trash2, AlertCircle, FlaskConical, Loader2, X } from 'lucide-react';
 import {
   STATUS_ISLAND_DOCK_PRESETS,
+  STATUS_ISLAND_MOBILE_SCOPE,
   STATUS_ISLAND_MENU_PRESETS,
+  STATUS_ISLAND_SHARED_SCOPE,
   applyStatusIslandPreferenceState,
   deleteStatusIslandSavedPreset,
   doesPresetMatchState,
@@ -203,8 +207,12 @@ export function SettingsPanelContent() {
   const autoCompletionEnabled = useAppSelector(selectAutoCompletionEnabled);
   const gpuTarget = useAppSelector(selectGpuTarget);
   const byorEnabled = useAppSelector(selectBringYourOwnRunnerEnabled);
+  const viewport = useViewport();
   const { open: openThemePicker } = useThemePicker();
   const { data: session, status: sessionStatus, update: refreshSession } = useSession();
+  const statusIslandPreferenceScope = viewport.isMobile
+    ? STATUS_ISLAND_MOBILE_SCOPE
+    : STATUS_ISLAND_SHARED_SCOPE;
 
   // ── Per-user GitHub Token state ─────
   const [tokenInput, setTokenInput] = useState('');
@@ -213,7 +221,7 @@ export function SettingsPanelContent() {
   const [tokenError, setTokenError] = useState('');
   const [testRunning, setTestRunning] = useState(false);
   const [testResults, setTestResults] = useState(null); // null | array of step results
-  const [statusIslandPreferences, setStatusIslandPreferences] = useState(() => readStatusIslandPreferences());
+  const [statusIslandPreferences, setStatusIslandPreferences] = useState(() => readStatusIslandPreferences(statusIslandPreferenceScope));
   const [isStatusIslandPresetDialogOpen, setIsStatusIslandPresetDialogOpen] = useState(false);
   const [statusIslandPresetInitialName, setStatusIslandPresetInitialName] = useState('');
 
@@ -227,9 +235,9 @@ export function SettingsPanelContent() {
   const tokenSource = session?.githubTokenSource || null;
 
   useEffect(() => {
-    setStatusIslandPreferences(readStatusIslandPreferences());
-    return subscribeStatusIslandPreferences(setStatusIslandPreferences);
-  }, []);
+    setStatusIslandPreferences(readStatusIslandPreferences(statusIslandPreferenceScope));
+    return subscribeStatusIslandPreferences(setStatusIslandPreferences, statusIslandPreferenceScope);
+  }, [statusIslandPreferenceScope]);
 
   const currentStatusIslandState = {
     isCompact: Boolean(statusIslandPreferences?.isCompact),
@@ -258,32 +266,32 @@ export function SettingsPanelContent() {
   }, [currentStatusIslandState.isCompact]);
 
   const handleToggleStatusIslandLock = useCallback(() => {
-    persistStatusIslandPositionLocked(!currentStatusIslandState.isPositionLocked);
+    persistStatusIslandPositionLocked(!currentStatusIslandState.isPositionLocked, statusIslandPreferenceScope);
     toast(currentStatusIslandState.isPositionLocked ? 'Status island movement unlocked' : 'Status island movement locked', {
       duration: 1800,
     });
-  }, [currentStatusIslandState.isPositionLocked]);
+  }, [currentStatusIslandState.isPositionLocked, statusIslandPreferenceScope]);
 
   const handleStatusIslandDockChange = useCallback((dockPreset) => {
     applyStatusIslandPreferenceState({
       ...currentStatusIslandState,
       dockPreset,
-    });
-  }, [currentStatusIslandState]);
+    }, statusIslandPreferenceScope);
+  }, [currentStatusIslandState, statusIslandPreferenceScope]);
 
   const handleApplyStatusIslandPreset = useCallback((presetId) => {
     const preset = STATUS_ISLAND_MENU_PRESETS[presetId];
     if (!preset) return;
-    applyStatusIslandPreferenceState(preset);
+    applyStatusIslandPreferenceState(preset, statusIslandPreferenceScope);
     toast(`Applied status island preset: ${preset.label}`, { duration: 1800 });
-  }, []);
+  }, [statusIslandPreferenceScope]);
 
   const handleApplySavedStatusIslandPreset = useCallback((presetId) => {
     const preset = (statusIslandPreferences.savedPresets || []).find((entry) => entry.id === presetId);
     if (!preset) return;
-    applyStatusIslandPreferenceState(preset);
+    applyStatusIslandPreferenceState(preset, statusIslandPreferenceScope);
     toast(`Applied status island preset: ${preset.label}`, { duration: 1800 });
-  }, [statusIslandPreferences.savedPresets]);
+  }, [statusIslandPreferenceScope, statusIslandPreferences.savedPresets]);
 
   const openStatusIslandPresetDialog = useCallback(() => {
     const nextDefaultLabel = activeSavedStatusIslandPreset?.label || `Preset ${(statusIslandPreferences.savedPresets || []).length + 1}`;
@@ -661,7 +669,7 @@ export function SettingsPanelContent() {
           <span className="text-sm">Bring Your Own Runner</span>
           <span className="text-[11px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
             Preserve your own <code className="font-mono">host_runner.cpp</code> instead of regenerating it.
-            Requires <code className="font-mono">// SYNTHI_USER_RUNNER</code> on the first non-blank line.
+            Requires <code className="font-mono">{'// SYNTHI_USER_RUNNER'}</code> on the first non-blank line.
           </span>
         </div>
         <button
@@ -682,6 +690,8 @@ export function SettingsPanelContent() {
       </div>
 
       <div className="border-t my-1" style={{ borderColor: 'var(--border-subtle)' }} />
+
+      <JupyterConnectionSettings />
 
       {/* Theme picker */}
       <button
@@ -717,8 +727,8 @@ export function SettingsPanelContent() {
         </div>
       )}
       {sessionStatus === 'authenticated' && !tokenSource && (
-        <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs" style={{ background: 'color-mix(in srgb, #ef4444 6%, transparent)', color: 'var(--text-primary)' }}>
-          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" style={{ color: '#f87171' }} />
+        <div className="vt-workflow-alert vt-workflow-alert--danger flex items-center gap-2 px-2 py-1.5 text-xs">
+          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 text-[var(--accent-danger)]" />
           <span>No GitHub access. Save a PAT below to enable git/PR features.</span>
         </div>
       )}
@@ -741,7 +751,7 @@ export function SettingsPanelContent() {
             className="w-full pl-7 pr-8 py-1.5 text-xs rounded border font-mono focus:outline-none transition-colors"
             style={{
               background: 'var(--bg-input, var(--bg-editor))',
-              borderColor: tokenError ? '#ef4444' : 'var(--border-subtle)',
+              borderColor: tokenError ? 'var(--accent-danger)' : 'var(--border-subtle)',
               color: 'var(--text-primary)',
             }}
             onKeyDown={e => e.key === 'Enter' && handleSaveToken()}
@@ -776,7 +786,7 @@ export function SettingsPanelContent() {
       </div>
 
       {tokenError && (
-        <div className="flex items-center gap-1.5 text-[11px]" style={{ color: '#f87171' }}>
+        <div className="flex items-center gap-1.5 text-[11px] text-[var(--accent-danger)]">
           <AlertCircle className="w-3 h-3 flex-shrink-0" />
           {tokenError}
         </div>
@@ -814,9 +824,9 @@ export function SettingsPanelContent() {
         >
           {testResults.map((step, i) => {
             const colour =
-              step.status === 'ok' ? '#4ade80' :
-              step.status === 'warn' ? '#fbbf24' :
-              step.status === 'fail' ? '#f87171' : 'var(--text-muted)';
+              step.status === 'ok' ? 'var(--accent-success)' :
+              step.status === 'warn' ? 'var(--accent-warning)' :
+              step.status === 'fail' ? 'var(--accent-danger)' : 'var(--text-muted)';
             const glyph =
               step.status === 'ok' ? '✓' :
               step.status === 'warn' ? '!' :

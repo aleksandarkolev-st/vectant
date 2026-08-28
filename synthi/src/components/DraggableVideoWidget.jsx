@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { MonitorPlay, X } from 'lucide-react';
 
 export function DraggableVideoWidget({
     guiConfig,
@@ -230,7 +231,7 @@ export function DraggableVideoWidget({
         height: guiConfig.height,
         maxWidth: '90vw',
         maxHeight: '90vh',
-        zIndex: 999
+        zIndex: 70,
     } : {
         visibility: 'hidden'
     };
@@ -238,16 +239,48 @@ export function DraggableVideoWidget({
     return (
         <div 
             ref={containerRef}
-            className="fixed bg-black border border-gray-600 shadow-lg resize overflow-hidden flex flex-col"
-            style={style}
+            className="vt-command-surface fixed flex resize flex-col overflow-hidden rounded-[var(--radius-panel)] border"
+            style={{
+                ...style,
+                background: 'var(--bg-editor)',
+                borderColor: isDragging ? 'var(--attention-purple)' : 'var(--border-medium)',
+                boxShadow: isDragging
+                    ? '0 24px 80px color-mix(in srgb, var(--attention-purple) 18%, transparent)'
+                    : '0 24px 80px color-mix(in srgb, var(--bg-app) 72%, transparent)',
+            }}
         >
             <div 
                 onMouseDown={handleDragStart}
-                className="bg-gray-800 text-white text-xs px-2 py-1 z-10 flex items-center gap-2 cursor-move w-full shrink-0 select-none"
+                className="z-10 flex w-full shrink-0 cursor-move select-none items-center gap-2 border-b px-2.5 py-1.5 text-xs"
+                style={{ background: 'var(--bg-panel)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
             >
-                <span>GUI Output ({guiConfig.width}x{guiConfig.height})</span>
-                {isHmrRecompiling && <span className="text-yellow-400 font-bold">[RECOMPILING]</span>}
-                {!isGuiRunning && !isHmrRecompiling && <span className="text-red-400 font-bold">[STOPPED]</span>}
+                <MonitorPlay className="h-3.5 w-3.5" style={{ color: 'var(--attention-purple)' }} aria-hidden="true" />
+                <span className="font-medium" style={{ color: 'var(--text-primary)' }}>GUI output</span>
+                <span className="font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{guiConfig.width}x{guiConfig.height}</span>
+                {isHmrRecompiling && (
+                    <span
+                        className="vt-state-pill ml-1"
+                        style={{
+                            color: 'var(--accent-warning)',
+                            borderColor: 'color-mix(in srgb, var(--accent-warning) 34%, transparent)',
+                            background: 'color-mix(in srgb, var(--accent-warning) 10%, transparent)',
+                        }}
+                    >
+                        Recompiling
+                    </span>
+                )}
+                {!isGuiRunning && !isHmrRecompiling && (
+                    <span
+                        className="vt-state-pill ml-1"
+                        style={{
+                            color: 'var(--accent-danger)',
+                            borderColor: 'color-mix(in srgb, var(--accent-danger) 34%, transparent)',
+                            background: 'color-mix(in srgb, var(--accent-danger) 10%, transparent)',
+                        }}
+                    >
+                        Stopped
+                    </span>
+                )}
                 <button 
                     onClick={(e) => { 
                         e.stopPropagation(); 
@@ -255,12 +288,14 @@ export function DraggableVideoWidget({
                         setGuiConfig(null); 
                         setIsGuiRunning(false); 
                     }} 
-                    className="ml-auto text-red-400 hover:text-red-300 px-2"
+                    className="vt-icon-button th-focus-ring ml-auto h-6 min-w-6"
+                    title="Close GUI output"
+                    aria-label="Close GUI output"
                 >
-                    ✕
+                    <X className="h-3.5 w-3.5" aria-hidden="true" />
                 </button>
             </div>
-            <div className="flex-1 relative overflow-hidden bg-black w-full h-full">
+            <div className="relative h-full w-full flex-1 overflow-hidden" style={{ background: 'var(--bg-app)' }}>
                 {mediaStream ? (
                     <video
                         ref={(el) => {
@@ -277,7 +312,7 @@ export function DraggableVideoWidget({
                         onClick={() => { try { videoRef.current && videoRef.current.focus(); } catch (e) {} }}
                     />
                 ) : (
-                    <div className="w-full h-full flex items-center justify-center text-gray-500 bg-black">
+                    <div className="flex h-full w-full items-center justify-center text-xs" style={{ color: 'var(--text-muted)', background: 'var(--bg-app)' }}>
                         {isGuiRunning ? 'Waiting for video stream...' : isHmrRecompiling ? 'Recompiling...' : 'Application exited'}
                     </div>
                 )}

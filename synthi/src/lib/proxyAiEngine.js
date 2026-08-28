@@ -8,7 +8,7 @@ const AI_ENGINE_BASE = (
 
 const FORWARDED_RESPONSE_HEADERS = ['content-type', 'cache-control'];
 
-export async function proxyAiEngineRequest(request, targetPath) {
+export async function proxyAiEngineRequest(request, targetPath, options = {}) {
   const incomingUrl = new URL(request.url);
   const targetUrl = new URL(targetPath, `${AI_ENGINE_BASE}/`);
   targetUrl.search = incomingUrl.search;
@@ -34,6 +34,28 @@ export async function proxyAiEngineRequest(request, targetPath) {
   for (const name of FORWARDED_RESPONSE_HEADERS) {
     const value = upstream.headers.get(name);
     if (value) responseHeaders.set(name, value);
+  }
+
+  if (
+    typeof options.transformJson === 'function'
+    && (upstream.headers.get('content-type') || '').toLowerCase().includes('application/json')
+  ) {
+    const raw = await upstream.text();
+    try {
+      const body = raw ? JSON.parse(raw) : null;
+      responseHeaders.set('content-type', 'application/json');
+      return new Response(JSON.stringify(options.transformJson(body)), {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers: responseHeaders,
+      });
+    } catch {
+      return new Response(raw, {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers: responseHeaders,
+      });
+    }
   }
 
   return new Response(upstream.body, {

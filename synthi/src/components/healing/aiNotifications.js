@@ -61,14 +61,14 @@ function showBrowserNotification(fixes) {
   const severity = critical.length > 0 ? 'Critical' : 'High';
   const body = fixes
     .slice(0, 3)
-    .map((f) => `L${f.line ?? '?'}: ${f.description || 'AI-detected issue'}`)
+    .map((f) => `L${f.line ?? '?'}: ${f.description || 'Detected issue'}`)
     .join('\n');
 
   try {
-    new Notification(`${severity}: ${count} AI issue${count > 1 ? 's' : ''} found`, {
+    new Notification(`${severity}: ${count} fix issue${count > 1 ? 's' : ''} found`, {
       body,
-      icon: '/favicon.ico',
-      tag: 'ai-healing',
+      icon: '/vectant/the_V.png',
+      tag: 'vectant-healing',
       requireInteraction: false,
     });
   } catch {

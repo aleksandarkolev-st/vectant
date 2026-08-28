@@ -15,8 +15,12 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-PROJECT_ID="overview-synti"
+PROJECT_ID="vectant-proj"
 K8S_NAMESPACE="synthi"
+WORKSPACE_BUCKET="vectant-synthi-cloud-storage"
+KMS_LOCATION="${KMS_LOCATION:-europe-west10}"
+DOJO_KMS_KEYRING="${DOJO_KMS_KEYRING:-synthi-dojo}"
+DOJO_KMS_KEY="${DOJO_KMS_KEY:-dojo-proof-signing}"
 
 echo "=== Synthi IDE — Workload Identity Setup ==="
 echo "Project: ${PROJECT_ID}"
@@ -36,6 +40,11 @@ gcloud iam service-accounts create synthi-eso-sa \
   --display-name="Synthi External Secrets" \
   --project="${PROJECT_ID}" 2>/dev/null || echo "  synthi-eso-sa already exists"
 
+# SA for Agent Dojo MCP host managed signing and hosted release checks
+gcloud iam service-accounts create synthi-dojo-mcp-sa \
+  --display-name="Synthi Dojo MCP Host" \
+  --project="${PROJECT_ID}" 2>/dev/null || echo "  synthi-dojo-mcp-sa already exists"
+
 echo ""
 
 # ── 2. Grant IAM Roles ────────────────────────────────────────────────────
@@ -45,9 +54,9 @@ echo "Granting IAM roles..."
 # GCS SA: Storage Object Admin on the workspace bucket
 gsutil iam ch \
   "serviceAccount:synthi-gcs-sa@${PROJECT_ID}.iam.gserviceaccount.com:roles/storage.objectAdmin" \
-  gs://synthi-cloud-storage
+  "gs://${WORKSPACE_BUCKET}"
 
-echo "  synthi-gcs-sa → roles/storage.objectAdmin on gs://synthi-cloud-storage"
+echo "  synthi-gcs-sa → roles/storage.objectAdmin on gs://${WORKSPACE_BUCKET}"
 
 # ESO SA: Secret Manager Secret Accessor
 gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
@@ -57,6 +66,16 @@ gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
   --quiet
 
 echo "  synthi-eso-sa → roles/secretmanager.secretAccessor"
+
+# Dojo MCP host: sign with the managed proof-signing key and read release secrets.
+gcloud kms keys add-iam-policy-binding "${DOJO_KMS_KEY}" \
+  --location="${KMS_LOCATION}" \
+  --keyring="${DOJO_KMS_KEYRING}" \
+  --member="serviceAccount:synthi-dojo-mcp-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role="roles/cloudkms.signerVerifier" \
+  --quiet
+
+echo "  synthi-dojo-mcp-sa → roles/cloudkms.signerVerifier on ${DOJO_KMS_KEYRING}/${DOJO_KMS_KEY}"
 echo ""
 
 # ── 3. Workload Identity Bindings ─────────────────────────────────────────
@@ -65,14 +84,15 @@ echo ""
 
 echo "Creating Workload Identity bindings..."
 
-# collab-server-sa (K8s) → synthi-gcs-sa (GCP)
-gcloud iam service-accounts add-iam-policy-binding \
-  "synthi-gcs-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
-  --role="roles/iam.workloadIdentityUser" \
-  --member="serviceAccount:${PROJECT_ID}.svc.id.goog[${K8S_NAMESPACE}/collab-server-sa]" \
-  --quiet
-
-echo "  collab-server-sa → synthi-gcs-sa"
+# K8s service accounts annotated with synthi-gcs-sa.
+for KSA in collab-server-sa frontend-sa y-sweet-sa workspace-runtime-sa; do
+  gcloud iam service-accounts add-iam-policy-binding \
+    "synthi-gcs-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
+    --role="roles/iam.workloadIdentityUser" \
+    --member="serviceAccount:${PROJECT_ID}.svc.id.goog[${K8S_NAMESPACE}/${KSA}]" \
+    --quiet
+  echo "  ${KSA} → synthi-gcs-sa"
+done
 
 # eso-service-account (K8s) → synthi-eso-sa (GCP)
 gcloud iam service-accounts add-iam-policy-binding \
@@ -82,6 +102,15 @@ gcloud iam service-accounts add-iam-policy-binding \
   --quiet
 
 echo "  eso-service-account → synthi-eso-sa"
+
+# dojo-mcp-host-sa (K8s) → synthi-dojo-mcp-sa (GCP)
+gcloud iam service-accounts add-iam-policy-binding \
+  "synthi-dojo-mcp-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role="roles/iam.workloadIdentityUser" \
+  --member="serviceAccount:${PROJECT_ID}.svc.id.goog[${K8S_NAMESPACE}/dojo-mcp-host-sa]" \
+  --quiet
+
+echo "  dojo-mcp-host-sa → synthi-dojo-mcp-sa"
 echo ""
 
 # ── 4. Verify ────────────────────────────────────────────────────────────

@@ -1,0 +1,15 @@
+CodeSite-Project: cmr76rvc3008sqk01itxc3o8s
+CodeSite-Flight: SCHEMA-01
+CodeSite-Clearance: cmr76s97i00alqk01mvljd1m6
+CodeSite-Landing: completed
+CodeSite-Transaction: cmr76sqte00blqk01jga6jnj3
+CodeSite-Lease: cmr76s97i00alqk01mvljd1m6
+CodeSite-Read-Set: sha256:478271e6e2cb5a755bbfe83737ef10debab09482410cda922c58fc66fa20c83a
+CodeSite-Write-Set: sha256:c9dc8f2e81e79067b5051b7a7e1beca884399b3b891086ab43fb576b0f74f973
+CodeSite-Base-Snapshot: sha256:c04ec87252abc33affeebd968d3047f4ca887142e76e4905b25459490e38ed92
+CodeSite-Base-Snapshot-Evidence: sha256:ec8199f8668dee7f87523f5839403218bd5f73b8ccdc0a6884689c24d50be2bb
+CodeSite-Invariants: clearance.diff.inside_route
+CodeSite-Black-Box: sha256:0440d3ec904cc611fa4f78850026ddb97d51be44de844762ad252f73b930b531
+CodeSite-Proof-Digest: sha256:0de8d747c5220a75ee4467fc1a272c52628bc8d12d745a8398c3d79b144b88f3
+CodeSite-Proof-Authority: codesite-local-proof-authority
+CodeSite-Proof-Signature: hmac-sha256:codesite-local-proof-authority:Qfb9JWVyH_VXeVEdOb-CrpYpDPFD--9A0JpN9NRezvk

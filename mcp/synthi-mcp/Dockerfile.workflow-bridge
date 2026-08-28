@@ -1,0 +1,24 @@
+FROM mcr.microsoft.com/playwright:v1.60.0-noble
+
+WORKDIR /app/mcp/synthi-mcp
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    novnc \
+    websockify \
+    x11vnc \
+    xvfb \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY packages/mcp-hub /app/packages/mcp-hub
+COPY mcp/synthi-mcp/.npmrc mcp/synthi-mcp/package.json mcp/synthi-mcp/package-lock.json ./
+RUN NODE_ENV=development npm ci --workspaces=false --include=dev --production=false \
+  && ./node_modules/.bin/tsc --version
+
+COPY mcp/synthi-mcp/tsconfig.json ./
+COPY mcp/synthi-mcp/src ./src
+COPY mcp/synthi-mcp/scripts ./scripts
+
+RUN npm run build && test -s dist/browser_workflow_bridge/standalone.js
+
+CMD ["node", "dist/browser_workflow_bridge/standalone.js"]

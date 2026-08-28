@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Embodied Core — Conformance Proof</title>
+<style>
+ body{background:#101418;color:#e6e6e6;font-family:ui-monospace,Consolas,monospace;margin:2rem;}
+ h1{font-size:1.3rem;} .verdict{font-size:1.6rem;padding:.6rem 1rem;border-radius:6px;display:inline-block;}
+ .verdict.green{background:#123b23;color:#7ce38b;border:1px solid #1d5c34;}
+ .verdict.red{background:#43111a;color:#ff8fa3;border:1px solid #6e2436;}
+ table{border-collapse:collapse;margin:1.5rem 0;min-width:60%;}
+ td,th{padding:.45rem .9rem;border-bottom:1px solid #2a3138;text-align:left;}
+ tr.pass td:nth-child(3){color:#7ce38b;} tr.fail td:nth-child(3){color:#ff8fa3;}
+ pre{background:#0a0d10;border:1px solid #232a30;padding:1rem;max-height:340px;overflow:auto;font-size:.72rem;line-height:1.35;}
+ .muted{color:#8b949e;font-size:.8rem;}
+</style></head><body>
+<h1>Universal Embodied Teaching — Phase 0 conformance proof</h1>
+<p class="muted">generated 2026-08-23T02:07:42.978Z · all numbers come from live vitest/tsc runs executed by this script · no hardcoded values</p>
+<div class="verdict green">ALL WORLDS CONFORM</div>
+<table><tr><th>suite</th><th>tests</th><th>status</th></tr>
+    <tr class="pass">
+      <td>embodied_grid_conformance.test.ts</td>
+      <td>4/4</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_nn_conformance.test.ts</td>
+      <td>4/4</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_kv_conformance.test.ts</td>
+      <td>3/3</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_terminal_conformance.test.ts</td>
+      <td>3/3</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_kernel_conformance.test.ts</td>
+      <td>3/3</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_e2e_teach_everything.test.ts</td>
+      <td>4/4</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_core_gate.test.ts</td>
+      <td>4/4</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_cv.test.ts</td>
+      <td>15/15</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_depth_invariants.test.ts</td>
+      <td>9/9</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_browser_wrapper.test.ts</td>
+      <td>4/4</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_terminal_scrub.test.ts</td>
+      <td>4/4</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_terminal_adapter.test.ts</td>
+      <td>3/3</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_kernel_adapter.test.ts</td>
+      <td>3/3</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_game_adapter.test.ts</td>
+      <td>4/4</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_api_adapter.test.ts</td>
+      <td>2/2</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_case_law.test.ts</td>
+      <td>3/3</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_metrics.test.ts</td>
+      <td>5/5</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_tools.test.ts</td>
+      <td>2/2</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_hardening.test.ts</td>
+      <td>3/3</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_replay_orchestrator.test.ts</td>
+      <td>4/4</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_observation.test.ts</td>
+      <td>4/4</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_runtime_adapter.test.ts</td>
+      <td>3/3</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_fixture_rotate_logs.test.ts</td>
+      <td>1/1</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_fixture_edit_hmr.test.ts</td>
+      <td>1/1</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_fixture_run_tests.test.ts</td>
+      <td>1/1</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_failure_catalog.test.ts</td>
+      <td>3/3</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_merge_profiles.test.ts</td>
+      <td>5/5</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_world_manifest.test.ts</td>
+      <td>2/2</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_browser_repoint.test.ts</td>
+      <td>2/2</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_bridge_dispatch.test.ts</td>
+      <td>4/4</td>
+      <td>GREEN</td>
+    </tr>
+
+    <tr class="pass">
+      <td>embodied_game_transport.test.ts</td>
+      <td>1/1</td>
+      <td>GREEN</td>
+    </tr></table>
+<p>tsc --noEmit: <span style="color:#7ce38b">CLEAN</span></p>
+<h3 style="font-size:.9rem">embodied_grid_conformance.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_grid_conformance.test.ts (4 tests) 25ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  05:06:43
+   Duration  481ms (transform 82ms, setup 0ms, collect 102ms, tests 25ms, environment 0ms, prepare 123ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_nn_conformance.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_nn_conformance.test.ts (4 tests) 14ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  05:06:45
+   Duration  518ms (transform 128ms, setup 0ms, collect 159ms, tests 14ms, environment 0ms, prepare 113ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_kv_conformance.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_kv_conformance.test.ts (3 tests) 16ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  05:06:46
+   Duration  472ms (transform 72ms, setup 0ms, collect 88ms, tests 16ms, environment 0ms, prepare 92ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_terminal_conformance.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_terminal_conformance.test.ts (3 tests) 17ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  05:06:48
+   Duration  507ms (transform 72ms, setup 0ms, collect 90ms, tests 17ms, environment 0ms, prepare 153ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_kernel_conformance.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_kernel_conformance.test.ts (3 tests) 17ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  05:06:49
+   Duration  471ms (transform 79ms, setup 0ms, collect 106ms, tests 17ms, environment 0ms, prepare 89ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_e2e_teach_everything.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_e2e_teach_everything.test.ts (4 tests) 20ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  05:06:51
+   Duration  580ms (transform 158ms, setup 0ms, collect 202ms, tests 20ms, environment 0ms, prepare 84ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_core_gate.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_core_gate.test.ts (4 tests) 14ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  05:06:53
+   Duration  401ms (transform 26ms, setup 0ms, collect 21ms, tests 14ms, environment 0ms, prepare 113ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_cv.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_cv.test.ts (15 tests) 20ms
+
+ Test Files  1 passed (1)
+      Tests  15 passed (15)
+   Start at  05:06:55
+   Duration  403ms (transform 45ms, setup 0ms, collect 49ms, tests 20ms, environment 0ms, prepare 94ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_depth_invariants.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_depth_invariants.test.ts (9 tests) 51ms
+
+ Test Files  1 passed (1)
+      Tests  9 passed (9)
+   Start at  05:06:56
+   Duration  483ms (transform 80ms, setup 0ms, collect 92ms, tests 51ms, environment 0ms, prepare 91ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_browser_wrapper.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_browser_wrapper.test.ts (4 tests) 5ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  05:06:58
+   Duration  448ms (transform 55ms, setup 0ms, collect 66ms, tests 5ms, environment 0ms, prepare 57ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_terminal_scrub.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_terminal_scrub.test.ts (4 tests) 4ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  05:06:59
+   Duration  375ms (transform 33ms, setup 0ms, collect 29ms, tests 4ms, environment 0ms, prepare 119ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_terminal_adapter.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_terminal_adapter.test.ts (3 tests) 220ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  05:07:01
+   Duration  674ms (transform 49ms, setup 0ms, collect 59ms, tests 220ms, environment 0ms, prepare 68ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_kernel_adapter.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_kernel_adapter.test.ts (3 tests) 4ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  05:07:03
+   Duration  392ms (transform 41ms, setup 0ms, collect 43ms, tests 4ms, environment 0ms, prepare 75ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_game_adapter.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_game_adapter.test.ts (4 tests) 7ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  05:07:05
+   Duration  414ms (transform 49ms, setup 0ms, collect 55ms, tests 7ms, environment 0ms, prepare 111ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_api_adapter.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_api_adapter.test.ts (2 tests) 4ms
+
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+   Start at  05:07:06
+   Duration  382ms (transform 40ms, setup 0ms, collect 42ms, tests 4ms, environment 0ms, prepare 97ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_case_law.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_case_law.test.ts (3 tests) 3ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  05:07:08
+   Duration  414ms (transform 39ms, setup 0ms, collect 40ms, tests 3ms, environment 0ms, prepare 94ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_metrics.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_metrics.test.ts (5 tests) 3ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  05:07:09
+   Duration  420ms (transform 31ms, setup 0ms, collect 30ms, tests 3ms, environment 0ms, prepare 101ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_tools.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_tools.test.ts (2 tests) 84ms
+
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+   Start at  05:07:11
+   Duration  606ms (transform 97ms, setup 0ms, collect 131ms, tests 84ms, environment 0ms, prepare 128ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_hardening.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_hardening.test.ts (3 tests) 3ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  05:07:13
+   Duration  389ms (transform 35ms, setup 0ms, collect 34ms, tests 3ms, environment 0ms, prepare 128ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_replay_orchestrator.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_replay_orchestrator.test.ts (4 tests) 3ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  05:07:14
+   Duration  398ms (transform 36ms, setup 0ms, collect 39ms, tests 3ms, environment 0ms, prepare 81ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_observation.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_observation.test.ts (4 tests) 4ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  05:07:16
+   Duration  466ms (transform 42ms, setup 0ms, collect 41ms, tests 4ms, environment 0ms, prepare 132ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_runtime_adapter.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_runtime_adapter.test.ts (3 tests) 4ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  05:07:18
+   Duration  431ms (transform 40ms, setup 0ms, collect 53ms, tests 4ms, environment 0ms, prepare 72ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_fixture_rotate_logs.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_fixture_rotate_logs.test.ts (1 test) 123ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  05:07:19
+   Duration  496ms (transform 52ms, setup 0ms, collect 60ms, tests 123ms, environment 0ms, prepare 113ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_fixture_edit_hmr.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_fixture_edit_hmr.test.ts (1 test) 42ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  05:07:21
+   Duration  611ms (transform 58ms, setup 0ms, collect 69ms, tests 42ms, environment 0ms, prepare 112ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_fixture_run_tests.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_fixture_run_tests.test.ts (1 test) 104ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  05:07:23
+   Duration  512ms (transform 51ms, setup 0ms, collect 59ms, tests 104ms, environment 0ms, prepare 104ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_failure_catalog.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_failure_catalog.test.ts (3 tests) 3ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  05:07:25
+   Duration  416ms (transform 45ms, setup 0ms, collect 46ms, tests 3ms, environment 0ms, prepare 92ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_merge_profiles.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_merge_profiles.test.ts (5 tests) 6ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  05:07:27
+   Duration  486ms (transform 37ms, setup 0ms, collect 36ms, tests 6ms, environment 0ms, prepare 82ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_world_manifest.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_world_manifest.test.ts (2 tests) 4ms
+
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+   Start at  05:07:29
+   Duration  417ms (transform 45ms, setup 0ms, collect 46ms, tests 4ms, environment 0ms, prepare 114ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_browser_repoint.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_browser_repoint.test.ts (2 tests) 4ms
+
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+   Start at  05:07:30
+   Duration  646ms (transform 208ms, setup 0ms, collect 271ms, tests 4ms, environment 0ms, prepare 82ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_bridge_dispatch.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_bridge_dispatch.test.ts (4 tests) 8ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  05:07:33
+   Duration  561ms (transform 134ms, setup 0ms, collect 180ms, tests 8ms, environment 0ms, prepare 105ms)
+
+</pre>
+<h3 style="font-size:.9rem">embodied_game_transport.test.ts — raw tail</h3>
+<pre>npm warn config ignoring workspace config at C:\Users\dev\Downloads\synthi-test\synthi-ide\mcp\synthi-mcp/.npmrc
+
+ RUN  v2.1.9 C:/Users/dev/Downloads/synthi-test/synthi-ide/mcp/synthi-mcp
+
+ ✓ tests/unit/embodied_game_transport.test.ts (1 test) 20ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  05:07:35
+   Duration  468ms (transform 33ms, setup 0ms, collect 63ms, tests 20ms, environment 0ms, prepare 118ms)
+
+</pre>
+</body></html>

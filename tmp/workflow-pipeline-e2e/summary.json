@@ -1,0 +1,250 @@
+{
+  "schema_version": "synthi.dojo.workflowPipelineE2E.v1",
+  "generated_at": "2026-07-05T04:04:45.677Z",
+  "ok": true,
+  "case_count": 1,
+  "hosted_runtime": {
+    "cdp_url": "http://127.0.0.1:37019/",
+    "cdp_url_configured": true,
+    "ok": false,
+    "require_non_loopback_runtime": true,
+    "non_loopback_runtime": false,
+    "runtime_host_class": "loopback"
+  },
+  "fresh_mcp": {
+    "verify_fresh_mcp": true,
+    "bridge_url": "http://127.0.0.1:38889/",
+    "private_workflow_store_env_configured": true
+  },
+  "visual_artifact_count": 4,
+  "visual_artifacts": [
+    {
+      "case_id": "profile-form",
+      "stage": "observed_preview",
+      "source": "playwright_screenshot",
+      "path": "profile-form/observed-preview.png",
+      "bytes": 32099,
+      "screenshot_sha256": "c6b235a6a56a5b68a594af27de0847fb148a156e4a691d7361c9d27181d6f854",
+      "mime_type": "image/png",
+      "png_verified": true
+    },
+    {
+      "case_id": "profile-form",
+      "stage": "after_teach_actions",
+      "source": "playwright_screenshot",
+      "path": "profile-form/after-teach-actions.png",
+      "bytes": 31902,
+      "screenshot_sha256": "ef8f13f0bbe983be8cf5eca84fb5904c41b94e00341e592423faf78142c684dd",
+      "mime_type": "image/png",
+      "png_verified": true
+    },
+    {
+      "case_id": "profile-form",
+      "stage": "after_publish_panel",
+      "source": "playwright_screenshot",
+      "path": "profile-form/after-publish-panel.png",
+      "bytes": 165973,
+      "screenshot_sha256": "98b56bbe8de4f1052eeb5259129eb5629aadfaaf1b559a6174a4ed60a4e26e84",
+      "mime_type": "image/png",
+      "png_verified": true
+    },
+    {
+      "case_id": "profile-form",
+      "stage": "after_validate_panel",
+      "source": "playwright_screenshot",
+      "path": "profile-form/after-validate-panel.png",
+      "bytes": 165866,
+      "screenshot_sha256": "d0f0ebf3b17b66fb7dae1f7d0ec089956acdc7749b2be0d6dcc2233042d239fc",
+      "mime_type": "image/png",
+      "png_verified": true
+    }
+  ],
+  "results": [
+    {
+      "caseId": "profile-form",
+      "name": "seed workspace files",
+      "ok": true,
+      "detail": "workflow-pipeline-profile-form-mr79no5t"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "register source identity",
+      "ok": true,
+      "detail": "tokens=2"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "detect actual running port",
+      "ok": true,
+      "detail": "port=44659 preview=http://127.0.0.1:11234/port/44659/"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "click attach",
+      "ok": true,
+      "detail": "hosted-playwright-cdp"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "workflow overlay bridge binding",
+      "ok": true,
+      "detail": "http://127.0.0.1:38889"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "click overlay observe",
+      "ok": true,
+      "detail": "observed=http://127.0.0.1:11234/port/44659/ status=observed"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "click overlay teach",
+      "ok": true,
+      "detail": "recording"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "park workflow overlay",
+      "ok": true,
+      "detail": "x=16 y=16 w=330 h=68"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "click overlay stop",
+      "ok": true,
+      "detail": "steps=2"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "click compile",
+      "ok": true,
+      "detail": "workflow=wf_ewnndk"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "compile expected actions",
+      "ok": true,
+      "detail": "actions=fill,click"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "click export",
+      "ok": true,
+      "detail": "locators=2"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "export avoids forwarded port literals",
+      "ok": true,
+      "detail": "no forwarded port literals"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "click manifest",
+      "ok": true,
+      "detail": "status=manualOnly source=complete"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "click publish private MCP tool",
+      "ok": true,
+      "detail": "tool=synthi_app_save_profile"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "lookup published private MCP manifest",
+      "ok": true,
+      "detail": "tool=synthi_app_save_profile status=manualOnly"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "direct private MCP tool requires Dojo proof",
+      "ok": true,
+      "detail": "tool=synthi_app_save_profile required=synthi_dojo_run_with_proof_capsule"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "export Dojo artifacts for proof",
+      "ok": true,
+      "detail": "artifacts=48"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "extract proof evidence ledger",
+      "ok": true,
+      "detail": "records=35 checkpoint=274a821b5049eb291cd4d99eb701ff076a0cbd76bf001929ad854bb20a2e99d0"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "issue Dojo proof capsule",
+      "ok": true,
+      "detail": "capsule=capsule_eb544f72-a40f-4641-8495-a4f4730dc897 status=allowed"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "validate Dojo proof capsule",
+      "ok": true,
+      "detail": "status=allowed"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "dry-run Dojo proof capsule",
+      "ok": true,
+      "detail": "status=allowed"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "run Dojo proof capsule",
+      "ok": true,
+      "detail": "capsule=capsule_eb544f72-a40f-4641-8495-a4f4730dc897 backing=synthi_safety_run_prefix_validation"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "fresh MCP tools/list private tool",
+      "ok": true,
+      "detail": "tool=synthi_app_save_profile tools=230"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "fresh MCP lookup private tool manifest",
+      "ok": true,
+      "detail": "status=manualOnly"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "fresh MCP attach hosted browser",
+      "ok": true,
+      "detail": "hosted"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "fresh MCP grant preview consent",
+      "ok": true,
+      "detail": "http://127.0.0.1:11234"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "fresh MCP open preview",
+      "ok": true,
+      "detail": "tab=chrome_tab_4"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "fresh MCP call discovered private tool",
+      "ok": true,
+      "detail": "tool=synthi_app_save_profile mode=prefixOnly steps=1"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "click validate",
+      "ok": true,
+      "detail": "status=stoppedAtMutationBoundary"
+    },
+    {
+      "caseId": "profile-form",
+      "name": "run exported Playwright",
+      "ok": true,
+      "detail": "passed"
+    }
+  ]
+}

@@ -1,0 +1,761 @@
+{
+  "generatedAt": "2026-07-06T02:03:31.603Z",
+  "baseUrl": "http://127.0.0.1:3100",
+  "slug": "codesite-runway-occupancy-proof-1783303386275",
+  "project": {
+    "id": "cmr8kskzr03vfqg01ngfcfxzc",
+    "title": "Runway occupancy proof"
+  },
+  "lease": {
+    "id": "cmr8ksvca03wwqg01of7ruyn8",
+    "status": "active"
+  },
+  "transaction": {
+    "id": "cmr8kswb603x2qg01fw41uomc",
+    "status": "open"
+  },
+  "runway": {
+    "runway": "services/checkout/**",
+    "route": [
+      "services/checkout/**"
+    ],
+    "occupiedBy": "RUNWAY-01",
+    "mutationLeaseId": "cmr8ksvca03wwqg01of7ruyn8",
+    "runwayClass": "C",
+    "diffPaths": [
+      "services/checkout/handler.ts"
+    ],
+    "pendingInspections": [
+      "api_contract_radar",
+      "inspection:QA-RUNWAY-01"
+    ],
+    "eligibleFlights": [
+      "DOCS-02"
+    ]
+  },
+  "controlState": {
+    "projectId": "cmr8kskzr03vfqg01ngfcfxzc",
+    "workspaceSlug": "codesite-runway-occupancy-proof-1783303386275",
+    "towerState": "active",
+    "status": "active",
+    "activeFlights": [
+      {
+        "id": "cmr8ksql703wgqg015do8h7ho",
+        "projectId": "cmr8kskzr03vfqg01ngfcfxzc",
+        "agentSessionId": "cmr8ksljs03vwqg013lgvwtb5",
+        "displayCallsign": "RUNWAY-01",
+        "mission": "Update checkout handler on the service runway",
+        "domain": "backend",
+        "status": "filed",
+        "route": [
+          "services/checkout/**"
+        ],
+        "blockedZones": [],
+        "abortConditions": [],
+        "requestedTools": [
+          "file_write",
+          "npm_test"
+        ],
+        "estimatedDurationMs": null,
+        "filedAt": "2026-07-06T02:03:15.740Z",
+        "closedAt": null
+      },
+      {
+        "id": "cmr8ksrfv03wmqg016mp0x12r",
+        "projectId": "cmr8kskzr03vfqg01ngfcfxzc",
+        "agentSessionId": "cmr8ksm6h03w2qg01m1u5yxph",
+        "displayCallsign": "DOCS-02",
+        "mission": "Prepare release notes outside the checkout runway",
+        "domain": "docs",
+        "status": "filed",
+        "route": [
+          "docs/release/**"
+        ],
+        "blockedZones": [],
+        "abortConditions": [],
+        "requestedTools": [
+          "file_write"
+        ],
+        "estimatedDurationMs": null,
+        "filedAt": "2026-07-06T02:03:16.843Z",
+        "closedAt": null
+      },
+      {
+        "id": "cmr8kssjf03wqqg01p7rt1qmg",
+        "projectId": "cmr8kskzr03vfqg01ngfcfxzc",
+        "agentSessionId": "cmr8kspjc03waqg01mw77c8ws",
+        "displayCallsign": "CONFLICT-03",
+        "mission": "Attempt overlapping checkout update while runway is occupied",
+        "domain": "backend",
+        "status": "filed",
+        "route": [
+          "services/checkout/conflicting.ts"
+        ],
+        "blockedZones": [],
+        "abortConditions": [],
+        "requestedTools": [
+          "file_write"
+        ],
+        "estimatedDurationMs": null,
+        "filedAt": "2026-07-06T02:03:18.267Z",
+        "closedAt": null
+      }
+    ],
+    "activeMutationLeases": [
+      {
+        "id": "cmr8ksvca03wwqg01of7ruyn8",
+        "projectId": "cmr8kskzr03vfqg01ngfcfxzc",
+        "executionPlanId": "cmr8ksql703wgqg015do8h7ho",
+        "agentSessionId": "cmr8ksljs03vwqg013lgvwtb5",
+        "displayCallsign": "RUNWAY-01",
+        "status": "active",
+        "lease": {
+          "allowedPaths": [
+            "services/checkout/**"
+          ],
+          "blockedPaths": [
+            "secrets/**"
+          ],
+          "allowedTools": [
+            "file_write"
+          ],
+          "invariants": [
+            "clearance.diff.inside_route",
+            "no.secret.exposure"
+          ],
+          "requiredRadar": [
+            "api_contract"
+          ],
+          "expiresAt": null,
+          "issuedBy": "codesite_policy_engine",
+          "towerInstruction": "Cleared as filed. Maintain transponder updates until landing.",
+          "inspectedZones": [
+            {
+              "zoneKey": "checkout-service",
+              "label": "Checkout service runway",
+              "class": "C",
+              "paths": [
+                "services/checkout/**"
+              ],
+              "rules": [
+                "api_contract_radar_required"
+              ],
+              "risk": "medium",
+              "source": "custom",
+              "path": "services/checkout/**"
+            }
+          ],
+          "dojoProofVerification": {
+            "ok": false,
+            "status": "blocked",
+            "checkedAt": "2026-07-06T02:03:21.876Z",
+            "source": "codesite_dojo_public_verifier",
+            "signatureVerified": false,
+            "blockedBy": [
+              "dojo_public_proof_capsule_required",
+              "dojo_public_proof_key_required"
+            ],
+            "digest": "sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a"
+          },
+          "pilotLicenseHealth": {
+            "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+            "key": "cmr8ksljs03vwqg013lgvwtb5",
+            "projectId": "cmr8kskzr03vfqg01ngfcfxzc",
+            "workspaceSlug": "codesite-runway-occupancy-proof-1783303386275",
+            "agentSessionId": "cmr8ksljs03vwqg013lgvwtb5",
+            "ownerUserId": "cmr8kskv703vbqg019zx3446f",
+            "displayCallsign": "RUNWAY-01",
+            "status": "active",
+            "level": "Student",
+            "levelRank": 1,
+            "dojoPilotLicenseRef": null,
+            "dojoLicenseRef": null,
+            "dojoProofRef": null,
+            "dojoDecisionDigest": null,
+            "repoScope": "codesite-runway-occupancy-proof-1783303386275",
+            "authorizedAirspace": [],
+            "restrictedAirspace": [],
+            "requiredRadar": [],
+            "earnedBy": [],
+            "expiresAt": null,
+            "expiresOn": [],
+            "sourceDrift": {
+              "monitored": false,
+              "sourceDigest": null,
+              "currentSourceDigest": "sha256:0f2774f3202ef7b8bd5a40291f0a0e071ba83a6b2d1b55441a4e0223377dd1c2",
+              "expired": false
+            },
+            "landingStats": {
+              "total": 0,
+              "passed": 0,
+              "failed": 0,
+              "evidenceRefs": []
+            },
+            "violationStats": {
+              "total": 0,
+              "critical": 0,
+              "latestAt": null,
+              "evidenceRefs": []
+            },
+            "reasonCodes": [
+              "pilot_license_health_active"
+            ],
+            "requiredAction": null,
+            "evidenceRefs": [],
+            "lifecycle": {
+              "issuedAt": "2026-07-06T02:03:09.208Z",
+              "checkedAt": "2026-07-06T02:03:21.897Z",
+              "latestLandingAt": null,
+              "latestViolationAt": null,
+              "sourcePolicyDigest": "sha256:67f5969a25e0b691dc594a437a23988ed9d2d1de050011fc2b379f19a3c1b670"
+            }
+          },
+          "pilotLicenseRequirement": {
+            "required": false,
+            "classes": [
+              "C"
+            ],
+            "minimumLevel": "Student",
+            "minimumLevelRank": 1
+          },
+          "collisionAvoidance": null,
+          "counterfactualPolicy": null,
+          "governancePolicy": null
+        },
+        "pilotLicenseHealth": {
+          "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+          "key": "cmr8ksljs03vwqg013lgvwtb5",
+          "projectId": "cmr8kskzr03vfqg01ngfcfxzc",
+          "workspaceSlug": "codesite-runway-occupancy-proof-1783303386275",
+          "agentSessionId": "cmr8ksljs03vwqg013lgvwtb5",
+          "ownerUserId": "cmr8kskv703vbqg019zx3446f",
+          "displayCallsign": "RUNWAY-01",
+          "status": "active",
+          "level": "Student",
+          "levelRank": 1,
+          "dojoPilotLicenseRef": null,
+          "dojoLicenseRef": null,
+          "dojoProofRef": null,
+          "dojoDecisionDigest": null,
+          "repoScope": "codesite-runway-occupancy-proof-1783303386275",
+          "authorizedAirspace": [],
+          "restrictedAirspace": [],
+          "requiredRadar": [],
+          "earnedBy": [],
+          "expiresAt": null,
+          "expiresOn": [],
+          "sourceDrift": {
+            "monitored": false,
+            "sourceDigest": null,
+            "currentSourceDigest": "sha256:0f2774f3202ef7b8bd5a40291f0a0e071ba83a6b2d1b55441a4e0223377dd1c2",
+            "expired": false
+          },
+          "landingStats": {
+            "total": 0,
+            "passed": 0,
+            "failed": 0,
+            "evidenceRefs": []
+          },
+          "violationStats": {
+            "total": 0,
+            "critical": 0,
+            "latestAt": null,
+            "evidenceRefs": []
+          },
+          "reasonCodes": [
+            "pilot_license_health_active"
+          ],
+          "requiredAction": null,
+          "evidenceRefs": [],
+          "lifecycle": {
+            "issuedAt": "2026-07-06T02:03:09.208Z",
+            "checkedAt": "2026-07-06T02:03:21.897Z",
+            "latestLandingAt": null,
+            "latestViolationAt": null,
+            "sourcePolicyDigest": "sha256:67f5969a25e0b691dc594a437a23988ed9d2d1de050011fc2b379f19a3c1b670"
+          }
+        },
+        "pilotLicenseRequirement": {
+          "required": false,
+          "classes": [
+            "C"
+          ],
+          "minimumLevel": "Student",
+          "minimumLevelRank": 1
+        },
+        "dojoProofRef": null,
+        "dojoLicenseRef": null,
+        "dojoEvidenceRefs": [],
+        "dojoLedgerCheckpointHash": null,
+        "dojoDecisionDigest": "sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a",
+        "implementationStatus": {
+          "executable": false,
+          "productionRuntime": false
+        },
+        "issuedAt": "2026-07-06T02:03:21.898Z",
+        "expiresAt": null,
+        "revokedAt": null
+      }
+    ],
+    "activeTransactions": [
+      {
+        "id": "cmr8kswb603x2qg01fw41uomc",
+        "projectId": "cmr8kskzr03vfqg01ngfcfxzc",
+        "mutationLeaseId": "cmr8ksvca03wwqg01of7ruyn8",
+        "agentSessionId": "cmr8ksljs03vwqg013lgvwtb5",
+        "baseSnapshot": "sha256:runway-occupancy-base",
+        "baseSnapshotEvidence": {
+          "schemaVersion": "synthi.codesite.repoSnapshotEvidence.v1",
+          "status": "stable",
+          "scope": "read_set",
+          "readSet": [
+            "services/checkout/handler.ts"
+          ],
+          "repoRoot": null,
+          "fileDigests": [
+            {
+              "path": "services/checkout/handler.ts",
+              "exists": true,
+              "size": null,
+              "digest": "sha256:checkout-handler-base"
+            }
+          ],
+          "missingPaths": [],
+          "skippedPaths": [],
+          "truncated": false,
+          "repoManifestDigest": null,
+          "repoManifestFileCount": 0,
+          "repoManifestScannedEntries": 0,
+          "repoManifestTruncated": false,
+          "repoManifestSkippedPaths": [],
+          "repoManifestExcludedPaths": [],
+          "limits": {
+            "maxFiles": 512,
+            "maxFileBytes": 2097152,
+            "maxScanEntries": 15000
+          },
+          "generatedAt": "2026-07-06T02:03:23.139Z",
+          "source": "codesite_control_plane",
+          "snapshotDigest": "sha256:runway-occupancy-base",
+          "evidenceDigest": "sha256:3a8503a564f4ca75ccdda6f2db33ce2d0af4863c4fcc833efc79189a542e9add"
+        },
+        "isolation": "serializable",
+        "status": "open",
+        "readSet": [
+          "services/checkout/handler.ts"
+        ],
+        "observedReadSet": [],
+        "writeSet": [
+          "services/checkout/handler.ts"
+        ],
+        "observedWriteSet": [
+          "services/checkout/handler.ts"
+        ],
+        "semanticDependencyRefs": [],
+        "invariants": [
+          "clearance.diff.inside_route",
+          "no.secret.exposure"
+        ],
+        "assumptionRefs": [],
+        "commitDecision": null,
+        "proofBundleDigest": null,
+        "openedAt": "2026-07-06T02:03:23.154Z",
+        "closedAt": null
+      }
+    ],
+    "allowedPaths": [
+      "services/checkout/**"
+    ],
+    "blockedPaths": [
+      "secrets/**"
+    ],
+    "pendingQuarantines": [],
+    "pilotLicenseHealth": [
+      {
+        "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+        "key": "cmr8kspjc03waqg01mw77c8ws",
+        "projectId": "cmr8kskzr03vfqg01ngfcfxzc",
+        "workspaceSlug": "codesite-runway-occupancy-proof-1783303386275",
+        "agentSessionId": "cmr8kspjc03waqg01mw77c8ws",
+        "ownerUserId": "cmr8kskv703vbqg019zx3446f",
+        "displayCallsign": "CONFLICT-03",
+        "status": "active",
+        "level": "Student",
+        "levelRank": 1,
+        "dojoPilotLicenseRef": null,
+        "dojoLicenseRef": null,
+        "dojoProofRef": null,
+        "dojoDecisionDigest": null,
+        "repoScope": "codesite-runway-occupancy-proof-1783303386275",
+        "authorizedAirspace": [],
+        "restrictedAirspace": [],
+        "requiredRadar": [],
+        "earnedBy": [],
+        "expiresAt": null,
+        "expiresOn": [],
+        "sourceDrift": {
+          "monitored": false,
+          "sourceDigest": null,
+          "currentSourceDigest": "sha256:0f2774f3202ef7b8bd5a40291f0a0e071ba83a6b2d1b55441a4e0223377dd1c2",
+          "expired": false
+        },
+        "landingStats": {
+          "total": 0,
+          "passed": 0,
+          "failed": 0,
+          "evidenceRefs": []
+        },
+        "violationStats": {
+          "total": 0,
+          "critical": 0,
+          "latestAt": null,
+          "evidenceRefs": []
+        },
+        "reasonCodes": [
+          "pilot_license_health_active"
+        ],
+        "requiredAction": null,
+        "evidenceRefs": [],
+        "lifecycle": {
+          "issuedAt": "2026-07-06T02:03:14.376Z",
+          "checkedAt": "2026-07-06T02:03:29.651Z",
+          "latestLandingAt": null,
+          "latestViolationAt": null,
+          "sourcePolicyDigest": "sha256:67f5969a25e0b691dc594a437a23988ed9d2d1de050011fc2b379f19a3c1b670"
+        }
+      },
+      {
+        "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+        "key": "cmr8ksm6h03w2qg01m1u5yxph",
+        "projectId": "cmr8kskzr03vfqg01ngfcfxzc",
+        "workspaceSlug": "codesite-runway-occupancy-proof-1783303386275",
+        "agentSessionId": "cmr8ksm6h03w2qg01m1u5yxph",
+        "ownerUserId": "cmr8kskv703vbqg019zx3446f",
+        "displayCallsign": "DOCS-02",
+        "status": "active",
+        "level": "Student",
+        "levelRank": 1,
+        "dojoPilotLicenseRef": null,
+        "dojoLicenseRef": null,
+        "dojoProofRef": null,
+        "dojoDecisionDigest": null,
+        "repoScope": "codesite-runway-occupancy-proof-1783303386275",
+        "authorizedAirspace": [],
+        "restrictedAirspace": [],
+        "requiredRadar": [],
+        "earnedBy": [],
+        "expiresAt": null,
+        "expiresOn": [],
+        "sourceDrift": {
+          "monitored": false,
+          "sourceDigest": null,
+          "currentSourceDigest": "sha256:0f2774f3202ef7b8bd5a40291f0a0e071ba83a6b2d1b55441a4e0223377dd1c2",
+          "expired": false
+        },
+        "landingStats": {
+          "total": 0,
+          "passed": 0,
+          "failed": 0,
+          "evidenceRefs": []
+        },
+        "violationStats": {
+          "total": 0,
+          "critical": 0,
+          "latestAt": null,
+          "evidenceRefs": []
+        },
+        "reasonCodes": [
+          "pilot_license_health_active"
+        ],
+        "requiredAction": null,
+        "evidenceRefs": [],
+        "lifecycle": {
+          "issuedAt": "2026-07-06T02:03:10.025Z",
+          "checkedAt": "2026-07-06T02:03:29.651Z",
+          "latestLandingAt": null,
+          "latestViolationAt": null,
+          "sourcePolicyDigest": "sha256:67f5969a25e0b691dc594a437a23988ed9d2d1de050011fc2b379f19a3c1b670"
+        }
+      },
+      {
+        "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+        "key": "cmr8ksljs03vwqg013lgvwtb5",
+        "projectId": "cmr8kskzr03vfqg01ngfcfxzc",
+        "workspaceSlug": "codesite-runway-occupancy-proof-1783303386275",
+        "agentSessionId": "cmr8ksljs03vwqg013lgvwtb5",
+        "ownerUserId": "cmr8kskv703vbqg019zx3446f",
+        "displayCallsign": "RUNWAY-01",
+        "status": "active",
+        "level": "Student",
+        "levelRank": 1,
+        "dojoPilotLicenseRef": null,
+        "dojoLicenseRef": null,
+        "dojoProofRef": null,
+        "dojoDecisionDigest": "sha256:87fa29793015c3a233cc1fb8e85a31096e30c5050f6e64a619f539449f98412a",
+        "repoScope": "codesite-runway-occupancy-proof-1783303386275",
+        "authorizedAirspace": [
+          "services/checkout/**"
+        ],
+        "restrictedAirspace": [
+          "secrets/**"
+        ],
+        "requiredRadar": [
+          "api_contract"
+        ],
+        "earnedBy": [],
+        "expiresAt": null,
+        "expiresOn": [],
+        "sourceDrift": {
+          "monitored": false,
+          "sourceDigest": null,
+          "currentSourceDigest": "sha256:0f2774f3202ef7b8bd5a40291f0a0e071ba83a6b2d1b55441a4e0223377dd1c2",
+          "expired": false
+        },
+        "landingStats": {
+          "total": 1,
+          "passed": 0,
+          "failed": 0,
+          "evidenceRefs": [
+            "codesite:runway-proof:pending-inspection"
+          ]
+        },
+        "violationStats": {
+          "total": 0,
+          "critical": 0,
+          "latestAt": null,
+          "evidenceRefs": []
+        },
+        "reasonCodes": [
+          "pilot_license_health_active"
+        ],
+        "requiredAction": null,
+        "evidenceRefs": [
+          "codesite:runway-proof:pending-inspection",
+          "codesite:read-snapshot:sha256:3a8503a564f4ca75ccdda6f2db33ce2d0af4863c4fcc833efc79189a542e9add",
+          "codesite:runway-proof:write-checkout",
+          "codesite:policy-decision:cmr8ksvcf03wyqg01xa4gpjep"
+        ],
+        "lifecycle": {
+          "issuedAt": "2026-07-06T02:03:09.208Z",
+          "checkedAt": "2026-07-06T02:03:29.651Z",
+          "latestLandingAt": "2026-07-06T02:03:28.443Z",
+          "latestViolationAt": null,
+          "sourcePolicyDigest": "sha256:67f5969a25e0b691dc594a437a23988ed9d2d1de050011fc2b379f19a3c1b670"
+        }
+      }
+    ],
+    "pilotLicenseSummary": {
+      "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+      "statusCounts": {
+        "active": 3
+      },
+      "active": 3,
+      "blocked": 0,
+      "requiredActions": []
+    },
+    "filesystemBoundaryProofs": [],
+    "requiredActions": [],
+    "eventsSince": "lt:14",
+    "inboxUrl": "/api/workspace/codesite-runway-occupancy-proof-1783303386275/codesite/agent-sessions/:agentSessionId/inbox",
+    "collisionForecast": {
+      "riskLevel": "high",
+      "risks": [
+        {
+          "risk": "file_collision",
+          "severity": "medium",
+          "aircraft": [
+            "CONFLICT-03",
+            "RUNWAY-01"
+          ],
+          "conflictZone": "services/checkout/**",
+          "overlaps": [
+            [
+              "services/checkout/**",
+              "services/checkout/conflicting.ts"
+            ]
+          ],
+          "recommendedResolution": {
+            "action": "sequence_flights",
+            "steps": [
+              "Sequence RUNWAY-01 before CONFLICT-03",
+              "Refresh read sets after first landing",
+              "Run landing radar before second flight mutates overlapping files"
+            ]
+          }
+        },
+        {
+          "risk": "wake_turbulence",
+          "severity": "high",
+          "aircraft": [
+            "CONFLICT-03",
+            "RUNWAY-01"
+          ],
+          "conflictZone": "services/checkout/**",
+          "wake": {
+            "kind": "schema_or_contract",
+            "runway": "services/checkout/**",
+            "occupiedBy": "RUNWAY-01",
+            "affectedFlights": [
+              "CONFLICT-03"
+            ],
+            "requiredWaits": [
+              "generated_client_refresh",
+              "contract_radar",
+              "downstream_test_rerun"
+            ],
+            "downstreamSignals": {
+              "schemaSignals": [],
+              "generatedClients": []
+            }
+          },
+          "recommendedResolution": {
+            "action": "hold_for_wake_turbulence",
+            "steps": [
+              "Hold downstream feature flights until schema or contract radar completes",
+              "Refresh generated clients before dependent code lands",
+              "Rerun tests covering the changed contract surface"
+            ]
+          }
+        }
+      ],
+      "runwayOccupancy": [
+        {
+          "runway": "services/checkout/**",
+          "route": [
+            "services/checkout/**"
+          ],
+          "occupiedBy": "RUNWAY-01",
+          "mutationLeaseId": "cmr8ksvca03wwqg01of7ruyn8",
+          "runwayClass": "C",
+          "diffPaths": [
+            "services/checkout/handler.ts"
+          ],
+          "pendingInspections": [
+            "api_contract_radar",
+            "inspection:QA-RUNWAY-01"
+          ],
+          "eligibleFlights": [
+            "DOCS-02"
+          ]
+        }
+      ],
+      "wakeTurbulence": [
+        {
+          "risk": "wake_turbulence",
+          "severity": "high",
+          "aircraft": [
+            "CONFLICT-03",
+            "RUNWAY-01"
+          ],
+          "conflictZone": "services/checkout/**",
+          "wake": {
+            "kind": "schema_or_contract",
+            "runway": "services/checkout/**",
+            "occupiedBy": "RUNWAY-01",
+            "affectedFlights": [
+              "CONFLICT-03"
+            ],
+            "requiredWaits": [
+              "generated_client_refresh",
+              "contract_radar",
+              "downstream_test_rerun"
+            ],
+            "downstreamSignals": {
+              "schemaSignals": [],
+              "generatedClients": []
+            }
+          },
+          "recommendedResolution": {
+            "action": "hold_for_wake_turbulence",
+            "steps": [
+              "Hold downstream feature flights until schema or contract radar completes",
+              "Refresh generated clients before dependent code lands",
+              "Rerun tests covering the changed contract surface"
+            ]
+          }
+        }
+      ]
+    },
+    "updatedAt": "2026-07-06T02:03:29.651Z"
+  },
+  "browserChecks": {
+    "boardVisible": true,
+    "runwayVisible": true,
+    "occupantVisible": true,
+    "diffVisible": true,
+    "pendingVisible": true,
+    "pendingInspectionRunVisible": true,
+    "eligibleVisible": true,
+    "conflictingFlightHeld": true,
+    "noHorizontalOverflow": true
+  },
+  "panelPngPath": "tmp/codesite-dojo-proof/codesite-runway-occupancy-panel.png",
+  "assertions": {
+    "runwayFromControlState": true,
+    "occupiedByLeaseCallsign": true,
+    "diffFromTransactionWriteSet": true,
+    "pendingInspectionFromZoneRule": true,
+    "pendingInspectionFromInspectionRun": true,
+    "nonOverlappingFlightCanLand": true,
+    "overlappingFlightCannotLand": true,
+    "browserBoardVisible": true,
+    "browserShowsRunwayDiff": true,
+    "browserShowsPendingInspection": true,
+    "browserShowsPendingInspectionRun": true,
+    "browserShowsEligibleFlight": true,
+    "browserHidesConflictingFlight": true,
+    "browserNoHorizontalOverflow": true
+  },
+  "status": "validated",
+  "git": {
+    "head": "96e35fee3eea974e4ce6a5076f33518cdb82a2f5",
+    "branch": "codex/codesite-atc-full-from-dev-20260630",
+    "statusShort": "M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-active-mutation-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-actual-git-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.html\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.json\n M tmp/codesite-dojo-proof/codesite-black-box-completeness-proof.png\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.html\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.json\n M tmp/codesite-dojo-proof/codesite-context-alias-proof.png\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.html\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.json\n M tmp/codesite-dojo-proof/codesite-counterfactual-memory-proof.png\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-direct-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-latest.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof-summary.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.html\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-proof.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-publication.json\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-handover.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-causal-replay-mobile.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-coordination.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-line-inspector.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui-proof-section.png\n M tmp/codesite-dojo-proof/codesite-full-workflow-ui.png\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-git-provisioning-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-index-proof.png\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.html\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.json\n M tmp/codesite-dojo-proof/codesite-gitservice-worktree-proof.png\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.html\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.json\n M tmp/codesite-dojo-proof/codesite-governance-mcp-lifecycle-proof.png\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.html\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.json\n M tmp/codesite-dojo-proof/codesite-isolation-contract-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.html\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.json\n M tmp/codesite-dojo-proof/codesite-line-inspector-proof.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-line-inspector-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.html\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.json\n M tmp/codesite-dojo-proof/codesite-line-provenance-diff-proof.png\n M tmp/codesite-dojo-proof/codesite-metrics-proof.html\n M tmp/codesite-dojo-proof/codesite-metrics-proof.json\n M tmp/codesite-dojo-proof/codesite-metrics-proof.png\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.html\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.json\n M tmp/codesite-dojo-proof/codesite-monitor-downgrade-proof.png\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.html\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.json\n M tmp/codesite-dojo-proof/codesite-pathless-run-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-bundle-git-context-proof.png\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.html\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.json\n M tmp/codesite-dojo-proof/codesite-proof-carrying-commit-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.html\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.json\n M tmp/codesite-dojo-proof/codesite-quarantine-review-proof.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-desktop-full.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-panel.png\n M tmp/codesite-dojo-proof/codesite-quarantine-review-ui-rejected.png\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.json\n M tmp/codesite-dojo-proof/codesite-radar-adapter-proof.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.html\n M tmp/codesite-dojo-proof/codesite-radar-ui-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-cache-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-local-autosync-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-policy-compiler-proof.png\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.html\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.json\n M tmp/codesite-dojo-proof/codesite-repo-state-identity-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-host-block-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-boundary-overlay-attestation.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-context-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-filesystem-hydration-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-overlay-proof.png\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.html\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.json\n M tmp/codesite-dojo-proof/codesite-runtime-quarantine-proof.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-panel.png\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.html\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.json\n M tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.png\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.html\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.json\n M tmp/codesite-dojo-proof/codesite-schema-first-clearance-proof.png\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.html\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.json\n M tmp/codesite-dojo-proof/codesite-serializable-commit-race-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.html\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.json\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-proof.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-desktop.png\n M tmp/codesite-dojo-proof/codesite-shadow-simulator-ui-mobile.png\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.html\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.json\n M tmp/codesite-dojo-proof/codesite-terminal-reattach-proof.png\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.html\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.json\n M tmp/codesite-dojo-proof/codesite-unmanaged-host-boundary-proof.png\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.html\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.json\n M tmp/codesite-dojo-proof/codesite-workspace-prep-guard-proof.png\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.html\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.json\n M tmp/codesite-dojo-proof/codesitefs-runtime-boundary-proof.png\n?? .synthi/codesite/"
+  },
+  "commands": [
+    {
+      "name": "proofSuiteGenerator:runwayOccupancy",
+      "command": "node synthi/scripts/codesite-runway-occupancy-proof.mjs",
+      "cwd": ".",
+      "exitCode": 0,
+      "signal": null,
+      "summary": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "runner": "command"
+      },
+      "outputTail": [
+        "{",
+        "  \"ok\": true,",
+        "  \"jsonPath\": \"tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.json\",",
+        "  \"htmlPath\": \"tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.html\",",
+        "  \"pngPath\": \"tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.png\",",
+        "  \"panelPngPath\": \"tmp/codesite-dojo-proof/codesite-runway-occupancy-panel.png\",",
+        "  \"assertions\": {",
+        "    \"runwayFromControlState\": true,",
+        "    \"occupiedByLeaseCallsign\": true,",
+        "    \"diffFromTransactionWriteSet\": true,",
+        "    \"pendingInspectionFromZoneRule\": true,",
+        "    \"pendingInspectionFromInspectionRun\": true,",
+        "    \"nonOverlappingFlightCanLand\": true,",
+        "    \"overlappingFlightCannotLand\": true,",
+        "    \"browserBoardVisible\": true,",
+        "    \"browserShowsRunwayDiff\": true,",
+        "    \"browserShowsPendingInspection\": true,",
+        "    \"browserShowsPendingInspectionRun\": true,",
+        "    \"browserShowsEligibleFlight\": true,",
+        "    \"browserHidesConflictingFlight\": true,",
+        "    \"browserNoHorizontalOverflow\": true",
+        "  }",
+        "}"
+      ]
+    }
+  ],
+  "proofSuite": {
+    "runner": "synthi/scripts/codesite-run-mature-proof-suite.mjs",
+    "stampedAt": "2026-07-06T02:03:31.603Z",
+    "proofFile": "tmp/codesite-dojo-proof/codesite-runway-occupancy-proof.json"
+  },
+  "ok": true
+}

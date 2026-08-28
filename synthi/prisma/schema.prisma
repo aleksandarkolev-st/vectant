@@ -2,29 +2,26 @@ generator client {
   provider = "prisma-client-js"
 }
 
-
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
-
 model Workspace {
-  id        String   @id @default(cuid())
-  name      String
-  slug      String   @unique
-  repoUrl   String?
-  
+  id      String  @id @default(cuid())
+  name    String
+  slug    String  @unique
+  repoUrl String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   memberships WorkspaceMembership[]
 }
 
-
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
+  id    String @id @default(cuid())
+  email String @unique
 
   // AES-256-GCM blob for the user's GitHub PAT, format: "<iv_b64>:<authTag_b64>:<ciphertext_b64>".
   // Decrypted on the server only (in NextAuth session callback) and never persisted in the JWT.
@@ -36,15 +33,20 @@ model User {
   updatedAt DateTime @updatedAt
 
   memberships WorkspaceMembership[]
+  tokens      PersonalAccessToken[]
 
   @@index([email])
 }
 
 model WorkspaceMembership {
-  id          String    @id @default(cuid())
-  userId      String
-  workspaceId String
-  createdAt   DateTime  @default(now())
+  id             String   @id @default(cuid())
+  userId         String
+  workspaceId    String
+  // Workspace authorization role: 'owner' | 'admin' | 'member'. Backfill sets the
+  // earliest membership per workspace to 'owner' (Workspace has no creatorId). (Plan 1a R1-9)
+  role           String   @default("member")
+  invitedByEmail String?
+  createdAt      DateTime @default(now())
 
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -52,4 +54,1378 @@ model WorkspaceMembership {
   @@unique([userId, workspaceId])
   @@index([userId])
   @@index([workspaceId])
+}
+
+model EncryptedSecret {
+  id        String   @id @default(cuid())
+  // AES-256-GCM blob from src/lib/tokenCrypto.js, format "iv:tag:ct".
+  cipher    String
+  // Non-sensitive last-4 chars of the plaintext, for display only.
+  last4     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  connection         McpConnection?
+  gitProvider        GitProvider?   @relation("GitProviderSecret")
+  gitProviderRefresh GitProvider?   @relation("GitProviderRefresh")
+  jupyterServer      JupyterServer?
+}
+
+model JupyterServer {
+  id           String           @id @default(cuid())
+  workspaceSlug String
+  name         String
+  origin       String
+  mountPath    String           @default("")
+  enabled      Boolean          @default(true)
+  secretId     String?          @unique
+  secret       EncryptedSecret? @relation(fields: [secretId], references: [id], onDelete: SetNull)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  @@index([workspaceSlug])
+  @@unique([workspaceSlug, origin])
+}
+
+model JupyterAuditEvent {
+  id            String   @id @default(cuid())
+  workspaceSlug String
+  serverId      String?
+  actorUserId   String?
+  eventType     String
+  notebookPath  String?
+  kernelId      String?
+  detailsJson   String   @default("{}")
+  createdAt     DateTime @default(now())
+
+  @@index([workspaceSlug, createdAt])
+  @@index([serverId, createdAt])
+  @@index([eventType, createdAt])
+}
+
+model McpConnection {
+  id              String           @id @default(cuid())
+  name            String
+  url             String
+  transport       String           @default("http") // 'http' | 'sse'
+  scope           String // 'personal' | 'workspace'
+  ownerUserId     String?
+  workspaceSlug   String?
+  authType        String           @default("none") // 'none' | 'bearer' | 'header'
+  headerName      String?
+  secretId        String?          @unique
+  secret          EncryptedSecret? @relation(fields: [secretId], references: [id], onDelete: SetNull)
+  // Tool names the AI may call. Empty array = none enabled (fail-closed). (R1-1)
+  toolAllowlist   String[]         @default([])
+  enabled         Boolean          @default(true)
+  lastHealthState String?
+  lastHealthAt    DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  audits McpCallAudit[]
+
+  @@index([ownerUserId])
+  @@index([workspaceSlug])
+}
+
+model McpCallAudit {
+  id                       String         @id @default(cuid())
+  connectionId             String? // null for unknown-alias audit rows
+  connection               McpConnection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  serverName               String
+  toolName                 String // original MCP tool name
+  userId                   String?
+  workspaceSlug            String?
+  outcome                  String // 'ok' | 'error' | 'blocked'
+  errorCode                String?
+  // Richer audit columns (R1-8) — never store raw secrets or full payloads.
+  alias                    String? // the ext_<i> alias presented to the model
+  callerType               String? // 'chat' | 'cli'
+  durationMs               Int?
+  argsHash                 String? // sha256 hex of the JSON args (NOT raw args)
+  argsBytes                Int?
+  resultBytes              Int?
+  codeSiteProjectId        String?
+  codeSiteTransactionId    String?
+  codeSiteMutationLeaseId  String?
+  codeSiteAgentSessionId   String?
+  codeSiteEvidenceRefsJson String?
+  createdAt                DateTime       @default(now())
+
+  @@index([connectionId])
+  @@index([createdAt])
+  @@index([codeSiteProjectId])
+  @@index([codeSiteTransactionId])
+  @@index([codeSiteMutationLeaseId])
+}
+
+model PersonalAccessToken {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  tokenHash  String    @unique
+  last4      String?
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+
+  @@index([userId])
+}
+
+model GitProvider {
+  id                   String           @id @default(cuid())
+  name                 String
+  providerType         String // 'github' | 'gitlab' | 'generic'
+  baseUrl              String?
+  scope                String // 'personal' | 'workspace'
+  ownerUserId          String?
+  workspaceSlug        String?
+  authType             String           @default("pat") // 'oauth' | 'pat'
+  secretId             String?          @unique
+  secret               EncryptedSecret? @relation("GitProviderSecret", fields: [secretId], references: [id], onDelete: SetNull)
+  refreshSecretId      String?          @unique
+  refreshSecret        EncryptedSecret? @relation("GitProviderRefresh", fields: [refreshSecretId], references: [id], onDelete: SetNull)
+  accessTokenExpiresAt DateTime?
+  oauthScopes          String[]         @default([])
+  accountLogin         String?
+  enabled              Boolean          @default(true)
+  needsRelink          Boolean          @default(false)
+  lastHealthState      String?
+  lastHealthAt         DateTime?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  @@index([ownerUserId])
+  @@index([workspaceSlug])
+}
+
+model MarketplaceProgram {
+  id                String   @id @default(cuid())
+  packageId         String   @unique
+  publisher         String
+  verified          Boolean  @default(false)
+  latestVersion     String
+  // Phase 5 (open marketplace): publish + reputation metadata. publishedByUserId
+  // is the user who published; installCount is the denormalized reputation signal.
+  displayName       String?
+  description       String?
+  publishedByUserId String?
+  installCount      Int      @default(0)
+  // The currently-live (last-approved) version + its AR digest. Null until a
+  // version reaches `published`. The marketplace lists only programs where this
+  // is set; an update in review does NOT change these until it is approved
+  // (the previously-approved digest stays live).
+  publishedVersion  String?
+  publishedDigest   String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  versions     ProgramVersion[]
+  installs     ProgramInstall[]
+  pricing      ProgramPricing?
+  entitlements Entitlement[]
+}
+
+model ProgramVersion {
+  id            String   @id @default(cuid())
+  programId     String
+  version       String
+  manifestJson  String
+  requiredTools String[] @default([])
+  ports         String[] @default([])
+
+  // ── Community-app review gate (Phase 1) ──
+  // State machine: submitted|scanning|ai_review|pending_review|approved|rehosting|published|rejected.
+  // Built-in/legacy direct-published versions default to 'published'.
+  reviewState       String   @default("published")
+  sourceImageRef    String?  // publisher's pullable ref (their registry), container/gui only
+  sourceImageDigest String?  // resolved digest of the source ref at scan time
+  hostedImageDigest String?  // our AR digest after re-host (what installers pull)
+  scanReportJson    String?  // redacted trivy summary (severity counts + decisive CVEs)
+  aiRiskJson        String?  // Phase 2 placeholder (nullable)
+  submittedByUserId String?
+  reviewedByUserId  String?
+  reviewNotes       String?
+  submittedAt       DateTime @default(now())
+  reviewedAt        DateTime?
+
+  createdAt     DateTime @default(now())
+
+  program MarketplaceProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+  events  ProgramReviewEvent[]
+
+  @@unique([programId, version])
+  @@index([programId])
+  @@index([reviewState])
+}
+
+model ProgramInstall {
+  id                String   @id @default(cuid())
+  programId         String
+  workspaceSlug     String
+  version           String
+  status            String   @default("pending")
+  installedByUserId String
+  grantId           String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  program  MarketplaceProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+  grant    PermissionGrant?   @relation(fields: [grantId], references: [id], onDelete: SetNull)
+  sessions ProgramSession[]
+
+  @@index([programId])
+  @@index([workspaceSlug])
+  @@index([installedByUserId])
+  @@index([grantId])
+}
+
+model ProgramSession {
+  id              String    @id @default(cuid())
+  installId       String?
+  workspaceSlug   String
+  runtimeType     String
+  state           String    @default("starting")
+  startedByUserId String
+  startedAt       DateTime  @default(now())
+  endedAt         DateTime?
+  lastHealthState String?
+  lastHealthAt    DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  install ProgramInstall?       @relation(fields: [installId], references: [id], onDelete: SetNull)
+  events  ProgramRuntimeEvent[]
+
+  @@index([installId])
+  @@index([workspaceSlug])
+  @@index([startedByUserId])
+  @@index([state])
+  @@index([startedAt])
+}
+
+model PermissionGrant {
+  id              String   @id @default(cuid())
+  workspaceSlug   String
+  scopesJson      String
+  grantedByUserId String
+  grantedAt       DateTime @default(now())
+  createdAt       DateTime @default(now())
+
+  installs ProgramInstall[]
+
+  @@index([workspaceSlug])
+  @@index([grantedByUserId])
+}
+
+model ProgramRuntimeEvent {
+  id                       String   @id @default(cuid())
+  sessionId                String
+  type                     String
+  dataJson                 String?
+  codeSiteProjectId        String?
+  codeSiteTransactionId    String?
+  codeSiteMutationLeaseId  String?
+  codeSiteAgentSessionId   String?
+  codeSiteEvidenceRefsJson String?
+  createdAt                DateTime @default(now())
+
+  session ProgramSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([createdAt])
+  @@index([codeSiteProjectId])
+  @@index([codeSiteTransactionId])
+  @@index([codeSiteMutationLeaseId])
+}
+
+model CodeSiteProject {
+  id                     String   @id @default(cuid())
+  workspaceSlug          String
+  collaborationSessionId String?
+  title                  String
+  request                String
+  status                 String
+  zonePolicyJson         String
+  controlPlanJson        String
+  // Coordination mode from docs/CHANNEL_MODES_TRADEOFFS.md:
+  // mediated_only | registered_direct | direct_preferred | open_local
+  channelMode            String   @default("registered_direct")
+  createdByUserId        String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  members            CodeSiteProjectMember[]
+  agentSessions      CodeSiteAgentSession[]
+  executionPlans     CodeSiteExecutionPlan[]
+  mutationLeases     CodeSiteMutationLease[]
+  mutationTxns       CodeSiteMutationTransaction[]
+  assumptions        CodeSiteAssumptionLease[]
+  policyDecisions    CodeSitePolicyDecision[]
+  events             CodeSiteEvent[]
+  incidents          CodeSiteIncident[]
+  inspectionRuns     CodeSiteInspectionRun[]
+  proofBundles       CodeSiteProofBundle[]
+  lineProvenance     CodeSiteLineProvenance[]
+  documents          CodeSiteDocument[]
+  permits            CodeSitePermit[]
+  documentReviews    CodeSiteDocumentReview[]
+  routeRevisions     CodeSiteRouteRevision[]
+  counterfactualRuns CodeSiteCounterfactualRun[]
+  policyDeltas       CodeSitePolicyDelta[]
+  inboxItems         CodeSiteAgentInboxItem[]
+  knowledgeItems     CodeSiteKnowledgeItem[]
+  knowledgeReferences CodeSiteKnowledgeReference[]
+  agentChannels      CodeSiteAgentChannel[]
+  publishedNotams    CodeSiteFleetNotam[]
+  notamIngestStates  CodeSiteNotamIngestState[]
+
+  @@index([workspaceSlug])
+  @@index([collaborationSessionId])
+  @@index([status])
+}
+
+model CodeSiteProjectMember {
+  id              String   @id @default(cuid())
+  projectId       String
+  workspaceSlug   String
+  userId          String
+  role            String
+  permissionsJson String
+  redactionPolicyJson String?
+  participationStatus String @default("enabled")
+  source          String
+  createdByUserId String?
+  revokedAt       DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([workspaceSlug, userId])
+  @@index([projectId])
+  @@index([role])
+  @@index([projectId, revokedAt])
+}
+
+model CodeSiteMutationZone {
+  id            String   @id @default(cuid())
+  workspaceSlug String
+  zoneKey       String
+  label         String
+  zoneClass     String   @map("class")
+  pathsJson     String
+  rulesJson     String
+  risk          String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([workspaceSlug, zoneKey])
+  @@index([workspaceSlug])
+  @@index([zoneClass])
+}
+
+model CodeSiteAgentSession {
+  id                       String    @id @default(cuid())
+  projectId                String
+  ownerUserId              String
+  workspaceSlug            String?
+  collaborationUserId      String?
+  effectiveWorkspaceUserId String?
+  collaborationSessionId   String?
+  terminalSessionId        String?
+  runtimeSessionId         String?
+  runtimeScope             String?
+  agentProvider            String
+  agentRuntime             String?
+  providerSessionRef       String?
+  displayCallsign          String
+  status                   String
+  permissionsJson          String
+  redactionPolicyJson      String?
+  capabilitiesJson         String    @default("[]")
+  executionHostJson        String    @default("{}")
+  subscriptionsJson        String    @default("[]")
+  deliveryChannelJson      String    @default("{}")
+  attachSource             String?
+  bindingVersion           Int?
+  agentAccessTokenHash     String?   @unique
+  agentAccessTokenIssuedAt DateTime?
+  agentAccessTokenExpiresAt DateTime?
+  activeMutationLeaseId    String?
+  activeTransactionId      String?
+  dojoPilotLicenseRef      String?
+  dojoProofRef             String?
+  dojoEvidenceRefsJson     String?
+  dojoDecisionDigest       String?
+  pilotLicenseSnapshotJson String?
+  attachedAt               DateTime?
+  lastHeartbeatAt          DateTime?
+  detachedAt               DateTime?
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+  endedAt                  DateTime?
+
+  project        CodeSiteProject               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  executionPlans CodeSiteExecutionPlan[]
+  mutationLeases CodeSiteMutationLease[]
+  mutationTxns   CodeSiteMutationTransaction[]
+  inboxItems     CodeSiteAgentInboxItem[]
+  createdKnowledgeItems CodeSiteKnowledgeItem[] @relation("CodeSiteKnowledgeCreatedByAgent")
+  ownedKnowledgeItems   CodeSiteKnowledgeItem[] @relation("CodeSiteKnowledgeOwnedByAgent")
+
+  @@index([projectId])
+  @@index([ownerUserId])
+  @@index([workspaceSlug])
+  @@index([collaborationUserId])
+  @@index([effectiveWorkspaceUserId])
+  @@index([collaborationSessionId, status])
+  @@index([terminalSessionId])
+  @@index([runtimeSessionId])
+  @@index([runtimeScope])
+  @@index([lastHeartbeatAt])
+  @@index([agentAccessTokenExpiresAt])
+  @@index([displayCallsign])
+  @@index([status])
+}
+
+model CodeSiteExecutionPlan {
+  id                  String    @id @default(cuid())
+  projectId           String
+  agentSessionId      String
+  displayCallsign     String
+  mission             String
+  domain              String
+  status              String
+  routeJson           String
+  blockedZonesJson    String
+  abortJson           String
+  requestedToolsJson  String
+  estimatedDurationMs Int?
+  filedAt             DateTime  @default(now())
+  closedAt            DateTime?
+
+  project        CodeSiteProject         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  agentSession   CodeSiteAgentSession    @relation(fields: [agentSessionId], references: [id], onDelete: Cascade)
+  mutationLeases CodeSiteMutationLease[]
+  inspectionRuns CodeSiteInspectionRun[]
+  routeRevisions CodeSiteRouteRevision[]
+
+  @@index([projectId])
+  @@index([agentSessionId])
+  @@index([displayCallsign])
+  @@index([status])
+}
+
+model CodeSiteMutationLease {
+  id                       String    @id @default(cuid())
+  projectId                String
+  executionPlanId          String
+  agentSessionId           String
+  displayCallsign          String
+  status                   String
+  leaseJson                String
+  dojoProofRef             String?
+  dojoLicenseRef           String?
+  dojoEvidenceRefsJson     String?
+  dojoLedgerCheckpointHash String?
+  dojoDecisionDigest       String?
+  implementationStatusJson String?
+  issuedAt                 DateTime  @default(now())
+  expiresAt                DateTime?
+  revokedAt                DateTime?
+
+  project         CodeSiteProject               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  executionPlan   CodeSiteExecutionPlan         @relation(fields: [executionPlanId], references: [id], onDelete: Cascade)
+  agentSession    CodeSiteAgentSession          @relation(fields: [agentSessionId], references: [id], onDelete: Cascade)
+  events          CodeSiteEvent[]
+  policyDecisions CodeSitePolicyDecision[]
+  mutationTxns    CodeSiteMutationTransaction[]
+
+  @@index([projectId])
+  @@index([executionPlanId])
+  @@index([agentSessionId])
+  @@index([displayCallsign])
+  @@index([status])
+}
+
+model CodeSiteMutationTransaction {
+  id                         String    @id @default(cuid())
+  projectId                  String
+  mutationLeaseId            String
+  agentSessionId             String
+  baseSnapshot               String
+  baseSnapshotEvidenceJson   String?
+  isolation                  String
+  status                     String
+  readSetJson                String
+  observedReadSetJson        String?
+  writeSetJson               String
+  observedWriteSetJson       String?
+  semanticDependencyRefsJson String?
+  invariantsJson             String
+  assumptionRefsJson         String
+  commitDecisionJson         String?
+  proofBundleDigest          String?
+  openedAt                   DateTime  @default(now())
+  closedAt                   DateTime?
+
+  project        CodeSiteProject          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  mutationLease  CodeSiteMutationLease    @relation(fields: [mutationLeaseId], references: [id], onDelete: Cascade)
+  agentSession   CodeSiteAgentSession     @relation(fields: [agentSessionId], references: [id], onDelete: Cascade)
+  proofBundles   CodeSiteProofBundle[]
+  lineProvenance CodeSiteLineProvenance[]
+  targetedKnowledgeItems CodeSiteKnowledgeItem[]
+
+  @@index([projectId])
+  @@index([mutationLeaseId])
+  @@index([agentSessionId])
+  @@index([status])
+  @@index([openedAt])
+}
+
+model CodeSiteAssumptionLease {
+  id              String    @id @default(cuid())
+  projectId       String
+  ownerSessionId  String
+  displayCallsign String
+  assumptionKey   String
+  dependsOnJson   String
+  usedByJson      String
+  status          String
+  invalidatedBy   String?
+  invalidatedAt   DateTime?
+  createdAt       DateTime  @default(now())
+
+  project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([ownerSessionId])
+  @@index([assumptionKey])
+  @@index([status])
+}
+
+model CodeSitePolicyDecision {
+  id              String   @id @default(cuid())
+  projectId       String
+  mutationLeaseId String?
+  displayCallsign String?
+  decision        String
+  reasonCodesJson String
+  inputDigest     String
+  decisionJson    String
+  createdAt       DateTime @default(now())
+
+  project       CodeSiteProject        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  mutationLease CodeSiteMutationLease? @relation(fields: [mutationLeaseId], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@index([mutationLeaseId])
+  @@index([displayCallsign])
+  @@index([decision])
+  @@index([createdAt])
+}
+
+model CodeSiteProofBundle {
+  id                    String   @id @default(cuid())
+  projectId             String
+  transactionId         String
+  commitSha             String?
+  readSetDigest         String
+  writeSetDigest        String
+  invariantsJson        String
+  evidenceRefsJson      String
+  dojoEvidenceRefsJson  String?
+  repoStateJson         String?
+  incidentReplayDigest  String?
+  landingStatus         String?
+  bundleDigest          String
+  proofSignatureJson    String?
+  signatureKeyId        String?
+  createdAt             DateTime @default(now())
+
+  project     CodeSiteProject             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  transaction CodeSiteMutationTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([transactionId])
+  @@index([commitSha])
+  @@index([bundleDigest])
+  @@index([signatureKeyId])
+}
+
+model CodeSiteLineProvenance {
+  id                  String   @id @default(cuid())
+  projectId           String
+  transactionId       String
+  filePath            String
+  lineAnchor          String
+  startLine           Int?
+  endLine             Int?
+  displayCallsign     String
+  reasonRef           String?
+  evidenceRefsJson    String
+  dojoSourceRefsJson  String?
+  proofBundleId       String?
+  processAncestryJson String?
+  promptSummary       String?
+  createdAt           DateTime @default(now())
+
+  project     CodeSiteProject             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  transaction CodeSiteMutationTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([transactionId])
+  @@index([filePath])
+  @@index([filePath, startLine, endLine])
+  @@index([projectId, filePath, startLine, endLine])
+  @@index([displayCallsign])
+}
+
+model CodeSiteInspectionRun {
+  id                    String    @id @default(cuid())
+  projectId             String
+  executionPlanId       String?
+  displayCallsign       String
+  status                String
+  changedPathsJson      String
+  inspectionSignalsJson String
+  evidenceRefsJson      String
+  requestedAt           DateTime  @default(now())
+  completedAt           DateTime?
+
+  project       CodeSiteProject        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  executionPlan CodeSiteExecutionPlan? @relation(fields: [executionPlanId], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@index([executionPlanId])
+  @@index([displayCallsign])
+  @@index([status])
+}
+
+model CodeSiteIncident {
+  id                    String   @id @default(cuid())
+  projectId             String
+  severity              String
+  category              String
+  participantsJson      String
+  affectedZonesJson     String
+  incidentReplayJson    String
+  replayDigest          String?
+  timelineEventRefsJson String?
+  policyDeltaJson       String?
+  evidenceRefsJson      String
+  createdAt             DateTime @default(now())
+
+  project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([severity])
+  @@index([category])
+}
+
+model CodeSiteDocument {
+  id         String    @id @default(cuid())
+  projectId  String
+  kind       String
+  status     String
+  title      String
+  bodyJson   String
+  blocking   Boolean   @default(false)
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
+
+  project    CodeSiteProject          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  inboxItems CodeSiteAgentInboxItem[]
+  reviews    CodeSiteDocumentReview[]
+  routeRevisions CodeSiteRouteRevision[]
+
+  @@index([projectId])
+  @@index([kind])
+  @@index([status])
+}
+
+model CodeSitePermit {
+  id               String   @id @default(cuid())
+  projectId        String
+  executionPlanId  String?
+  mutationLeaseId  String?
+  documentId       String?
+  permitType       String
+  status           String
+  title            String
+  scopeJson        String
+  approvalJson     String
+  evidenceRefsJson String
+  issuedByUserId   String?
+  issuedAt         DateTime @default(now())
+  expiresAt        DateTime?
+  closedAt         DateTime?
+
+  project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([executionPlanId])
+  @@index([mutationLeaseId])
+  @@index([documentId])
+  @@index([status])
+  @@index([permitType])
+}
+
+model CodeSiteDocumentReview {
+  id               String   @id @default(cuid())
+  projectId        String
+  documentId       String
+  reviewerUserId   String?
+  status           String
+  decision         String
+  reasonCodesJson  String
+  bodyJson         String
+  evidenceRefsJson String
+  requestedAt      DateTime @default(now())
+  reviewedAt       DateTime?
+
+  project  CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  document CodeSiteDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([documentId])
+  @@index([reviewerUserId])
+  @@index([status])
+  @@index([decision])
+}
+
+model CodeSiteRouteRevision {
+  id                 String   @id @default(cuid())
+  projectId          String
+  executionPlanId    String
+  documentId         String?
+  status             String
+  previousRouteJson  String
+  proposedRouteJson  String
+  affectedLeasesJson String
+  approvalJson       String
+  evidenceRefsJson   String
+  proposedByUserId   String?
+  approvedByUserId   String?
+  appliedAt          DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  project       CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  executionPlan CodeSiteExecutionPlan @relation(fields: [executionPlanId], references: [id], onDelete: Cascade)
+  document      CodeSiteDocument? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@index([executionPlanId])
+  @@index([documentId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model CodeSiteEvent {
+  id               String   @id @default(cuid())
+  projectId        String
+  mutationLeaseId  String?
+  eventType        String
+  displayCallsign  String?
+  actorType        String?
+  actorId          String?
+  detailsJson      String
+  evidenceRefsJson String?
+  logicalTime      Int?
+  createdAt        DateTime @default(now())
+
+  project       CodeSiteProject          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  mutationLease CodeSiteMutationLease?   @relation(fields: [mutationLeaseId], references: [id], onDelete: SetNull)
+  inboxItems    CodeSiteAgentInboxItem[]
+  knowledgeItems CodeSiteKnowledgeItem[]
+
+  @@unique([projectId, logicalTime])
+  @@index([projectId])
+  @@index([mutationLeaseId])
+  @@index([displayCallsign])
+  @@index([eventType])
+  @@index([createdAt])
+  @@index([projectId, logicalTime])
+}
+
+model CodeSiteAgentInboxItem {
+  id                  String    @id @default(cuid())
+  projectId           String
+  agentSessionId      String
+  recipientUserId     String
+  eventId             String?
+  documentId          String?
+  knowledgeItemId     String?
+  kind                String
+  requiresResponse    Boolean   @default(false)
+  status              String    @default("pending")
+  redactedPayloadJson String
+  responseAction      String?
+  responseJson        String?
+  createdAt           DateTime  @default(now())
+  acknowledgedAt      DateTime?
+  respondedAt         DateTime?
+
+  project      CodeSiteProject      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  agentSession CodeSiteAgentSession @relation(fields: [agentSessionId], references: [id], onDelete: Cascade)
+  event        CodeSiteEvent?       @relation(fields: [eventId], references: [id], onDelete: SetNull)
+  document     CodeSiteDocument?    @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  knowledgeItem CodeSiteKnowledgeItem? @relation(fields: [knowledgeItemId], references: [id], onDelete: SetNull)
+
+  @@unique([knowledgeItemId, agentSessionId])
+  @@index([projectId])
+  @@index([agentSessionId])
+  @@index([recipientUserId])
+  @@index([eventId])
+  @@index([status])
+}
+
+model CodeSiteKnowledgeItem {
+  id                      String    @id @default(cuid())
+  projectId               String
+  kind                    String
+  status                  String
+  title                   String
+  summary                 String
+  payloadJson             String
+  scopeJson               String
+  // project (default), workspace, or learning_network. Only the latter two
+  // are sanitized, portable shared skills; raw knowledge remains project-local.
+  learningScope           String    @default("project")
+  redactionClass          String    @default("project")
+  confidence              Float?
+  verificationStatus      String    @default("unverified")
+  createdByUserId         String?
+  createdByAgentSessionId String?
+  ownerUserId             String?
+  ownerAgentSessionId     String?
+  sourceEventId           String?
+  sourceKnowledgeItemId   String?
+  targetTransactionId     String?
+  dedupeKey               String?
+  evidenceRefsJson        String    @default("[]")
+  expiresAt               DateTime?
+  resolvedAt              DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  project               CodeSiteProject              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdByAgentSession CodeSiteAgentSession?        @relation("CodeSiteKnowledgeCreatedByAgent", fields: [createdByAgentSessionId], references: [id], onDelete: SetNull)
+  ownerAgentSession     CodeSiteAgentSession?        @relation("CodeSiteKnowledgeOwnedByAgent", fields: [ownerAgentSessionId], references: [id], onDelete: SetNull)
+  sourceEvent           CodeSiteEvent?               @relation(fields: [sourceEventId], references: [id], onDelete: SetNull)
+  sourceKnowledgeItem   CodeSiteKnowledgeItem?       @relation("CodeSiteKnowledgeCausality", fields: [sourceKnowledgeItemId], references: [id], onDelete: SetNull)
+  derivedKnowledgeItems CodeSiteKnowledgeItem[]      @relation("CodeSiteKnowledgeCausality")
+  targetTransaction     CodeSiteMutationTransaction? @relation(fields: [targetTransactionId], references: [id], onDelete: SetNull)
+  references            CodeSiteKnowledgeReference[]
+  inboxItems            CodeSiteAgentInboxItem[]
+
+  @@unique([projectId, dedupeKey])
+  @@index([projectId, kind, status])
+  @@index([learningScope, kind, status])
+  @@index([projectId, expiresAt])
+  @@index([createdByAgentSessionId])
+  @@index([ownerAgentSessionId])
+  @@index([sourceEventId])
+  @@index([sourceKnowledgeItemId])
+  @@index([targetTransactionId])
+}
+
+model CodeSiteKnowledgeReference {
+  id           String @id @default(cuid())
+  projectId    String
+  knowledgeId  String
+  refType      String
+  refKey       String
+  relation     String
+  metadataJson String @default("{}")
+
+  project   CodeSiteProject       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  knowledge CodeSiteKnowledgeItem @relation(fields: [knowledgeId], references: [id], onDelete: Cascade)
+
+  @@unique([knowledgeId, refType, refKey, relation])
+  @@index([projectId, refType, refKey])
+  @@index([knowledgeId, relation])
+}
+
+model CodeSiteCounterfactualRun {
+  id                   String   @id @default(cuid())
+  projectId            String
+  shadowJobRef         String?
+  baseSnapshot         String
+  universesJson        String
+  arbiterVerdictJson   String?
+  userChoiceJson       String?
+  laterManualEditsJson String?
+  validityStrength     String
+  evidenceRefsJson     String
+  createdAt            DateTime @default(now())
+
+  project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([shadowJobRef])
+  @@index([validityStrength])
+}
+
+model CodeSitePolicyDelta {
+  id                       String    @id @default(cuid())
+  projectId                String
+  learnedFromIncidentsJson String
+  affectedZoneKey          String?
+  ruleCandidateJson        String
+  triggerConditionsJson    String
+  expectedRiskReduction    Float?
+  confidence               Float
+  promotionState           String
+  replayRefsJson           String
+  createdAt                DateTime  @default(now())
+  promotedAt               DateTime?
+
+  project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([affectedZoneKey])
+  @@index([promotionState])
+}
+
+model CodeSiteFleetNotam {
+  id                      String   @id @default(cuid())
+  projectId               String
+  workspaceSlug           String
+  sourcePolicyDeltaId     String
+  advisoryKey             String
+  title                   String
+  summary                 String
+  affectedZoneKey         String?
+  affectedRoutesJson      String
+  triggerConditionsJson   String
+  ruleCandidateJson       String
+  confidence              Float
+  expectedRiskReduction   Float?
+  digestSha256            String
+  status                  String   @default("active")
+  supersedesNotamId       String?
+  supersededByNotamId     String?
+  lifecycleChangedAt      DateTime?
+  lifecycleChangedBy      String?
+  lifecycleReason         String?
+  publishedAt             DateTime @default(now())
+  expiresAt               DateTime?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  project      CodeSiteProject            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  ingestStates CodeSiteNotamIngestState[]
+
+  @@unique([projectId, advisoryKey])
+  @@index([status, expiresAt])
+  @@index([workspaceSlug])
+  @@index([affectedZoneKey])
+  @@index([supersededByNotamId])
+}
+
+model CodeSiteNotamIngestState {
+  id             String   @id @default(cuid())
+  notamId        String
+  projectId      String
+  workspaceSlug  String
+  state          String   @default("unreviewed")
+  decidedBy      String?
+  decidedAt      DateTime?
+  reason         String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  notam   CodeSiteFleetNotam @relation(fields: [notamId], references: [id], onDelete: Cascade)
+  project CodeSiteProject    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([notamId, projectId])
+  @@index([projectId, state])
+}
+
+// Durable Local Support relay state. This table stores only the signed request
+// envelope and scrubbed target metadata; local response bodies are never
+// persisted in the cloud control plane.
+model LocalSupportRelayRequest {
+  requestId            String    @id
+  sessionId            String
+  accountId            String
+  orgId                String
+  workspaceId          String
+  deviceFingerprint    String
+  actor                String
+  capability           String
+  targetDisplay        String
+  targetHash           String
+  targetClassification String
+  redactionCount       Int       @default(0)
+  scannerVersion       String
+  policyVersion        String
+  protocolVersion      String
+  appVersion           String
+  deviceProof          String
+  envelopeSignature    String
+  status               String    @default("queued")
+  leaseId              String?
+  leaseExpiresAt       DateTime?
+  deliveryAttempts     Int       @default(0)
+  expiresAt            DateTime
+  completedAt          DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  auditEntries LocalSupportCloudAudit[]
+  payload      LocalSupportRelayPayload?
+
+  @@index([sessionId, status, expiresAt])
+  @@index([deviceFingerprint, status, expiresAt])
+  @@index([status, leaseExpiresAt])
+  @@index([createdAt])
+}
+
+model LocalSupportRelayPayload {
+  requestId       String   @id
+  ciphertext      String
+  byteCount       Int
+  contentSha256   String
+  redactionCount  Int      @default(0)
+  scannerVersion  String
+  expiresAt       DateTime
+  createdAt       DateTime @default(now())
+
+  request LocalSupportRelayRequest @relation(fields: [requestId], references: [requestId], onDelete: Cascade)
+
+  @@index([expiresAt])
+}
+
+// Durable commands originating from the authenticated browser control surface.
+// The desktop consumes these over the signed outbound device relay; no local
+// daemon bearer or control secret is stored or returned to the browser.
+model LocalSupportControlCommand {
+  commandId          String    @id
+  sessionId          String
+  accountId          String
+  orgId              String
+  workspaceId        String
+  deviceFingerprint  String
+  action             String
+  port               Int?
+  // A bounded, signed-by-relay enrollment proposal. This may contain only
+  // policy and consent metadata, never local file, process, or command data.
+  proposalJson       String?
+  status             String    @default("queued")
+  leaseId            String?
+  leaseExpiresAt     DateTime?
+  deliveryAttempts   Int       @default(0)
+  expiresAt          DateTime
+  completedAt        DateTime?
+  resultReason       String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([sessionId, status, expiresAt])
+  @@index([deviceFingerprint, status, expiresAt])
+  @@index([status, leaseExpiresAt])
+  @@index([accountId, createdAt])
+}
+
+model LocalSupportControlAudit {
+  id                  String   @id @default(cuid())
+  commandId           String   @unique
+  sessionId           String
+  accountId           String
+  orgId               String
+  workspaceId         String
+  deviceFingerprint   String
+  actor               String
+  capability          String
+  targetDisplay       String
+  targetHash          String
+  targetClassification String
+  decision            String
+  bytesSent           Int      @default(0)
+  redactionCount      Int      @default(0)
+  policyVersion       String
+  scannerVersion      String
+  logClass            String
+  reason              String?
+  createdAt           DateTime @default(now())
+
+  @@index([accountId, createdAt])
+  @@index([sessionId, createdAt])
+  @@index([decision, createdAt])
+  @@index([logClass, createdAt])
+}
+
+// Product/security audit summaries are deliberately separate from relay
+// delivery state so retention and access policy can differ. There is no raw
+// request or response body column in this model.
+model LocalSupportCloudAudit {
+  id                   String   @id @default(cuid())
+  requestId            String
+  sessionId            String
+  accountId            String
+  orgId                String
+  workspaceId          String
+  deviceFingerprint    String
+  actor                String
+  capability           String
+  targetDisplay        String
+  targetHash           String
+  targetClassification String
+  decision             String
+  bytesSent            Int      @default(0)
+  redactionCount       Int      @default(0)
+  policyVersion        String
+  scannerVersion       String
+  logClass             String
+  reason               String?
+  createdAt            DateTime @default(now())
+
+  request LocalSupportRelayRequest @relation(fields: [requestId], references: [requestId], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@index([accountId, orgId, createdAt])
+  @@index([logClass, createdAt])
+  @@index([decision, createdAt])
+}
+
+model LocalSupportSecurityEvent {
+  id            String   @id @default(cuid())
+  dedupeKey     String
+  eventType     String
+  severity      String
+  alert         Boolean  @default(false)
+  alertRoute    String
+  accountId     String
+  sessionId     String
+  requestId     String
+  targetDisplay String
+  targetHash    String
+  count         Int      @default(1)
+  logClass      String
+  createdAt     DateTime @default(now())
+
+  @@index([severity, createdAt])
+  @@index([eventType, createdAt])
+  @@index([accountId, createdAt])
+  @@index([dedupeKey, createdAt])
+}
+
+model LocalSupportPolicyState {
+  id                     String   @id
+  orgId                  String?  @unique
+  globalEnabled          Boolean  @default(false)
+  orgDisabled            Boolean  @default(false)
+  pairingDisabled        Boolean  @default(false)
+  previewDisabled        Boolean  @default(false)
+  agentAccessDisabled    Boolean  @default(true)
+  minAppVersion          String   @default("0.1.0")
+  vulnerableVersionsJson String   @default("[]")
+  fullAccessPolicyJson  String   @default("{\"enabled\":false,\"autoApproval\":false,\"processVisibility\":false,\"workspaceMutation\":false,\"commandExecution\":false,\"localPortDiscovery\":false,\"localPortUse\":false}")
+  retentionDays          Int      @default(30)
+  updatedBy              String
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+}
+
+model LocalSupportSession {
+  sessionId          String   @id
+  pairingId          String   @unique
+  browserSessionId   String
+  accountId          String
+  orgId              String
+  workspaceId        String
+  deviceFingerprint  String
+  devicePublicKey    String
+  capabilitiesJson   String
+  approvedPortsJson   String   @default("[]")
+  policyVersion      String
+  protocolVersion    String
+  appVersion         String   @default("unknown")
+  status              String   @default("active")
+  expiresAt           DateTime
+  revokedAt           DateTime?
+  lastDeviceProofAt   DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  deviceNonces LocalSupportDeviceNonce[]
+  linkedProjects LocalSupportLinkedProject[]
+
+  @@index([deviceFingerprint, status, expiresAt])
+  @@index([accountId, orgId, status])
+  @@index([expiresAt])
+}
+
+// A linked project is a cloud-visible, local-backed collaboration identity.
+// It contains graph metadata and selection hashes only, never paths or source.
+model LocalSupportLinkedProject {
+  projectId             String   @id
+  sessionId             String
+  accountId             String
+  orgId                 String
+  deviceFingerprint     String
+  workspaceHash         String
+  selectionMode         String
+  selectedNodeIdsJson   String   @default("[]")
+  displayName           String
+  graphNodeCount        Int      @default(0)
+  status                String   @default("pending_local_confirmation")
+  fullAccessExpiresAt   DateTime?
+  disconnectedAt        DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  session LocalSupportSession @relation(fields: [sessionId], references: [sessionId], onDelete: Cascade)
+
+  @@index([accountId, status, updatedAt])
+  @@index([sessionId, status])
+  @@index([deviceFingerprint, status])
+}
+
+model LocalSupportDeviceNonce {
+  id        String   @id @default(cuid())
+  sessionId String
+  nonce     String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  session LocalSupportSession @relation(fields: [sessionId], references: [sessionId], onDelete: Cascade)
+
+  @@unique([sessionId, nonce])
+  @@index([expiresAt])
+}
+
+model LocalSupportPairingChallenge {
+  pairingId         String   @id
+  codeHash          String   @unique
+  fingerprint       String
+  serverNonce       String
+  browserSessionId  String
+  requestedUserId   String
+  accountId         String
+  orgId             String
+  workspaceId       String
+  appVersion        String   @default("unclaimed")
+  protocolVersion   String   @default("unclaimed")
+  attempts          Int      @default(0)
+  status             String   @default("pending")
+  expiresAt          DateTime
+  consumedAt         DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([status, expiresAt])
+  @@index([accountId, orgId, createdAt])
+}
+
+model LocalSupportPairingRateLimit {
+  bucket    String   @id
+  attempts  Int      @default(0)
+  expiresAt DateTime
+}
+
+model ProgramReviewEvent {
+  id          String   @id @default(cuid())
+  versionId   String
+  fromState   String?
+  toState     String
+  actorUserId String?
+  reasonJson  String?
+  createdAt   DateTime @default(now())
+
+  version ProgramVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+
+  @@index([versionId])
+  @@index([createdAt])
+}
+
+// ── Paid apps (marketplace billing control plane) ──
+// This repo owns pricing + entitlement + the paywall; the external payments app
+// (checkout-synthi, Stripe) owns card processing + payouts. See
+// docs/superpowers/specs/2026-07-04-paid-apps-design.md.
+
+model ProgramPricing {
+  id               String   @id @default(cuid())
+  programId        String   @unique
+  model            String   @default("one_time") // v1 = one_time; subscription/usage later
+  priceCents       Int // >= 0; 0 = free (but explicitly priced)
+  currency         String   @default("eur")
+  active           Boolean  @default(true)
+  payoutAccountRef String? // Stripe Connect account id (acct_…), owned by the payments app
+  takeRateBps      Int      @default(3000) // platform cut, basis points
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  program MarketplaceProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+}
+
+model Entitlement {
+  id          String    @id @default(cuid())
+  programId   String
+  subjectType String    @default("user") // user | workspace (v1 = user)
+  subjectId   String // userId (or workspaceSlug when workspace-scoped)
+  status      String    @default("active") // active | revoked
+  source      String // purchase | grant | trial
+  reference   String    @unique // idempotency key — carried in the PaymentIntent metadata
+  priceCents  Int? // captured at purchase (audit)
+  currency    String?
+  grantedAt   DateTime  @default(now())
+  revokedAt   DateTime?
+
+  program MarketplaceProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+
+  @@unique([programId, subjectType, subjectId]) // one live entitlement per subject+app
+  @@index([programId])
+  @@index([subjectId])
+}
+
+model PaymentWebhookEvent {
+  id          String   @id @default(cuid())
+  eventId     String   @unique // provider (Stripe) event id — dedupe/idempotency
+  type        String // purchase | refund
+  reference   String
+  payloadJson String
+  processedAt DateTime @default(now())
+
+  @@index([reference])
+}
+
+// Registered direct channel between two attached agent sessions.
+// See docs/REGISTERED_DIRECT_CHANNELS_DESIGN.md — the control plane
+// authorizes and logs lifecycle; the data plane runs directly between the
+// agents with HMAC-signed frames. Message payloads are never persisted here.
+model CodeSiteAgentChannel {
+  id               String    @id @default(cuid())
+  projectId        String
+  workspaceSlug    String
+  fromSessionId    String
+  toSessionId      String
+  status           String    @default("requested") // requested | active | closed | rejected | expired | violation
+  purpose          String
+  transport        String // websocket | sse
+  fromEndpointRef  String?
+  toEndpointRef    String?
+  channelTokenHash String?
+  maxDurationMs    Int?
+  grantExpiresAt   DateTime?
+  openedAt         DateTime?
+  closedAt         DateTime?
+  summaryDigest    String?
+  messageCount     Int       @default(0)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, status])
+  @@index([workspaceSlug, status])
+  @@index([fromSessionId])
+  @@index([toSessionId])
 }

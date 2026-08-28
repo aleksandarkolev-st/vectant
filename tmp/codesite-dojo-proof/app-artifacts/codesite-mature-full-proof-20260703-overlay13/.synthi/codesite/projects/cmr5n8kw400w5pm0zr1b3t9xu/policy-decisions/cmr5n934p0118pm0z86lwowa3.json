@@ -1,0 +1,99 @@
+{
+  "id": "cmr5n934p0118pm0z86lwowa3",
+  "projectId": "cmr5n8kw400w5pm0zr1b3t9xu",
+  "mutationLeaseId": "cmr5n8q0i00xspm0zc16y3e69",
+  "displayCallsign": "SCHEMA-01",
+  "decision": "quarantine",
+  "reasonCodes": [
+    "raw_terminal_quarantine"
+  ],
+  "inputDigest": "sha256:44fcf2b1bca3638a78e8343dc5eadb15a254abb33142c5c8caa3118d6a765d5a",
+  "decisionBody": {
+    "path": "synthi/prisma/schema.prisma",
+    "zone": {
+      "zoneKey": "class_b",
+      "label": "Shared contract airspace",
+      "class": "B",
+      "paths": [
+        "packages/schemas/**",
+        "openapi/**",
+        "packages/*/src/index.ts",
+        "synthi/prisma/**",
+        "backend/collab-server/permissionMiddleware.js"
+      ],
+      "rules": [
+        "flight_plan_required",
+        "downstream_notification_required",
+        "change_order_for_mutation"
+      ],
+      "risk": "high",
+      "source": "compiled_default",
+      "path": "synthi/prisma/schema.prisma"
+    },
+    "codesiteFsEvent": {
+      "type": "write_quarantined",
+      "transaction_id": "cmr5n8ta300yspm0zf8blsf5p",
+      "mutation_lease_id": "cmr5n8q0i00xspm0zc16y3e69",
+      "display_callsign": "SCHEMA-01",
+      "workspace_slug": "codesite-mature-full-proof-20260703-overlay13",
+      "actor_user_id": null,
+      "effective_user_id": null,
+      "path": "synthi/prisma/schema.prisma",
+      "tool": "raw_terminal",
+      "wall_time": "2026-07-04T00:48:38.577Z",
+      "evidence_refs": [
+        "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b"
+      ],
+      "details": {
+        "reason": "Raw terminal modified quarantined for synthi/prisma/schema.prisma",
+        "reason_codes": [
+          "raw_terminal_quarantine"
+        ],
+        "process_ancestry": [
+          "mcp:synthi_codesite_apply_patch",
+          "codex:tmp-proof-session"
+        ],
+        "operation": "raw_terminal",
+        "quarantine_id": "qtn-cmr5n8ta300yspm0zf8blsf5p-1783126117844-b4016a50",
+        "quarantine_root": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-full-workflow-quarantine/codesite-mature-full-proof-20260703-overlay13/cmr5n8ta300yspm0zf8blsf5p/qtn-cmr5n8ta300yspm0zf8blsf5p-1783126117844-b4016a50",
+        "original_cwd": "/mnt/c/Users/dev/Downloads/synthi-test/synthi-ide/tmp/codesite-atc-session/tmp/codesite-dojo-proof/codesite-full-workflow-repos/codesite-mature-full-proof-20260703-overlay13",
+        "change_kind": "modified",
+        "quarantine_evidence": {
+          "path": "synthi/prisma/schema.prisma",
+          "kind": "modified",
+          "beforeExists": true,
+          "afterExists": true,
+          "beforeDigest": "sha256:e63f6070ae54fae3ca685e7a714ab9b6ab8a0e79563fe91c316eddce282b8a1f",
+          "afterDigest": "sha256:f35544b0386043c862271efbcccec8b2ea18734b77ce100e5635fc7219f1ce30",
+          "beforeSize": 135,
+          "afterSize": 249,
+          "beforeText": "datasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n}\n\nmodel User {\n  id    String @id\n  email String @unique\n}\n",
+          "afterText": "datasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n}\n\nmodel User {\n  id    String @id\n  email String @unique\n}\n\nmodel QuarantinedAuditEvent {\n  id        String   @id\n  userId    String\n  createdAt DateTime @default(now())\n}\n",
+          "textDiff": {
+            "format": "line-window-v1",
+            "startLine": 8,
+            "beforeLineCount": 3,
+            "afterLineCount": 9,
+            "truncated": false,
+            "lines": [
+              "   email String @unique",
+              " }",
+              " ",
+              "+model QuarantinedAuditEvent {",
+              "+  id        String   @id",
+              "+  userId    String",
+              "+  createdAt DateTime @default(now())",
+              "+}",
+              "+"
+            ]
+          },
+          "digest": "sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b",
+          "evidenceRef": "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b",
+          "quarantineId": "qtn-cmr5n8ta300yspm0zf8blsf5p-1783126117844-b4016a50"
+        }
+      }
+    },
+    "towerInstruction": "Write quarantined for synthi/prisma/schema.prisma. Review before landing."
+  },
+  "createdAt": "2026-07-04T00:48:39.193Z"
+}

@@ -1,0 +1,76 @@
+{
+  "schema_version": "synthi.dojo.therapeuticTomographyReleaseEvidence.v1",
+  "generated_at": "2026-06-30T00:01:20.000Z",
+  "scope": "repo-local release-gate evidence with non-loopback hosted/probe endpoints",
+  "hosted_runtime": {
+    "authorized": true,
+    "session_id": "hosted-release-session",
+    "url": "https://runtime.example.test/session/hosted-release-session",
+    "loopback": false
+  },
+  "tenant_scope": {
+    "tenant_id": "tenant-release",
+    "workspace_id": "workspace-release",
+    "actor_id": "agent-release"
+  },
+  "task_id": "release_incident_response_non_demo_001",
+  "non_demo_probe_adapter": {
+    "kind": "https_probe_adapter",
+    "endpoint_url": "https://probe.example.test/therapeutic/incident-response",
+    "loopback": false,
+    "probes_completed": [
+      "service_health_rollup",
+      "blast_radius_summary"
+    ]
+  },
+  "durable_store": {
+    "kind": "file",
+    "path": "C:\\Users\\bombt\\Desktop\\work\\vectant-ade\\mcp\\synthi-mcp\\.tmp\\therapeutic-release-evidence\\tenant-release\\workspace-release\\release_incident_response_non_demo_001.therapeutic-runtime.json",
+    "sha256": "b4787b616bfb0721f34add4cfafd1a0cf1694c3ce601a42c07e7322cb66f2b95",
+    "persisted_at": "2026-06-30T00:01:10.000Z",
+    "evidence_records": 8,
+    "audit_records": 7,
+    "reconstructed_evidence_records": 8,
+    "reconstructed_audit_records": 7,
+    "audit_reconstruction_verified": true
+  },
+  "proof_signing": {
+    "signature_algorithm": "hmac-sha256",
+    "signature_key_id": "release-therapeutic-proof-key",
+    "signing_provider": "hmac-local",
+    "signature_verified": true,
+    "verification_blocked_by": [],
+    "managed_key_production_path_supported_by_runtime": true
+  },
+  "authorization_path": {
+    "unauthorized_bypass_decision": "denied",
+    "unauthorized_bypass_blocked_by": [
+      "broker_required",
+      "active_scoped_grant_missing"
+    ],
+    "access_decision": "approved",
+    "grant_id": "grant_1a72d496",
+    "protected_dispatch_decision": "approved",
+    "post_revocation_dispatch_decision": "denied",
+    "post_revocation_dispatch_blocked_by": [
+      "broker_required",
+      "active_scoped_grant_missing"
+    ],
+    "revoked_grants": [
+      {
+        "grant_id": "grant_1a72d496",
+        "status": "revoked",
+        "revocation_status": "success"
+      }
+    ]
+  },
+  "safety_assertions": {
+    "narrative_only_grants_broader_access": false,
+    "diagnostic_proof_authorized_mutation": false,
+    "unauthorized_protected_tool_bypass": "blocked",
+    "broad_access_granted": false,
+    "raw_logs_granted": false,
+    "model_weights_granted": false,
+    "admin_privileges_granted": false
+  }
+}

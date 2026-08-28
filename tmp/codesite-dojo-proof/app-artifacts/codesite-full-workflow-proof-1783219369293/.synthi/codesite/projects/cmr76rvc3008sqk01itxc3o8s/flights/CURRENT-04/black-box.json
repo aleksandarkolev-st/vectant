@@ -1,0 +1,257 @@
+{
+  "displayCallsign": "CURRENT-04",
+  "session": {
+    "id": "cmr76ut1q00exqk014vfg2dty",
+    "projectId": "cmr76rvc3008sqk01itxc3o8s",
+    "ownerUserId": "cmr76rv7e008jqk01igpdj00w",
+    "agentProvider": "codesite-proof-harness",
+    "agentRuntime": "pilot-license-current-source-proof",
+    "providerSessionRef": "codesite-health:codesite-full-workflow-proof-1783219369293:source-current",
+    "displayCallsign": "CURRENT-04",
+    "status": "registered",
+    "permissions": [
+      "synthi_codesite_request_landing"
+    ],
+    "redactionPolicy": {
+      "acceptsTowerMessages": true,
+      "redactSecrets": true,
+      "redactPrivatePrompts": true,
+      "allowAttachments": false,
+      "visibleZones": [
+        "**"
+      ],
+      "allowedDocumentKinds": [
+        "rfi",
+        "change_order",
+        "inspection_request",
+        "inspection_result",
+        "mayday",
+        "handoff",
+        "stop_work",
+        "punch",
+        "tower_instruction"
+      ]
+    },
+    "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+    "dojoProofRef": "pcap-full-workflow-schema",
+    "dojoEvidenceRefs": [
+      "dojo:evidence:source-current-checkride"
+    ],
+    "dojoDecisionDigest": "sha256:0a2283f5f85248bece5c787c7a6d5164f7569c2cfb6303a9d4d32a4969eb3813",
+    "pilotLicenseSnapshot": {
+      "licenseLevel": "IFR",
+      "licenseStatus": "active",
+      "repoScope": "codesite-full-workflow-proof-1783219369293",
+      "authorizedAirspace": [
+        "synthi/prisma/**"
+      ],
+      "requiredRadar": [
+        "typecheck",
+        "tests"
+      ],
+      "earnedBy": [
+        "dojo:evidence:source-current-checkride"
+      ],
+      "expiresOn": [
+        "source_drift"
+      ],
+      "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+      "evidenceRefs": [
+        "dojo:evidence:source-current-checkride"
+      ]
+    },
+    "createdAt": "2026-07-05T02:45:11.438Z",
+    "endedAt": null
+  },
+  "flightPlans": [
+    {
+      "id": "cmr76uw5e00f3qk01bph1yaq0",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "agentSessionId": "cmr76ut1q00exqk014vfg2dty",
+      "displayCallsign": "CURRENT-04",
+      "mission": "Exercise current source pilot health",
+      "domain": "schema",
+      "status": "preflight",
+      "route": [
+        "synthi/prisma/**"
+      ],
+      "blockedZones": [],
+      "abortConditions": [],
+      "requestedTools": [
+        "npm_test"
+      ],
+      "estimatedDurationMs": null,
+      "filedAt": "2026-07-05T02:45:15.458Z",
+      "closedAt": null
+    }
+  ],
+  "clearances": [],
+  "transactions": [],
+  "assumptions": [],
+  "inbox": [],
+  "events": [
+    {
+      "id": "cmr76ut2100f1qk018sfb3h6a",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": null,
+      "eventType": "transponder_update",
+      "displayCallsign": "CURRENT-04",
+      "actorType": "agent_session",
+      "actorId": "cmr76ut1q00exqk014vfg2dty",
+      "details": {
+        "status": "registered",
+        "provider": "codesite-proof-harness",
+        "runtime": "pilot-license-current-source-proof",
+        "permissions": [
+          "synthi_codesite_request_landing"
+        ],
+        "instruction": "CURRENT-04 registered with tower."
+      },
+      "evidenceRefs": [],
+      "logicalTime": 62,
+      "createdAt": "2026-07-05T02:45:11.449Z"
+    },
+    {
+      "id": "cmr76uw5k00f5qk01av6gj8sx",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": null,
+      "eventType": "flight_plan_filed",
+      "displayCallsign": "CURRENT-04",
+      "actorType": "agent_session",
+      "actorId": "cmr76ut1q00exqk014vfg2dty",
+      "details": {
+        "executionPlanId": "cmr76uw5e00f3qk01bph1yaq0",
+        "mission": "Exercise current source pilot health",
+        "route": [
+          "synthi/prisma/**"
+        ],
+        "blockedZones": []
+      },
+      "evidenceRefs": [],
+      "logicalTime": 63,
+      "createdAt": "2026-07-05T02:45:15.464Z"
+    },
+    {
+      "id": "cmr76uymd00f9qk01du48pz5w",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "mutationLeaseId": null,
+      "eventType": "landing_requested",
+      "displayCallsign": "CURRENT-04",
+      "actorType": "inspection",
+      "actorId": "cmr76uym800f7qk01lqotwcx8",
+      "details": {
+        "inspectionRunId": "cmr76uym800f7qk01lqotwcx8",
+        "status": "passed",
+        "changedPaths": [
+          "synthi/prisma/schema.prisma"
+        ],
+        "inspectionEvidenceRefs": [
+          "codesite:landing:current-source-proof"
+        ]
+      },
+      "evidenceRefs": [
+        "codesite:landing:current-source-proof"
+      ],
+      "logicalTime": 64,
+      "createdAt": "2026-07-05T02:45:18.661Z"
+    }
+  ],
+  "inspections": [
+    {
+      "id": "cmr76uym800f7qk01lqotwcx8",
+      "projectId": "cmr76rvc3008sqk01itxc3o8s",
+      "executionPlanId": "cmr76uw5e00f3qk01bph1yaq0",
+      "displayCallsign": "CURRENT-04",
+      "status": "passed",
+      "changedPaths": [
+        "synthi/prisma/schema.prisma"
+      ],
+      "inspectionSignals": [
+        {
+          "key": "landing_health",
+          "status": "passed",
+          "evidenceRefs": [
+            "codesite:landing:current-source-proof"
+          ]
+        }
+      ],
+      "evidenceRefs": [
+        "codesite:landing:current-source-proof"
+      ],
+      "requestedAt": "2026-07-05T02:45:18.657Z",
+      "completedAt": null
+    }
+  ],
+  "pilotLicenseHealth": {
+    "schemaVersion": "synthi.codesite.pilotLicenseHealth.v1",
+    "key": "cmr76ut1q00exqk014vfg2dty",
+    "projectId": "cmr76rvc3008sqk01itxc3o8s",
+    "workspaceSlug": "codesite-full-workflow-proof-1783219369293",
+    "agentSessionId": "cmr76ut1q00exqk014vfg2dty",
+    "ownerUserId": "cmr76rv7e008jqk01igpdj00w",
+    "displayCallsign": "CURRENT-04",
+    "status": "active",
+    "level": "IFR",
+    "levelRank": 3,
+    "dojoPilotLicenseRef": "schema.level_2@2026-06-25",
+    "dojoLicenseRef": "schema.level_2@2026-06-25",
+    "dojoProofRef": "pcap-full-workflow-schema",
+    "dojoDecisionDigest": "sha256:0a2283f5f85248bece5c787c7a6d5164f7569c2cfb6303a9d4d32a4969eb3813",
+    "repoScope": "codesite-full-workflow-proof-1783219369293",
+    "authorizedAirspace": [
+      "synthi/prisma/**"
+    ],
+    "restrictedAirspace": [],
+    "requiredRadar": [
+      "typecheck",
+      "tests"
+    ],
+    "earnedBy": [
+      "dojo:evidence:source-current-checkride"
+    ],
+    "expiresAt": null,
+    "expiresOn": [
+      "source_drift"
+    ],
+    "sourceDrift": {
+      "monitored": true,
+      "sourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+      "currentSourceDigest": "sha256:b5f5a3a96b7d87b33bb51f55431c1fff03492322d0b0abe3ba21443c968902b1",
+      "expired": false
+    },
+    "landingStats": {
+      "total": 1,
+      "passed": 1,
+      "failed": 0,
+      "evidenceRefs": [
+        "codesite:landing:current-source-proof"
+      ]
+    },
+    "violationStats": {
+      "total": 0,
+      "critical": 0,
+      "latestAt": null,
+      "evidenceRefs": []
+    },
+    "reasonCodes": [
+      "pilot_license_health_active",
+      "pilot_license_source_current"
+    ],
+    "requiredAction": null,
+    "evidenceRefs": [
+      "dojo:evidence:source-current-checkride",
+      "codesite:landing:current-source-proof"
+    ],
+    "lifecycle": {
+      "issuedAt": "2026-07-05T02:45:11.438Z",
+      "checkedAt": "2026-07-05T02:48:56.964Z",
+      "latestLandingAt": "2026-07-05T02:45:18.657Z",
+      "latestViolationAt": null,
+      "sourcePolicyDigest": "sha256:3f1ffed0fa524107a41f3f42c4b550faccf87e9e9e90d63ca9126466b4956712"
+    }
+  },
+  "proofBundles": [],
+  "quarantines": [],
+  "filesystemBoundaryProofs": [],
+  "causalReplays": []
+}

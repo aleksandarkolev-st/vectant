@@ -40,14 +40,14 @@ spec:
         app: worker
     spec:
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
+        runAsUser: 0
+        runAsGroup: 0
         fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
       nodeSelector:
         cloud.google.com/gke-nodepool: workspace-pool
+      serviceAccountName: workspace-runtime-sa
       tolerations:
         - key: workload
           operator: Equal
@@ -67,12 +67,11 @@ spec:
       terminationGracePeriodSeconds: 15
       containers:
         - name: worker
-          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-worker:build-tag-required
+          image: europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-worker:build-tag-required
           securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-                - ALL
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: true
           command: ["/bin/bash", "-c"]
           args:
             - |
@@ -137,12 +136,11 @@ spec:
                   key: SYNTHI_ISOLATION_MODEL
           resources:
             requests:
-              # Lower base request so it schedules on standard GKE nodes
-              cpu: 250m
-              memory: 512Mi
-            limits:
               cpu: "2"
               memory: 4Gi
+            limits:
+              cpu: "6"
+              memory: 12Gi
           # Workers have no inbound port — liveness is checked via process.
           livenessProbe:
             exec:

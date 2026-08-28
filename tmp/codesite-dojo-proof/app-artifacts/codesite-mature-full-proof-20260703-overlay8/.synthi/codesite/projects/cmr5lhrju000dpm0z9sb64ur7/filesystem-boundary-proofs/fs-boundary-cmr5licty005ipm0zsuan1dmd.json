@@ -1,0 +1,97 @@
+{
+  "schemaVersion": "synthi.codesite.filesystemBoundaryProof.v1",
+  "proofId": "fs-boundary-cmr5licty005ipm0zsuan1dmd",
+  "projectId": "cmr5lhrju000dpm0z9sb64ur7",
+  "workspaceSlug": "codesite-mature-full-proof-20260703-overlay8",
+  "eventId": "cmr5licty005ipm0zsuan1dmd",
+  "policyDecisionId": "cmr5lictu005gpm0zjo9uo8ot",
+  "eventType": "write_quarantined",
+  "disposition": "write_quarantined",
+  "prevented": true,
+  "quarantined": true,
+  "path": "synthi/prisma/schema.prisma",
+  "transactionId": "cmr5li1840030pm0ziuph9b1r",
+  "mutationLeaseId": "cmr5lhw270020pm0zv2swrhf0",
+  "requestedMutationLeaseId": null,
+  "inspectedLeases": [],
+  "displayCallsign": "SCHEMA-01",
+  "leaseState": "matched_clearance",
+  "lease": {
+    "id": "cmr5lhw270020pm0zv2swrhf0",
+    "displayCallsign": "SCHEMA-01",
+    "status": "active",
+    "allowedPaths": [
+      "synthi/prisma/**"
+    ],
+    "blockedPaths": [
+      "secrets/**"
+    ],
+    "allowedTools": [
+      "file_write"
+    ],
+    "dojoLicenseRef": "schema.level_2@2026-06-25",
+    "dojoProofRef": "pcap-full-workflow-schema"
+  },
+  "reasonCodes": [
+    "raw_terminal_quarantine"
+  ],
+  "reason": "Raw terminal modified quarantined for synthi/prisma/schema.prisma",
+  "zone": {
+    "zoneKey": "class_b",
+    "label": "Shared contract airspace",
+    "class": "B",
+    "paths": [
+      "packages/schemas/**",
+      "openapi/**",
+      "packages/*/src/index.ts",
+      "synthi/prisma/**",
+      "backend/collab-server/permissionMiddleware.js"
+    ],
+    "rules": [
+      "flight_plan_required",
+      "downstream_notification_required",
+      "change_order_for_mutation"
+    ],
+    "risk": "high",
+    "source": "compiled_default",
+    "path": "synthi/prisma/schema.prisma"
+  },
+  "boundary": {
+    "source": "codesitefs",
+    "tool": "raw_terminal",
+    "operation": "raw_terminal",
+    "actorType": "codesitefs",
+    "actorId": "cmr5lictu005gpm0zjo9uo8ot"
+  },
+  "process": {
+    "ancestry": [
+      "mcp:synthi_codesite_apply_patch",
+      "codex:tmp-proof-session"
+    ],
+    "display": "mcp:synthi_codesite_apply_patch <- codex:tmp-proof-session"
+  },
+  "evidence": {
+    "refs": [
+      "event:cmr5licty005ipm0zsuan1dmd",
+      "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b"
+    ],
+    "lineProvenanceCount": 0,
+    "changedLineRanges": [],
+    "dojoSourceRefs": []
+  },
+  "evidenceRefs": [
+    "event:cmr5licty005ipm0zsuan1dmd",
+    "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b"
+  ],
+  "quarantine": {
+    "quarantineId": "qtn-cmr5li1840030pm0ziuph9b1r-1783123191257-bd957ebd",
+    "evidenceRef": "codesitefs:quarantine:sha256:94c7e81400c6d456ca0738a909a3115070d2e992aa9f2ccc87ea10e3941e897b",
+    "kind": "modified",
+    "beforeDigest": "sha256:e63f6070ae54fae3ca685e7a714ab9b6ab8a0e79563fe91c316eddce282b8a1f",
+    "afterDigest": "sha256:f35544b0386043c862271efbcccec8b2ea18734b77ce100e5635fc7219f1ce30",
+    "symlinkSanitization": null
+  },
+  "proofComplete": true,
+  "missingProofFields": [],
+  "createdAt": "2026-07-03T23:59:52.439Z"
+}

@@ -1,0 +1,11 @@
+{
+  "id": "hmr-event-sequence-v1",
+  "adapter": "hmr",
+  "faulty_region": "runner.py",
+  "accepted_fix": "correct hot-update handler",
+  "files": {"runner.py": "import sys\nprint('FailureSignature HMR_REJECTED')\nsys.exit(7)\n", "unused.module": "discard\n"},
+  "command": ["{python}", "runner.py"],
+  "signature": "FailureSignature HMR_REJECTED",
+  "candidates": ["unused.module"],
+  "observation": {"kind": "hmr", "hmr_events": ["update-received", "apply-started", "rejected"]}
+}

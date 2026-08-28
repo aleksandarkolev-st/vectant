@@ -1,6 +1,7 @@
 // src/app/FileItem.jsx
 "use client";
 import { useState, useRef, useEffect, useMemo, memo } from "react";
+import { motion } from "framer-motion";
 import { toast } from "sonner";
 import collabClient from '@/services/collabClient';
 import { useAppSelector } from "@/redux/hooks";
@@ -30,6 +31,10 @@ function fileItemAreEqual(prev, next) {
     prev.onFileSelect !== next.onFileSelect ||
     prev.activeFile !== next.activeFile ||
     prev.onAction !== next.onAction ||
+    prev.onExternalFilesDrop !== next.onExternalFilesDrop ||
+    prev.onExternalFolderDragTarget !== next.onExternalFolderDragTarget ||
+    prev.isExternalFolderDropTarget !== next.isExternalFolderDropTarget ||
+    prev.canMutateFiles !== next.canMutateFiles ||
     prev.uiActionState !== next.uiActionState ||
     prev.dispatch !== next.dispatch ||
     prev.handleKeyDown !== next.handleKeyDown ||
@@ -61,6 +66,10 @@ const FileItem = memo(({
   activeFile,
   onAction,
   onRightMouseButtonClick,
+  onExternalFilesDrop,
+  onExternalFolderDragTarget,
+  isExternalFolderDropTarget = false,
+  canMutateFiles = true,
   uiActionState,
   dispatch,
   handleKeyDown,
@@ -89,7 +98,7 @@ const FileItem = memo(({
 
     return (
       <div
-        className="pointer-events-none absolute inset-y-0 left-0 z-0"
+        className="pointer-events-none absolute -top-px -bottom-px left-0 z-0"
         aria-hidden="true"
       >
         {Array.isArray(guideAncestorHasNext) &&
@@ -426,19 +435,47 @@ useEffect(() => {
     handleFileClick(e);
   };
 
+  const handleRowKeyDown = (e) => {
+    if (e.target !== e.currentTarget) return;
+    if (e.key === "Delete") {
+      e.preventDefault();
+      onAction?.("delete", item);
+      return;
+    }
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      handleFileClick(e);
+      return;
+    }
+    if (!item.isFolder) return;
+    if (e.key === "ArrowRight" && isExpandable && !isOpen) {
+      e.preventDefault();
+      dispatch(toggleFolderExpansion(item.path));
+    } else if (e.key === "ArrowLeft" && isOpen) {
+      e.preventDefault();
+      dispatch(toggleFolderExpansion(item.path));
+    }
+  };
+
   // Drag for chat-context (string drop on AI chat) and tree move (drop on folder).
   // The tree-move handler (handleDrop) recognises the JSON payload below.
   const handleDragStart = (e) => {
     e.dataTransfer.setData('text/workspace-path', item.path);
     e.dataTransfer.setData('text/plain', item.name);
-    e.dataTransfer.setData(
-      'application/x-synthi-tree-item',
-      JSON.stringify({ path: item.path, name: item.name, isFolder: !!item.isFolder }),
-    );
-    e.dataTransfer.effectAllowed = 'copyMove';
+    if (canMutateFiles) {
+      e.dataTransfer.setData(
+        'application/x-synthi-tree-item',
+        JSON.stringify({ path: item.path, name: item.name, isFolder: !!item.isFolder }),
+      );
+    }
+    e.dataTransfer.effectAllowed = canMutateFiles ? 'copyMove' : 'copy';
   };
 
   const [isDropTarget, setIsDropTarget] = useState(false);
+  const [isExternalDropTarget, setIsExternalDropTarget] = useState(false);
+  const showExternalDropLine = canMutateFiles && item.isFolder && (isExternalDropTarget || isExternalFolderDropTarget);
+
+  const hasExternalFiles = (e) => Array.from(e.dataTransfer?.types || []).includes("Files");
 
   const isValidDropSource = (e) => {
     if (!item.isFolder) return null;
@@ -462,6 +499,22 @@ useEffect(() => {
 
   const handleDragOver = (e) => {
     if (!item.isFolder) return;
+    if (!canMutateFiles) {
+      if (hasExternalFiles(e) || Array.from(e.dataTransfer?.types || []).includes('application/x-synthi-tree-item')) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = 'none';
+      }
+      return;
+    }
+    if (hasExternalFiles(e)) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'copy';
+      if (!isExternalDropTarget) setIsExternalDropTarget(true);
+      onExternalFolderDragTarget?.(item.path);
+      return;
+    }
     // We can't read dataTransfer payload during dragover (browser locks it),
     // so accept the drop optimistically and re-validate on drop.
     e.preventDefault();
@@ -472,10 +525,30 @@ useEffect(() => {
 
   const handleDragLeave = () => {
     if (isDropTarget) setIsDropTarget(false);
+    if (isExternalDropTarget) setIsExternalDropTarget(false);
   };
 
   const handleDrop = async (e) => {
     if (!item.isFolder) return;
+    if (!canMutateFiles) {
+      if (hasExternalFiles(e) || Array.from(e.dataTransfer?.types || []).includes('application/x-synthi-tree-item')) {
+        e.preventDefault();
+        e.stopPropagation();
+        toast.error('File operations are disabled for this session.');
+      }
+      setIsDropTarget(false);
+      setIsExternalDropTarget(false);
+      onExternalFolderDragTarget?.("");
+      return;
+    }
+    if (hasExternalFiles(e)) {
+      setIsExternalDropTarget(false);
+      onExternalFolderDragTarget?.("");
+      if (typeof onExternalFilesDrop === "function") {
+        await onExternalFilesDrop(e, item.path);
+      }
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     setIsDropTarget(false);
@@ -495,31 +568,34 @@ useEffect(() => {
   // Standard Display Rendering
   return (
     <>
-      <div
+      <motion.div
         ref={fileContentRef}
         data-node-path={item.path}
         data-node-path-id={item.path}
         data-node-name={item.name}
+        role="treeitem"
+        tabIndex={0}
+        aria-selected={!!isSelected}
+        aria-expanded={item.isFolder ? !!isOpen : undefined}
+        aria-label={`${item.isFolder ? 'Folder' : 'File'} ${item.name}`}
         draggable
         onDragStart={handleDragStart}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        className={`file-item relative group flex items-center py-1 px-2 cursor-pointer transition-all ${isSelected ? 'rounded-none' : 'rounded-md'}`}
+        layout={false}
+        whileHover={{ x: 1 }}
+        whileTap={{ scale: 0.996 }}
+        transition={{ duration: 0.16, ease: [0.32, 0.72, 0, 1] }}
+        className={`vt-file-row file-item th-focus-ring relative group mx-1 flex items-center py-1 px-2 cursor-pointer ${isSelected ? 'is-active' : ''}`}
         style={{
           ...itemStyle,
-          ...(isSelected
-            ? {
-                background: 'color-mix(in srgb, var(--attention-purple) 10%, transparent)',
-                borderRadius: 0,
-                boxShadow: 'inset 0 0 0 1px color-mix(in srgb, var(--attention-purple) 28%, transparent), 0 0 14px -6px color-mix(in srgb, var(--attention-purple) 26%, transparent)',
-              }
-            : {}),
           ...(isDropTarget
             ? { background: 'color-mix(in srgb, var(--attention-purple) 18%, transparent)', outline: '1px solid var(--attention-purple)' }
             : {}),
         }}
         onClick={handleClick}
+        onKeyDown={handleRowKeyDown}
         onContextMenu={handleClick}
       >
         {guidesVisibleForRow &&
@@ -536,15 +612,37 @@ useEffect(() => {
             }}
           />
         )}
+        {showExternalDropLine && (
+          <span
+            data-testid="workspace-folder-drop-line"
+            aria-hidden="true"
+            className="pointer-events-none absolute bottom-0 left-2.5 right-2.5 h-[2px] rounded-t-full"
+            style={{
+              backgroundImage: [
+                'var(--brand-gradient-horizontal)',
+                'linear-gradient(90deg, color-mix(in srgb, var(--text-muted) 72%, transparent), color-mix(in srgb, var(--text-muted) 72%, transparent))',
+              ].join(', '),
+              backgroundRepeat: 'no-repeat, no-repeat',
+              backgroundPosition: 'left bottom, left bottom',
+              backgroundSize: '100% 100%, 100% 100%',
+              boxShadow: '0 0 8px -2px color-mix(in srgb, var(--brand-stop-3) 55%, transparent)',
+              transformOrigin: 'left center',
+              animation: 'file-folder-drop-line 160ms cubic-bezier(0.25, 1, 0.5, 1) both',
+            }}
+          />
+        )}
         {isExpandable && (
-          <div
+          <button
+            type="button"
+            aria-label={isOpen ? `Collapse ${item.name}` : `Expand ${item.name}`}
+            className="th-focus-ring rounded-sm"
             onClick={(e) => {
               e.stopPropagation();
               dispatch(toggleFolderExpansion(item.path));
             }}
           >
             <ChevronIcon isOpen={isOpen} isSelected={isSelected} />
-          </div>
+          </button>
         )}
         <div className={`w-3 h-3 mr-2 flex-shrink-0 flex items-center justify-center text-[13px] ${isSelected ? 'opacity-98' : 'opacity-95'}`}>
           {currentIcon}
@@ -617,8 +715,13 @@ useEffect(() => {
                             }}
                             onMouseLeave={() => { if (hoverHideTimeoutRef.current) clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140); }}
                             title={p.state?.user?.name || 'User'}
-                            className="w-6 h-6 rounded-full flex items-center justify-center text-xs text-white cursor-default overflow-hidden"
-                            style={{ border: `2px solid ${p.state?.user?.color || '#0b0b0b'}`, background: p.state?.user?.color ? 'rgba(255,255,255,0.03)' : '#111' }}
+                            className="flex h-6 w-6 cursor-default items-center justify-center overflow-hidden rounded-full text-xs text-[var(--text-primary)]"
+                            style={{
+                              border: `2px solid ${p.state?.user?.color || 'var(--border-medium)'}`,
+                              background: p.state?.user?.color
+                                ? 'color-mix(in srgb, var(--text-primary) 3%, transparent)'
+                                : 'var(--bg-panel)',
+                            }}
                           >
                             {userImage
                               ? <img src={userImage} alt="" className="w-full h-full rounded-full object-cover" referrerPolicy="no-referrer" />
@@ -637,11 +740,11 @@ useEffect(() => {
             {/* Hover card for file presence */}
             {hoverPresence && hoverPresence.rect && (
               <div style={{ position: 'fixed', left: hoverPresence.rect.left + hoverPresence.rect.width + 6, top: hoverPresence.rect.top - 6, zIndex: 2000 }} onMouseEnter={() => { if (hoverHideTimeoutRef.current) { clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = null; } }} onMouseLeave={() => { if (hoverHideTimeoutRef.current) clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140); }}>
-                <div className="rounded-md p-2 text-sm shadow-lg w-44 border" style={{ background: 'var(--bg-panel)', borderColor: 'var(--border-medium)', color: 'var(--text-primary)' }}>
+                <div className="vt-command-popover w-44 p-2 text-sm" style={{ color: 'var(--text-primary)' }}>
                   <div className="flex items-center gap-2">
                     {hoverPresence.user.image
                       ? <img src={hoverPresence.user.image} alt="" className="w-7 h-7 rounded-full object-cover" referrerPolicy="no-referrer" />
-                      : <div className="w-7 h-7 rounded-full flex items-center justify-center text-sm text-white" style={{ background: hoverPresence.user.color || '#555' }}>{(hoverPresence.user.name || 'Anonymous').split(' ').map(p => p[0]).slice(0,2).join('').toUpperCase()}</div>
+                      : <div className="flex h-7 w-7 items-center justify-center rounded-full text-sm text-[var(--text-primary)]" style={{ background: hoverPresence.user.color || 'var(--bg-elevated)' }}>{(hoverPresence.user.name || 'Anonymous').split(' ').map(p => p[0]).slice(0,2).join('').toUpperCase()}</div>
                     }
                     <div className="flex flex-col">
                       <div className="font-semibold text-sm">{hoverPresence.user.name || 'Anonymous'}</div>
@@ -653,7 +756,7 @@ useEffect(() => {
             )}
           </div>
         )}
-      </div>
+      </motion.div>
 
       {/* Show children if folder is open or if it's the target for creation */}
       {/* In shallow mode (virtualised tree), children rendering is handled by the parent Virtuoso list */}
@@ -718,6 +821,9 @@ useEffect(() => {
               activeFile={activeFile}
               onAction={onAction}
               onRightMouseButtonClick={onRightMouseButtonClick}
+              onExternalFilesDrop={onExternalFilesDrop}
+              onExternalFolderDragTarget={onExternalFolderDragTarget}
+              canMutateFiles={canMutateFiles}
               // Propagate all necessary state and handlers
               uiActionState={uiActionState}
               dispatch={dispatch}

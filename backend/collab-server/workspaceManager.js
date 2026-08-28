@@ -17,7 +17,7 @@
 
 class WorkspaceManager {
     constructor() {
-        /** @type {Map<string, {slug: string, repoUrl: string, owner: string, name: string, createdAt: string}>} */
+        /** @type {Map<string, {slug: string, repoUrl: string, owner: string, name: string, createdAt: string, showInRecent: boolean, source: string}>} */
         this.workspaces = new Map();
     }
 
@@ -25,8 +25,24 @@ class WorkspaceManager {
      * Register a workspace. Called after clone or when a workspace is first accessed.
      * Stores only non-sensitive metadata (repoUrl should NOT contain tokens).
      */
-    addWorkspace(slug, repoUrl, owner, name) {
-        if (this.workspaces.has(slug)) return;
+    addWorkspace(slug, repoUrl, owner, name, options = {}) {
+        const existing = this.workspaces.get(slug);
+        const showInRecent = options.showInRecent !== false;
+        const source = typeof options.source === 'string' && options.source.trim()
+            ? options.source.trim()
+            : 'workspace';
+
+        if (existing) {
+            this.workspaces.set(slug, {
+                ...existing,
+                repoUrl: existing.repoUrl || repoUrl || '',
+                owner: existing.owner || owner || '',
+                name: name || existing.name || slug,
+                showInRecent: existing.showInRecent || showInRecent,
+                source: existing.source || source,
+            });
+            return;
+        }
 
         // Strip any embedded tokens from the URL before storing
         let safeUrl = repoUrl || '';
@@ -48,16 +64,19 @@ class WorkspaceManager {
             owner: owner || '',
             name: name || slug,
             createdAt: new Date().toISOString(),
+            showInRecent,
+            source,
         });
     }
 
     /**
      * Get workspaces optionally filtered by owner.
      */
-    getWorkspaces(owner) {
-        const all = Array.from(this.workspaces.values());
-        if (!owner) return all;
-        return all.filter(w => w.owner === owner);
+    getWorkspaces(owner, options = {}) {
+        let all = Array.from(this.workspaces.values());
+        if (owner) all = all.filter(w => w.owner === owner);
+        if (options.recentOnly) all = all.filter(w => w.showInRecent === true);
+        return all;
     }
 
     /**

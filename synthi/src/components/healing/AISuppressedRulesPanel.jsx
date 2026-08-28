@@ -59,13 +59,13 @@ export function AISuppressedRulesPanel({
   }
 
   return (
-    <div className="rounded-md border border-white/10 bg-white/[0.02] text-xs">
+    <div className="vt-command-surface text-xs">
       {/* ── Header ───────────────────────────────────────────────── */}
       <button
         onClick={toggleExpand}
-        className="flex items-center justify-between w-full px-3 py-2 hover:bg-white/5 transition-colors"
+        className="vt-command-item th-focus-ring flex w-full items-center justify-between px-3 py-2 transition-colors"
       >
-        <div className="flex items-center gap-2 text-white/50">
+        <div className="flex items-center gap-2" style={{ color: 'var(--text-secondary)' }}>
           <EyeOff size={12} />
           <span>
             {suppressedCount > 0
@@ -73,43 +73,52 @@ export function AISuppressedRulesPanel({
               : 'Suppressed rules'}
           </span>
           {totalRules > 0 && (
-            <span className="bg-white/10 px-1.5 py-0.5 rounded text-[10px] font-mono">
+            <span className="vt-state-pill h-[18px] px-1.5 text-[10px]">
               {totalRules}
             </span>
           )}
           {escalatedCount > 0 && (
-            <span className="bg-amber-500/20 text-amber-400/80 px-1.5 py-0.5 rounded text-[10px] font-mono" title={`${escalatedCount} escalated (manual-only)`}>
-              ⚠ {escalatedCount}
+            <span
+              className="vt-state-pill h-[18px] px-1.5 text-[10px]"
+              style={{
+                color: 'var(--accent-warning)',
+                borderColor: 'color-mix(in srgb, var(--accent-warning) 34%, transparent)',
+                background: 'color-mix(in srgb, var(--accent-warning) 10%, transparent)',
+              }}
+              title={`${escalatedCount} escalated (manual-only)`}
+            >
+              {escalatedCount} escalated
             </span>
           )}
         </div>
-        {expanded ? <ChevronUp size={12} className="text-white/30" /> : <ChevronDown size={12} className="text-white/30" />}
+        {expanded ? <ChevronUp size={12} style={{ color: 'var(--text-muted)' }} /> : <ChevronDown size={12} style={{ color: 'var(--text-muted)' }} />}
       </button>
 
       {/* ── Body ─────────────────────────────────────────────────── */}
       {expanded && (
         <div className="px-3 pb-3 space-y-1.5">
           {rules.length === 0 && (
-            <p className="text-white/30 py-2 text-center">No rules suppressed</p>
+            <p className="py-2 text-center" style={{ color: 'var(--text-muted)' }}>No rules suppressed</p>
           )}
 
           {rules.map((entry) => (
             <div
               key={entry.ruleId}
-              className="flex items-start justify-between bg-white/5 rounded px-2 py-1.5 group"
+              className="group flex items-start justify-between rounded-[var(--radius-control)] px-2 py-1.5"
+              style={{ background: 'color-mix(in srgb, var(--text-primary) 5%, transparent)' }}
             >
               <div className="flex flex-col gap-0.5 min-w-0">
                 <div className="flex items-center gap-2">
                   {entry.mode === 'rule' ? (
-                    <ShieldAlert size={11} className="text-red-400/60 shrink-0" title="Blanket rule suppression" />
+                    <ShieldAlert size={11} className="shrink-0" style={{ color: 'var(--accent-danger)' }} title="Blanket rule suppression" />
                   ) : (
-                    <Fingerprint size={11} className="text-blue-400/60 shrink-0" title="Fingerprint-based suppression" />
+                    <Fingerprint size={11} className="shrink-0" style={{ color: 'var(--attention-purple)' }} title="Fingerprint-based suppression" />
                   )}
-                  <span className="font-mono text-white/60 truncate" title={entry.ruleId}>
+                  <span className="truncate font-mono" style={{ color: 'var(--text-secondary)' }} title={entry.ruleId}>
                     {entry.ruleId}
                   </span>
                   {entry.mode === 'fingerprint' && entry.fingerprintCount > 0 && (
-                    <span className="text-[10px] text-white/30">
+                    <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
                       ({entry.fingerprintCount} pattern{entry.fingerprintCount === 1 ? '' : 's'})
                     </span>
                   )}
@@ -119,13 +128,13 @@ export function AISuppressedRulesPanel({
                 {(entry.reason || entry.escalated) && (
                   <div className="flex items-center gap-1.5 ml-5">
                     {entry.escalated && (
-                      <span className="flex items-center gap-0.5 text-[10px] text-amber-400/70" title="Backend escalated — manual-only">
+                      <span className="flex items-center gap-0.5 text-[10px]" style={{ color: 'var(--accent-warning)' }} title="Backend escalated - manual-only">
                         <AlertTriangle size={9} />
                         escalated
                       </span>
                     )}
                     {entry.reason && (
-                      <span className="text-[10px] text-white/25 truncate" title={entry.reason}>
+                      <span className="truncate text-[10px]" style={{ color: 'var(--text-muted)' }} title={entry.reason}>
                         {entry.reason}
                       </span>
                     )}
@@ -135,7 +144,7 @@ export function AISuppressedRulesPanel({
 
               <button
                 onClick={() => onUnsuppress?.(entry.ruleId)}
-                className="flex items-center gap-1 text-white/30 hover:text-green-400 transition-colors opacity-0 group-hover:opacity-100 shrink-0 mt-0.5"
+                className="th-focus-ring th-btn-ghost mt-0.5 flex shrink-0 items-center gap-1 rounded-[var(--radius-control)] px-1.5 py-0.5 opacity-0 transition-colors group-hover:opacity-100"
                 title={`Unsuppress ${entry.ruleId}`}
               >
                 <Eye size={11} />
@@ -148,7 +157,7 @@ export function AISuppressedRulesPanel({
           {rules.length > 0 && (
             <button
               onClick={onClearAll}
-              className="flex items-center gap-1 text-white/30 hover:text-red-400 transition-colors mt-2 ml-auto"
+              className="vt-danger-icon-hover th-focus-ring th-btn-ghost mt-2 ml-auto flex items-center gap-1 rounded-[var(--radius-control)] px-1.5 py-0.5 transition-colors"
               title="Clear all suppressed rules"
             >
               <Trash2 size={11} />
