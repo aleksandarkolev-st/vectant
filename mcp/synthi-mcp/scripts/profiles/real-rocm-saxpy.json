@@ -8,7 +8,10 @@
     "entryFile": "HIP-Basic/saxpy/main.hip",
     "deltaFile": "HIP-Basic/saxpy/main.hip",
     "targetName": "hip_saxpy",
-    "buildSubdir": "HIP-Basic/saxpy"
+    "buildSubdir": "HIP-Basic/saxpy",
+    "nativeLaunchSymbols": [
+      "saxpy_kernel"
+    ]
   },
   "sourceDelta": {
     "before": "d_y[global_idx] = a * d_x[global_idx] + d_y[global_idx];",

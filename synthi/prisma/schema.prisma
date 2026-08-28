@@ -384,6 +384,8 @@ model CodeSiteProject {
   warrantReceipts    CodeSiteWarrantReceipt[]
   warrantAuditHead   CodeSiteWarrantAuditHead?
   warrantAuditOutbox CodeSiteWarrantAuditOutbox[]
+  publishedNotams    CodeSiteFleetNotam[]
+  notamIngestStates  CodeSiteNotamIngestState[]
 
   @@index([workspaceSlug])
   @@index([collaborationSessionId])
@@ -1036,6 +1038,9 @@ model CodeSiteKnowledgeItem {
   summary                 String
   payloadJson             String
   scopeJson               String
+  // project (default), workspace, or learning_network. Only the latter two
+  // are sanitized, portable shared skills; raw knowledge remains project-local.
+  learningScope           String    @default("project")
   redactionClass          String    @default("project")
   confidence              Float?
   verificationStatus      String    @default("unverified")
@@ -1065,6 +1070,7 @@ model CodeSiteKnowledgeItem {
 
   @@unique([projectId, dedupeKey])
   @@index([projectId, kind, status])
+  @@index([learningScope, kind, status])
   @@index([projectId, expiresAt])
   @@index([createdByAgentSessionId])
   @@index([ownerAgentSessionId])
@@ -1129,6 +1135,61 @@ model CodeSitePolicyDelta {
   @@index([projectId])
   @@index([affectedZoneKey])
   @@index([promotionState])
+}
+
+model CodeSiteFleetNotam {
+  id                      String   @id @default(cuid())
+  projectId               String
+  workspaceSlug           String
+  sourcePolicyDeltaId     String
+  advisoryKey             String
+  title                   String
+  summary                 String
+  affectedZoneKey         String?
+  affectedRoutesJson      String
+  triggerConditionsJson   String
+  ruleCandidateJson       String
+  confidence              Float
+  expectedRiskReduction   Float?
+  digestSha256            String
+  status                  String   @default("active")
+  supersedesNotamId       String?
+  supersededByNotamId     String?
+  lifecycleChangedAt      DateTime?
+  lifecycleChangedBy      String?
+  lifecycleReason         String?
+  publishedAt             DateTime @default(now())
+  expiresAt               DateTime?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  project      CodeSiteProject            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  ingestStates CodeSiteNotamIngestState[]
+
+  @@unique([projectId, advisoryKey])
+  @@index([status, expiresAt])
+  @@index([workspaceSlug])
+  @@index([affectedZoneKey])
+  @@index([supersededByNotamId])
+}
+
+model CodeSiteNotamIngestState {
+  id             String   @id @default(cuid())
+  notamId        String
+  projectId      String
+  workspaceSlug  String
+  state          String   @default("unreviewed")
+  decidedBy      String?
+  decidedAt      DateTime?
+  reason         String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  notam   CodeSiteFleetNotam @relation(fields: [notamId], references: [id], onDelete: Cascade)
+  project CodeSiteProject    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([notamId, projectId])
+  @@index([projectId, state])
 }
 
 // Durable Local Support relay state. This table stores only the signed request

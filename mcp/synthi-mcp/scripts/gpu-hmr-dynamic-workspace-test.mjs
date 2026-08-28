@@ -801,6 +801,12 @@ function waitContractForCompile({ manifest, primaryPath, compile, timeoutMs }) {
   return { waitArgs, role, isGpuDeviceEdit };
 }
 
+function waitContractRequiresStrictProof(waitContract) {
+  const waitArgs = waitContract?.waitArgs ?? {};
+  return waitArgs.requireGpuFullRuntimeProof === true
+    || (typeof waitArgs.requiredGpuProofState === 'string' && waitArgs.requiredGpuProofState.trim().length > 0);
+}
+
 async function seedWorkspace(vendor, arch) {
   const paths = makePaths(vendor);
   const manifest = manifestFor(vendor, paths, arch);
@@ -851,7 +857,9 @@ async function compileViaMcp(ctx, primaryPath, content) {
   });
   const hmr = await state.client.toolCall('synthi_wait_hmr', waitContract.waitArgs, waitTimeout + 5000)
     .catch((e) => ({ status: 'timeout_or_error', error: e.message }));
-  record('mcp wait_hmr proof gate', hmr?.status === 'applied' ? 'pass' : 'warn', JSON.stringify({
+  const strictProofRequired = waitContractRequiresStrictProof(waitContract);
+  const waitGateSatisfied = hmr?.status === 'applied';
+  const waitSummary = {
     role: waitContract.role,
     module: waitContract.waitArgs.module ?? null,
     since_ts: waitContract.waitArgs.since_ts ?? null,
@@ -859,7 +867,16 @@ async function compileViaMcp(ctx, primaryPath, content) {
     requiredGpuProofState: waitContract.waitArgs.requiredGpuProofState ?? null,
     status: hmr?.status ?? null,
     frame_gate: hmr?.frame_gate ?? null,
-  }));
+    error: hmr?.error ? String(hmr.error).slice(0, 4000) : null,
+  };
+  record(
+    'mcp wait_hmr proof gate',
+    waitGateSatisfied ? 'pass' : strictProofRequired ? 'fail' : 'warn',
+    JSON.stringify(waitSummary),
+  );
+  if (strictProofRequired && !waitGateSatisfied) {
+    throw new Error(`strict synthi_wait_hmr proof gate did not apply: ${JSON.stringify(waitSummary).slice(0, 4000)}`);
+  }
   return { compile, hmr, waitContract };
 }
 

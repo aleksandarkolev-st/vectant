@@ -1,4 +1,64 @@
+import { constants as fsConstants } from 'node:fs';
+import { lstat, open, realpath } from 'node:fs/promises';
+import path from 'node:path';
+import { isDeepStrictEqual, types as utilTypes } from 'node:util';
+import sharp from 'sharp';
+
+import {
+  classifyGpuHmrVisualEvidenceStats,
+  evaluateRuntimeVisualControlObservationPair,
+  materializeRuntimeVisualControlObservation,
+  screenshotQualifiesAsVisualEvidence,
+} from './gpu-hmr-visual-evidence.mjs';
+import {
+  sha256Bytes,
+  sha256Text,
+  validateArtifactLocator,
+} from './gpu-hmr-artifact-cas.mjs';
+import {
+  GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_V2_SCHEMA_VERSION,
+} from './gpu-hmr-runtime-adapter-capabilities-v2.mjs';
+import {
+  evaluateGpuHmrRuntimeAdapterCapabilitiesVersionedIntegrity,
+} from './gpu-hmr-runtime-adapter-capabilities-versioned.mjs';
+import {
+  classifyGpuHmrOutputOracleKind,
+} from './gpu-hmr-output-oracle-kind.mjs';
+
 export const GPU_HMR_PROOF_SCHEMA_VERSION = 'synthi.gpu.hmr.proof.v1';
+export const GPU_HMR_VERIFIED_OUTPUT_MODALITY_SCHEMA_VERSION =
+  'synthi.gpu_hmr.verified_output_modality.v1';
+export const GPU_HMR_VERIFIED_DISPATCH_TRACE_SCHEMA_VERSION =
+  'synthi.gpu_hmr.verified_dispatch_trace.v1';
+export const GPU_HMR_VERIFIED_VISUAL_CAPTURE_PROVENANCE_SCHEMA_VERSION =
+  'synthi.gpu_hmr.verified_visual_capture_provenance.v1';
+export const GPU_HMR_VERIFIED_VISUAL_EVIDENCE_SCHEMA_VERSION =
+  'synthi.gpu_hmr.verified_visual_evidence.v1';
+
+const PINNED_DISPATCH_PROOFS = new WeakMap();
+const PINNED_DISPATCH_TRACE_EVIDENCE = new WeakMap();
+const PINNED_OUTPUT_MODALITY_EVIDENCE = new WeakMap();
+const PINNED_VISUAL_CAPTURE_PROVENANCE = new WeakMap();
+// This pin protects support-analysis integrity only. It never grants visual authority.
+const PINNED_VISUAL_SUPPORT_EVIDENCE = new WeakMap();
+// The runner-owned issuer lives outside this module. Until it supplies a pinned
+// native observation, serialized or caller-created visual declarations have no authority.
+const PINNED_RUNNER_VISUAL_OBSERVATIONS = new WeakMap();
+
+const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+const VISUAL_FILE_LIMITS = Object.freeze({
+  maxEncodedBytes: 32 * 1024 * 1024,
+  maxDecodedBytes: 256 * 1024 * 1024,
+  maxDimension: 16_384,
+  maxPixels: 64 * 1024 * 1024,
+  maxPages: 1,
+  maxSourceStreamBytes: 8 * 1024 * 1024,
+});
+const VISUAL_TEMPORAL_LIMITS = Object.freeze({
+  maxBeforeCaptureAgeNs: 5_000_000_000n,
+});
+const VISUAL_RUNNER_PROVENANCE_GAP =
+  'visual_capture_provenance_runner_owned_native_observation_missing';
 
 export const GPU_HMR_PROOF_STATES = [
   'gpu-hmr-compile-proven',
@@ -52,13 +112,6 @@ const ACCEPTED_OUTPUT_ORACLE_KINDS = new Set([
   'per_pass_checksum',
   'dispatch_counter',
   'buffer_checksum',
-]);
-
-const RENDER_OUTPUT_ORACLE_KINDS = new Set([
-  'render_target_hash',
-  'accumulation_buffer_hash',
-  'selected_pixels',
-  'selected_pixel_values',
 ]);
 
 export function gpuHmrOutputOracleKindAccepted(kind) {
@@ -245,6 +298,20 @@ function latestEpochPublicationTimestampFromProof(proof) {
     ?? proof?.timestampMs
     ?? proof?.timestamp_ms,
   );
+}
+
+function latestEpochPublicationMonotonicTimestampFromProof(proof) {
+  const publication = latestEpochPublicationFromProof(proof);
+  const value =
+    publication?.timestampMonotonicNs
+    ?? publication?.timestamp_monotonic_ns
+    ?? publication?.publishTimestampMonotonicNs
+    ?? publication?.publish_timestamp_monotonic_ns
+    ?? proof?.timestampMonotonicNs
+    ?? proof?.timestamp_monotonic_ns
+    ?? proof?.publishTimestampMonotonicNs
+    ?? proof?.publish_timestamp_monotonic_ns;
+  return value === null || value === undefined ? null : monotonicTimestamp(String(value));
 }
 
 function contentAddressedArtifactIds(values) {
@@ -854,14 +921,27 @@ function runtimeLaunchArgProvenanceEvidenceRefs(refs) {
   return compactStringList(refs).filter((ref) => /^worker-log:launch_arg_provenance:/i.test(ref));
 }
 
+const RUNTIME_DISPATCH_EVIDENCE_REF_PREFIXES = Object.freeze([
+  'worker-log:synthi_gpu_launch:',
+  'worker-log:native_runtime_dispatch:',
+]);
+
 function runtimeDispatchEvidenceRefs(refs) {
-  return compactStringList(refs).filter((ref) => /^worker-log:synthi_gpu_launch:/i.test(ref));
+  return compactStringList(refs).filter((ref) => {
+    const value = String(ref ?? '').toLowerCase();
+    return RUNTIME_DISPATCH_EVIDENCE_REF_PREFIXES.some((prefix) =>
+      value.startsWith(prefix)
+    );
+  });
 }
 
 function runtimeDispatchEvidenceRefSession(ref) {
-  const prefix = 'worker-log:synthi_gpu_launch:';
   const value = String(ref ?? '');
-  if (!value.toLowerCase().startsWith(prefix)) return null;
+  const lower = value.toLowerCase();
+  const prefix = RUNTIME_DISPATCH_EVIDENCE_REF_PREFIXES.find((candidate) =>
+    lower.startsWith(candidate)
+  );
+  if (!prefix) return null;
   const suffix = value.slice(prefix.length);
   const separator = suffix.lastIndexOf(':');
   if (separator <= 0) return null;
@@ -1550,6 +1630,2239 @@ export function gpuHmrOracleValuesCompatible(expected, actual, tolerance = null)
   };
 }
 
+function ownDataRecord(value) {
+  if (
+    value === null
+    || typeof value !== 'object'
+    || Array.isArray(value)
+    || utilTypes.isProxy(value)
+    || Object.getPrototypeOf(value) !== Object.prototype
+  ) return false;
+  return Object.values(Object.getOwnPropertyDescriptors(value)).every(
+    (descriptor) => Object.prototype.hasOwnProperty.call(descriptor, 'value'),
+  );
+}
+
+function clonePlainData(value, seen = new Set()) {
+  if (value === null || ['string', 'boolean'].includes(typeof value)) return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (Array.isArray(value)) {
+    if (utilTypes.isProxy(value) || seen.has(value)) throw new Error('plain_data_tree_invalid');
+    seen.add(value);
+    const clone = value.map((entry) => clonePlainData(entry, seen));
+    seen.delete(value);
+    return clone;
+  }
+  if (!ownDataRecord(value) || seen.has(value)) throw new Error('plain_data_tree_invalid');
+  seen.add(value);
+  const clone = Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [key, clonePlainData(entry, seen)]),
+  );
+  seen.delete(value);
+  return clone;
+}
+
+function deepFreezeData(value) {
+  if (value === null || typeof value !== 'object') return value;
+  for (const entry of Object.values(value)) deepFreezeData(entry);
+  return Object.isFrozen(value) ? value : Object.freeze(value);
+}
+
+function exactOwnKeys(value, keys) {
+  return ownDataRecord(value)
+    && Object.keys(value).length === keys.length
+    && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
+}
+
+function aliasedEvidenceValue(sources, aliases) {
+  const declarations = [];
+  for (const source of sources) {
+    if (!ownDataRecord(source)) continue;
+    for (const alias of aliases) {
+      if (Object.prototype.hasOwnProperty.call(source, alias)) {
+        declarations.push({ alias, source, value: source[alias] });
+      }
+    }
+  }
+  const conflict = declarations.length > 1
+    && declarations.some(({ value }) => !isDeepStrictEqual(value, declarations[0].value));
+  return {
+    value: conflict ? null : declarations[0]?.value ?? null,
+    declared: declarations.length > 0,
+    conflict,
+    duplicate: declarations.length > 1,
+  };
+}
+
+function frozenModalityFailure(failures) {
+  const failedGates = Object.freeze([...new Set(failures)]);
+  return Object.freeze({
+    schemaVersion: GPU_HMR_VERIFIED_OUTPUT_MODALITY_SCHEMA_VERSION,
+    accepted: false,
+    modality: null,
+    oracleKind: null,
+    capabilityProofId: null,
+    failedGates,
+  });
+}
+
+export function verifyGpuHmrOutputModalityEvidence(capabilityFacet) {
+  const integrity = evaluateGpuHmrRuntimeAdapterCapabilitiesVersionedIntegrity(capabilityFacet);
+  const envelope = integrity.recomputedEnvelope;
+  if (integrity.valid !== true || !envelope?.facet) {
+    return frozenModalityFailure([
+      'output_modality_capability_integrity_unverified',
+      ...(Array.isArray(integrity.failures) ? integrity.failures : []),
+    ]);
+  }
+  const facet = envelope.facet;
+  if (
+    envelope.schemaVersion !== GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_V2_SCHEMA_VERSION
+    || envelope.historical !== false
+    || facet.schemaVersion !== GPU_HMR_RUNTIME_ADAPTER_CAPABILITIES_V2_SCHEMA_VERSION
+  ) {
+    return frozenModalityFailure(['output_modality_capability_v2_required']);
+  }
+  const result = Object.freeze({
+    schemaVersion: GPU_HMR_VERIFIED_OUTPUT_MODALITY_SCHEMA_VERSION,
+    accepted: true,
+    modality: facet.outputModality,
+    oracleKind: facet.oracleKind,
+    capabilityProofId: facet.proofId,
+    capabilityBindingHash: facet.bindingHash,
+    evidenceRefs: facet.evidenceRefs,
+    failedGates: Object.freeze([]),
+  });
+  PINNED_OUTPUT_MODALITY_EVIDENCE.set(result, Object.freeze({
+    modality: facet.outputModality,
+    oracleKind: facet.oracleKind,
+    capabilityProofId: facet.proofId,
+    capabilityBindingHash: facet.bindingHash,
+    evidenceRefs: facet.evidenceRefs,
+  }));
+  return result;
+}
+
+function outputModalityEvidenceFromObservation(observation, rawOracle) {
+  const declaration = aliasedEvidenceValue(
+    [observation, rawOracle],
+    ['outputModalityEvidence', 'output_modality_evidence'],
+  );
+  const pinned = declaration.value && typeof declaration.value === 'object'
+    ? PINNED_OUTPUT_MODALITY_EVIDENCE.get(declaration.value)
+    : null;
+  const kind = classifyGpuHmrOutputOracleKind(rawOracle.kind);
+  const failedGates = [];
+  if (declaration.conflict) failedGates.push('output_modality_evidence_alias_conflict');
+  if (declaration.duplicate) failedGates.push('output_modality_evidence_duplicate');
+  if (!pinned || declaration.value?.accepted !== true) {
+    failedGates.push('output_modality_evidence_missing_or_unverified');
+  }
+  if (!kind.accepted) failedGates.push(kind.failureCode ?? 'output_oracle_kind_unaccepted');
+  if (pinned && kind.accepted && pinned.oracleKind !== kind.kind) {
+    failedGates.push('output_modality_evidence_oracle_kind_mismatch');
+  }
+  if (pinned && kind.accepted && pinned.modality !== kind.modality) {
+    failedGates.push('output_modality_evidence_modality_mismatch');
+  }
+  return {
+    accepted: failedGates.length === 0,
+    declared: declaration.declared,
+    modality: failedGates.length === 0 ? pinned.modality : null,
+    registryModality: kind.modality,
+    oracleKind: failedGates.length === 0 ? pinned.oracleKind : null,
+    evidence: declaration.value,
+    pinned,
+    failedGates,
+  };
+}
+
+function dispatchProofPublicIdentity(dispatchProof) {
+  return {
+    schemaVersion: stringField(dispatchProof?.schemaVersion),
+    resultState: stringField(dispatchProof?.resultState),
+    degradedState: dispatchProof?.degradedState ?? null,
+    degradedReason: dispatchProof?.degradedReason ?? null,
+    dispatchObserved: dispatchProof?.dispatchObserved === true,
+    dispatchEvidenceObserved: dispatchProof?.dispatchEvidenceObserved === true,
+    dispatchEvidenceRefs: compactStringList(dispatchProof?.dispatchEvidenceRefs),
+    sessionScoped: dispatchProof?.sessionScoped === true,
+    runtimeSessionObserved: dispatchProof?.runtimeSessionObserved === true,
+    runtimeSessionIds: compactStringList(dispatchProof?.runtimeSessionIds),
+    runtimeSessionConsistent: dispatchProof?.runtimeSessionConsistent === true,
+    argProvenanceObserved: dispatchProof?.argProvenanceObserved === true,
+    argProvenanceComplete: dispatchProof?.argProvenanceComplete === true,
+    argProvenanceEvidenceObserved: dispatchProof?.argProvenanceEvidenceObserved === true,
+    argProvenanceRecordComplete: dispatchProof?.argProvenanceRecordComplete === true,
+    unknownArgCount: finiteNonNegativeNumber(dispatchProof?.unknownArgCount),
+    abiProven: dispatchProof?.abiProven === true,
+    abiProofEvidenceObserved: dispatchProof?.abiProofEvidenceObserved === true,
+    epochSwapProven: dispatchProof?.epochSwapProven === true,
+    epochProofEvidenceObserved: dispatchProof?.epochProofEvidenceObserved === true,
+    streamOrderingProven: dispatchProof?.streamOrderingProven === true,
+    replacementScopeProven: dispatchProof?.replacementScopeProven === true,
+    runtimeTouchedSymbolsMatch: dispatchProof?.runtimeTouchedSymbolsMatch === true,
+    runtimeArtifactMatchesSelected: dispatchProof?.runtimeArtifactMatchesSelected === true,
+    selectedArtifactIds: contentAddressedArtifactIds(dispatchProof?.selectedArtifactIds),
+    runtimeArtifactId: stringField(dispatchProof?.runtimeArtifactId),
+    runtimeArtifactIds: dispatchRuntimeArtifactIdsFromProof(dispatchProof),
+    dispatcherRegistrationIds: compactStringList(dispatchProof?.dispatcherRegistrationIds),
+    dispatchTableEntryIds: compactStringList(dispatchProof?.dispatchTableEntryIds),
+    dispatchTableHashes: compactStringList(dispatchProof?.dispatchTableHashes),
+    dispatchStreamIds: compactStringList(dispatchProof?.dispatchStreamIds),
+    gridDimensions: compactStringList(dispatchProof?.gridDimensions),
+    blockDimensions: compactStringList(dispatchProof?.blockDimensions),
+    sharedMemoryBytes: finiteNonNegativeNumberList(dispatchProof?.sharedMemoryBytes),
+    dispatchTimestamps: finiteNonNegativeNumberList(dispatchProof?.dispatchTimestamps),
+    dispatchId: stringField(dispatchProof?.dispatchId),
+    processId: stringField(dispatchProof?.processId),
+    epoch: stringField(dispatchProof?.epoch),
+  };
+}
+
+function dispatchProofIdentity(dispatchProof) {
+  const pinned = dispatchProof && typeof dispatchProof === 'object'
+    ? PINNED_DISPATCH_PROOFS.get(dispatchProof)
+    : null;
+  if (!pinned || dispatchProof.resultState !== 'gpu-hmr-dispatch-safe-proven') return null;
+  return isDeepStrictEqual(dispatchProofPublicIdentity(dispatchProof), pinned.publicIdentity)
+    ? pinned
+    : null;
+}
+
+function frozenDispatchTraceFailure(failures) {
+  return Object.freeze({
+    schemaVersion: GPU_HMR_VERIFIED_DISPATCH_TRACE_SCHEMA_VERSION,
+    accepted: false,
+    failedGates: Object.freeze([...new Set(failures)]),
+  });
+}
+
+function parseRuntimeBoundaryFields(sourceLine, eventName) {
+  if (typeof sourceLine !== 'string' || sourceLine.trim() !== sourceLine) return null;
+  if (!/^[a-z][a-z0-9_]*$/.test(eventName)) return null;
+  const marker = `[gpu-runtime-boundary] ${eventName} `;
+  if (!sourceLine.startsWith(marker)) return null;
+  const payload = sourceLine.slice(marker.length);
+  if (!payload) return null;
+  const fields = new Map();
+  for (const token of payload.split(/\s+/)) {
+    const field = token.match(/^([a-z][a-z0-9_]*)=([^\s=]+)$/);
+    if (!field || fields.has(field[1])) return null;
+    fields.set(field[1], field[2]);
+  }
+  return fields;
+}
+
+function parseDispatchTraceLine(sourceLine) {
+  return parseRuntimeBoundaryFields(sourceLine, 'dispatch_trace');
+}
+
+function monotonicTimestamp(value) {
+  if (typeof value !== 'string' || !/^[1-9][0-9]*$/.test(value)) return null;
+  try {
+    return BigInt(value) > 0n ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function dispatchTraceAnchorFromObservation(observation, expected) {
+  const declaration = aliasedEvidenceValue(
+    [observation],
+    ['dispatchTraceEvidence', 'dispatch_trace_evidence'],
+  );
+  const failures = [];
+  if (declaration.conflict) failures.push('dispatch_trace_evidence_alias_conflict');
+  if (declaration.duplicate) failures.push('dispatch_trace_evidence_duplicate');
+  const candidate = declaration.value;
+  if (!exactOwnKeys(candidate, [
+    'evidenceRef',
+    'sourceLine',
+    'sourceLineHash',
+    'sourceLineIndex',
+    'sourceStreamHash',
+  ])) {
+    failures.push('dispatch_trace_evidence_field_set_invalid');
+    return { anchor: null, failures };
+  }
+  const fields = parseDispatchTraceLine(candidate.sourceLine);
+  if (!fields) failures.push('dispatch_trace_source_line_invalid');
+  const sourceLineHash = typeof candidate.sourceLine === 'string'
+    ? sha256Text(candidate.sourceLine)
+    : null;
+  const sourceLineIndex = Number.isInteger(candidate.sourceLineIndex) && candidate.sourceLineIndex >= 0
+    ? candidate.sourceLineIndex
+    : null;
+  const trace = {
+    dispatchId: fields?.get('dispatch_id') ?? null,
+    dispatchTimestamp: monotonicTimestamp(fields?.get('timestamp_monotonic_ns')),
+    processId: fields?.get('process_id') ?? null,
+    runtimeSessionId: fields?.get('runtime_session') ?? null,
+    runtimeArtifactId: fields?.get('artifact_id') ?? null,
+    epoch: fields?.get('epoch') ?? null,
+    outputTargetId: fields?.get('output_target_id') ?? null,
+    deviceIdentity: fields?.get('device_identity') ?? null,
+  };
+  const evidenceRef = stringField(candidate.evidenceRef);
+  const sourceStreamHash = /^sha256:[0-9a-f]{64}$/.test(candidate.sourceStreamHash ?? '')
+    ? candidate.sourceStreamHash
+    : null;
+  if (!evidenceRef || !expected.dispatchEvidenceRefs.includes(evidenceRef)) {
+    failures.push('dispatch_trace_evidence_ref_not_accepted_by_dispatch_proof');
+  }
+  if (!sourceLineHash || candidate.sourceLineHash !== sourceLineHash) {
+    failures.push('dispatch_trace_source_line_hash_mismatch');
+  }
+  if (!sourceStreamHash) failures.push('dispatch_trace_source_stream_hash_invalid');
+  if (sourceLineIndex === null) failures.push('dispatch_trace_source_line_index_invalid');
+  for (const [field, value] of Object.entries(trace)) {
+    if (!value) {
+      failures.push(
+        `dispatch_trace_${field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)}_missing`,
+      );
+    }
+  }
+  for (const field of [
+    'dispatchId',
+    'processId',
+    'runtimeSessionId',
+    'runtimeArtifactId',
+    'epoch',
+  ]) {
+    if (trace[field] && trace[field] !== expected[field]) {
+      failures.push(
+        `dispatch_trace_${field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)}_mismatch`,
+      );
+    }
+  }
+  if (!expected.epochPublicationTimestamp) {
+    failures.push('dispatch_trace_epoch_publication_timestamp_unverified');
+  } else if (
+    trace.dispatchTimestamp
+    && BigInt(trace.dispatchTimestamp) <= BigInt(expected.epochPublicationTimestamp)
+  ) {
+    failures.push('dispatch_trace_precedes_epoch_publication');
+  }
+  if (failures.length > 0) return { anchor: null, failures };
+  return {
+    anchor: Object.freeze({
+      ...trace,
+      evidenceRef,
+      sourceLineHash,
+      sourceLineIndex,
+      sourceStreamHash,
+    }),
+    failures: [],
+  };
+}
+
+export function verifyGpuHmrDispatchTraceEvidence(input) {
+  if (!exactOwnKeys(input, ['dispatchProof'])) {
+    return frozenDispatchTraceFailure(['dispatch_trace_evidence_field_set_invalid']);
+  }
+  const dispatchIdentity = dispatchProofIdentity(input.dispatchProof);
+  if (!dispatchIdentity) {
+    return frozenDispatchTraceFailure(['dispatch_trace_dispatch_proof_unverified']);
+  }
+  if (!dispatchIdentity.dispatchTraceAnchor) {
+    return frozenDispatchTraceFailure(
+      dispatchIdentity.dispatchTraceFailures.length > 0
+        ? dispatchIdentity.dispatchTraceFailures
+        : ['dispatch_trace_not_accepted_with_dispatch_proof'],
+    );
+  }
+
+  const anchor = dispatchIdentity.dispatchTraceAnchor;
+  const result = Object.freeze({
+    schemaVersion: GPU_HMR_VERIFIED_DISPATCH_TRACE_SCHEMA_VERSION,
+    accepted: true,
+    proofAuthority: 'accepted_dispatch_proof_runtime_boundary_trace',
+    ...anchor,
+    failedGates: Object.freeze([]),
+  });
+  PINNED_DISPATCH_TRACE_EVIDENCE.set(result, Object.freeze({
+    dispatchProof: input.dispatchProof,
+    anchor,
+  }));
+  return result;
+}
+
+function dispatchTraceAnchor(dispatchProof, dispatchTraceEvidence) {
+  const pinned = dispatchTraceEvidence && typeof dispatchTraceEvidence === 'object'
+    ? PINNED_DISPATCH_TRACE_EVIDENCE.get(dispatchTraceEvidence)
+    : null;
+  if (!pinned || pinned.dispatchProof !== dispatchProof || !dispatchProofIdentity(dispatchProof)) {
+    return null;
+  }
+  const current = {
+    dispatchId: stringField(dispatchTraceEvidence.dispatchId),
+    dispatchTimestamp: monotonicTimestamp(dispatchTraceEvidence.dispatchTimestamp),
+    processId: stringField(dispatchTraceEvidence.processId),
+    runtimeSessionId: stringField(dispatchTraceEvidence.runtimeSessionId),
+    runtimeArtifactId: stringField(dispatchTraceEvidence.runtimeArtifactId),
+    epoch: stringField(dispatchTraceEvidence.epoch),
+    outputTargetId: stringField(dispatchTraceEvidence.outputTargetId),
+    deviceIdentity: stringField(dispatchTraceEvidence.deviceIdentity),
+    evidenceRef: stringField(dispatchTraceEvidence.evidenceRef),
+    sourceLineHash: stringField(dispatchTraceEvidence.sourceLineHash),
+    sourceLineIndex: Number.isInteger(dispatchTraceEvidence.sourceLineIndex)
+      ? dispatchTraceEvidence.sourceLineIndex
+      : null,
+    sourceStreamHash: stringField(dispatchTraceEvidence.sourceStreamHash),
+  };
+  return isDeepStrictEqual(current, pinned.anchor) ? pinned.anchor : null;
+}
+
+function pathInsideRoot(candidate, root) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+function statIdentity(stat, includeSize = true) {
+  const identity = {
+    dev: String(stat.dev),
+    ino: String(stat.ino),
+    birthtimeMs: String(stat.birthtimeMs),
+    ctimeMs: String(stat.ctimeMs),
+  };
+  if (includeSize) identity.size = String(stat.size);
+  return identity;
+}
+
+function rootStatIdentity(stat) {
+  return {
+    dev: String(stat.dev),
+    ino: String(stat.ino),
+    birthtimeMs: String(stat.birthtimeMs),
+  };
+}
+
+function handleAndPathIdentityMatch(handleIdentity, pathIdentity) {
+  const deviceComparable = handleIdentity.dev !== '0' && pathIdentity.dev !== '0';
+  return (!deviceComparable || handleIdentity.dev === pathIdentity.dev)
+    && handleIdentity.ino === pathIdentity.ino
+    && handleIdentity.birthtimeMs === pathIdentity.birthtimeMs
+    && handleIdentity.ctimeMs === pathIdentity.ctimeMs
+    && handleIdentity.size === pathIdentity.size;
+}
+
+function strictStableFileIdentity(pathIdentity, handleIdentity) {
+  const device = handleIdentity.dev !== '0'
+    ? handleIdentity.dev
+    : pathIdentity.dev !== '0'
+      ? pathIdentity.dev
+      : null;
+  const inode = handleIdentity.ino !== '0'
+    ? handleIdentity.ino
+    : pathIdentity.ino !== '0'
+      ? pathIdentity.ino
+      : null;
+  if (!device || !inode) return null;
+  return Object.freeze({
+    device,
+    inode,
+    birthtimeMs: handleIdentity.birthtimeMs,
+    ctimeMs: handleIdentity.ctimeMs,
+    size: handleIdentity.size,
+  });
+}
+
+function strictStableRootIdentity(pathIdentity, handleIdentity) {
+  const device = handleIdentity.dev !== '0'
+    ? handleIdentity.dev
+    : pathIdentity.dev !== '0'
+      ? pathIdentity.dev
+      : null;
+  const inode = handleIdentity.ino !== '0'
+    ? handleIdentity.ino
+    : pathIdentity.ino !== '0'
+      ? pathIdentity.ino
+      : null;
+  if (!device || !inode || handleIdentity.birthtimeMs !== pathIdentity.birthtimeMs) return null;
+  return Object.freeze({
+    device,
+    inode,
+    birthtimeMs: handleIdentity.birthtimeMs,
+  });
+}
+
+function stableFileIdentityKey(identity) {
+  return identity?.device && identity?.inode
+    ? `${identity.device}:${identity.inode}`
+    : null;
+}
+
+function hardBoundedLimit(options, key) {
+  const hardLimit = VISUAL_FILE_LIMITS[key];
+  const requested = options?.limits?.[key] ?? options?.[key];
+  return Number.isSafeInteger(requested) && requested > 0
+    ? Math.min(requested, hardLimit)
+    : hardLimit;
+}
+
+function hardBoundedTemporalLimit(options, key) {
+  const hardLimit = VISUAL_TEMPORAL_LIMITS[key];
+  const requested = options?.temporalLimits?.[key] ?? options?.[key];
+  try {
+    const normalized = requested === undefined ? hardLimit : BigInt(requested);
+    return normalized > 0n && normalized < hardLimit ? normalized : hardLimit;
+  } catch {
+    return hardLimit;
+  }
+}
+
+function publicAllowedRootBinding(binding) {
+  return Object.freeze({
+    path: binding.path,
+    identity: Object.freeze({
+      path: Object.freeze({ ...binding.identity.path }),
+      handle: Object.freeze({ ...binding.identity.handle }),
+      stable: Object.freeze({ ...binding.identity.stable }),
+    }),
+  });
+}
+
+async function closePinnedAllowedRoots(bindings) {
+  await Promise.allSettled((Array.isArray(bindings) ? bindings : []).map(
+    (binding) => binding?.handle?.close(),
+  ));
+}
+
+async function pinAllowedRoots(allowedRoots, codePrefix) {
+  if (
+    !Array.isArray(allowedRoots)
+    || utilTypes.isProxy(allowedRoots)
+    || allowedRoots.length === 0
+    || !allowedRoots.every((root) => typeof root === 'string' && root.trim())
+  ) throw new Error(`${codePrefix}_allowed_root_missing`);
+  const bindings = [];
+  try {
+    for (const root of allowedRoots) {
+      let handle = null;
+      try {
+        const requestedPath = path.resolve(root);
+        const pathMetadata = await lstat(requestedPath, { bigint: true });
+        if (!pathMetadata.isDirectory() || pathMetadata.isSymbolicLink()) {
+          throw new Error(`${codePrefix}_allowed_root_not_stable_directory`);
+        }
+        const canonicalPath = await realpath(requestedPath);
+        if (path.relative(requestedPath, canonicalPath) !== '') {
+          throw new Error(`${codePrefix}_allowed_root_symlink_or_reparse`);
+        }
+        const noFollow = Number.isInteger(fsConstants.O_NOFOLLOW) ? fsConstants.O_NOFOLLOW : 0;
+        const directory = Number.isInteger(fsConstants.O_DIRECTORY) ? fsConstants.O_DIRECTORY : 0;
+        handle = await open(requestedPath, fsConstants.O_RDONLY | noFollow | directory);
+        const pathIdentity = rootStatIdentity(pathMetadata);
+        const pathSnapshot = statIdentity(pathMetadata);
+        const handleMetadata = await handle.stat({ bigint: true });
+        const handleIdentity = rootStatIdentity(handleMetadata);
+        const handleSnapshot = statIdentity(handleMetadata);
+        if (
+          !handleMetadata.isDirectory()
+          || !handleAndPathIdentityMatch(handleIdentity, pathIdentity)
+          || !handleAndPathIdentityMatch(handleSnapshot, pathSnapshot)
+        ) throw new Error(`${codePrefix}_allowed_root_handle_path_identity_mismatch`);
+        const stableIdentity = strictStableRootIdentity(pathIdentity, handleIdentity);
+        if (!stableIdentity) {
+          throw new Error(`${codePrefix}_allowed_root_stable_identity_unavailable`);
+        }
+        const binding = {
+          path: canonicalPath,
+          handle,
+          identity: Object.freeze({
+            path: Object.freeze(pathIdentity),
+            handle: Object.freeze(handleIdentity),
+            stable: stableIdentity,
+          }),
+          snapshot: Object.freeze({
+            path: Object.freeze(pathSnapshot),
+            handle: Object.freeze(handleSnapshot),
+          }),
+        };
+        if (
+          bindings.some((existing) => (
+            existing.path === binding.path
+            || stableFileIdentityKey(existing.identity.stable)
+              === stableFileIdentityKey(binding.identity.stable)
+          ))
+        ) throw new Error(`${codePrefix}_allowed_root_duplicate`);
+        bindings.push(binding);
+        handle = null;
+      } finally {
+        if (handle) await handle.close();
+      }
+    }
+    return bindings;
+  } catch (error) {
+    await closePinnedAllowedRoots(bindings);
+    if (typeof error?.message === 'string' && error.message.startsWith(`${codePrefix}_`)) {
+      throw error;
+    }
+    throw new Error(`${codePrefix}_allowed_root_unreadable`);
+  }
+}
+
+async function verifyPinnedAllowedRoot(binding, codePrefix) {
+  try {
+    const pathMetadata = await lstat(binding.path, { bigint: true });
+    if (!pathMetadata.isDirectory() || pathMetadata.isSymbolicLink()) {
+      throw new Error(`${codePrefix}_allowed_root_replaced`);
+    }
+    const canonicalPath = await realpath(binding.path);
+    if (canonicalPath !== binding.path) {
+      throw new Error(`${codePrefix}_allowed_root_replaced`);
+    }
+    const pinnedHandleMetadata = await binding.handle.stat({ bigint: true });
+    const pinnedHandleIdentity = rootStatIdentity(pinnedHandleMetadata);
+    const pinnedHandleSnapshot = statIdentity(pinnedHandleMetadata);
+    const currentPathIdentity = rootStatIdentity(pathMetadata);
+    const currentPathSnapshot = statIdentity(pathMetadata);
+    const noFollow = Number.isInteger(fsConstants.O_NOFOLLOW) ? fsConstants.O_NOFOLLOW : 0;
+    const directory = Number.isInteger(fsConstants.O_DIRECTORY) ? fsConstants.O_DIRECTORY : 0;
+    const currentHandle = await open(binding.path, fsConstants.O_RDONLY | noFollow | directory);
+    try {
+      const currentHandleMetadata = await currentHandle.stat({ bigint: true });
+      const currentHandleIdentity = rootStatIdentity(currentHandleMetadata);
+      const currentHandleSnapshot = statIdentity(currentHandleMetadata);
+      if (
+        !currentHandleMetadata.isDirectory()
+        || !isDeepStrictEqual(pinnedHandleIdentity, binding.identity.handle)
+        || !isDeepStrictEqual(pinnedHandleSnapshot, binding.snapshot.handle)
+        || !isDeepStrictEqual(currentPathIdentity, binding.identity.path)
+        || !isDeepStrictEqual(currentPathSnapshot, binding.snapshot.path)
+        || !isDeepStrictEqual(currentHandleIdentity, binding.identity.handle)
+        || !isDeepStrictEqual(currentHandleSnapshot, binding.snapshot.handle)
+        || !handleAndPathIdentityMatch(currentHandleIdentity, currentPathIdentity)
+        || !handleAndPathIdentityMatch(currentHandleSnapshot, currentPathSnapshot)
+        || !isDeepStrictEqual(
+          strictStableRootIdentity(currentPathIdentity, currentHandleIdentity),
+          binding.identity.stable,
+        )
+      ) throw new Error(`${codePrefix}_allowed_root_replaced`);
+    } finally {
+      await currentHandle.close();
+    }
+  } catch (error) {
+    if (error?.message === `${codePrefix}_allowed_root_replaced`) throw error;
+    throw new Error(`${codePrefix}_allowed_root_replaced`);
+  }
+}
+
+function ancestorPathList(filePath, root) {
+  const ancestors = [];
+  let current = path.dirname(filePath);
+  while (pathInsideRoot(current, root)) {
+    ancestors.push(current);
+    if (current === root) break;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return ancestors.reverse();
+}
+
+async function snapshotAncestorChain(filePath, root, codePrefix) {
+  const snapshots = [];
+  for (const ancestor of ancestorPathList(filePath, root)) {
+    const metadata = await lstat(ancestor, { bigint: true });
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+      throw new Error(`${codePrefix}_ancestor_not_stable_directory`);
+    }
+    snapshots.push({
+      path: ancestor,
+      realPath: await realpath(ancestor),
+      identity: statIdentity(metadata, false),
+    });
+  }
+  return snapshots;
+}
+
+async function stableAllowedRootRead(candidate, pinnedAllowedRoots, {
+  codePrefix,
+  maxBytes,
+  afterFileOpen,
+} = {}) {
+  if (typeof candidate !== 'string' || !candidate.trim() || candidate.includes('\0')) {
+    throw new Error(`${codePrefix}_path_invalid`);
+  }
+  const requested = path.resolve(candidate);
+  const acceptedRoot = pinnedAllowedRoots.find((root) => pathInsideRoot(requested, root.path)) ?? null;
+  if (!acceptedRoot) throw new Error(`${codePrefix}_path_outside_allowed_roots`);
+  await verifyPinnedAllowedRoot(acceptedRoot, codePrefix);
+  const pathStatBefore = await lstat(requested, { bigint: true });
+  if (!pathStatBefore.isFile() || pathStatBefore.isSymbolicLink()) {
+    throw new Error(`${codePrefix}_path_not_regular_file`);
+  }
+  const realPathBefore = await realpath(requested);
+  if (path.relative(requested, realPathBefore) !== '') {
+    throw new Error(`${codePrefix}_path_or_ancestor_symlink`);
+  }
+  if (!pathInsideRoot(realPathBefore, acceptedRoot.path)) {
+    throw new Error(`${codePrefix}_path_outside_allowed_roots`);
+  }
+  const ancestorsBefore = await snapshotAncestorChain(realPathBefore, acceptedRoot.path, codePrefix);
+  const pathIdentityBefore = statIdentity(pathStatBefore);
+  const byteLimit = Number.isSafeInteger(maxBytes) && maxBytes > 0 ? maxBytes : 0;
+  if (!byteLimit || pathStatBefore.size > BigInt(byteLimit)) {
+    throw new Error(`${codePrefix}_encoded_bytes_limit_exceeded`);
+  }
+
+  const noFollow = Number.isInteger(fsConstants.O_NOFOLLOW) ? fsConstants.O_NOFOLLOW : 0;
+  const binary = Number.isInteger(fsConstants.O_BINARY) ? fsConstants.O_BINARY : 0;
+  const handle = await open(requested, fsConstants.O_RDONLY | noFollow | binary);
+  try {
+    const handleStatBefore = await handle.stat({ bigint: true });
+    if (!handleStatBefore.isFile()) throw new Error(`${codePrefix}_handle_not_regular_file`);
+    const handleIdentityBefore = statIdentity(handleStatBefore);
+    if (!handleAndPathIdentityMatch(handleIdentityBefore, pathIdentityBefore)) {
+      throw new Error(`${codePrefix}_handle_path_identity_mismatch`);
+    }
+    const stableIdentity = strictStableFileIdentity(pathIdentityBefore, handleIdentityBefore);
+    if (!stableIdentity) throw new Error(`${codePrefix}_stable_file_identity_unavailable`);
+    if (typeof afterFileOpen === 'function') {
+      await afterFileOpen(Object.freeze({
+        requestedPath: requested,
+        realPath: realPathBefore,
+        codePrefix,
+      }));
+    }
+    const expectedSize = Number(handleStatBefore.size);
+    if (!Number.isSafeInteger(expectedSize) || expectedSize > byteLimit) {
+      throw new Error(`${codePrefix}_encoded_bytes_limit_exceeded`);
+    }
+    const allocation = Buffer.allocUnsafe(expectedSize);
+    let bytesRead = 0;
+    while (bytesRead < allocation.byteLength) {
+      const read = await handle.read(
+        allocation,
+        bytesRead,
+        allocation.byteLength - bytesRead,
+        bytesRead,
+      );
+      if (read.bytesRead === 0) break;
+      bytesRead += read.bytesRead;
+    }
+    const overflowProbe = Buffer.allocUnsafe(1);
+    const overflow = await handle.read(overflowProbe, 0, 1, bytesRead);
+    if (overflow.bytesRead !== 0 || bytesRead !== expectedSize) {
+      throw new Error(`${codePrefix}_path_replaced_during_read`);
+    }
+    const bytes = allocation.subarray(0, bytesRead);
+    const handleStatAfter = await handle.stat({ bigint: true });
+    const pathStatAfter = await lstat(requested, { bigint: true });
+    const realPathAfter = await realpath(requested);
+    const ancestorsAfter = await snapshotAncestorChain(realPathAfter, acceptedRoot.path, codePrefix);
+    await verifyPinnedAllowedRoot(acceptedRoot, codePrefix);
+    if (
+      !isDeepStrictEqual(statIdentity(handleStatAfter), handleIdentityBefore)
+      || !isDeepStrictEqual(statIdentity(pathStatAfter), pathIdentityBefore)
+      || !handleAndPathIdentityMatch(statIdentity(handleStatAfter), statIdentity(pathStatAfter))
+      || realPathAfter !== realPathBefore
+      || !isDeepStrictEqual(ancestorsAfter, ancestorsBefore)
+    ) throw new Error(`${codePrefix}_path_replaced_during_read`);
+    return Object.freeze({
+      path: realPathBefore,
+      bytes,
+      contentHash: sha256Bytes(bytes),
+      identity: Object.freeze({
+        path: Object.freeze(pathIdentityBefore),
+        handle: Object.freeze(handleIdentityBefore),
+        stable: stableIdentity,
+      }),
+      allowedRoot: publicAllowedRootBinding(acceptedRoot),
+    });
+  } finally {
+    await handle.close();
+  }
+}
+
+function snapshotVisualRoleEntry(entry, role) {
+  if (!ownDataRecord(entry)) throw new Error(`visual_evidence_${role}_entry_invalid`);
+  const allowedKeys = new Set(['role', 'path', 'locator']);
+  if (Object.keys(entry).some((key) => !allowedKeys.has(key))) {
+    throw new Error(`visual_evidence_${role}_entry_field_set_invalid`);
+  }
+  try {
+    return Object.freeze(clonePlainData(entry));
+  } catch {
+    throw new Error(`visual_evidence_${role}_entry_plain_data_invalid`);
+  }
+}
+
+async function visualRoleBytes(entry, role, allowedRoots, pinnedAllowedRoots, options) {
+  if (!ownDataRecord(entry)) throw new Error(`visual_evidence_${role}_entry_invalid`);
+  const allowedKeys = new Set(['role', 'path', 'locator']);
+  if (Object.keys(entry).some((key) => !allowedKeys.has(key))) {
+    throw new Error(`visual_evidence_${role}_entry_field_set_invalid`);
+  }
+  if (entry.role !== role) throw new Error(`visual_evidence_${role}_role_mismatch`);
+  const hasPath = Object.prototype.hasOwnProperty.call(entry, 'path');
+  const hasLocator = Object.prototype.hasOwnProperty.call(entry, 'locator');
+  if (!hasPath && !hasLocator) throw new Error(`visual_evidence_${role}_source_missing`);
+
+  let locatorPath = null;
+  let locatorValidation = null;
+  if (hasLocator) {
+    if (!ownDataRecord(entry.locator) || entry.locator.role !== role) {
+      throw new Error(`visual_evidence_${role}_locator_role_mismatch`);
+    }
+    locatorValidation = await validateArtifactLocator(entry.locator, {
+      allowedRoots,
+      requireReadableBytes: false,
+    });
+    if (locatorValidation.accepted !== true) {
+      throw new Error(`visual_evidence_${role}_locator_unverified`);
+    }
+    locatorPath = locatorValidation.localPath ?? locatorValidation.local_path ?? null;
+  }
+  const maxBytes = hardBoundedLimit(options, 'maxEncodedBytes');
+  const afterFileOpen = typeof options?.afterFileOpen === 'function'
+    ? (details) => options.afterFileOpen(Object.freeze({ ...details, role }))
+    : null;
+  const direct = hasPath
+    ? await stableAllowedRootRead(entry.path, pinnedAllowedRoots, {
+        codePrefix: `visual_evidence_${role}`,
+        maxBytes,
+        afterFileOpen,
+      })
+    : null;
+  const located = locatorPath
+    ? await stableAllowedRootRead(locatorPath, pinnedAllowedRoots, {
+        codePrefix: `visual_evidence_${role}_locator`,
+        maxBytes,
+        afterFileOpen,
+      })
+    : null;
+  if (
+    direct
+    && located
+    && (
+      direct.path !== located.path
+      || !isDeepStrictEqual(direct.identity, located.identity)
+      || direct.contentHash !== located.contentHash
+    )
+  ) {
+    throw new Error(`visual_evidence_${role}_path_locator_mismatch`);
+  }
+  const verified = direct ?? located;
+  if (!verified) throw new Error(`visual_evidence_${role}_readable_path_missing`);
+  if (locatorValidation?.contentHash && locatorValidation.contentHash !== verified.contentHash) {
+    throw new Error(`visual_evidence_${role}_locator_hash_mismatch`);
+  }
+  return {
+    role,
+    path: verified.path,
+    bytes: verified.bytes,
+    contentHash: verified.contentHash,
+    fileIdentity: verified.identity,
+    allowedRoot: verified.allowedRoot,
+  };
+}
+
+function pngPreflight(bytes, role, options) {
+  const fail = (suffix) => {
+    throw new Error(`visual_evidence_${role}_${suffix}`);
+  };
+  if (!Buffer.isBuffer(bytes) || bytes.byteLength < 33 || !bytes.subarray(0, 8).equals(PNG_SIGNATURE)) {
+    fail('png_signature_invalid');
+  }
+  const maxDimension = hardBoundedLimit(options, 'maxDimension');
+  const maxPixels = hardBoundedLimit(options, 'maxPixels');
+  const maxDecodedBytes = hardBoundedLimit(options, 'maxDecodedBytes');
+  const maxPages = hardBoundedLimit(options, 'maxPages');
+  let offset = 8;
+  let chunkIndex = 0;
+  let width = null;
+  let height = null;
+  let pages = 1;
+  let idatObserved = false;
+  let iendObserved = false;
+  while (offset < bytes.byteLength) {
+    if (bytes.byteLength - offset < 12) fail('png_chunk_bounds_invalid');
+    const length = bytes.readUInt32BE(offset);
+    if (length > bytes.byteLength - offset - 12) fail('png_chunk_bounds_invalid');
+    const type = bytes.toString('ascii', offset + 4, offset + 8);
+    const dataOffset = offset + 8;
+    if (chunkIndex === 0 && (type !== 'IHDR' || length !== 13)) fail('png_ihdr_invalid');
+    if (type === 'IHDR') {
+      if (chunkIndex !== 0 || width !== null || length !== 13) fail('png_ihdr_invalid');
+      width = bytes.readUInt32BE(dataOffset);
+      height = bytes.readUInt32BE(dataOffset + 4);
+      if (
+        width <= 0
+        || height <= 0
+        || width > maxDimension
+        || height > maxDimension
+      ) fail('dimensions_limit_exceeded');
+      const pixelCount = width * height;
+      if (!Number.isSafeInteger(pixelCount) || pixelCount > maxPixels) {
+        fail('pixel_limit_exceeded');
+      }
+      const decodedBytes = pixelCount * 4;
+      if (!Number.isSafeInteger(decodedBytes) || decodedBytes > maxDecodedBytes) {
+        fail('decoded_bytes_limit_exceeded');
+      }
+    } else if (type === 'acTL') {
+      if (length !== 8) fail('png_animation_metadata_invalid');
+      pages = bytes.readUInt32BE(dataOffset);
+      if (pages <= 0 || pages > maxPages) fail('page_limit_exceeded');
+    } else if (type === 'fcTL' || type === 'fdAT') {
+      fail('page_limit_exceeded');
+    } else if (type === 'IDAT') {
+      idatObserved = true;
+    } else if (type === 'IEND') {
+      if (length !== 0 || iendObserved) fail('png_iend_invalid');
+      iendObserved = true;
+      offset += 12;
+      if (offset !== bytes.byteLength) fail('png_trailing_bytes_invalid');
+      break;
+    }
+    offset += length + 12;
+    chunkIndex += 1;
+  }
+  if (width === null || height === null || !idatObserved || !iendObserved) {
+    fail('png_structure_incomplete');
+  }
+  return Object.freeze({ width, height, pages, maxPixels, maxDecodedBytes });
+}
+
+function canonicalizeTransparentRgb(data) {
+  const canonical = Buffer.from(data);
+  for (let offset = 0; offset < canonical.byteLength; offset += 4) {
+    if (canonical[offset + 3] === 0) {
+      canonical[offset] = 0;
+      canonical[offset + 1] = 0;
+      canonical[offset + 2] = 0;
+    }
+  }
+  return canonical;
+}
+
+function compositedChannel(channel, alpha) {
+  return Math.round((channel * alpha) / 255);
+}
+
+function alphaAwareVisualQuality(data, width, height) {
+  const pixels = width * height;
+  let visiblePixels = 0;
+  let lumaTotal = 0;
+  let lumaSquareTotal = 0;
+  const minChannel = [255, 255, 255];
+  const maxChannel = [0, 0, 0];
+  const uniqueSamples = new Set();
+  const sampleStride = Math.max(1, Math.floor(pixels / 8192));
+  let pixelIndex = 0;
+  for (let offset = 0; offset < data.byteLength; offset += 4) {
+    const alpha = data[offset + 3];
+    const red = compositedChannel(data[offset], alpha);
+    const green = compositedChannel(data[offset + 1], alpha);
+    const blue = compositedChannel(data[offset + 2], alpha);
+    const luma = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+    lumaTotal += luma;
+    lumaSquareTotal += luma * luma;
+    if (alpha > 0 && (luma > 24 || Math.max(red, green, blue) - Math.min(red, green, blue) > 30)) {
+      visiblePixels += 1;
+    }
+    minChannel[0] = Math.min(minChannel[0], red);
+    minChannel[1] = Math.min(minChannel[1], green);
+    minChannel[2] = Math.min(minChannel[2], blue);
+    maxChannel[0] = Math.max(maxChannel[0], red);
+    maxChannel[1] = Math.max(maxChannel[1], green);
+    maxChannel[2] = Math.max(maxChannel[2], blue);
+    if (pixelIndex % sampleStride === 0) uniqueSamples.add(`${red},${green},${blue},${alpha}`);
+    pixelIndex += 1;
+  }
+  const meanLuma = pixels > 0 ? lumaTotal / pixels : 0;
+  const variance = pixels > 0
+    ? Math.max(0, (lumaSquareTotal / pixels) - (meanLuma * meanLuma))
+    : 0;
+  const stats = {
+    width,
+    height,
+    visible_pixels: visiblePixels,
+    mean_luma: meanLuma,
+    luma_stddev: Math.sqrt(variance),
+    rgb_span_mean: (
+      (maxChannel[0] - minChannel[0])
+      + (maxChannel[1] - minChannel[1])
+      + (maxChannel[2] - minChannel[2])
+    ) / 3,
+    unique_color_sample_count: uniqueSamples.size,
+  };
+  return Object.freeze({
+    ...stats,
+    visual_quality: classifyGpuHmrVisualEvidenceStats(stats),
+  });
+}
+
+async function decodedVisualRole(roleEvidence, role, options) {
+  const preflight = pngPreflight(roleEvidence.bytes, role, options);
+  const pipelineOptions = {
+    animated: false,
+    failOn: 'error',
+    limitInputPixels: preflight.maxPixels,
+    sequentialRead: true,
+  };
+  const metadata = await sharp(roleEvidence.bytes, pipelineOptions).metadata();
+  if (
+    metadata.format !== 'png'
+    || metadata.width !== preflight.width
+    || metadata.height !== preflight.height
+    || Number(metadata.pages ?? 1) > 1
+    || Number(metadata.pages ?? 1) > hardBoundedLimit(options, 'maxPages')
+  ) throw new Error(`visual_evidence_${role}_png_metadata_mismatch`);
+  const decoded = await sharp(roleEvidence.bytes, pipelineOptions)
+    .toColourspace('srgb')
+    .ensureAlpha()
+    .raw({ depth: 'uchar' })
+    .toBuffer({ resolveWithObject: true });
+  const decodedByteLength = preflight.width * preflight.height * 4;
+  if (
+    decoded.info.width !== preflight.width
+    || decoded.info.height !== preflight.height
+    || decoded.info.channels !== 4
+    || decoded.data.byteLength !== decodedByteLength
+    || decodedByteLength > preflight.maxDecodedBytes
+  ) throw new Error(`visual_evidence_${role}_decoded_layout_invalid`);
+  const data = canonicalizeTransparentRgb(decoded.data);
+  return {
+    ...roleEvidence,
+    data,
+    decodedContentHash: sha256Bytes(data),
+    width: preflight.width,
+    height: preflight.height,
+    channels: 4,
+    quality: alphaAwareVisualQuality(data, preflight.width, preflight.height),
+  };
+}
+
+async function verifiedVisualRoleBytes(entry, role, allowedRoots, pinnedAllowedRoots, options) {
+  try {
+    return await visualRoleBytes(entry, role, allowedRoots, pinnedAllowedRoots, options);
+  } catch (error) {
+    if (
+      typeof error?.message === 'string'
+      && /^visual_evidence_[a-z0-9_]+$/.test(error.message)
+    ) throw error;
+    throw new Error(`visual_evidence_${role}_byte_verification_failed`);
+  }
+}
+
+async function verifiedDecodedVisualRoleBytes(roleEvidence, role, options) {
+  try {
+    return await decodedVisualRole(roleEvidence, role, options);
+  } catch (error) {
+    if (
+      typeof error?.message === 'string'
+      && /^visual_evidence_[a-z0-9_]+$/.test(error.message)
+    ) throw error;
+    throw new Error(`visual_evidence_${role}_byte_verification_failed`);
+  }
+}
+
+function visualDiffMetrics(before, after, diff) {
+  let changedPixels = 0;
+  let absoluteDelta = 0;
+  let diffMismatchPixels = 0;
+  const pixels = before.width * before.height;
+  for (let offset = 0; offset < before.data.length; offset += 4) {
+    const beforeAlpha = before.data[offset + 3];
+    const afterAlpha = after.data[offset + 3];
+    const alphaDelta = Math.abs(beforeAlpha - afterAlpha);
+    const expected = [0, 1, 2].map((channel) => Math.max(
+      Math.abs(
+        compositedChannel(before.data[offset + channel], beforeAlpha)
+        - compositedChannel(after.data[offset + channel], afterAlpha)
+      ),
+      alphaDelta,
+    ));
+    if (expected[0] + expected[1] + expected[2] > 0) changedPixels += 1;
+    absoluteDelta += expected[0] + expected[1] + expected[2];
+    if (
+      diff.data[offset] !== expected[0]
+      || diff.data[offset + 1] !== expected[1]
+      || diff.data[offset + 2] !== expected[2]
+      || diff.data[offset + 3] !== 255
+    ) diffMismatchPixels += 1;
+  }
+  return Object.freeze({
+    pixelCount: pixels,
+    changedPixels,
+    changedPixelRatio: pixels > 0 ? changedPixels / pixels : 0,
+    perceptualDiff: pixels > 0 ? absoluteDelta / (pixels * 3 * 255) : 0,
+    diffMismatchPixels,
+  });
+}
+
+const VISUAL_ORACLE_FIELD_SPECS = Object.freeze([
+  ['oracleId', ['oracleId', 'oracle_id', 'id'], 'id'],
+  ['requiredOracleId', ['requiredOracleId', 'required_oracle_id'], 'required_oracle_id'],
+  ['kind', ['kind'], 'kind'],
+  ['producer', ['producer'], 'producer'],
+  ['expected', ['expected'], 'expected'],
+  ['actual', ['actual'], 'actual'],
+  ['passed', ['passed'], 'passed'],
+  [
+    'beforeEncodedHash',
+    [
+      'beforeEncodedHash', 'before_encoded_hash', 'beforeImageHash', 'before_image_hash',
+      'beforeHash', 'before_hash',
+    ],
+    'before_encoded_hash',
+  ],
+  [
+    'afterEncodedHash',
+    [
+      'afterEncodedHash', 'after_encoded_hash', 'afterImageHash', 'after_image_hash',
+      'afterHash', 'after_hash',
+    ],
+    'after_encoded_hash',
+  ],
+  [
+    'diffEncodedHash',
+    [
+      'diffEncodedHash', 'diff_encoded_hash', 'diffImageHash', 'diff_image_hash',
+      'diffHash', 'diff_hash',
+    ],
+    'diff_encoded_hash',
+  ],
+  [
+    'beforeDecodedHash',
+    ['beforeDecodedHash', 'before_decoded_hash', 'beforeRawFrameHash', 'before_raw_frame_hash'],
+    'before_decoded_hash',
+  ],
+  [
+    'afterDecodedHash',
+    ['afterDecodedHash', 'after_decoded_hash', 'afterRawFrameHash', 'after_raw_frame_hash'],
+    'after_decoded_hash',
+  ],
+  [
+    'diffDecodedHash',
+    ['diffDecodedHash', 'diff_decoded_hash', 'diffRawFrameHash', 'diff_raw_frame_hash'],
+    'diff_decoded_hash',
+  ],
+  ['width', ['width', 'frameWidth', 'frame_width'], 'width'],
+  ['height', ['height', 'frameHeight', 'frame_height'], 'height'],
+  [
+    'outputTargetId',
+    ['outputTargetId', 'output_target_id', 'outputTarget', 'output_target'],
+    'output_target_id',
+  ],
+  ['processId', ['processId', 'process_id'], 'process_id'],
+  [
+    'runtimeSessionId',
+    ['runtimeSessionId', 'runtimeSession', 'runtime_session', 'sessionId', 'session_id'],
+    'runtime_session',
+  ],
+  ['deviceIdentity', ['deviceIdentity', 'device_identity'], 'device_identity'],
+  [
+    'afterDispatchId',
+    ['afterDispatchId', 'after_dispatch_id', 'dispatchId', 'dispatch_id'],
+    'after_dispatch_id',
+  ],
+  [
+    'epoch',
+    [
+      'epoch', 'epoch_id', 'generation', 'outputEpoch', 'output_epoch',
+      'outputGeneration', 'output_generation',
+    ],
+    'epoch',
+  ],
+  ['artifactId', ['artifactId', 'artifact_id'], 'artifact_id'],
+  [
+    'readbackTimestampMonotonicNs',
+    [
+      'readbackTimestampMonotonicNs',
+      'readback_timestamp_monotonic_ns',
+      'readbackTimestamp',
+      'readback_timestamp',
+      'readbackTs',
+      'readback_ts',
+    ],
+    'readback_timestamp_monotonic_ns',
+  ],
+]);
+
+const VISUAL_ORACLE_HASH_FIELDS = new Set([
+  'expected',
+  'actual',
+  'beforeEncodedHash',
+  'afterEncodedHash',
+  'diffEncodedHash',
+  'beforeDecodedHash',
+  'afterDecodedHash',
+  'diffDecodedHash',
+]);
+
+function strictVisualString(value) {
+  return typeof value === 'string' && value.length > 0 && value.trim() === value
+    ? value
+    : null;
+}
+
+function normalizeVisualOracleField(key, value, sourceLine = false) {
+  if (VISUAL_ORACLE_HASH_FIELDS.has(key)) {
+    return typeof value === 'string' && /^sha256:[0-9a-f]{64}$/.test(value) ? value : null;
+  }
+  if (key === 'width' || key === 'height') {
+    const number = sourceLine && typeof value === 'string' && /^[1-9][0-9]*$/.test(value)
+      ? Number(value)
+      : value;
+    return Number.isSafeInteger(number) && number > 0 ? number : null;
+  }
+  if (key === 'passed') {
+    if (sourceLine) return value === 'true' ? true : value === 'false' ? false : null;
+    return typeof value === 'boolean' ? value : null;
+  }
+  if (key === 'readbackTimestampMonotonicNs') return monotonicTimestamp(value);
+  return strictVisualString(value);
+}
+
+function visualOracleSemanticFailures(projection, prefix) {
+  const failures = [];
+  if (!projection) return [`${prefix}_invalid`];
+  if (projection.oracleId !== projection.requiredOracleId) {
+    failures.push(`${prefix}_contract_id_mismatch`);
+  }
+  if (projection.expected !== projection.afterEncodedHash) {
+    failures.push(`${prefix}_expected_hash_mismatch`);
+  }
+  if (projection.actual !== projection.afterEncodedHash) {
+    failures.push(`${prefix}_actual_hash_mismatch`);
+  }
+  if (projection.passed !== true) failures.push(`${prefix}_pass_status_invalid`);
+  return failures;
+}
+
+function visualOracleProjectionFromRaw(rawOracle) {
+  const failures = [];
+  if (!ownDataRecord(rawOracle)) {
+    return { projection: null, failures: ['visual_evidence_output_oracle_invalid'] };
+  }
+  const projection = {};
+  const fieldBinding = {};
+  for (const [key, aliases] of VISUAL_ORACLE_FIELD_SPECS) {
+    const declaration = aliasedEvidenceValue([rawOracle], aliases);
+    const fieldCode = key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+    if (!declaration.declared) {
+      failures.push(`visual_evidence_output_oracle_${fieldCode}_missing`);
+      continue;
+    }
+    if (declaration.conflict) {
+      failures.push(`visual_evidence_output_oracle_${fieldCode}_alias_conflict`);
+      continue;
+    }
+    const normalized = normalizeVisualOracleField(key, declaration.value);
+    if (normalized === null) {
+      failures.push(`visual_evidence_output_oracle_${fieldCode}_invalid`);
+      continue;
+    }
+    projection[key] = normalized;
+    fieldBinding[key] = Object.freeze(aliases.flatMap((alias) => (
+      Object.prototype.hasOwnProperty.call(rawOracle, alias)
+        ? [Object.freeze({ alias, value: rawOracle[alias] })]
+        : []
+    )));
+  }
+  failures.push(...visualOracleSemanticFailures(
+    Object.keys(projection).length === VISUAL_ORACLE_FIELD_SPECS.length ? projection : null,
+    'visual_evidence_output_oracle',
+  ));
+  return {
+    projection: failures.length === 0 ? Object.freeze(projection) : null,
+    fieldBinding: failures.length === 0 ? deepFreezeData(fieldBinding) : null,
+    failures: [...new Set(failures)],
+  };
+}
+
+function visualOracleProjectionFromSourceLine(sourceLine) {
+  const fields = parseRuntimeBoundaryFields(sourceLine, 'output_oracle');
+  const expectedFields = VISUAL_ORACLE_FIELD_SPECS.map(([, , sourceField]) => sourceField);
+  if (
+    !fields
+    || fields.size !== expectedFields.length
+    || expectedFields.some((field) => !fields.has(field))
+  ) return null;
+  const projection = {};
+  for (const [key, , sourceField] of VISUAL_ORACLE_FIELD_SPECS) {
+    const normalized = normalizeVisualOracleField(key, fields.get(sourceField), true);
+    if (normalized === null) return null;
+    projection[key] = normalized;
+  }
+  return visualOracleSemanticFailures(projection, 'visual_capture_provenance_output_oracle').length === 0
+    ? Object.freeze(projection)
+    : null;
+}
+
+const VISUAL_CAPTURE_RECEIPT_FIELDS = Object.freeze([
+  'role',
+  'capture_event_id',
+  'encoded_hash',
+  'decoded_hash',
+  'width',
+  'height',
+  'output_target_id',
+  'process_id',
+  'runtime_session',
+  'device_identity',
+  'dispatch_id',
+  'epoch',
+  'artifact_id',
+  'timestamp_monotonic_ns',
+]);
+
+function parseVisualCaptureReceiptLine(sourceLine) {
+  const fields = parseRuntimeBoundaryFields(sourceLine, 'visual_capture_receipt');
+  if (
+    !fields
+    || fields.size !== VISUAL_CAPTURE_RECEIPT_FIELDS.length
+    || VISUAL_CAPTURE_RECEIPT_FIELDS.some((field) => !fields.has(field))
+  ) return null;
+  const role = fields.get('role');
+  const width = normalizeVisualOracleField('width', fields.get('width'), true);
+  const height = normalizeVisualOracleField('height', fields.get('height'), true);
+  const timestamp = monotonicTimestamp(fields.get('timestamp_monotonic_ns'));
+  const encodedHash = normalizeVisualOracleField(
+    'beforeEncodedHash',
+    fields.get('encoded_hash'),
+    true,
+  );
+  const decodedHash = normalizeVisualOracleField(
+    'beforeDecodedHash',
+    fields.get('decoded_hash'),
+    true,
+  );
+  const strings = Object.fromEntries([
+    ['captureEventId', 'capture_event_id'],
+    ['outputTargetId', 'output_target_id'],
+    ['processId', 'process_id'],
+    ['runtimeSessionId', 'runtime_session'],
+    ['deviceIdentity', 'device_identity'],
+    ['dispatchId', 'dispatch_id'],
+    ['epoch', 'epoch'],
+    ['artifactId', 'artifact_id'],
+  ].map(([key, field]) => [key, strictVisualString(fields.get(field))]));
+  if (
+    !['before', 'after', 'diff'].includes(role)
+    || !width
+    || !height
+    || !timestamp
+    || !encodedHash
+    || !decodedHash
+    || Object.values(strings).some((value) => !value)
+  ) return null;
+  return Object.freeze({
+    role,
+    encodedHash,
+    decodedHash,
+    width,
+    height,
+    timestampMonotonicNs: timestamp,
+    ...strings,
+  });
+}
+
+const VISUAL_DISPATCH_TRACE_FIELDS = Object.freeze([
+  'artifact_id',
+  'dispatch_id',
+  'epoch',
+  'output_target_id',
+  'process_id',
+  'runtime_session',
+  'timestamp_monotonic_ns',
+  'device_identity',
+]);
+
+function parseVisualDispatchObservationLine(sourceLine) {
+  const fields = parseDispatchTraceLine(sourceLine);
+  if (
+    !fields
+    || fields.size !== VISUAL_DISPATCH_TRACE_FIELDS.length
+    || VISUAL_DISPATCH_TRACE_FIELDS.some((field) => !fields.has(field))
+  ) return null;
+  const timestamp = monotonicTimestamp(fields.get('timestamp_monotonic_ns'));
+  const strings = Object.fromEntries([
+    ['artifactId', 'artifact_id'],
+    ['dispatchId', 'dispatch_id'],
+    ['epoch', 'epoch'],
+    ['outputTargetId', 'output_target_id'],
+    ['processId', 'process_id'],
+    ['runtimeSessionId', 'runtime_session'],
+    ['deviceIdentity', 'device_identity'],
+  ].map(([key, field]) => [key, strictVisualString(fields.get(field))]));
+  if (!timestamp || Object.values(strings).some((value) => !value)) return null;
+  return Object.freeze({ timestampMonotonicNs: timestamp, ...strings });
+}
+
+const VISUAL_PREVIOUS_OUTPUT_FIELDS = Object.freeze([
+  'output_event_id',
+  'encoded_hash',
+  'decoded_hash',
+  'width',
+  'height',
+  'output_target_id',
+  'process_id',
+  'runtime_session',
+  'device_identity',
+  'dispatch_id',
+  'epoch',
+  'artifact_id',
+  'timestamp_monotonic_ns',
+]);
+
+function parseVisualPreviousOutputLine(sourceLine) {
+  const fields = parseRuntimeBoundaryFields(sourceLine, 'visual_output_observation');
+  if (
+    !fields
+    || fields.size !== VISUAL_PREVIOUS_OUTPUT_FIELDS.length
+    || VISUAL_PREVIOUS_OUTPUT_FIELDS.some((field) => !fields.has(field))
+  ) return null;
+  const width = normalizeVisualOracleField('width', fields.get('width'), true);
+  const height = normalizeVisualOracleField('height', fields.get('height'), true);
+  const timestamp = monotonicTimestamp(fields.get('timestamp_monotonic_ns'));
+  const encodedHash = normalizeVisualOracleField(
+    'beforeEncodedHash',
+    fields.get('encoded_hash'),
+    true,
+  );
+  const decodedHash = normalizeVisualOracleField(
+    'beforeDecodedHash',
+    fields.get('decoded_hash'),
+    true,
+  );
+  const strings = Object.fromEntries([
+    ['outputEventId', 'output_event_id'],
+    ['outputTargetId', 'output_target_id'],
+    ['processId', 'process_id'],
+    ['runtimeSessionId', 'runtime_session'],
+    ['deviceIdentity', 'device_identity'],
+    ['dispatchId', 'dispatch_id'],
+    ['epoch', 'epoch'],
+    ['artifactId', 'artifact_id'],
+  ].map(([key, field]) => [key, strictVisualString(fields.get(field))]));
+  if (
+    !width
+    || !height
+    || !timestamp
+    || !encodedHash
+    || !decodedHash
+    || Object.values(strings).some((value) => !value)
+  ) return null;
+  return Object.freeze({
+    encodedHash,
+    decodedHash,
+    width,
+    height,
+    timestampMonotonicNs: timestamp,
+    ...strings,
+  });
+}
+
+function frozenVisualCaptureProvenanceFailure(failures) {
+  return Object.freeze({
+    schemaVersion: GPU_HMR_VERIFIED_VISUAL_CAPTURE_PROVENANCE_SCHEMA_VERSION,
+    accepted: false,
+    supportValidated: false,
+    failedGates: Object.freeze([...new Set(failures)]),
+  });
+}
+
+function sourceLineBinding(line, index) {
+  return Object.freeze({ index, hash: sha256Text(line) });
+}
+
+function uniqueIndexedSourceLines(lines, marker) {
+  return lines.flatMap((line, index) => line.startsWith(marker) ? [{ line, index }] : []);
+}
+
+export async function verifyGpuHmrVisualCaptureProvenance(input, options = {}) {
+  const failures = [];
+  let pinnedAllowedRoots = [];
+  try {
+    if (!exactOwnKeys(input, ['dispatchProof', 'dispatchTraceEvidence', 'sourceStreamPath'])) {
+      return frozenVisualCaptureProvenanceFailure([
+        'visual_capture_provenance_field_set_invalid',
+      ]);
+    }
+    const dispatchAnchor = dispatchTraceAnchor(input.dispatchProof, input.dispatchTraceEvidence);
+    if (!dispatchAnchor) {
+      return frozenVisualCaptureProvenanceFailure([
+        'visual_capture_provenance_dispatch_trace_unverified',
+      ]);
+    }
+    const dispatchIdentity = dispatchProofIdentity(input.dispatchProof);
+    const epochPublicationTimestamp = monotonicTimestamp(
+      dispatchIdentity?.epochPublicationTimestamp === null
+        || dispatchIdentity?.epochPublicationTimestamp === undefined
+        ? null
+        : String(dispatchIdentity.epochPublicationTimestamp),
+    );
+    if (!epochPublicationTimestamp) {
+      return frozenVisualCaptureProvenanceFailure([
+        'visual_capture_provenance_epoch_publication_timestamp_unverified',
+      ]);
+    }
+    pinnedAllowedRoots = await pinAllowedRoots(
+      options.allowedRoots,
+      'visual_capture_provenance',
+    );
+    if (typeof options.afterAllowedRootsPinned === 'function') {
+      await options.afterAllowedRootsPinned(Object.freeze(
+        pinnedAllowedRoots.map(publicAllowedRootBinding),
+      ));
+    }
+    const source = await stableAllowedRootRead(input.sourceStreamPath, pinnedAllowedRoots, {
+      codePrefix: 'visual_capture_provenance_source_stream',
+      maxBytes: hardBoundedLimit(options, 'maxSourceStreamBytes'),
+      afterFileOpen: options.afterSourceFileOpen,
+    });
+    if (source.contentHash !== dispatchAnchor.sourceStreamHash) {
+      failures.push('visual_capture_provenance_source_stream_hash_mismatch');
+    }
+    let text;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(source.bytes);
+    } catch {
+      failures.push('visual_capture_provenance_source_stream_utf8_invalid');
+    }
+    if (typeof text !== 'string' || text.includes('\0') || text.includes('\r')) {
+      failures.push('visual_capture_provenance_source_stream_text_invalid');
+    }
+    if (failures.length > 0) return frozenVisualCaptureProvenanceFailure(failures);
+    const lines = text.split('\n');
+    const dispatchLine = lines[dispatchAnchor.sourceLineIndex] ?? null;
+    if (
+      !dispatchLine
+      || sha256Text(dispatchLine) !== dispatchAnchor.sourceLineHash
+      || !parseDispatchTraceLine(dispatchLine)
+    ) failures.push('visual_capture_provenance_dispatch_line_mismatch');
+
+    const controlCandidates = uniqueIndexedSourceLines(
+      lines,
+      '[gpu-runtime-boundary] visual_control_observation ',
+    );
+    const receiptCandidates = uniqueIndexedSourceLines(
+      lines,
+      '[gpu-runtime-boundary] visual_capture_receipt ',
+    );
+    const oracleCandidates = uniqueIndexedSourceLines(
+      lines,
+      '[gpu-runtime-boundary] output_oracle ',
+    );
+    const previousOutputCandidates = uniqueIndexedSourceLines(
+      lines,
+      '[gpu-runtime-boundary] visual_output_observation ',
+    );
+    const dispatchCandidates = uniqueIndexedSourceLines(
+      lines,
+      '[gpu-runtime-boundary] dispatch_trace ',
+    );
+    if (controlCandidates.length !== 2) {
+      failures.push('visual_capture_provenance_control_line_count_invalid');
+    }
+    if (receiptCandidates.length !== 3) {
+      failures.push('visual_capture_provenance_receipt_line_count_invalid');
+    }
+    if (oracleCandidates.length !== 1) {
+      failures.push('visual_capture_provenance_output_oracle_line_count_invalid');
+    }
+    if (previousOutputCandidates.length !== 1) {
+      failures.push('visual_capture_provenance_previous_output_line_count_invalid');
+    }
+
+    const receipts = new Map();
+    for (const candidate of receiptCandidates) {
+      const receipt = parseVisualCaptureReceiptLine(candidate.line);
+      if (!receipt) {
+        failures.push('visual_capture_provenance_receipt_line_invalid');
+        continue;
+      }
+      if (receipts.has(receipt.role)) {
+        failures.push(`visual_capture_provenance_${receipt.role}_receipt_duplicate`);
+        continue;
+      }
+      receipts.set(receipt.role, Object.freeze({ ...receipt, ...sourceLineBinding(candidate.line, candidate.index) }));
+    }
+    for (const role of ['before', 'after', 'diff']) {
+      if (!receipts.has(role)) failures.push(`visual_capture_provenance_${role}_receipt_missing`);
+    }
+
+    const controls = new Map();
+    for (const candidate of controlCandidates) {
+      const discovery = materializeRuntimeVisualControlObservation({ source_line: candidate.line });
+      if (!['before', 'after'].includes(discovery.phase) || controls.has(discovery.phase)) {
+        failures.push('visual_capture_provenance_control_phase_invalid_or_duplicate');
+        continue;
+      }
+      controls.set(discovery.phase, candidate);
+    }
+    for (const phase of ['before', 'after']) {
+      if (!controls.has(phase)) failures.push(`visual_capture_provenance_${phase}_control_missing`);
+    }
+    const sourceOracleProjection = oracleCandidates.length === 1
+      ? visualOracleProjectionFromSourceLine(oracleCandidates[0].line)
+      : null;
+    if (!sourceOracleProjection) {
+      failures.push('visual_capture_provenance_output_oracle_line_invalid');
+    }
+    const previousOutput = previousOutputCandidates.length === 1
+      ? parseVisualPreviousOutputLine(previousOutputCandidates[0].line)
+      : null;
+    if (!previousOutput) {
+      failures.push('visual_capture_provenance_previous_output_line_invalid');
+    }
+    const dispatchRecords = dispatchCandidates.map((candidate) => ({
+      ...candidate,
+      observation: parseVisualDispatchObservationLine(candidate.line),
+    }));
+    if (dispatchRecords.some((candidate) => !candidate.observation)) {
+      failures.push('visual_capture_provenance_dispatch_line_invalid');
+    }
+    const currentDispatchRecords = dispatchRecords.filter((candidate) => (
+      candidate.observation?.dispatchId === dispatchAnchor.dispatchId
+    ));
+    if (
+      currentDispatchRecords.length !== 1
+      || currentDispatchRecords[0]?.index !== dispatchAnchor.sourceLineIndex
+    ) failures.push('visual_capture_provenance_current_dispatch_line_ambiguous');
+    const previousDispatchRecords = previousOutput
+      ? dispatchRecords.filter((candidate) => (
+          candidate.observation?.dispatchId === previousOutput.dispatchId
+        ))
+      : [];
+    if (previousDispatchRecords.length !== 1) {
+      failures.push('visual_capture_provenance_previous_dispatch_line_ambiguous');
+    }
+    if (failures.length > 0) return frozenVisualCaptureProvenanceFailure(failures);
+
+    const beforeReceipt = receipts.get('before');
+    const afterReceipt = receipts.get('after');
+    const diffReceipt = receipts.get('diff');
+    const previousDispatchRecord = previousDispatchRecords[0];
+    const previousDispatch = previousDispatchRecord.observation;
+    const previousOutputCandidate = previousOutputCandidates[0];
+    for (const receipt of [afterReceipt, diffReceipt]) {
+      if (receipt.outputTargetId !== dispatchAnchor.outputTargetId) {
+        failures.push(`visual_capture_provenance_${receipt.role}_output_target_mismatch`);
+      }
+      if (receipt.processId !== dispatchAnchor.processId) {
+        failures.push(`visual_capture_provenance_${receipt.role}_process_mismatch`);
+      }
+      if (receipt.runtimeSessionId !== dispatchAnchor.runtimeSessionId) {
+        failures.push(`visual_capture_provenance_${receipt.role}_session_mismatch`);
+      }
+      if (receipt.deviceIdentity !== dispatchAnchor.deviceIdentity) {
+        failures.push(`visual_capture_provenance_${receipt.role}_device_mismatch`);
+      }
+      if (receipt.epoch !== dispatchAnchor.epoch) {
+        failures.push(`visual_capture_provenance_${receipt.role}_epoch_mismatch`);
+      }
+      if (receipt.artifactId !== dispatchAnchor.runtimeArtifactId) {
+        failures.push(`visual_capture_provenance_${receipt.role}_artifact_mismatch`);
+      }
+    }
+    for (const receipt of [afterReceipt, diffReceipt]) {
+      if (receipt.dispatchId !== dispatchAnchor.dispatchId) {
+        failures.push(`visual_capture_provenance_${receipt.role}_dispatch_id_mismatch`);
+      }
+    }
+    for (const [field, currentValue] of [
+      ['outputTargetId', dispatchAnchor.outputTargetId],
+      ['processId', dispatchAnchor.processId],
+      ['runtimeSessionId', dispatchAnchor.runtimeSessionId],
+      ['deviceIdentity', dispatchAnchor.deviceIdentity],
+    ]) {
+      if (previousDispatch[field] !== currentValue) {
+        failures.push(`visual_capture_provenance_previous_dispatch_${field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)}_mismatch`);
+      }
+      if (previousOutput[field] !== currentValue) {
+        failures.push(`visual_capture_provenance_previous_output_${field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)}_mismatch`);
+      }
+      if (beforeReceipt[field] !== currentValue) {
+        failures.push(`visual_capture_provenance_before_${field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)}_mismatch`);
+      }
+    }
+    if (
+      previousDispatch.dispatchId === dispatchAnchor.dispatchId
+      || previousDispatch.artifactId === dispatchAnchor.runtimeArtifactId
+      || previousDispatch.epoch === dispatchAnchor.epoch
+    ) failures.push('visual_capture_provenance_previous_dispatch_identity_not_distinct');
+    for (const field of ['dispatchId', 'epoch', 'artifactId']) {
+      if (previousOutput[field] !== previousDispatch[field]) {
+        failures.push(`visual_capture_provenance_previous_output_${field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)}_mismatch`);
+      }
+      if (beforeReceipt[field] !== previousDispatch[field]) {
+        failures.push(`visual_capture_provenance_before_${field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)}_mismatch`);
+      }
+    }
+    for (const field of ['encodedHash', 'decodedHash', 'width', 'height']) {
+      if (beforeReceipt[field] !== previousOutput[field]) {
+        failures.push(`visual_capture_provenance_before_previous_output_${field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)}_mismatch`);
+      }
+    }
+    if (
+      beforeReceipt.width !== afterReceipt.width
+      || beforeReceipt.height !== afterReceipt.height
+      || beforeReceipt.width !== diffReceipt.width
+      || beforeReceipt.height !== diffReceipt.height
+    ) failures.push('visual_capture_provenance_dimensions_mismatch');
+
+    const beforeControl = controls.get('before');
+    const afterControl = controls.get('after');
+    const oracleCandidate = oracleCandidates[0];
+    if (!(
+      previousDispatchRecord.index < previousOutputCandidate.index
+      && previousOutputCandidate.index < beforeControl.index
+      && beforeControl.index < beforeReceipt.index
+      && beforeReceipt.index < dispatchAnchor.sourceLineIndex
+      && dispatchAnchor.sourceLineIndex < afterControl.index
+      && afterControl.index < afterReceipt.index
+      && afterReceipt.index < diffReceipt.index
+      && diffReceipt.index < oracleCandidate.index
+    )) failures.push('visual_capture_provenance_source_line_order_unproven');
+    const previousDispatchTimestamp = BigInt(previousDispatch.timestampMonotonicNs);
+    const previousOutputTimestamp = BigInt(previousOutput.timestampMonotonicNs);
+    const beforeTimestamp = BigInt(beforeReceipt.timestampMonotonicNs);
+    const publicationTimestamp = BigInt(epochPublicationTimestamp);
+    const currentDispatchTimestamp = BigInt(dispatchAnchor.dispatchTimestamp);
+    const afterTimestamp = BigInt(afterReceipt.timestampMonotonicNs);
+    const diffTimestamp = BigInt(diffReceipt.timestampMonotonicNs);
+    if (
+      previousDispatchTimestamp >= previousOutputTimestamp
+      || previousOutputTimestamp >= beforeTimestamp
+      || beforeTimestamp >= publicationTimestamp
+      || publicationTimestamp >= currentDispatchTimestamp
+      || afterTimestamp <= currentDispatchTimestamp
+      || diffTimestamp < afterTimestamp
+    ) failures.push('visual_capture_provenance_timestamp_order_unproven');
+    const maxBeforeCaptureAgeNs = hardBoundedTemporalLimit(
+      options,
+      'maxBeforeCaptureAgeNs',
+    );
+    if (
+      publicationTimestamp > beforeTimestamp
+      && (
+        publicationTimestamp - beforeTimestamp > maxBeforeCaptureAgeNs
+        || currentDispatchTimestamp - beforeTimestamp > maxBeforeCaptureAgeNs
+      )
+    ) failures.push('visual_capture_provenance_before_capture_stale');
+    if (
+      beforeTimestamp > previousOutputTimestamp
+      && beforeTimestamp - previousOutputTimestamp > maxBeforeCaptureAgeNs
+    ) failures.push('visual_capture_provenance_previous_output_to_before_stale');
+
+    const controlPair = evaluateRuntimeVisualControlObservationPair({
+      before: materializeRuntimeVisualControlObservation({
+        source_line: beforeControl.line,
+        source_line_index: beforeControl.index,
+        frame_hash: beforeReceipt.decodedHash,
+        width: beforeReceipt.width,
+        height: beforeReceipt.height,
+        device_identity: beforeReceipt.deviceIdentity,
+        dispatch_id: null,
+      }),
+      after: materializeRuntimeVisualControlObservation({
+        source_line: afterControl.line,
+        source_line_index: afterControl.index,
+        frame_hash: afterReceipt.decodedHash,
+        width: afterReceipt.width,
+        height: afterReceipt.height,
+        device_identity: afterReceipt.deviceIdentity,
+        dispatch_id: afterReceipt.dispatchId,
+      }),
+      expected: {
+        before_frame_hash: beforeReceipt.decodedHash,
+        after_frame_hash: afterReceipt.decodedHash,
+        width: beforeReceipt.width,
+        height: beforeReceipt.height,
+        process_id: dispatchAnchor.processId,
+        runtime_session: dispatchAnchor.runtimeSessionId,
+        device_identity: dispatchAnchor.deviceIdentity,
+        dispatch_id: dispatchAnchor.dispatchId,
+        dispatch_timestamp_monotonic_ns: dispatchAnchor.dispatchTimestamp,
+        dispatch_line_index: dispatchAnchor.sourceLineIndex,
+      },
+    });
+    if (controlPair.supportValidated !== true) {
+      failures.push(...controlPair.diagnosticFailedGates.map(
+        (gate) => `visual_capture_provenance_${gate}`,
+      ));
+    }
+    if (
+      controlPair.before?.capture_event_id !== beforeReceipt.captureEventId
+      || controlPair.after?.capture_event_id !== afterReceipt.captureEventId
+    ) failures.push('visual_capture_provenance_control_capture_event_mismatch');
+    if (
+      controlPair.before?.frame_timestamp_monotonic_ns !== beforeReceipt.timestampMonotonicNs
+      || controlPair.after?.frame_timestamp_monotonic_ns !== afterReceipt.timestampMonotonicNs
+    ) failures.push('visual_capture_provenance_control_timestamp_mismatch');
+
+    const sourceRoleBindings = {
+      before: [sourceOracleProjection.beforeEncodedHash, sourceOracleProjection.beforeDecodedHash],
+      after: [sourceOracleProjection.afterEncodedHash, sourceOracleProjection.afterDecodedHash],
+      diff: [sourceOracleProjection.diffEncodedHash, sourceOracleProjection.diffDecodedHash],
+    };
+    for (const role of ['before', 'after', 'diff']) {
+      const receipt = receipts.get(role);
+      if (
+        receipt.encodedHash !== sourceRoleBindings[role][0]
+        || receipt.decodedHash !== sourceRoleBindings[role][1]
+      ) failures.push(`visual_capture_provenance_${role}_oracle_hash_mismatch`);
+    }
+    const oracleIdentityBindings = [
+      ['width', beforeReceipt.width],
+      ['height', beforeReceipt.height],
+      ['outputTargetId', dispatchAnchor.outputTargetId],
+      ['processId', dispatchAnchor.processId],
+      ['runtimeSessionId', dispatchAnchor.runtimeSessionId],
+      ['deviceIdentity', dispatchAnchor.deviceIdentity],
+      ['afterDispatchId', dispatchAnchor.dispatchId],
+      ['epoch', dispatchAnchor.epoch],
+      ['artifactId', dispatchAnchor.runtimeArtifactId],
+      ['readbackTimestampMonotonicNs', diffReceipt.timestampMonotonicNs],
+    ];
+    for (const [field, expected] of oracleIdentityBindings) {
+      if (sourceOracleProjection[field] !== expected) {
+        failures.push(`visual_capture_provenance_output_oracle_${field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)}_mismatch`);
+      }
+    }
+    if (failures.length > 0) return frozenVisualCaptureProvenanceFailure(failures);
+
+    const lineBindings = Object.freeze({
+      previousDispatch: sourceLineBinding(
+        previousDispatchRecord.line,
+        previousDispatchRecord.index,
+      ),
+      previousOutput: sourceLineBinding(
+        previousOutputCandidate.line,
+        previousOutputCandidate.index,
+      ),
+      beforeControl: sourceLineBinding(beforeControl.line, beforeControl.index),
+      beforeReceipt: sourceLineBinding(lines[beforeReceipt.index], beforeReceipt.index),
+      dispatch: sourceLineBinding(dispatchLine, dispatchAnchor.sourceLineIndex),
+      afterControl: sourceLineBinding(afterControl.line, afterControl.index),
+      afterReceipt: sourceLineBinding(lines[afterReceipt.index], afterReceipt.index),
+      diffReceipt: sourceLineBinding(lines[diffReceipt.index], diffReceipt.index),
+      outputOracle: sourceLineBinding(oracleCandidate.line, oracleCandidate.index),
+    });
+    const result = deepFreezeData({
+      schemaVersion: GPU_HMR_VERIFIED_VISUAL_CAPTURE_PROVENANCE_SCHEMA_VERSION,
+      accepted: false,
+      supportValidated: true,
+      proofAuthority: 'caller_artifact_stream_verification_support_only',
+      authorityGap: VISUAL_RUNNER_PROVENANCE_GAP,
+      sourceStreamHash: source.contentHash,
+      sourceStreamPath: source.path,
+      sourceStreamFileIdentity: source.identity,
+      sourceStreamStableFileIdentity: source.identity.stable,
+      sourceStreamAllowedRoot: source.allowedRoot,
+      dispatchId: dispatchAnchor.dispatchId,
+      dispatchTimestamp: dispatchAnchor.dispatchTimestamp,
+      epochPublicationTimestamp,
+      processId: dispatchAnchor.processId,
+      runtimeSessionId: dispatchAnchor.runtimeSessionId,
+      deviceIdentity: dispatchAnchor.deviceIdentity,
+      outputTargetId: dispatchAnchor.outputTargetId,
+      epoch: dispatchAnchor.epoch,
+      runtimeArtifactId: dispatchAnchor.runtimeArtifactId,
+      previousDispatch,
+      previousOutput,
+      receipts: Object.freeze(Object.fromEntries(receipts)),
+      lineBindings,
+      outputOracleProjection: sourceOracleProjection,
+      controlPair,
+      failedGates: [VISUAL_RUNNER_PROVENANCE_GAP],
+    });
+    PINNED_VISUAL_CAPTURE_PROVENANCE.set(result, Object.freeze({
+      dispatchProof: input.dispatchProof,
+      dispatchTraceEvidence: input.dispatchTraceEvidence,
+      dispatchAnchor,
+      supportValidated: true,
+      sourceStreamAllowedRoot: source.allowedRoot,
+      publicIdentity: clonePlainData(result),
+    }));
+    return result;
+  } catch (error) {
+    const code = typeof error?.message === 'string'
+      && /^visual_capture_provenance_[a-z0-9_]+$/.test(error.message)
+      ? error.message
+      : 'visual_capture_provenance_verification_failed';
+    return frozenVisualCaptureProvenanceFailure([code]);
+  } finally {
+    await closePinnedAllowedRoots(pinnedAllowedRoots);
+  }
+}
+
+function visualCaptureSupportAnchor(
+  dispatchProof,
+  dispatchTraceEvidence,
+  captureProvenance,
+) {
+  const pinned = captureProvenance && typeof captureProvenance === 'object'
+    ? PINNED_VISUAL_CAPTURE_PROVENANCE.get(captureProvenance)
+    : null;
+  if (
+    !pinned
+    || pinned.dispatchProof !== dispatchProof
+    || pinned.dispatchTraceEvidence !== dispatchTraceEvidence
+    || pinned.supportValidated !== true
+    || captureProvenance.accepted !== false
+    || captureProvenance.supportValidated !== true
+    || captureProvenance.authorityGap !== VISUAL_RUNNER_PROVENANCE_GAP
+    || !isDeepStrictEqual(captureProvenance.failedGates, [VISUAL_RUNNER_PROVENANCE_GAP])
+    || !isDeepStrictEqual(captureProvenance, pinned.publicIdentity)
+  ) return null;
+  const dispatchAnchor = dispatchTraceAnchor(dispatchProof, dispatchTraceEvidence);
+  return dispatchAnchor && isDeepStrictEqual(dispatchAnchor, pinned.dispatchAnchor)
+    ? Object.freeze({ ...pinned, captureProvenance })
+    : null;
+}
+
+function frozenVisualFailure(failures, supportDetails = {}) {
+  return deepFreezeData({
+    schemaVersion: GPU_HMR_VERIFIED_VISUAL_EVIDENCE_SCHEMA_VERSION,
+    ...supportDetails,
+    accepted: false,
+    failedGates: [...new Set(failures)],
+  });
+}
+
+export async function verifyGpuHmrVisualProofBundle(input, options = {}) {
+  const failures = [];
+  let pinnedAllowedRoots = [];
+  try {
+    if (!exactOwnKeys(input, [
+      'roles',
+      'dispatchProof',
+      'dispatchTraceEvidence',
+      'captureProvenance',
+      'outputModalityEvidence',
+      'outputOracle',
+    ])) {
+      return frozenVisualFailure(['visual_evidence_bundle_field_set_invalid']);
+    }
+    const modality = PINNED_OUTPUT_MODALITY_EVIDENCE.get(input.outputModalityEvidence);
+    if (!modality || modality.modality !== 'visual') {
+      return frozenVisualFailure(['visual_evidence_visual_modality_unverified']);
+    }
+    const dispatchAnchor = dispatchTraceAnchor(
+      input.dispatchProof,
+      input.dispatchTraceEvidence,
+    );
+    if (!dispatchAnchor) {
+      return frozenVisualFailure(['visual_evidence_dispatch_receipt_unverified']);
+    }
+    const capturePin = visualCaptureSupportAnchor(
+      input.dispatchProof,
+      input.dispatchTraceEvidence,
+      input.captureProvenance,
+    );
+    if (!capturePin) {
+      return frozenVisualFailure(['visual_evidence_capture_provenance_unverified']);
+    }
+    const rawOracle = visualOracleProjectionFromRaw(input.outputOracle);
+    if (!rawOracle.projection) return frozenVisualFailure(rawOracle.failures);
+    if (!isDeepStrictEqual(
+      rawOracle.projection,
+      input.captureProvenance.outputOracleProjection,
+    )) {
+      return frozenVisualFailure(['visual_evidence_output_oracle_source_projection_mismatch']);
+    }
+    if (rawOracle.projection.kind !== modality.oracleKind) {
+      return frozenVisualFailure(['visual_evidence_output_oracle_kind_mismatch']);
+    }
+    const allowedRoots = Array.isArray(options.allowedRoots)
+      && !utilTypes.isProxy(options.allowedRoots)
+      && options.allowedRoots.length > 0
+      && options.allowedRoots.every((root) => typeof root === 'string' && root.trim())
+      ? Object.freeze([...options.allowedRoots])
+      : null;
+    if (!allowedRoots) {
+      return frozenVisualFailure(['visual_evidence_allowed_root_missing']);
+    }
+    pinnedAllowedRoots = await pinAllowedRoots(allowedRoots, 'visual_evidence');
+    if (typeof options.afterAllowedRootsPinned === 'function') {
+      await options.afterAllowedRootsPinned(Object.freeze(
+        pinnedAllowedRoots.map(publicAllowedRootBinding),
+      ));
+    }
+    const sourceAllowedRoot = input.captureProvenance.sourceStreamAllowedRoot;
+    const pinnedSourceAllowedRoot = pinnedAllowedRoots.find(
+      (binding) => binding.path === sourceAllowedRoot?.path,
+    );
+    if (
+      !pinnedSourceAllowedRoot
+      || !isDeepStrictEqual(
+        publicAllowedRootBinding(pinnedSourceAllowedRoot),
+        sourceAllowedRoot,
+      )
+      || !isDeepStrictEqual(sourceAllowedRoot, capturePin.sourceStreamAllowedRoot)
+    ) {
+      return frozenVisualFailure(['visual_evidence_source_stream_allowed_root_changed']);
+    }
+    if (
+      !Array.isArray(input.roles)
+      || utilTypes.isProxy(input.roles)
+      || input.roles.length !== 3
+    ) {
+      return frozenVisualFailure(['visual_evidence_role_count_invalid']);
+    }
+    const roles = new Map();
+    for (const entry of input.roles) {
+      if (!ownDataRecord(entry)) {
+        failures.push('visual_evidence_role_invalid');
+        continue;
+      }
+      const role = entry?.role;
+      if (!['before', 'after', 'diff'].includes(role)) {
+        failures.push('visual_evidence_role_invalid');
+        continue;
+      }
+      if (roles.has(role)) failures.push(`visual_evidence_${role}_role_duplicate`);
+      roles.set(role, snapshotVisualRoleEntry(entry, role));
+    }
+    for (const role of ['before', 'after', 'diff']) {
+      if (!roles.has(role)) failures.push(`visual_evidence_${role}_role_missing`);
+    }
+    if (failures.length > 0) return frozenVisualFailure(failures);
+
+    const roleBytes = {};
+    for (const role of ['before', 'after', 'diff']) {
+      roleBytes[role] = await verifiedVisualRoleBytes(
+        roles.get(role),
+        role,
+        allowedRoots,
+        pinnedAllowedRoots,
+        options,
+      );
+    }
+    if (new Set(Object.values(roleBytes).map((entry) => entry.path)).size !== 3) {
+      failures.push('visual_evidence_role_path_reused');
+    }
+    if (Object.values(roleBytes).some(
+      (entry) => entry.path === input.captureProvenance.sourceStreamPath,
+    )) failures.push('visual_evidence_source_stream_role_path_reused');
+    const identityBindings = [
+      {
+        role: 'source_stream',
+        identity: input.captureProvenance.sourceStreamStableFileIdentity,
+      },
+      ...['before', 'after', 'diff'].map((role) => ({
+        role,
+        identity: roleBytes[role].fileIdentity?.stable,
+      })),
+    ];
+    const identityKeys = new Map();
+    for (const binding of identityBindings) {
+      const key = stableFileIdentityKey(binding.identity);
+      if (!key) {
+        failures.push(`visual_evidence_${binding.role}_stable_file_identity_unavailable`);
+        continue;
+      }
+      if (identityKeys.has(key)) {
+        failures.push('visual_evidence_cross_role_file_identity_reused');
+      } else {
+        identityKeys.set(key, binding.role);
+      }
+    }
+    if (failures.length > 0) return frozenVisualFailure(failures);
+
+    const decoded = {};
+    for (const role of ['before', 'after', 'diff']) {
+      decoded[role] = await verifiedDecodedVisualRoleBytes(
+        roleBytes[role],
+        role,
+        options,
+      );
+    }
+    if (
+      decoded.before.width !== decoded.after.width
+      || decoded.before.height !== decoded.after.height
+      || decoded.before.width !== decoded.diff.width
+      || decoded.before.height !== decoded.diff.height
+    ) failures.push('visual_evidence_decoded_dimensions_mismatch');
+    for (const role of ['before', 'after']) {
+      if (!screenshotQualifiesAsVisualEvidence({
+        ...decoded[role].quality,
+        path: decoded[role].path,
+      })) failures.push(`visual_evidence_${role}_blank_or_low_quality`);
+    }
+    const dimensionsMatch =
+      decoded.before.width === decoded.after.width
+      && decoded.before.height === decoded.after.height
+      && decoded.before.width === decoded.diff.width
+      && decoded.before.height === decoded.diff.height;
+    const metrics = dimensionsMatch
+      ? visualDiffMetrics(decoded.before, decoded.after, decoded.diff)
+      : {
+          pixelCount: 0,
+          changedPixels: 0,
+          changedPixelRatio: 0,
+          perceptualDiff: 0,
+          diffMismatchPixels: 0,
+        };
+    if (decoded.before.contentHash === decoded.after.contentHash || metrics.changedPixels === 0) {
+      failures.push('visual_evidence_before_after_same');
+    }
+    if (metrics.diffMismatchPixels > 0) failures.push('visual_evidence_diff_bytes_mismatch');
+    if (
+      Number(decoded.diff.quality.visible_pixels) <= 0
+      || metrics.changedPixelRatio <= 0
+      || metrics.perceptualDiff <= 0
+    ) failures.push('visual_evidence_diff_blank');
+
+    const receipts = input.captureProvenance.receipts;
+    const oracleProjection = rawOracle.projection;
+    const oracleRoleBindings = {
+      before: [oracleProjection.beforeEncodedHash, oracleProjection.beforeDecodedHash],
+      after: [oracleProjection.afterEncodedHash, oracleProjection.afterDecodedHash],
+      diff: [oracleProjection.diffEncodedHash, oracleProjection.diffDecodedHash],
+    };
+    for (const role of ['before', 'after', 'diff']) {
+      const receipt = receipts[role];
+      if (
+        decoded[role].contentHash !== receipt.encodedHash
+        || decoded[role].decodedContentHash !== receipt.decodedHash
+      ) failures.push(`visual_evidence_${role}_capture_receipt_hash_mismatch`);
+      if (
+        decoded[role].contentHash !== oracleRoleBindings[role][0]
+        || decoded[role].decodedContentHash !== oracleRoleBindings[role][1]
+      ) failures.push(`visual_evidence_${role}_output_oracle_hash_mismatch`);
+      if (decoded[role].width !== receipt.width || decoded[role].height !== receipt.height) {
+        failures.push(`visual_evidence_${role}_capture_receipt_dimensions_mismatch`);
+      }
+    }
+    if (
+      decoded.before.width !== oracleProjection.width
+      || decoded.before.height !== oracleProjection.height
+    ) failures.push('visual_evidence_output_oracle_dimensions_mismatch');
+    if (failures.length > 0) return frozenVisualFailure(failures);
+
+    const artifacts = Object.freeze(['before', 'after', 'diff'].map((role) => Object.freeze({
+      role,
+      path: decoded[role].path,
+      contentHash: decoded[role].contentHash,
+      decodedContentHash: decoded[role].decodedContentHash,
+      byteLength: decoded[role].bytes.byteLength,
+      decodedByteLength: decoded[role].data.byteLength,
+      stableFileIdentity: decoded[role].fileIdentity.stable,
+      allowedRoot: decoded[role].allowedRoot,
+      width: decoded[role].width,
+      height: decoded[role].height,
+      visualQuality: decoded[role].quality.visual_quality,
+      visiblePixels: decoded[role].quality.visible_pixels,
+    })));
+    // No producer-authenticated runner observation issuer exists in this module's
+    // import boundary, so verified caller artifacts remain support-only.
+    const result = frozenVisualFailure([VISUAL_RUNNER_PROVENANCE_GAP], {
+      supportValidated: true,
+      proofAuthority: 'live_allowed_root_image_bytes_support_only',
+      authorityGap: VISUAL_RUNNER_PROVENANCE_GAP,
+      modality: 'visual',
+      oracleKind: modality.oracleKind,
+      dispatchId: dispatchAnchor.dispatchId,
+      dispatchTimestamp: dispatchAnchor.dispatchTimestamp,
+      runtimeSessionId: dispatchAnchor.runtimeSessionId,
+      processId: dispatchAnchor.processId,
+      deviceIdentity: dispatchAnchor.deviceIdentity,
+      outputTargetId: dispatchAnchor.outputTargetId,
+      epoch: dispatchAnchor.epoch,
+      runtimeArtifactId: dispatchAnchor.runtimeArtifactId,
+      postDispatchTimestamp: oracleProjection.readbackTimestampMonotonicNs,
+      previousDispatch: input.captureProvenance.previousDispatch,
+      previousOutput: input.captureProvenance.previousOutput,
+      sourceStreamStableFileIdentity:
+        input.captureProvenance.sourceStreamStableFileIdentity,
+      sourceStreamAllowedRoot: input.captureProvenance.sourceStreamAllowedRoot,
+      allowedRoots: Object.freeze(pinnedAllowedRoots.map(publicAllowedRootBinding)),
+      width: decoded.before.width,
+      height: decoded.before.height,
+      artifacts,
+      metrics: Object.freeze(metrics),
+      controlPair: input.captureProvenance.controlPair,
+      captureProvenance: input.captureProvenance,
+      outputOracleProjection: oracleProjection,
+      outputOracleFieldBinding: rawOracle.fieldBinding,
+    });
+    PINNED_VISUAL_SUPPORT_EVIDENCE.set(result, Object.freeze({
+      dispatchProof: input.dispatchProof,
+      dispatchTraceEvidence: input.dispatchTraceEvidence,
+      captureProvenance: input.captureProvenance,
+      outputModalityEvidence: input.outputModalityEvidence,
+      rawOutputOracle: input.outputOracle,
+      outputOracleProjection: oracleProjection,
+      outputOracleFieldBinding: rawOracle.fieldBinding,
+      dispatchAnchor,
+      allowedRoots: Object.freeze(pinnedAllowedRoots.map(publicAllowedRootBinding)),
+      publicIdentity: clonePlainData(result),
+    }));
+    return result;
+  } catch (error) {
+    const code = typeof error?.message === 'string' && /^visual_evidence_[a-z0-9_]+$/.test(error.message)
+      ? error.message
+      : 'visual_evidence_byte_verification_failed';
+    return frozenVisualFailure([code]);
+  } finally {
+    await closePinnedAllowedRoots(pinnedAllowedRoots);
+  }
+}
+
+function verifiedVisualEvidenceFromObservation(observation, rawOracle, dispatchProof, modalityEvidence) {
+  const declaration = aliasedEvidenceValue(
+    [observation, rawOracle],
+    ['verifiedVisualEvidence', 'verified_visual_evidence'],
+  );
+  const support = declaration.value && typeof declaration.value === 'object'
+    ? PINNED_VISUAL_SUPPORT_EVIDENCE.get(declaration.value)
+    : null;
+  const failedGates = [];
+  if (declaration.conflict) failedGates.push('visual_evidence_alias_conflict');
+  if (declaration.duplicate) failedGates.push('visual_evidence_duplicate_alias');
+  if (
+    !support
+    || declaration.value?.accepted !== false
+    || declaration.value?.supportValidated !== true
+    || !isDeepStrictEqual(declaration.value, support.publicIdentity)
+  ) failedGates.push('visual_evidence_live_verification_missing');
+  if (support && support.dispatchProof !== dispatchProof) failedGates.push('visual_evidence_dispatch_receipt_identity_mismatch');
+  if (support && support.outputModalityEvidence !== modalityEvidence) {
+    failedGates.push('visual_evidence_modality_identity_mismatch');
+  }
+  if (support && support.rawOutputOracle !== rawOracle) {
+    failedGates.push('visual_evidence_output_oracle_identity_mismatch');
+  }
+  if (support) {
+    const currentOracle = visualOracleProjectionFromRaw(rawOracle);
+    if (
+      !currentOracle.projection
+      || !isDeepStrictEqual(currentOracle.projection, support.outputOracleProjection)
+      || !isDeepStrictEqual(currentOracle.fieldBinding, support.outputOracleFieldBinding)
+    ) failedGates.push('visual_evidence_output_oracle_changed');
+  }
+  const anchor = support
+    ? dispatchTraceAnchor(dispatchProof, support.dispatchTraceEvidence)
+    : null;
+  if (support && (!anchor || !isDeepStrictEqual(anchor, support.dispatchAnchor))) {
+    failedGates.push('visual_evidence_dispatch_receipt_changed');
+  }
+  if (
+    support
+    && !visualCaptureSupportAnchor(
+      dispatchProof,
+      support.dispatchTraceEvidence,
+      support.captureProvenance,
+    )
+  ) failedGates.push('visual_evidence_capture_provenance_changed');
+  if (support) failedGates.push(VISUAL_RUNNER_PROVENANCE_GAP);
+  return {
+    accepted: false,
+    reason: failedGates[0] ?? null,
+    failedGates,
+    evidence: declaration.value,
+  };
+}
+
 export function classifyGpuHmrOutputProof(observation = {}) {
   const dispatchProof = observation.dispatchProof && typeof observation.dispatchProof === 'object'
     ? observation.dispatchProof
@@ -1620,6 +3933,12 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     ? rawOracle.kind.trim()
     : null;
   const oracleKindAccepted = gpuHmrOutputOracleKindAccepted(oracleKind);
+  const outputModality = outputModalityEvidenceFromObservation(observation, rawOracle);
+  const outputModalityEvidenceRequired = outputModality.registryModality === 'visual';
+  const outputModalityRequirementSatisfied =
+    outputModalityEvidenceRequired
+      ? outputModality.accepted
+      : !outputModality.declared || outputModality.accepted;
   const rawOracleEvidenceRefs = compactStringList(rawOracle.evidenceRefs);
   const oracleEvidenceRefs = runtimeOutputOracleEvidenceRefs(rawOracleEvidenceRefs);
   const rejectedOracleEvidenceRefs = rawOracleEvidenceRefs.filter((ref) => !oracleEvidenceRefs.includes(ref));
@@ -1769,6 +4088,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
   const deterministicOraclePassed =
     deterministicOutputObserved
     && deterministicOracleProvided
+    && outputModalityRequirementSatisfied
     && oracleEvidenceObserved
     && oracleProvenanceComplete
     && oracleRuntimeSessionMatchesDispatch
@@ -1823,6 +4143,12 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     reportedPassed: oracleReportedPassed,
     kind: oracleKind,
     kindAccepted: oracleKindAccepted,
+    modalityEvidenceAccepted: outputModality.accepted,
+    modalityEvidenceDeclared: outputModality.declared,
+    modalityEvidenceRequired: outputModalityEvidenceRequired,
+    modality: outputModality.registryModality,
+    modalityEvidence: outputModality.evidence,
+    modalityFailedGates: outputModality.failedGates,
     expected: hasExpected ? rawOracle.expected : null,
     actual: hasActual ? rawOracle.actual : null,
     tolerance: Object.prototype.hasOwnProperty.call(rawOracle, 'tolerance') ? rawOracle.tolerance : null,
@@ -1847,13 +4173,19 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     rawOracle.visualRef,
     rawOracle.visual_ref,
   ]);
-  const renderVisualEvidenceRequired =
-    oracleKind !== null
-    && RENDER_OUTPUT_ORACLE_KINDS.has(oracleKind.trim().toLowerCase());
   const visualEvidenceRequired =
-    observation.visualEvidenceRequired === true || renderVisualEvidenceRequired;
-  const visualEvidenceComplete = !visualEvidenceRequired
-    || (visualFrameObserved && visualEvidenceRefs.length > 0);
+    outputModality.registryModality === 'visual';
+  const renderVisualEvidenceRequired = visualEvidenceRequired;
+  const verifiedVisualEvidence = visualEvidenceRequired
+    ? verifiedVisualEvidenceFromObservation(
+      observation,
+      rawOracle,
+      dispatchProof,
+      outputModality.evidence,
+    )
+    : null;
+  const visualEvidenceComplete =
+    !visualEvidenceRequired || verifiedVisualEvidence?.accepted === true;
 
   if (!dispatchUsable) {
     return {
@@ -1873,6 +4205,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
       visualEvidenceRequired,
       renderVisualEvidenceRequired,
       visualEvidenceComplete,
+      verifiedVisualEvidence,
       evidenceRefs,
       visualEvidenceRefs,
       dispatchProof,
@@ -1885,10 +4218,9 @@ export function classifyGpuHmrOutputProof(observation = {}) {
         schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
         resultState: dispatchProof?.resultState ?? 'gpu-hmr-dispatch-safe-proven',
         degradedState: 'gpu-hmr-visual-evidence-missing',
-        degradedReason: visualFrameObserved
-          ? 'visual_evidence_refs_missing'
-          : 'visual_frame_not_observed',
-        outputOracle,
+        degradedReason: verifiedVisualEvidence?.reason
+          ?? 'visual_evidence_live_verification_missing',
+        outputOracle: { ...outputOracle, passed: false },
         oracleArtifacts,
         oracle_artifacts: oracleArtifacts,
         deterministicVisualMode,
@@ -1900,6 +4232,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
         visualEvidenceRequired,
         renderVisualEvidenceRequired,
         visualEvidenceComplete,
+        verifiedVisualEvidence,
         evidenceRefs,
         visualEvidenceRefs,
         dispatchProof,
@@ -1923,6 +4256,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
       visualEvidenceRequired,
       renderVisualEvidenceRequired,
       visualEvidenceComplete,
+      verifiedVisualEvidence,
       evidenceRefs,
       visualEvidenceRefs,
       dispatchProof,
@@ -1939,6 +4273,8 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     : 'gpu-hmr-output-unobserved';
   const degradedReason = oracleKind !== null && !oracleKindAccepted
     ? 'output_oracle_kind_unaccepted'
+    : (visualEvidenceRequired || outputModality.declared) && !outputModality.accepted
+      ? outputModality.failedGates[0] ?? 'output_modality_evidence_missing_or_unverified'
     : oraclePayloadOtherwisePassed && rawOracleEvidenceRefs.length > 0 && !oracleEvidenceObserved
       ? 'output_oracle_evidence_unaccepted'
       : oraclePayloadOtherwisePassed && !oracleEvidenceObserved
@@ -1990,6 +4326,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     visualEvidenceRequired,
     renderVisualEvidenceRequired,
     visualEvidenceComplete,
+    verifiedVisualEvidence,
     evidenceRefs,
     visualEvidenceRefs,
     dispatchProof,
@@ -2761,7 +5098,7 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
     };
   }
 
-  return {
+  const proof = {
     schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
     resultState: 'gpu-hmr-dispatch-safe-proven',
     degradedState: null,
@@ -2806,6 +5143,23 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
     epoch: dispatchEpoch,
     processId,
   };
+  const epochPublicationTimestamp = latestEpochPublicationMonotonicTimestampFromProof(epochProof);
+  const dispatchTrace = dispatchTraceAnchorFromObservation(observation, {
+    dispatchId,
+    processId,
+    runtimeSessionId: runtimeSessionIds[0] ?? null,
+    runtimeArtifactId,
+    epoch: dispatchEpoch,
+    epochPublicationTimestamp,
+    dispatchEvidenceRefs,
+  });
+  PINNED_DISPATCH_PROOFS.set(proof, Object.freeze({
+    publicIdentity: dispatchProofPublicIdentity(proof),
+    epochPublicationTimestamp,
+    dispatchTraceAnchor: dispatchTrace.anchor,
+    dispatchTraceFailures: Object.freeze([...new Set(dispatchTrace.failures)]),
+  }));
+  return proof;
 }
 
 export function summarizeGpuHmrDispatchProof(proof) {
@@ -2835,12 +5189,11 @@ export function classifyGpuHmrAbiProof(observation = {}) {
   const compatibilityClass = parsedCompatibilityClass ?? 'unknown';
   const backendSpecificAdapterSafetyEvidenceRefs = backendSpecificAdapterSafetyEvidence(observation);
   const adapterSafetyDeclared = backendSpecificAdapterSafetyDeclared(observation);
-  const adapterSafetyDeclaredWithoutEvidence =
-    adapterSafetyDeclared && backendSpecificAdapterSafetyEvidenceRefs.length === 0;
-  const backendSpecificAdapterSafetyProven = backendSpecificAdapterSafetyEvidenceRefs.length > 0;
-  const compatibilityClassAccepted =
-    ['compatible', 'additive'].includes(compatibilityClass)
-    || backendSpecificAdapterSafetyProven;
+  const adapterSafetyAuthorityClaimed =
+    adapterSafetyDeclared || backendSpecificAdapterSafetyEvidenceRefs.length > 0;
+  // Serialized references and booleans are support metadata, not an observed ABI migration proof.
+  const backendSpecificAdapterSafetyProven = false;
+  const compatibilityClassAccepted = ['compatible', 'additive'].includes(compatibilityClass);
   const acceptedExtractor = acceptedAbiExtractorEvidence(observation);
   const acceptedExtractorProvenanceObserved = acceptedExtractor.accepted;
   const extractorProvenanceComplete = observation.extractorProvenanceComplete !== false;
@@ -2895,8 +5248,8 @@ export function classifyGpuHmrAbiProof(observation = {}) {
     degradedReason: metadataObserved
       ? (typeof observation.degradedReason === 'string' && observation.degradedReason.trim()
         ? observation.degradedReason.trim()
-        : adapterSafetyDeclaredWithoutEvidence
-          ? 'backend_specific_adapter_safety_evidence_missing'
+        : !compatibilityClassAccepted && adapterSafetyAuthorityClaimed
+          ? 'abi_backend_specific_adapter_safety_not_authoritative'
           : parsedCompatibilityClass === null
           ? 'abi_compatibility_class_missing'
           : !compatibilityClassAccepted
@@ -3494,6 +5847,28 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
     observation.nativeFunctionResolutionEvidenceRefs
     ?? observation.native_function_resolution_evidence_refs,
   );
+  const nativeLaunchAttemptEvidenceRefs = compactStringList(
+    observation.nativeLaunchAttemptEvidenceRefs
+    ?? observation.native_launch_attempt_evidence_refs,
+  );
+  const nativeLaunchEvidenceRefs = compactStringList(
+    observation.nativeLaunchEvidenceRefs
+    ?? observation.native_launch_evidence_refs,
+  );
+  const nativeLaunchAttemptRecords = Array.isArray(
+    observation.nativeLaunchAttemptRecords ?? observation.native_launch_attempt_records,
+  )
+    ? (observation.nativeLaunchAttemptRecords ?? observation.native_launch_attempt_records)
+      .filter((record) => record && typeof record === 'object')
+      .slice(-20)
+    : [];
+  const nativeLaunchRecords = Array.isArray(
+    observation.nativeLaunchRecords ?? observation.native_launch_records,
+  )
+    ? (observation.nativeLaunchRecords ?? observation.native_launch_records)
+      .filter((record) => record && typeof record === 'object')
+      .slice(-20)
+    : [];
   const nativeTextureObjectEvidenceRefs = compactStringList(
     observation.nativeTextureObjectEvidenceRefs
     ?? observation.native_texture_object_evidence_refs,
@@ -3552,6 +5927,8 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
     ...runtimeCapabilityEvidenceRefs,
     ...nativeLaunchObserverReadyEvidenceRefs,
     ...nativeFunctionResolutionEvidenceRefs,
+    ...nativeLaunchAttemptEvidenceRefs,
+    ...nativeLaunchEvidenceRefs,
     ...nativeTextureObjectEvidenceRefs,
     ...nativeArrayAllocationEvidenceRefs,
     ...runtimeErrorEvidenceRefs,
@@ -3627,6 +6004,10 @@ export function classifyGpuHmrOriginalHostPathProof(observation = {}) {
     nativeArrayAllocationFailureBeforeLaunch,
     nativeLaunchObserverReadyEvidenceRefs,
     nativeFunctionResolutionEvidenceRefs,
+    nativeLaunchAttemptEvidenceRefs,
+    nativeLaunchEvidenceRefs,
+    nativeLaunchAttemptRecords,
+    nativeLaunchRecords,
     nativeTextureObjectEvidenceRefs,
     nativeArrayAllocationEvidenceRefs,
     nativeArrayAllocationRecords,
@@ -3698,6 +6079,132 @@ export function summarizeGpuHmrOriginalHostPathProof(proof) {
   return `gpu_original_host_path_proof=${result}${degraded}${reason}${evidence}${session}${entry}${candidate}${observer}${resolver}${texture}${arrayAllocation}${arrayDescriptor}${arraySize}${runtimeError}${runtimeArrayCapability}${nativeAttempt}${upstreamExit}`;
 }
 
+function fullRuntimeVisualMechanics(outputProof) {
+  if (!outputProof || typeof outputProof !== 'object') return false;
+  const rawOracle = outputProof.outputOracle && typeof outputProof.outputOracle === 'object'
+    ? outputProof.outputOracle
+    : {};
+  const kind = classifyGpuHmrOutputOracleKind(rawOracle.kind);
+  // Preserve the existing compute/readback composition contract. Visual support
+  // attached to a registered compute oracle remains diagnostic-only.
+  if (kind.accepted === true && kind.modality === 'compute') return false;
+  const visualEvidence = aliasedEvidenceValue(
+    [outputProof, rawOracle],
+    ['verifiedVisualEvidence', 'verified_visual_evidence'],
+  );
+  const visualRefs = compactStringList([
+    ...(Array.isArray(outputProof.visualEvidenceRefs) ? outputProof.visualEvidenceRefs : []),
+    ...(Array.isArray(rawOracle.visualEvidenceRefs) ? rawOracle.visualEvidenceRefs : []),
+    ...(Array.isArray(rawOracle.visual_evidence_refs) ? rawOracle.visual_evidence_refs : []),
+    rawOracle.visualEvidenceRef,
+    rawOracle.visual_evidence_ref,
+    rawOracle.visualRef,
+    rawOracle.visual_ref,
+    rawOracle.screenshotPath,
+    rawOracle.screenshot_path,
+  ]);
+  const oracleArtifacts = objectField(
+    outputProof.oracleArtifacts,
+    outputProof.oracle_artifacts,
+    rawOracle.oracleArtifacts,
+    rawOracle.oracle_artifacts,
+  );
+  const artifactKeys = oracleArtifacts ? Object.keys(oracleArtifacts) : [];
+  return kind.modality === 'visual'
+    || outputProof.visualEvidenceRequired === true
+    || outputProof.renderVisualEvidenceRequired === true
+    || outputProof.visualFrameObserved === true
+    || visualEvidence.declared
+    || visualRefs.length > 0
+    || artifactKeys.some((key) => /(?:^|_)(?:before|after|diff|frame|image|visual)(?:_|$)/i.test(key));
+}
+
+function fullRuntimeVisualAuthority(outputProof, dispatchProof) {
+  if (!fullRuntimeVisualMechanics(outputProof)) {
+    return Object.freeze({ required: false, accepted: true, reason: null, failedGates: [] });
+  }
+  const rawOracle = outputProof?.outputOracle && typeof outputProof.outputOracle === 'object'
+    ? outputProof.outputOracle
+    : {};
+  const failures = [];
+  const modalityDeclaration = aliasedEvidenceValue(
+    [outputProof, rawOracle],
+    ['outputModalityEvidence', 'output_modality_evidence', 'modalityEvidence'],
+  );
+  const modalityPin = modalityDeclaration.value && typeof modalityDeclaration.value === 'object'
+    ? PINNED_OUTPUT_MODALITY_EVIDENCE.get(modalityDeclaration.value)
+    : null;
+  const oracleKind = classifyGpuHmrOutputOracleKind(rawOracle.kind);
+  if (modalityDeclaration.conflict) failures.push('output_modality_evidence_alias_conflict');
+  if (modalityDeclaration.duplicate) failures.push('output_modality_evidence_duplicate');
+  if (!modalityPin || modalityDeclaration.value?.accepted !== true) {
+    failures.push('output_modality_evidence_missing_or_unverified');
+  } else if (
+    modalityPin.modality !== 'visual'
+    || oracleKind.accepted !== true
+    || oracleKind.modality !== 'visual'
+    || modalityPin.oracleKind !== oracleKind.kind
+  ) {
+    failures.push('output_modality_evidence_visual_binding_mismatch');
+  }
+
+  const visualDeclaration = aliasedEvidenceValue(
+    [outputProof, rawOracle],
+    ['verifiedVisualEvidence', 'verified_visual_evidence'],
+  );
+  if (visualDeclaration.conflict) failures.push('visual_evidence_alias_conflict');
+  if (visualDeclaration.duplicate) failures.push('visual_evidence_duplicate_alias');
+  const declaredVisualEvidence = visualDeclaration.value;
+  const supportEvidence = declaredVisualEvidence?.evidence ?? declaredVisualEvidence;
+  const supportPin = supportEvidence && typeof supportEvidence === 'object'
+    ? PINNED_VISUAL_SUPPORT_EVIDENCE.get(supportEvidence)
+    : null;
+  if (
+    !supportPin
+    || supportEvidence?.accepted !== false
+    || supportEvidence?.supportValidated !== true
+    || !isDeepStrictEqual(supportEvidence, supportPin.publicIdentity)
+  ) {
+    failures.push('visual_evidence_live_verification_missing');
+  } else {
+    if (supportPin.dispatchProof !== dispatchProof) {
+      failures.push('visual_evidence_dispatch_receipt_identity_mismatch');
+    }
+    if (supportPin.outputModalityEvidence !== modalityDeclaration.value) {
+      failures.push('visual_evidence_modality_identity_mismatch');
+    }
+    const dispatchAnchor = dispatchTraceAnchor(dispatchProof, supportPin.dispatchTraceEvidence);
+    if (!dispatchAnchor || !isDeepStrictEqual(dispatchAnchor, supportPin.dispatchAnchor)) {
+      failures.push('visual_evidence_dispatch_receipt_changed');
+    }
+  }
+
+  const runnerDeclaration = aliasedEvidenceValue(
+    [outputProof],
+    ['runnerVisualObservation', 'runner_visual_observation'],
+  );
+  const runnerPin = runnerDeclaration.value && typeof runnerDeclaration.value === 'object'
+    ? PINNED_RUNNER_VISUAL_OBSERVATIONS.get(runnerDeclaration.value)
+    : null;
+  if (runnerDeclaration.conflict || runnerDeclaration.duplicate) {
+    failures.push('visual_capture_provenance_runner_observation_alias_invalid');
+  }
+  if (
+    !runnerPin
+    || runnerPin.dispatchProof !== dispatchProof
+    || runnerPin.outputModalityEvidence !== modalityDeclaration.value
+    || runnerPin.visualSupportEvidence !== supportEvidence
+  ) failures.push(VISUAL_RUNNER_PROVENANCE_GAP);
+
+  const failedGates = Object.freeze([...new Set(failures)]);
+  return Object.freeze({
+    required: true,
+    accepted: failedGates.length === 0,
+    reason: failedGates[0] ?? null,
+    failedGates,
+  });
+}
+
 export function classifyGpuHmrFullRuntimeProof(observation = {}) {
   const sourceProofs = Array.isArray(observation.sourceProofs)
     ? observation.sourceProofs.filter((proof) => proof && typeof proof === 'object')
@@ -3718,7 +6225,6 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
   const epochProof = observation.epochProof && typeof observation.epochProof === 'object'
     ? observation.epochProof
     : classifyGpuHmrEpochSwapProof({});
-  const outputRank = effectiveProofRank(outputProof);
   const hostProofAccepted = hostPreservationProofUsable(hostPreservationProof);
   const hostRank = hostProofAccepted ? effectiveProofRank(hostPreservationProof) : 0;
   const hostProofDegradedReason =
@@ -3759,8 +6265,13 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
       : null;
   const dispatchProof = observation.dispatchProof && typeof observation.dispatchProof === 'object'
     ? observation.dispatchProof
-    : embeddedDispatchProof ?? classifyGpuHmrDispatchProof({});
+      : embeddedDispatchProof ?? classifyGpuHmrDispatchProof({});
   const dispatchRank = effectiveProofRank(dispatchProof);
+  const visualOutputAuthority = fullRuntimeVisualAuthority(outputProof, dispatchProof);
+  const claimedOutputRank = effectiveProofRank(outputProof);
+  const outputRank = visualOutputAuthority.required && !visualOutputAuthority.accepted
+    ? Math.min(claimedOutputRank, proofStateRank('gpu-hmr-dispatch-safe-proven'))
+    : claimedOutputRank;
   const artifactIdentityProof = fullRuntimeArtifactIdentityProof({
     sourceProof: source.proof,
     artifactTransportProof,
@@ -3845,8 +6356,12 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
       'gpu-hmr-output-oracle-proven',
       outputRank,
       outputProof,
-      outputProof?.degradedState ?? 'gpu-hmr-output-unobserved',
-      outputProof?.degradedReason ?? 'output_oracle_not_collected',
+      visualOutputAuthority.required && !visualOutputAuthority.accepted
+        ? 'gpu-hmr-visual-evidence-missing'
+        : outputProof?.degradedState ?? 'gpu-hmr-output-unobserved',
+      visualOutputAuthority.required && !visualOutputAuthority.accepted
+        ? visualOutputAuthority.reason
+        : outputProof?.degradedReason ?? 'output_oracle_not_collected',
     ),
     ...(artifactIdentityProof.required
       ? [{
@@ -3931,7 +6446,11 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
       dispatchEffectiveRank: dispatchRank,
       dispatchResultState: dispatchProof?.resultState ?? null,
       outputEffectiveRank: outputRank,
+      outputClaimedRank: claimedOutputRank,
       outputResultState: outputProof?.resultState ?? null,
+      visualOutputAuthorityRequired: visualOutputAuthority.required,
+      visualOutputAuthorityProven: visualOutputAuthority.accepted,
+      visualOutputAuthorityFailedGates: visualOutputAuthority.failedGates,
       hostEffectiveRank: hostRank,
       hostResultState: hostPreservationProof?.resultState ?? null,
       originalHostPathRequired,

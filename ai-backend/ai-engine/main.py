@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Mapping, Optional, Union, Tuple
+import hashlib
 import re
 import requests
 import json
@@ -40,6 +41,7 @@ from pydantic import BaseModel
 from analyzer import get_analyzer
 from analyzer import supported_languages
 
+from llm.providers import ProviderSelectionError, get_provider
 from llm.providers import get_provider
 from program_review import assess_program_risk
 from program_manifest_gen import generate_manifest
@@ -413,6 +415,7 @@ class AnalyzeAiRequest(BaseModel):
     focus: Optional[str] = None
     model: Optional[str] = None
     api_key: Optional[str] = None
+    provider: Optional[str] = None
     gpu_arch: Optional[str] = None
 
 
@@ -1431,6 +1434,9 @@ async def analyze_code_ai(req: AnalyzeAiRequest):
     enforce_ai_request_limits(req)
 
     def select_provider_name() -> str | None:
+        explicit = str(req.provider or "").strip().lower()
+        if explicit:
+            return explicit
         if req.api_key:
             model_name = (req.model or '').lower()
             if 'gemini' in model_name:
@@ -1463,6 +1469,16 @@ async def analyze_code_ai(req: AnalyzeAiRequest):
 @app.post("/refactor/split")
 async def refactor_split(req: AnalyzeAiRequest):
     def select_provider_name() -> str | None:
+        explicit = str(req.provider or "").strip().lower()
+        if explicit:
+            return explicit
+        configured = str(
+            os.getenv("SYNTHI_SPLIT_PROVIDER")
+            or os.getenv("SYNTHI_GPU_SPLIT_PROVIDER")
+            or ""
+        ).strip().lower()
+        if configured:
+            return configured
         if req.api_key:
             model_name = (req.model or '').lower()
             if 'gemini' in model_name:
@@ -1602,6 +1618,9 @@ class VerifiedAiRequest(AnalyzeAiRequest):
     auto_repair: bool = True
     session_id: Optional[str] = None
     grounding_spans: Optional[List[dict]] = None
+    require_provider_call: bool = False
+    provider_call_request: Optional[Dict[str, Any]] = None
+    provider_call_request_hash: Optional[str] = None
 
 
 @app.post("/analyze/ai/verified")
@@ -2126,7 +2145,7 @@ from agents.gpu_healer import (  # noqa: E402
 )
 
 
-def _file_map_from_request(req: AnalyzeAiRequest) -> dict[str, str]:
+def _file_map_from_request(req: Union[AnalyzeRequest, AnalyzeAiRequest]) -> dict[str, str]:
     files = {}
     for f in req.files or []:
         path = getattr(f, "path", None) or getattr(f, "name", None) or "input.cpp"
@@ -2134,6 +2153,86 @@ def _file_map_from_request(req: AnalyzeAiRequest) -> dict[str, str]:
     if req.code:
         files.setdefault(req.focus or "input.cpp", req.code)
     return files
+
+
+_SPLIT_ROUTE_CLASSIFICATION_SCHEMA = "synthi.gpu_hmr.split_route_classification.v1"
+_SPLIT_ROUTE_CLASSIFICATION_AUTHORITY = (
+    "static_project_classification_only_not_gpu_hmr_success"
+)
+
+
+def _canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _build_split_route_classification(req: AnalyzeRequest) -> dict[str, Any]:
+    file_map = _file_map_from_request(req)
+    detection = _detect_gpu_project(file_map)
+    source_manifest = [
+        {
+            "path": path,
+            "content_hash": f"sha256:{hashlib.sha256(content.encode('utf-8')).hexdigest()}",
+            "byte_length": len(content.encode("utf-8")),
+        }
+        for path, content in sorted(file_map.items())
+    ]
+    source_manifest_hash = _canonical_sha256(source_manifest)
+    selected_route = "gpu_split" if detection.is_gpu else "host_split"
+    reason_code = (
+        "static_gpu_evidence_detected"
+        if detection.is_gpu
+        else "static_gpu_evidence_not_detected"
+    )
+    receipt_payload = {
+        "schema_version": _SPLIT_ROUTE_CLASSIFICATION_SCHEMA,
+        "proof_authority": _SPLIT_ROUTE_CLASSIFICATION_AUTHORITY,
+        "selected_route": selected_route,
+        "reason_code": reason_code,
+        "source_manifest_hash": source_manifest_hash,
+        "detection": detection.to_dict(),
+    }
+    classification_id = (
+        "gpu-split-route-classification:" + _canonical_sha256(receipt_payload)
+    )
+    return {
+        "schemaVersion": _SPLIT_ROUTE_CLASSIFICATION_SCHEMA,
+        "schema_version": _SPLIT_ROUTE_CLASSIFICATION_SCHEMA,
+        "classificationId": classification_id,
+        "classification_id": classification_id,
+        "proofAuthority": _SPLIT_ROUTE_CLASSIFICATION_AUTHORITY,
+        "proof_authority": _SPLIT_ROUTE_CLASSIFICATION_AUTHORITY,
+        "selectedRoute": selected_route,
+        "selected_route": selected_route,
+        "reasonCode": reason_code,
+        "reason_code": reason_code,
+        "sourceManifestHash": source_manifest_hash,
+        "source_manifest_hash": source_manifest_hash,
+        "sourceFileCount": len(source_manifest),
+        "source_file_count": len(source_manifest),
+        "sourceManifest": source_manifest,
+        "source_manifest": source_manifest,
+        "detection": detection.to_dict(),
+        "acceptedForGpuHmr": False,
+        "accepted_for_gpu_hmr": False,
+        "gpuHmrSuccess": False,
+        "gpu_hmr_success": False,
+        "canSatisfyRuntimeProof": False,
+        "can_satisfy_runtime_proof": False,
+        "canSatisfyDispatchProof": False,
+        "can_satisfy_dispatch_proof": False,
+    }
+
+
+@app.post("/refactor/split/route")
+async def classify_refactor_split_route(req: AnalyzeRequest):
+    """Classify split routing from source evidence without invoking an AI provider."""
+    return _build_split_route_classification(req)
 
 
 _DEVICE_MAPPING_LOCAL_INCLUDE_RE = re.compile(
@@ -2354,6 +2453,16 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
     start_time = time.time()
 
     def select_provider_name() -> str | None:
+        explicit = str(req.provider or "").strip().lower()
+        if explicit:
+            return explicit
+        configured = str(
+            os.getenv("SYNTHI_SPLIT_PROVIDER")
+            or os.getenv("SYNTHI_GPU_SPLIT_PROVIDER")
+            or ""
+        ).strip().lower()
+        if configured:
+            return configured
         if req.api_key:
             model_name = (req.model or "").lower()
             if "gemini" in model_name:
@@ -2361,7 +2470,22 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
             return "chatgpt"
         return None
 
-    provider = get_provider(provider_name=select_provider_name(), use_custom=bool(req.api_key))
+    try:
+        provider = get_provider(
+            provider_name=select_provider_name(),
+            use_custom=bool(req.api_key),
+            require_exact=req.require_provider_call,
+        )
+    except ProviderSelectionError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "GPU split AI provider selection failed",
+                "reason_code": "ai_provider_selection_failed",
+                "provider": select_provider_name() or "gemini",
+                "error_type": type(exc).__name__,
+            },
+        ) from exc
     file_map = _file_map_from_request(req)
     logger.info(
         "[split/gpu] request file context count=%s focus=%s names=%s",
@@ -2376,9 +2500,22 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
     split = None
     split_model = (
         req.model
+        or os.getenv("SYNTHI_SPLIT_MODEL")
         or os.getenv("SYNTHI_GPU_SPLIT_MODEL")
-        or os.getenv("SYNTHI_GEMINI_MODEL")
-        or "gemini-3.5-flash"
+        or getattr(provider, "model_name", None)
+    )
+    if req.require_provider_call and (not req.provider or not req.model):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Request-bound provider proof requires explicit provider and model",
+                "reason_code": "ai_provider_selection_not_explicit",
+            },
+        )
+    request_arch_hint = (
+        req.gpu_arch.strip()
+        if req.gpu_arch and req.gpu_arch.strip().lower() != "auto"
+        else None
     )
     split_prompt = req.prompt
     max_split_attempts = 3
@@ -2396,6 +2533,11 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
                 api_key=req.api_key,
                 files=req.files,
                 focus=req.focus,
+                gpu_arch_hint=request_arch_hint,
+                require_provider_call=req.require_provider_call,
+                provider_call_request=req.provider_call_request,
+                provider_call_request_hash=req.provider_call_request_hash,
+                provider_call_binding_instructions=req.prompt,
             )
         except _KernelSplitterUnsupportedProjectError as e:
             verification = _split_failure_verification(
@@ -2500,8 +2642,11 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
                 if verification.violations
                 else "ai_provider_error"
             )
+            status_code = 504 if rule == "ai_provider_timeout" else 503
+            if rule in {"ai_provider_auth_denied", "ai_provider_account_suspended"}:
+                status_code = 403
             raise HTTPException(
-                status_code=504 if rule == "ai_provider_timeout" else 503,
+                status_code=status_code,
                 detail={
                     "message": "GPU split AI provider failed before verification",
                     "verification": verification.to_dict(),
@@ -2582,11 +2727,6 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
             },
         )
 
-    request_arch_hint = (
-        req.gpu_arch.strip()
-        if req.gpu_arch and req.gpu_arch.strip().lower() != "auto"
-        else None
-    )
     try:
         manifest_raw = normalize_gpu_split_manifest(
             split.manifest if isinstance(split.manifest, dict) else {},
@@ -2628,7 +2768,45 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
     verification = split.verification.to_dict() if split.verification else None
     if split.verification and not split.verification.ok:
         logger.info("[split/gpu] verifier rejected GPU split: %s", verification)
-    split_provider_model = getattr(provider, "last_call_metadata", {}) or {}
+    deterministic_split_report = (
+        split.repair_report.get("deterministicSplit")
+        if isinstance(split.repair_report, Mapping)
+        else None
+    )
+    if (
+        isinstance(deterministic_split_report, Mapping)
+        and deterministic_split_report.get("providerCallUsed") is False
+    ):
+        split_provider_model = {
+            "provider": "deterministic_static_splitter",
+            "requested_model": split_model,
+            "actual_model": "deterministic-static-gpu-splitter",
+            "fallback_model": None,
+            "fallback_used": False,
+            "mode": "split",
+            "request_mode": "split",
+            "provider_model_status": "unknown",
+            "provider_model_alias_resolved_to": None,
+            "provider_shutdown_or_deprecation_detected": False,
+            "model_availability_checked_at": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ",
+                time.gmtime(),
+            ),
+            "model_availability_source": "provider_not_called",
+            "model_availability_check_time_ms": 0.0,
+            "hard_infra_failure": False,
+            "provider_call_used": False,
+        }
+    else:
+        split_provider_model = dict(getattr(provider, "last_call_metadata", {}) or {})
+        provider_receipt = split.provider_call_receipt or {}
+        provider_call_used = (
+            provider_receipt.get("accepted") is True
+            and provider_receipt.get("provider_call_used") is True
+        )
+        split_provider_model["provider_call_used"] = provider_call_used
+        split_provider_model["providerCallUsed"] = provider_call_used
+        split_provider_model["provider_call_receipt_id"] = provider_receipt.get("call_id")
     split_actual_model = split_provider_model.get("actual_model") or split_model
     split_fallback_used = bool(split_provider_model.get("fallback_used"))
     logger.info(
@@ -2662,6 +2840,13 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         "model_fallback_used": split_fallback_used,
         "provider_model": split_provider_model,
         "model_provenance": split_provider_model,
+        "provider_call_used": bool(split_provider_model.get("provider_call_used")),
+        "providerCallUsed": bool(split_provider_model.get("provider_call_used")),
+        "provider_call_required": req.require_provider_call,
+        "provider_call_receipt": split.provider_call_receipt,
+        "provider_call_raw_response": (
+            split.raw_response if req.require_provider_call else None
+        ),
         "model_role": "gpu_split",
         "verified": bool(split.verification.ok if split.verification else True),
         "verification": verification,

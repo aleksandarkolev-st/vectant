@@ -119,6 +119,43 @@ function classifyOpenClPreflight({ libraries, vendorIcds, clinfoProbe, clinfoSum
   };
 }
 
+function preflightBackendEvidence({ libraries, vendorIcds, clinfoPresence, clinfoSummary }) {
+  const evidenceRefs = [
+    'probe:opencl_loader',
+    'probe:opencl_vendor_icd',
+    'probe:opencl_clinfo',
+  ];
+  return {
+    schemaVersion: 'synthi.gpu_hmr.preflight_backend_contract.v1',
+    backend: {
+      value: 'opencl',
+      evidenceRefs,
+    },
+    backendFamily: {
+      value: 'opencl',
+      evidenceRefs,
+    },
+    runtimeCapabilityPreflight: {
+      backend: 'opencl',
+      backendFamily: 'opencl',
+      probe: 'opencl_vendor_icd_preflight',
+      workerContainer: CFG.workerContainer,
+      loaderLibraryCount: libraries.length,
+      vendorIcdCount: vendorIcds.length,
+      clinfoPresent: clinfoPresence.present,
+      clinfoExitCode: clinfoPresence.exitCode,
+      platformCount: clinfoSummary.platformCount,
+      deviceCounts: clinfoSummary.deviceCounts,
+      noShimApplied: true,
+      noVendorIcdSynthesized: true,
+      noSynthesizedRuntime: true,
+      noSymlinkApplied: true,
+      evidenceRefs,
+    },
+    evidenceRefs,
+  };
+}
+
 async function buildProof() {
   const startedAt = new Date().toISOString();
   const started = performance.now();
@@ -206,6 +243,12 @@ async function buildProof() {
       },
       summary: clinfoSummary,
     },
+    backendEvidence: preflightBackendEvidence({
+      libraries,
+      vendorIcds,
+      clinfoPresence,
+      clinfoSummary,
+    }),
     classification: {
       openclAccepted: classification.openclAccepted,
       resultState: classification.resultState,
@@ -228,6 +271,7 @@ async function buildProof() {
       outputOracleRequired: true,
       noShimApplied: true,
       noVendorIcdSynthesized: true,
+      noSynthesizedRuntime: true,
       noSymlinkApplied: true,
     },
   };
@@ -252,6 +296,7 @@ async function writeProof(proof) {
     `unsupported_reasons=${proof.classification.unsupportedReasons.join(',') || 'none'}`,
     `no_shim_applied=${proof.acceptance.noShimApplied}`,
     `no_vendor_icd_synthesized=${proof.acceptance.noVendorIcdSynthesized}`,
+    `no_synthesized_runtime=${proof.acceptance.noSynthesizedRuntime}`,
     `no_symlink_applied=${proof.acceptance.noSymlinkApplied}`,
     '',
   ].join('\n'));

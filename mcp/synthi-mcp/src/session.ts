@@ -1,11 +1,30 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { RTCDataChannel } from "werift";
 import { SignalingClient } from "./signaling.js";
 import { Peer } from "./peer.js";
+import type { RuntimeEvidenceTransportKeyPin } from "./runtime_evidence_transport.js";
+import {
+  GpuParentRuntimeProofAdmissionAuthority,
+  type GpuParentRuntimeProofAdmissionTrustMaterial,
+  type GpuParentRuntimeProofOutputObservation,
+} from "./gpu_parent_runtime_proof_admission_authority.js";
+import {
+  createGpuMcpOutputByteObservationBoundary,
+} from "./gpu_mcp_output_byte_observation_boundary.js";
+import {
+  captureGpuMcpAdmittedOutputBytes,
+  type GpuMcpOutputByteCapture,
+} from "./gpu_mcp_admitted_output_capture.js";
+import type { GpuHmrProofTelemetry } from "./gpu_proof.js";
 import { FrameSink } from "./frames.js";
 import { SessionChannels } from "./channels.js";
+import { projectPublicHmrEvent } from "./hmr.js";
 import { eventLog } from "./events/index.js";
 import type { SessionState as WireSessionState } from "./events/index.js";
+import {
+  projectPublicWorkerDiagnostic,
+  publicWorkerReference,
+} from "./events/public_worker_diagnostic.js";
 import { locateEngine } from "./locate/index.js";
 import { scanForInjection } from "./security/injection.js";
 import { resolvePipelineBudgetMs } from "./protocol/index.js";
@@ -48,6 +67,7 @@ export interface AttachedSession {
   readonly buildLogDC: RTCDataChannel;
   readonly terminalDC: RTCDataChannel;
   readonly compileDC: RTCDataChannel;
+  readonly runtimeEvidenceTransportKeyPin: RuntimeEvidenceTransportKeyPin;
   readonly resolution: { width: number; height: number; dpr?: number } | null;
 }
 
@@ -72,6 +92,8 @@ export interface FrameAdvance {
   observed_at: number;
 }
 
+export type FrameGateEvidenceBinding = Readonly<Record<string, unknown>>;
+
 export interface FrameGateToken {
   token: string;
   session_id: string;
@@ -79,12 +101,16 @@ export interface FrameGateToken {
   ts_ms?: number;
   issued_at_ms: number;
   expires_at_ms: number;
+  readonly evidence_binding?: FrameGateEvidenceBinding;
+  readonly evidence_binding_hash?: string;
 }
 
 export interface FrameGateTokenValidation {
   accepted: boolean;
   reason?: string;
   token?: FrameGateToken;
+  evidence_binding?: FrameGateEvidenceBinding;
+  evidence_binding_hash?: string;
 }
 
 /** Watch window beyond which a stale frame_advance no longer counts as "live".
@@ -92,11 +118,117 @@ export interface FrameGateTokenValidation {
  *  than blocking on a signal that will never arrive. */
 export const FRAME_ADVANCE_FRESHNESS_WINDOW_MS = 10_000;
 export const FRAME_GATE_TOKEN_TTL_MS = 20 * 60_000;
+export const FRAME_GATE_TOKEN_MAX_RETENTION_MS = FRAME_GATE_TOKEN_TTL_MS;
+export const FRAME_GATE_TOKEN_MAX_ENTRIES = 128;
 
 type FrameAdvanceListener = (fa: FrameAdvance) => void;
 
+function cloneJsonEvidenceValue(value: unknown, ancestors: Set<object>): unknown {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new TypeError("evidence_binding numbers must be finite");
+    }
+    return value;
+  }
+  if (typeof value !== "object") {
+    throw new TypeError("evidence_binding must contain only JSON values");
+  }
+  if (ancestors.has(value)) {
+    throw new TypeError("evidence_binding must not contain cycles");
+  }
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const clone: unknown[] = [];
+      for (let index = 0; index < value.length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, index);
+        if (!descriptor) {
+          throw new TypeError("evidence_binding arrays must not be sparse");
+        }
+        if (!("value" in descriptor) || descriptor.enumerable !== true) {
+          throw new TypeError("evidence_binding arrays require enumerable data entries");
+        }
+        clone.push(cloneJsonEvidenceValue(descriptor.value, ancestors));
+      }
+      const allowedArrayKeys = new Set([
+        "length",
+        ...Array.from({ length: value.length }, (_, index) => String(index)),
+      ]);
+      if (Reflect.ownKeys(value).some(
+        (key) => typeof key !== "string" || !allowedArrayKeys.has(key),
+      )) {
+        throw new TypeError("evidence_binding arrays must not contain extra properties");
+      }
+      return Object.freeze(clone);
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new TypeError("evidence_binding objects must be plain JSON objects");
+    }
+    const clone: Record<string, unknown> = {};
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== "string") {
+        throw new TypeError("evidence_binding must not contain symbol keys");
+      }
+      if (key === "__proto__" || key === "prototype" || key === "constructor") {
+        throw new TypeError("evidence_binding contains an unsafe object key");
+      }
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !("value" in descriptor) || descriptor.enumerable !== true) {
+        throw new TypeError("evidence_binding objects require enumerable data properties");
+      }
+      Object.defineProperty(clone, key, {
+        value: cloneJsonEvidenceValue(descriptor.value, ancestors),
+        enumerable: true,
+        configurable: false,
+        writable: false,
+      });
+    }
+    return Object.freeze(clone);
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function cloneEvidenceBinding(
+  binding: Readonly<Record<string, unknown>>
+): FrameGateEvidenceBinding {
+  const cloned = cloneJsonEvidenceValue(binding, new Set());
+  if (cloned === null || typeof cloned !== "object" || Array.isArray(cloned)) {
+    throw new TypeError("evidence_binding must be a structured object");
+  }
+  return cloned as FrameGateEvidenceBinding;
+}
+
+function canonicalStructuredJson(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    const serialized = JSON.stringify(value);
+    if (serialized === undefined) {
+      throw new TypeError("evidence_binding must contain JSON-serializable values");
+    }
+    return serialized;
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => canonicalStructuredJson(entry)).join(",")}]`;
+  }
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalStructuredJson(record[key])}`)
+    .join(",")}}`;
+}
+
+function evidenceBindingHash(binding: FrameGateEvidenceBinding): string {
+  const digest = createHash("sha256")
+    .update(canonicalStructuredJson(binding))
+    .digest("hex");
+  return `sha256:${digest}`;
+}
+
 export interface WarmingProgress {
-  stage: string;
+  stage: "reported" | "unknown";
+  stage_ref?: string;
   stage_progress_pct: number;
   estimated_ready_at?: number;
 }
@@ -126,6 +258,20 @@ function finitePositiveNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
+function nonNegativeFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function publicFrameTimingInterval(raw: Record<string, unknown> | undefined): FrameTimingSnapshot["interval_ms"] {
+  if (raw === undefined) return {};
+  const projected: FrameTimingSnapshot["interval_ms"] = {};
+  for (const key of ["mean", "min", "p50", "p95", "p99", "max"] as const) {
+    const value = nonNegativeFiniteNumber(raw[key]);
+    if (value !== null) projected[key] = value;
+  }
+  return projected;
+}
+
 function parseProducerViewport(msg: Record<string, unknown>): ProducerViewport | null {
   const viewport = msg["viewport"];
   if (viewport && typeof viewport === "object") {
@@ -145,6 +291,15 @@ function parseProducerViewport(msg: Record<string, unknown>): ProducerViewport |
 }
 
 class SessionManager {
+  readonly #gpuMcpOutputByteObservationBoundary =
+    createGpuMcpOutputByteObservationBoundary();
+  readonly #gpuParentRuntimeProofAdmissionAuthority =
+    new GpuParentRuntimeProofAdmissionAuthority({
+      outputByteConsumerCapability:
+        this.#gpuMcpOutputByteObservationBoundary.consumer,
+    });
+  #gpuParentRuntimeProofAdmissionTrustMaterialPromise:
+    Promise<GpuParentRuntimeProofAdmissionTrustMaterial> | null = null;
   private attached: AttachedSession | null = null;
   private state: SessionState = "detached";
   private attachPromise: Promise<AttachedSession> | null = null;
@@ -159,6 +314,7 @@ class SessionManager {
   private lastFrameAdvance: FrameAdvance | null = null;
   private frameAdvanceListeners = new Set<FrameAdvanceListener>();
   private frameGateTokens = new Map<string, FrameGateToken>();
+  private gpuProofTrustInvalidated = false;
   private presenceCounts: { humans: number; agents: number } = { humans: 0, agents: 1 };
   private warmingProgress: WarmingProgress | null = null;
   private frameTiming: FrameTimingSnapshot | null = null;
@@ -173,6 +329,15 @@ class SessionManager {
 
   getWireStateTs(): number {
     return this.wireStateTs;
+  }
+
+  getGpuParentRuntimeProofAdmissionTrustMaterial():
+    Promise<GpuParentRuntimeProofAdmissionTrustMaterial> {
+    if (this.#gpuParentRuntimeProofAdmissionTrustMaterialPromise === null) {
+      this.#gpuParentRuntimeProofAdmissionTrustMaterialPromise =
+        this.#gpuParentRuntimeProofAdmissionAuthority.trustMaterial();
+    }
+    return this.#gpuParentRuntimeProofAdmissionTrustMaterialPromise;
   }
 
   isUnsafeMode(): boolean {
@@ -226,6 +391,7 @@ class SessionManager {
     }
     this.warmingProgress = {
       stage: progress.stage,
+      ...(progress.stage_ref !== undefined ? { stage_ref: progress.stage_ref } : {}),
       stage_progress_pct: Math.max(0, Math.min(100, Math.floor(progress.stage_progress_pct))),
       ...(progress.estimated_ready_at !== undefined
         ? { estimated_ready_at: progress.estimated_ready_at }
@@ -340,25 +506,36 @@ class SessionManager {
    */
   async awaitFrameAdvanceAtOrAfter(
     minTsMs: number,
-    timeoutMs: number
+    timeoutMs: number,
+    signal?: AbortSignal,
   ): Promise<FrameAdvance | null> {
+    if (signal?.aborted) return null;
     if (!this.frameSeqGateEnabled()) return null;
     if (this.lastFrameAdvance && this.lastFrameAdvance.ts_ms >= minTsMs) {
       return this.lastFrameAdvance;
     }
     return new Promise<FrameAdvance | null>((resolve) => {
       let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
       const settle = (value: FrameAdvance | null): void => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        if (timer !== null) clearTimeout(timer);
         unsub();
+        signal?.removeEventListener("abort", onAbort);
         resolve(value);
       };
       const unsub = this.onFrameAdvance((fa) => {
         if (fa.ts_ms >= minTsMs) settle(fa);
       });
-      const timer = setTimeout(() => settle(null), timeoutMs);
+      const onAbort = (): void => settle(null);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      timer = setTimeout(() => settle(null), timeoutMs);
+      timer.unref?.();
     });
   }
 
@@ -366,12 +543,25 @@ class SessionManager {
     session_id: string;
     frame_seq?: number;
     ts_ms?: number;
+    evidence_binding?: Readonly<Record<string, unknown>>;
     ttl_ms?: number;
     now?: number;
   }): FrameGateToken {
     const now = input.now ?? Date.now();
-    const ttlMs = Math.max(1, input.ttl_ms ?? FRAME_GATE_TOKEN_TTL_MS);
+    if (input.evidence_binding !== undefined && this.gpuProofTrustInvalidated) {
+      throw new Error("frame_gate_gpu_proof_trust_invalidated");
+    }
+    const requestedTtlMs = input.ttl_ms ?? FRAME_GATE_TOKEN_TTL_MS;
+    const ttlMs = Number.isFinite(requestedTtlMs)
+      ? Math.min(
+          FRAME_GATE_TOKEN_MAX_RETENTION_MS,
+          Math.max(1, requestedTtlMs),
+        )
+      : FRAME_GATE_TOKEN_TTL_MS;
     this.pruneFrameGateTokens(now);
+    const evidenceBinding = input.evidence_binding === undefined
+      ? undefined
+      : cloneEvidenceBinding(input.evidence_binding);
     const token: FrameGateToken = {
       token: `frame-gate:${randomUUID()}`,
       session_id: input.session_id,
@@ -379,8 +569,15 @@ class SessionManager {
       ...(input.ts_ms !== undefined ? { ts_ms: input.ts_ms } : {}),
       issued_at_ms: now,
       expires_at_ms: now + ttlMs,
+      ...(evidenceBinding !== undefined
+        ? {
+            evidence_binding: evidenceBinding,
+            evidence_binding_hash: evidenceBindingHash(evidenceBinding),
+          }
+        : {}),
     };
     this.frameGateTokens.set(token.token, token);
+    this.pruneFrameGateTokens(now);
     return { ...token };
   }
 
@@ -409,13 +606,47 @@ class SessionManager {
       return { accepted: false, reason: "frame_gate_token_timestamp_mismatch" };
     }
     this.frameGateTokens.delete(input.token);
-    return { accepted: true, token: { ...token } };
+    const consumedToken = { ...token };
+    return {
+      accepted: true,
+      token: consumedToken,
+      ...(consumedToken.evidence_binding !== undefined
+        ? { evidence_binding: consumedToken.evidence_binding }
+        : {}),
+      ...(consumedToken.evidence_binding_hash !== undefined
+        ? { evidence_binding_hash: consumedToken.evidence_binding_hash }
+        : {}),
+    };
   }
 
   private pruneFrameGateTokens(now: number = Date.now()): void {
     for (const [token, gate] of this.frameGateTokens) {
       if (gate.expires_at_ms < now) this.frameGateTokens.delete(token);
     }
+    while (this.frameGateTokens.size > FRAME_GATE_TOKEN_MAX_ENTRIES) {
+      const oldestToken = this.frameGateTokens.keys().next().value as string | undefined;
+      if (oldestToken === undefined) break;
+      this.frameGateTokens.delete(oldestToken);
+    }
+  }
+
+  private revokeFrameGateTokens(): void {
+    this.frameGateTokens.clear();
+  }
+
+  private invalidateGpuProofBoundFrameTokens(): void {
+    this.gpuProofTrustInvalidated = true;
+    this.revokeFrameGateTokens();
+  }
+
+  private bindFrameGateTokenRevocation(
+    hmr: Pick<SessionChannels["hmr"], "onGpuProofTrustInvalidated">,
+  ): () => void {
+    this.gpuProofTrustInvalidated = false;
+    this.revokeFrameGateTokens();
+    return hmr.onGpuProofTrustInvalidated(() => {
+      this.invalidateGpuProofBoundFrameTokens();
+    });
   }
 
   get(): AttachedSession | null {
@@ -427,6 +658,35 @@ class SessionManager {
       throw new Error("not_attached");
     }
     return this.attached;
+  }
+
+  async captureGpuProofOutputBytes(
+    proof: GpuHmrProofTelemetry,
+    captureOutputBytes: GpuMcpOutputByteCapture,
+  ): Promise<GpuParentRuntimeProofOutputObservation> {
+    const attached = this.require();
+    if (!attached.channels.hmr.isRetainedGpuProof(proof)) {
+      throw new Error("gpu_output_capture_proof_not_retained");
+    }
+    const admissionReceipt =
+      proof.parentControlVerificationMaterial?.mcpAdmissionReceipt;
+    if (admissionReceipt === undefined) {
+      throw new Error("gpu_output_capture_admission_receipt_missing");
+    }
+    if (admissionReceipt.transportSessionId !== attached.sessionId) {
+      throw new Error("gpu_output_capture_transport_session_mismatch");
+    }
+    return captureGpuMcpAdmittedOutputBytes(
+      this.#gpuParentRuntimeProofAdmissionAuthority,
+      this.#gpuMcpOutputByteObservationBoundary.producer,
+      admissionReceipt,
+      captureOutputBytes,
+      () => (
+        this.state === "attached"
+        && this.attached === attached
+        && attached.channels.hmr.isRetainedGpuProof(proof)
+      ),
+    );
   }
 
   async attach(opts: AttachOptions): Promise<AttachedSession> {
@@ -550,10 +810,16 @@ class SessionManager {
       dcWaiter("compileDC", peer.ready.compileDC),
     ]) as [void, RTCDataChannel, RTCDataChannel, RTCDataChannel];
 
-    const videoTrack = await peer.ready.videoTrack;
-    const frames = new FrameSink(videoTrack);
-
-    const channels = new SessionChannels(terminalDC, buildLogDC, compileDC);
+    const channels = new SessionChannels(terminalDC, buildLogDC, compileDC, {
+      keyPin: peer.runtimeEvidenceTransportKeyPin,
+      router: peer.runtimeEvidenceTransportChannelRouter,
+      transportSessionId: opts.sessionId,
+      admissionReceiptSigner:
+        this.#gpuParentRuntimeProofAdmissionAuthority.signer(),
+    });
+    const frames = new FrameSink();
+    const unsubFrameGateTokenRevocation = this.bindFrameGateTokenRevocation(channels.hmr);
+    this.unsubscribers.push(unsubFrameGateTokenRevocation);
 
     const attached: AttachedSession = {
       sessionId: opts.sessionId,
@@ -565,7 +831,10 @@ class SessionManager {
       buildLogDC,
       terminalDC,
       compileDC,
-      resolution: frames.dimensions(),
+      runtimeEvidenceTransportKeyPin: peer.runtimeEvidenceTransportKeyPin,
+      get resolution() {
+        return frames.dimensions();
+      },
     };
     this.attached = attached;
     this.state = "attached";
@@ -573,12 +842,24 @@ class SessionManager {
     this.lastActivityAt = this.attachedAt;
     this.setWireState("running");
 
+    void peer.ready.videoTrack.then(
+      (track) => {
+        if (this.attached !== attached || this.state !== "attached") return;
+        if (!frames.attachTrack(track)) {
+          dbg("ready.videoTrack ignored because the frame sink is no longer attachable");
+        }
+      },
+      (error) => {
+        const cause = error instanceof Error ? error.message : String(error);
+        dbg(`ready.videoTrack unavailable: ${cause}`);
+      },
+    );
+
     // Wire event-log taps.
     const unsubHmr = channels.hmr.onMessage((msg) => {
       const status = typeof msg["status"] === "string" ? (msg["status"] as string) : undefined;
       const evType = typeof msg["event"] === "string" ? (msg["event"] as string) : undefined;
       const msgType = typeof msg["type"] === "string" ? (msg["type"] as string) : undefined;
-      const label = status ?? evType ?? msgType ?? "unknown";
 
       if (msgType === "run-gui-start") {
         const viewport = parseProducerViewport(msg);
@@ -615,20 +896,30 @@ class SessionManager {
           ? (rawState as typeof KNOWN_STATES[number])
           : "unknown";
         const warming = msg["warming_progress"] as Record<string, unknown> | undefined;
+        let publicWarming: WarmingProgress | null = null;
         if (warming && typeof warming === "object") {
-          this.setWarmingProgress({
-            stage: typeof warming["stage"] === "string" ? (warming["stage"] as string) : "unknown",
-            stage_progress_pct: typeof warming["stage_progress_pct"] === "number"
-              ? (warming["stage_progress_pct"] as number)
-              : 0,
-            ...(typeof warming["estimated_ready_at"] === "number"
-              ? { estimated_ready_at: warming["estimated_ready_at"] as number }
+          const rawStage = typeof warming["stage"] === "string" && warming["stage"].length > 0
+            ? warming["stage"]
+            : null;
+          const rawProgress = warming["stage_progress_pct"];
+          const rawEstimate = warming["estimated_ready_at"];
+          publicWarming = {
+            stage: rawStage === null ? "unknown" : "reported",
+            ...(rawStage !== null
+              ? { stage_ref: publicWorkerReference("stage", rawStage) }
               : {}),
-          });
+            stage_progress_pct: typeof rawProgress === "number" && Number.isFinite(rawProgress)
+              ? rawProgress
+              : 0,
+            ...(typeof rawEstimate === "number" && Number.isFinite(rawEstimate) && rawEstimate >= 0
+              ? { estimated_ready_at: rawEstimate }
+              : {}),
+          };
+          this.setWarmingProgress(publicWarming);
         } else {
           this.setWarmingProgress(null);
         }
-        this.setWireState(mapped, warming ? { warming_progress: warming } : undefined);
+        this.setWireState(mapped, publicWarming ? { warming_progress: publicWarming } : undefined);
         return;
       }
 
@@ -655,7 +946,9 @@ class SessionManager {
         eventLog.push({
           kind: "security",
           code: mapped,
-          ...(detail !== undefined ? { detail } : {}),
+          ...(detail !== undefined
+            ? { detail: projectPublicWorkerDiagnostic("security", msg) }
+            : {}),
         });
         return;
       }
@@ -671,15 +964,14 @@ class SessionManager {
       // snapshot synchronously.
       if (msgType === "frame-timing") {
         const interval = msg["interval_ms"] as Record<string, unknown> | undefined;
-        const sampleCount = typeof msg["sample_count"] === "number" ? (msg["sample_count"] as number) : 0;
-        const totalFrames = typeof msg["total_frames"] === "number" ? (msg["total_frames"] as number) : 0;
-        const budget = typeof msg["pipeline_budget_estimate_ms"] === "number"
-          ? (msg["pipeline_budget_estimate_ms"] as number)
-          : 0;
+        const publicInterval = publicFrameTimingInterval(interval);
+        const sampleCount = nonNegativeFiniteNumber(msg["sample_count"]) ?? 0;
+        const totalFrames = nonNegativeFiniteNumber(msg["total_frames"]) ?? 0;
+        const budget = nonNegativeFiniteNumber(msg["pipeline_budget_estimate_ms"]) ?? 0;
         this.setFrameTimingSnapshot({
           total_frames: totalFrames,
           sample_count: sampleCount,
-          interval_ms: (interval as { mean?: number; min?: number; p50?: number; p95?: number; p99?: number; max?: number }) ?? {},
+          interval_ms: publicInterval,
           pipeline_budget_estimate_ms: budget,
         });
         eventLog.push({
@@ -690,7 +982,7 @@ class SessionManager {
             kind: "frame_timing",
             total_frames: totalFrames,
             sample_count: sampleCount,
-            ...(interval !== undefined ? { interval_ms: interval } : {}),
+            ...(Object.keys(publicInterval).length > 0 ? { interval_ms: publicInterval } : {}),
             pipeline_budget_estimate_ms: budget,
           },
         });
@@ -714,13 +1006,16 @@ class SessionManager {
         else if (rawKind === "key" || rawKind === "keyboard") mapped = "keyboard";
         else mapped = "other";
         const peerId = typeof msg["peer_id"] === "string" ? (msg["peer_id"] as string) : undefined;
-        const ts = typeof msg["ts_ms"] === "number" ? (msg["ts_ms"] as number) : Date.now();
+        const ts = nonNegativeFiniteNumber(msg["ts_ms"]) ?? Date.now();
         const detail = msg["detail"] as Record<string, unknown> | undefined;
+        const peerRef = peerId === undefined ? undefined : publicWorkerReference("peer", peerId);
         humanActions.record({
           kind: mapped,
           ts,
-          ...(peerId !== undefined ? { source_peer_id: peerId } : {}),
-          ...(detail !== undefined ? { detail } : {}),
+          ...(peerRef !== undefined ? { source_peer_id: peerRef } : {}),
+          ...(detail !== undefined
+            ? { detail: projectPublicWorkerDiagnostic("human_action", msg) }
+            : {}),
         });
         // Also mirror into the event log as an `input` event with
         // source-attribution, so event-log consumers see it without
@@ -730,7 +1025,7 @@ class SessionManager {
           action: "human:" + mapped,
           payload: {
             kind: mapped,
-            ...(peerId !== undefined ? { peer_id: peerId } : {}),
+            ...(peerRef !== undefined ? { peer_ref: peerRef } : {}),
             source: "human",
           },
         });
@@ -746,7 +1041,7 @@ class SessionManager {
         eventLog.push({
           kind: "console",
           level: "info",
-          message: `[guest_registered] pid=${msg["root_pid"]} binary=${msg["binary_path"]}`,
+          message: "[guest_registered] worker reported guest registration",
           source: "worker_build_log",
         });
         return;
@@ -767,7 +1062,7 @@ class SessionManager {
           eventLog.push({
             kind: "input",
             action: "ack",
-            payload: { dispatch_id: did, accepted, ...(reason !== undefined ? { reason } : {}) },
+            payload: projectPublicWorkerDiagnostic("input_ack", msg),
           });
         }
         return;
@@ -784,9 +1079,13 @@ class SessionManager {
             op === "release" ? "released" :
             op === "force-release" ? "force_released" :
             "queued",
-          ...(leaseId !== undefined ? { lease_id: leaseId } : {}),
-          ...(owner !== undefined ? { owner } : {}),
-          payload: msg,
+          ...(leaseId !== undefined
+            ? { lease_id: publicWorkerReference("lease", leaseId) }
+            : {}),
+          ...(owner !== undefined
+            ? { owner: publicWorkerReference("owner", owner) }
+            : {}),
+          payload: projectPublicWorkerDiagnostic("input_lease_result", msg),
         });
         return;
       }
@@ -795,7 +1094,7 @@ class SessionManager {
         eventLog.push({
           kind: "input",
           action: "rejected",
-          payload: msg,
+          payload: projectPublicWorkerDiagnostic("input_rejected", msg),
         });
         return;
       }
@@ -830,18 +1129,14 @@ class SessionManager {
         void snapshotFrame();
       }
 
-      // Only tap terminal events to the log — intermediate ones flood the
-      // ring. Classification happens in the normalizer; we mirror a short
-      // label for observability without re-parsing.
-      const isTerminal = status === "applied" || status === "rejected" ||
-        status === "compile-error" || status === "full-reload-required" ||
-        status === "state-migrated" || evType === "Promoted" || evType === "RolledBack" ||
-        evType === "Discarded";
+      // Keep HMR observability compact. Raw producer fields remain transient
+      // for protocol handling and never enter the retained event log.
+      const publicHmrEvent = projectPublicHmrEvent(msg);
       eventLog.push({
         kind: "hmr",
-        status: isTerminal ? (label as "applied") : "intermediate",
-        source: msgType ?? "build-log",
-        raw: msg,
+        status: publicHmrEvent.status,
+        source: publicHmrEvent.source,
+        diagnostic: publicHmrEvent.diagnostic,
       });
 
       // Structural-change verdict on every `applied` / `Promoted` —
@@ -889,7 +1184,15 @@ class SessionManager {
             eventLog.push({
               kind: "security",
               code: "injection_suspected",
-              detail: { matches, source: "build-log" },
+              detail: {
+                schemaVersion: "synthi.worker.public_injection_diagnostic.v1",
+                proofAuthority: "injection_diagnostic_only_not_gpu_hmr_acceptance",
+                acceptedForGpuHmr: false,
+                gpuHmrSuccess: false,
+                source: "worker_hmr_wire",
+                matchCount: matches.length,
+                matchLabels: [...new Set(matches.map((match) => match.label))].sort(),
+              },
             });
           }
         }
@@ -915,6 +1218,7 @@ class SessionManager {
   }
 
   async close(): Promise<void> {
+    this.invalidateGpuProofBoundFrameTokens();
     if (this.state === "closed") return;
     this.state = "closed";
     this.setWireState("terminated");
@@ -971,7 +1275,8 @@ class SessionManager {
     this.lastActivityAt = Date.now();
     this.lastFrameAdvance = null;
     this.frameAdvanceListeners.clear();
-    this.frameGateTokens.clear();
+    this.gpuProofTrustInvalidated = false;
+    this.revokeFrameGateTokens();
     this.presenceCounts = { humans: 0, agents: 1 };
     for (const unsub of this.unsubscribers) {
       try { unsub(); } catch { /* ignored */ }

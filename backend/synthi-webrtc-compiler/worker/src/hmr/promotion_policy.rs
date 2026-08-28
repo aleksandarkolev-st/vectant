@@ -169,7 +169,10 @@ mod tests {
             capability_tier: 2,
             slot: BuildSlot::Core,
             artifact_path: "/tmp/test.so".into(),
-            artifact_hash: "hash1".into(),
+            artifact_hash:
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .into(),
+            artifacts: None,
             toolchain_fingerprint: String::new(),
             abi_version: "1.0".into(),
             state_schema_hash: String::new(),
@@ -190,7 +193,7 @@ mod tests {
             boundary_map_version: None,
             provenance_id: None,
         };
-        let mut c = Candidate::new(manifest, 1, decision, StateStrategy::Preserve);
+        let mut c = Candidate::new(manifest, 1, decision, StateStrategy::Preserve).unwrap();
         c.begin_load();
         c.begin_health_check();
         c.record_health(HealthCheckResult::Healthy { latency_ms });
@@ -267,7 +270,10 @@ mod tests {
             capability_tier: 2,
             slot: BuildSlot::Core,
             artifact_path: "/tmp/test.so".into(),
-            artifact_hash: "hash1".into(),
+            artifact_hash:
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .into(),
+            artifacts: None,
             toolchain_fingerprint: String::new(),
             abi_version: "1.0".into(),
             state_schema_hash: String::new(),
@@ -293,7 +299,8 @@ mod tests {
             1,
             ReloadDecision::WarmReload,
             StateStrategy::Preserve,
-        );
+        )
+        .unwrap();
         match evaluate_promotion(&c, &PromotionPolicy::default(), 400) {
             PromotionVerdict::Reject { reason } => {
                 assert!(reason.contains("Built"));

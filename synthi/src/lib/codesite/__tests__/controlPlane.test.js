@@ -3,12 +3,12 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   canonicalDojoProofPayload,
   createEd25519DojoProofSigner,
   generateEd25519DojoProofKeyPair,
-} from 'C:/Users/polek/Desktop/vectant-ade/mcp/synthi-mcp/dist/dojo/proof/signing.js';
+} from '../../../../../mcp/synthi-mcp/src/dojo/proof/signing.ts';
 
 const { prisma } = vi.hoisted(() => ({
   prisma: {
@@ -85,6 +85,9 @@ const { prisma } = vi.hoisted(() => ({
       count: vi.fn(),
       create: vi.fn(),
       findFirst: vi.fn(),
+      findMany: vi.fn(),
+    },
+    codeSiteFleetNotam: {
       findMany: vi.fn(),
     },
     codeSitePolicyDecision: {
@@ -164,6 +167,7 @@ import {
   commitTransaction,
   acknowledgeInboxItem,
   acknowledgeInboxItemForAgent,
+  answerProjectQuestion,
   collisionPredict,
   applyRouteRevision,
   createAgentSession,
@@ -192,6 +196,7 @@ import {
   getRelevantAgentContext,
   getAgentSharedKnowledge,
   listProjectKnowledge,
+  listProjectKnowledgePage,
   getSourceStateSince,
   openTransaction,
   preflightCodeSiteFsWrite,
@@ -219,6 +224,8 @@ import {
   reviewDocument,
   reviewRouteRevision,
   shadowMergeSimulate,
+  submitAgentQuestionFeedback,
+  submitProjectQuestionFeedback,
   updateZonePolicy,
   validateTransaction,
 } from '../controlPlane.js';
@@ -290,8 +297,8 @@ function agentAuthoritySession(overrides = {}) {
     agentProvider: 'custom-provider',
     status: 'attached',
     capabilitiesJson: JSON.stringify(['codesite.context.read', 'codesite.knowledge.read']),
-    agentAccessTokenExpiresAt: new Date(Date.now() + 60_000),
-    lastHeartbeatAt: new Date(Date.now() - 1_000),
+    agentAccessTokenExpiresAt: new Date(AGENT_AUTHORITY_NOW.getTime() + 60_000),
+    lastHeartbeatAt: new Date(AGENT_AUTHORITY_NOW.getTime() - 1_000),
     endedAt: null,
     project: {
       id: 'project-authority-1',
@@ -3605,6 +3612,79 @@ describe('CodeSite control plane transaction validation', () => {
       expect(JSON.stringify(items)).not.toMatch(/private-knowledge|providerSessionRef|rawPrompt/i);
     });
 
+    it('applies shared-knowledge path and semantic filters in the database query', async () => {
+      const session = bindKnowledgeAuthority({ id: 'consumer-agent' });
+      prisma.codeSiteKnowledgeItem.findMany.mockResolvedValue([knowledgeRow()]);
+      prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([]);
+      prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([]);
+      prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([]);
+
+      await getAgentSharedKnowledge('acme', session.id, AGENT_AUTHORITY_TOKEN, {
+        path: 'src/rotation/Spin.cpp',
+        symbol: 'Spin::advance',
+        contract: 'rotation.completed@v2',
+        workstream_id: 'workstream-rotation',
+      });
+
+      const knowledgeQuery = prisma.codeSiteKnowledgeItem.findMany.mock.calls
+        .map(([args]) => args)
+        .find((args) => args?.include?.references);
+      expect(knowledgeQuery.where.AND).toEqual(expect.arrayContaining([
+        { references: { some: { refType: 'path', refKey: { in: ['src/rotation/Spin.cpp'] } } } },
+        { references: { some: { refType: 'symbol', refKey: { in: ['Spin::advance'] } } } },
+        { references: { some: { refType: 'contract', refKey: { in: ['rotation.completed@v2'] } } } },
+        { references: { some: { refType: 'workstream', refKey: { in: ['workstream-rotation'] } } } },
+      ]));
+    });
+
+    it('continues shared-knowledge scans beyond a full page until relevant rows are found', async () => {
+      const session = bindKnowledgeAuthority({
+        id: 'consumer-agent',
+        subscriptionsJson: JSON.stringify(['contract:rotation-event.v2']),
+      });
+      const unrelated = knowledgeRow({
+        id: 'unrelated-page-one',
+        createdByAgentSessionId: 'producer-agent',
+        createdByUserId: 'producer-user',
+        scopeJson: JSON.stringify({
+          visibility: 'project',
+          references: {
+            paths: ['src/unrelated.js'], symbols: [], contracts: [], runtimeSessionIds: [],
+            agentSessionIds: [], workstreamIds: [], transactionIds: [],
+          },
+          tags: [],
+        }),
+      });
+      const relevant = knowledgeRow({
+        id: 'relevant-page-two',
+        createdByAgentSessionId: 'producer-agent',
+        createdByUserId: 'producer-user',
+      });
+      let knowledgePage = 0;
+      prisma.codeSiteKnowledgeItem.findMany.mockImplementation(async ({ include } = {}) => {
+        if (!include?.references) return [];
+        knowledgePage += 1;
+        if (knowledgePage === 1) return [unrelated];
+        if (knowledgePage === 2) return [relevant];
+        return [];
+      });
+      prisma.codeSiteAgentInboxItem.findMany.mockResolvedValue([]);
+      prisma.codeSiteExecutionPlan.findMany.mockResolvedValue([]);
+      prisma.codeSiteMutationTransaction.findMany.mockResolvedValue([]);
+
+      const items = await getAgentSharedKnowledge('acme', session.id, AGENT_AUTHORITY_TOKEN, { limit: 1 });
+
+      expect(items.map((item) => item.id)).toEqual(['relevant-page-two']);
+      const knowledgeCalls = prisma.codeSiteKnowledgeItem.findMany.mock.calls
+        .map(([args]) => args)
+        .filter((args) => args?.include?.references);
+      expect(knowledgeCalls).toHaveLength(2);
+      expect(knowledgeCalls.every((args) => args.take === 1)).toBe(true);
+      expect(knowledgeCalls[1].where.AND).toEqual(expect.arrayContaining([
+        expect.objectContaining({ OR: expect.any(Array) }),
+      ]));
+    });
+
     it('hydrates relevant discoveries into fresh agent and resume context', async () => {
       const session = bindKnowledgeAuthority({
         id: 'consumer-agent',
@@ -3730,6 +3810,185 @@ describe('CodeSite control plane transaction validation', () => {
       ]);
       const items = await listProjectKnowledge('acme', 'project-1', {}, { userId: 'user-1' });
       expect(items.map((item) => item.id)).toEqual(['knowledge-1']);
+    });
+
+    it('fills a human knowledge page past hidden rows before returning a cursor', async () => {
+      const hidden = knowledgeRow({
+        id: 'private-newest',
+        createdByUserId: 'user-2',
+        updatedAt: new Date('2026-08-22T04:03:00.000Z'),
+        redactionClass: 'owner_private',
+        scopeJson: JSON.stringify({
+          visibility: 'owner_private',
+          references: JSON.parse(knowledgeRow().scopeJson).references,
+          tags: [],
+        }),
+      });
+      const visible = knowledgeRow({
+        id: 'project-after-private',
+        updatedAt: new Date('2026-08-22T04:02:00.000Z'),
+      });
+      prisma.codeSiteKnowledgeItem.findMany
+        .mockResolvedValueOnce([hidden, visible])
+        .mockResolvedValueOnce([visible]);
+
+      const page = await listProjectKnowledgePage(
+        'acme',
+        'project-1',
+        { kind: 'discovery', limit: 1 },
+        { userId: 'user-1' },
+      );
+
+      expect(page.knowledge.map((item) => item.id)).toEqual(['project-after-private']);
+      expect(page).not.toHaveProperty('nextCursor');
+      expect(prisma.codeSiteKnowledgeItem.findMany).toHaveBeenCalledTimes(2);
+      expect(prisma.codeSiteKnowledgeItem.findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+        take: 2,
+        where: expect.objectContaining({
+          AND: expect.arrayContaining([
+            expect.objectContaining({
+              OR: expect.arrayContaining([
+                { updatedAt: { lt: hidden.updatedAt } },
+                { updatedAt: hidden.updatedAt, id: { lt: hidden.id } },
+              ]),
+            }),
+          ]),
+        }),
+      }));
+    });
+
+    it('pages project knowledge with a stable updated-at and id cursor', async () => {
+      const newest = knowledgeRow({
+        id: 'knowledge-newest',
+        updatedAt: new Date('2026-08-22T04:02:00.000Z'),
+      });
+      const older = knowledgeRow({
+        id: 'knowledge-older',
+        updatedAt: new Date('2026-08-22T04:01:00.000Z'),
+      });
+      prisma.codeSiteKnowledgeItem.findMany.mockResolvedValueOnce([newest, older]);
+
+      const firstPage = await listProjectKnowledgePage(
+        'acme',
+        'project-1',
+        { kind: 'discovery', limit: 1 },
+        { userId: 'user-1' },
+      );
+      expect(firstPage.knowledge.map((item) => item.id)).toEqual(['knowledge-newest']);
+      expect(firstPage.nextCursor).toEqual(expect.any(String));
+
+      prisma.codeSiteKnowledgeItem.findMany.mockResolvedValueOnce([older]);
+      const secondPage = await listProjectKnowledgePage(
+        'acme',
+        'project-1',
+        { kind: 'discovery', limit: 1, cursor: firstPage.nextCursor },
+        { userId: 'user-1' },
+      );
+      expect(secondPage).toEqual({ knowledge: [expect.objectContaining({ id: 'knowledge-older' })] });
+      expect(prisma.codeSiteKnowledgeItem.findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+        orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+        take: 2,
+        where: expect.objectContaining({
+          AND: expect.arrayContaining([
+            expect.objectContaining({ projectId: 'project-1' }),
+            expect.objectContaining({ OR: expect.any(Array) }),
+          ]),
+        }),
+      }));
+    });
+
+    it.each(['owner_private', 'restricted'])('does not let a project writer answer a %s question they cannot view', async (visibility) => {
+      const question = knowledgeRow({
+        id: `${visibility}-question`,
+        kind: 'agent_question',
+        status: 'open',
+        createdByUserId: 'user-2',
+        ownerUserId: 'user-2',
+        createdByAgentSessionId: 'agent-2',
+        redactionClass: visibility === 'owner_private' ? 'owner_private' : 'project_fact',
+        scopeJson: JSON.stringify({
+          visibility,
+          references: JSON.parse(knowledgeRow().scopeJson).references,
+          tags: [],
+        }),
+      });
+      prisma.codeSiteKnowledgeItem.findFirst.mockResolvedValue(question);
+
+      await expect(answerProjectQuestion(
+        'acme',
+        'project-1',
+        question.id,
+        { answer: 'Private answer' },
+        { userId: 'reviewer-1' },
+      )).rejects.toMatchObject({ status: 404, code: 'knowledge_question_not_found' });
+      expect(prisma.codeSiteKnowledgeItem.update).not.toHaveBeenCalled();
+      expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+    });
+
+    it.each(['owner_private', 'restricted'])('does not let a project writer review an inaccessible %s answer', async (visibility) => {
+      const question = knowledgeRow({
+        id: `${visibility}-answered-question`,
+        kind: 'agent_question',
+        status: 'answered',
+        createdByUserId: 'user-2',
+        ownerUserId: 'user-2',
+        createdByAgentSessionId: 'agent-2',
+        redactionClass: visibility === 'owner_private' ? 'owner_private' : 'project_fact',
+        scopeJson: JSON.stringify({
+          visibility,
+          references: JSON.parse(knowledgeRow().scopeJson).references,
+          tags: [],
+        }),
+      });
+      prisma.codeSiteKnowledgeItem.findFirst.mockResolvedValue(question);
+
+      await expect(submitProjectQuestionFeedback(
+        'acme',
+        'project-1',
+        question.id,
+        { verdict: 'useful' },
+        { userId: 'reviewer-1' },
+      )).rejects.toMatchObject({ status: 404, code: 'knowledge_question_not_found' });
+      expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+    });
+
+    it('does not let a human answerer review their own answer', async () => {
+      const question = knowledgeRow({
+        id: 'human-self-reviewed-question',
+        kind: 'agent_question',
+        status: 'answered',
+        payloadJson: JSON.stringify({ answeredByUserId: 'reviewer-1' }),
+      });
+      prisma.codeSiteKnowledgeItem.findFirst.mockResolvedValue(question);
+
+      await expect(submitProjectQuestionFeedback(
+        'acme',
+        'project-1',
+        question.id,
+        { verdict: 'useful' },
+        { userId: 'reviewer-1' },
+      )).rejects.toMatchObject({ status: 403, code: 'knowledge_feedback_self_review_forbidden' });
+      expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+    });
+
+    it('does not let an agent answerer review their own answer', async () => {
+      const session = bindKnowledgeAuthority();
+      const question = knowledgeRow({
+        id: 'agent-self-reviewed-question',
+        kind: 'agent_question',
+        status: 'answered',
+        payloadJson: JSON.stringify({ answeredByAgentSessionId: session.id }),
+      });
+      prisma.codeSiteKnowledgeItem.findFirst.mockResolvedValue(question);
+
+      await expect(submitAgentQuestionFeedback(
+        'acme',
+        session.id,
+        question.id,
+        AGENT_AUTHORITY_TOKEN,
+        { verdict: 'useful' },
+      )).rejects.toMatchObject({ status: 403, code: 'knowledge_feedback_self_review_forbidden' });
+      expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
     });
   });
 
@@ -8852,6 +9111,7 @@ describe('CodeSite control plane transaction validation', () => {
       createdAt: new Date('2026-06-29T23:12:00.000Z'),
       promotedAt: new Date('2026-06-29T23:13:00.000Z'),
     }]);
+    prisma.codeSiteFleetNotam.findMany.mockResolvedValueOnce([]);
 
     const forecast = await collisionPredict('acme', 'project-1');
 
@@ -9363,10 +9623,15 @@ describe('agent-token inbox access', () => {
   }
 
   beforeEach(() => {
-      vi.clearAllMocks();
-      prisma.codeSiteProjectMember.findUnique.mockResolvedValue(null);
-      prisma.codeSiteProjectMember.findFirst.mockResolvedValue(null);
-    });
+    vi.useFakeTimers({ now: AGENT_AUTHORITY_NOW });
+    vi.clearAllMocks();
+    prisma.codeSiteProjectMember.findUnique.mockResolvedValue(null);
+    prisma.codeSiteProjectMember.findFirst.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
     it('authorizes its own session to read projected inbox items', async () => {
     const session = agentAuthoritySession();
@@ -9464,6 +9729,8 @@ describe('agent-token inbox access', () => {
       .rejects.toMatchObject({ status: 404, code: 'inbox_item_not_found' });
     expect(prisma.codeSiteAgentInboxItem.update).not.toHaveBeenCalled();
     expect(prisma.codeSiteEvent.create).not.toHaveBeenCalled();
+  });
+});
 
 describe('listProjectChannels keyset pagination', () => {
   const baseTime = new Date('2026-06-30T12:00:00.000Z');
@@ -9491,8 +9758,9 @@ describe('listProjectChannels keyset pagination', () => {
         .filter((row) => {
           if (!keyset) return true;
           const [beforeDate, sameDateBeforeId] = keyset.OR;
-          return row.createdAt < beforeDate.lt
-            || (row.createdAt.getTime() === beforeDate.lt.getTime() && row.id < sameDateBeforeId.id.lt);
+          const beforeCreatedAt = beforeDate.createdAt.lt;
+          return row.createdAt < beforeCreatedAt
+            || (row.createdAt.getTime() === beforeCreatedAt.getTime() && row.id < sameDateBeforeId.id.lt);
         })
         .sort((left, right) => right.createdAt - left.createdAt || right.id.localeCompare(left.id))
         .slice(0, take);
@@ -9573,8 +9841,8 @@ describe('listProjectChannels keyset pagination', () => {
     });
     expect(secondPage.channels.map((channel) => channel.id)).toEqual(['active-1']);
     expect(secondPage).not.toHaveProperty('nextCursor');
-    expect(prisma.codeSiteAgentChannel.findMany.mock.calls.at(-1)[0].where.AND)
-      .toContainEqual({ status: 'active' });
+    expect(prisma.codeSiteAgentChannel.findMany.mock.calls.at(-1)[0].where.status)
+      .toBe('active');
   });
 
   it('uses the id tiebreak deterministically when creation times match', async () => {

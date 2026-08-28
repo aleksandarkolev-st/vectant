@@ -17,6 +17,8 @@ def test_reason_code_registry_loads_required_metadata():
     assert registry.schemaVersion == REASON_CODE_REGISTRY_SCHEMA_VERSION
     assert "target_resolution_ambiguous" in by_code
     assert "abi.kernel_signature_changed" in by_code
+    assert "ai_provider_auth_denied" in by_code
+    assert "ai_provider_account_suspended" in by_code
     assert "ai_provider_rate_limited" in by_code
     assert "ai_provider_unavailable" in by_code
     assert "projection_not_found" in by_code
@@ -34,6 +36,8 @@ def test_reason_code_registry_loads_required_metadata():
     assert by_code["toolchain_capability_missing"].blocking is True
     assert by_code["cmake_file_api_missing"].blocking is False
     assert by_code["abi.kernel_signature_changed"].safeFallbackMode == "abi_breaking"
+    assert by_code["ai_provider_auth_denied"].safeFallbackMode == "diagnostics_only"
+    assert by_code["ai_provider_account_suspended"].blocking is True
     assert by_code["fission.candidate_accepted"].blocking is False
     assert by_code["fission.output_oracle_missing"].owner == "fission_verifier"
 

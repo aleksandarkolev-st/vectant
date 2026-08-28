@@ -10,12 +10,14 @@ import { buildPilotLicenseHealthRecords, pilotLicenseHealthSummary } from './pil
 import { buildFilesystemBoundaryProofRecords } from './filesystemBoundaryProof';
 import { projectKnowledgeRecord } from './knowledgeRecords';
 import { safeKnowledgeProjection } from './knowledgePolicy';
+import { loadExpertisePolicy } from './expertisePolicyRuntime';
 
 export const CODESITE_ARTIFACT_VERSION = 1;
 const ARTIFACT_FILE_INDEX = '.codesite-projection-files.json';
 const ARTIFACT_PATH_HISTORY = 'artifact-path-history.jsonl';
 const DEFAULT_ARTIFACT_PATH_HISTORY_MAX_BYTES = 4 * 1024 * 1024;
 const artifactWriteQueues = new Map();
+const ACTIVE_EXPERTISE_POLICY = loadExpertisePolicy();
 
 export const CODESITE_MCP_TOOLS = [
   'synthi_codesite_list_projects',
@@ -48,6 +50,8 @@ export const CODESITE_MCP_TOOLS = [
   'synthi_codesite_get_metrics',
   'synthi_codesite_get_agent_manifest',
   'synthi_codesite_get_relevant_context',
+  'synthi_codesite_find_experts',
+  'synthi_codesite_ask_expert_question',
   'synthi_codesite_record_discovery',
   'synthi_codesite_record_lead',
   'synthi_codesite_publish_shared_skill',
@@ -76,6 +80,13 @@ export const CODESITE_MCP_TOOLS = [
   'synthi_codesite_get_incident_replay',
   'synthi_codesite_resume_mayday',
   'synthi_codesite_file_policy_delta',
+  'synthi_codesite_list_learning_catalog',
+  'synthi_codesite_adopt_learning_catalog_entry',
+  'synthi_codesite_list_fleet_notams',
+  'synthi_codesite_publish_fleet_notam',
+  'synthi_codesite_decide_fleet_notam',
+  'synthi_codesite_withdraw_fleet_notam',
+  'synthi_codesite_supersede_fleet_notam',
   'synthi_codesite_promote_policy_delta',
   'synthi_codesite_reject_policy_delta',
   'synthi_codesite_request_landing',
@@ -429,9 +440,12 @@ const PRIVATE_KEY_MATERIAL = /-----BEGIN [A-Z ]*PRIVATE KEY-----/;
 
 function repoKnowledgeProjection(item) {
   try {
-    const projected = item?.payloadJson != null || item?.scopeJson != null
-      ? projectKnowledgeRecord(item)
-      : safeKnowledgeProjection(item);
+    // Artifact sync projects persisted rows, so preserve an already-stored
+    // unrouted question instead of rejecting historical facts during resync.
+    const storedItem = item?.kind === 'agent_question' ? { ...item, allowUnrouted: true } : item;
+    const projected = storedItem?.payloadJson != null || storedItem?.scopeJson != null
+      ? projectKnowledgeRecord(storedItem, ACTIVE_EXPERTISE_POLICY)
+      : safeKnowledgeProjection(storedItem, ACTIVE_EXPERTISE_POLICY);
     if (!projected
       || projected.visibility !== 'project'
       || projected.redactionClass === 'owner_private'

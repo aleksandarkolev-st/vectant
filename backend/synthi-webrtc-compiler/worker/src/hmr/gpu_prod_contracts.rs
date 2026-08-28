@@ -455,8 +455,7 @@ fn generated_roles_from_manifest(manifest: &Value) -> Value {
         let path = module_files
             .and_then(|m| m.get(role))
             .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| legacy_role_path(role));
+            .map(str::to_string);
         if let Some(path) = path {
             roles.insert(
                 role.to_string(),
@@ -526,8 +525,7 @@ fn device_roles_from_manifest(
     let device_path = module_files
         .and_then(|m| m.get("device"))
         .and_then(Value::as_str)
-        .map(str::to_string)
-        .or_else(|| legacy_role_path("device"));
+        .map(str::to_string);
     let Some(path) = device_path else {
         return Value::Array(Vec::new());
     };
@@ -2929,17 +2927,6 @@ fn string_array(value: Option<&Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn legacy_role_path(role: &str) -> Option<String> {
-    match role {
-        "shared" => Some("shared.h".to_string()),
-        "core" => Some("core.cpp".to_string()),
-        "gui" => Some("gui.cpp".to_string()),
-        "host_runner" => Some("host_runner.cpp".to_string()),
-        "device" => None,
-        _ => None,
-    }
-}
-
 fn stable_hash(value: &Value) -> String {
     let bytes = serde_json::to_vec(value).unwrap_or_default();
     let mut hasher = Sha256::new();
@@ -3129,12 +3116,28 @@ mod tests {
     }
 
     fn content_addressed_fission_candidate(digest: &str) -> Value {
-        json!({
+        let source_evidence_id = format!("evidence:test-observation:{}", "b".repeat(64));
+        let candidate = json!({
             "islandId": "island:sha256:abc",
             "sourceEditId": "edit:abc",
             "sourcePaths": ["src/render.kernel"],
             "sourceSpans": [{"path": "src/render.kernel", "startByte": 10, "endByte": 24}],
             "generatedRolePath": ".synthi/generated/gpu/render.kernel",
+            "generatedTopologyBinding": {
+                "schemaVersion": "synthi.gpu.generated_topology_binding.v1",
+                "source": "generated_manifest_device_role_topology",
+                "generatedRolePath": ".synthi/generated/gpu/render.kernel",
+                "selectedArtifactId": format!("artifact:sha256:{digest}"),
+                "selectedArtifactHash": format!("sha256:{digest}"),
+                "artifactKind": "partial_device_artifact",
+                "replacementScope": "partial_device_artifact",
+                "materializedPartialArtifact": true,
+                "separatelyMaterializedPartialArtifact": true,
+                "contentAddressedPartialArtifact": true,
+                "sourcePaths": ["src/render.kernel"],
+                "targetSymbols": ["render_step"]
+            },
+            "generatedTopologyEvidenceIds": [source_evidence_id.clone()],
             "targetSymbols": ["render_step"],
             "exportedSymbolsExpected": ["render_step"],
             "artifactKind": "partial_device_artifact",
@@ -3160,23 +3163,24 @@ mod tests {
                 "sessionIdSource": "runtime-session",
                 "artifactIdSource": "selected-artifact"
             },
-            "sourceMappingEvidenceIds": ["evidence:source-map"],
-            "includeClosureEvidenceIds": ["evidence:include-closure"],
-            "symbolOwnershipEvidenceIds": ["evidence:symbol-ownership"],
-            "dependencyClosureEvidenceIds": ["evidence:dependency-closure"],
-            "abiMembraneEvidenceIds": ["evidence:abi-membrane"],
-            "compileRecipeEvidenceIds": ["evidence:compile-recipe"],
-            "loaderCapabilityEvidenceIds": ["evidence:loader-capability"],
-            "outputOracleEvidenceIds": ["evidence:output-oracle"],
-            "verifierEvidenceIds": ["evidence:source-map", "evidence:abi-membrane"],
+            "sourceMappingEvidenceIds": [source_evidence_id.clone()],
+            "includeClosureEvidenceIds": [source_evidence_id.clone()],
+            "symbolOwnershipEvidenceIds": [source_evidence_id.clone()],
+            "dependencyClosureEvidenceIds": [source_evidence_id.clone()],
+            "abiMembraneEvidenceIds": [source_evidence_id.clone()],
+            "compileRecipeEvidenceIds": [source_evidence_id.clone()],
+            "loaderCapabilityEvidenceIds": [source_evidence_id.clone()],
+            "outputOracleEvidenceIds": [source_evidence_id.clone()],
+            "verifierEvidenceIds": [source_evidence_id.clone()],
             "narrowerCandidateRejections": [
                 {
                     "scopeRank": 0,
                     "reasonCode": "fission.edit_crosses_body_boundary",
-                    "verifierEvidenceIds": ["evidence:source-map"]
+                    "verifierEvidenceIds": [source_evidence_id]
                 }
             ]
-        })
+        });
+        candidate
     }
 
     #[test]
@@ -3314,6 +3318,42 @@ mod tests {
                 .pointer("/generatedRoles/deviceRoles/0/sourceFiles/0")
                 .and_then(Value::as_str),
             Some("src/gpu/device.hip")
+        );
+    }
+
+    #[test]
+    fn generated_roles_do_not_infer_default_module_filenames() {
+        let sidecar = json!({
+            "compile_manifest": {
+                "compiler": "clang++",
+                "std": "c++20",
+                "common_flags": ["-shared", "-fPIC"],
+                "gpu": {
+                    "vendor": "rocm",
+                    "device_compiler": "hipcc",
+                    "arch": ["gfx1201"]
+                }
+            }
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+        let generated_roles = migrated
+            .get("generatedRoles")
+            .and_then(Value::as_object)
+            .expect("generatedRoles object");
+
+        for role in ["shared", "core", "gui", "host_runner", "device"] {
+            assert!(
+                !generated_roles.contains_key(role),
+                "role {role} must come from explicit module_files, not default filenames"
+            );
+        }
+        assert_eq!(
+            migrated
+                .pointer("/generatedRoles/deviceRoles")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
         );
     }
 
@@ -4403,50 +4443,10 @@ mod tests {
     }
 
     #[test]
-    fn fission_candidate_report_is_promoted_into_run_report() {
+    fn serialized_fission_candidate_is_refused_without_current_run_registry() {
         let manifest = gpu_compile_manifest();
-        let fission_candidate = json!({
-            "islandId": "island:sha256:abc",
-            "sourceEditId": "edit:abc",
-            "sourcePaths": ["src/render.kernel"],
-            "sourceSpans": [{"path": "src/render.kernel", "startByte": 10, "endByte": 24}],
-            "generatedRolePath": ".synthi/generated/gpu/render.kernel",
-            "targetSymbols": ["render_step"],
-            "exportedSymbolsExpected": ["render_step"],
-            "artifactKind": "partial_device_artifact",
-            "includeClosure": [],
-            "dependencyClosureHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-            "abiMembraneId": "abi:membrane",
-            "compileRecipeHash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-            "compileCommandHash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
-            "loaderCapabilityRequirement": {"transportClass": "content_addressed_blob"},
-            "requiredOracleId": "oracle:render-step",
-            "outputOracleProposal": {
-                "kind": "buffer_checksum",
-                "producer": "deterministic_probe",
-                "expectedHash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
-                "outputTargetId": "buffer:render-step",
-                "readbackPlan": {"syncPoint": "after-dispatch"},
-                "sessionIdSource": "runtime-session",
-                "artifactIdSource": "selected-artifact"
-            },
-            "sourceMappingEvidenceIds": ["evidence:source-map"],
-            "includeClosureEvidenceIds": ["evidence:include-closure"],
-            "symbolOwnershipEvidenceIds": ["evidence:symbol-ownership"],
-            "dependencyClosureEvidenceIds": ["evidence:dependency-closure"],
-            "abiMembraneEvidenceIds": ["evidence:abi-membrane"],
-            "compileRecipeEvidenceIds": ["evidence:compile-recipe"],
-            "loaderCapabilityEvidenceIds": ["evidence:loader-capability"],
-            "outputOracleEvidenceIds": ["evidence:output-oracle"],
-            "verifierEvidenceIds": ["evidence:source-map", "evidence:abi-membrane"],
-            "narrowerCandidateRejections": [
-                {
-                    "scopeRank": 0,
-                    "reasonCode": "fission.edit_crosses_body_boundary",
-                    "verifierEvidenceIds": ["evidence:source-map"]
-                }
-            ]
-        });
+        let digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let fission_candidate = content_addressed_fission_candidate(digest);
         let sidecar = json!({
             "compile_manifest": manifest,
             "fissionCandidate": fission_candidate,
@@ -4458,24 +4458,36 @@ mod tests {
             migrated
                 .pointer("/fissionVerifierReport/status")
                 .and_then(Value::as_str),
-            Some("pass")
+            Some("reject"),
+            "{}",
+            migrated["fissionVerifierReport"]
         );
         assert_eq!(
             migrated
                 .pointer("/runReport/fissionVerifierReport/selectedIslandId")
                 .and_then(Value::as_str),
-            Some("island:sha256:abc")
+            None
         );
         assert_eq!(
             migrated
                 .pointer("/runReport/fissionVerifierReport/candidates/0/status")
                 .and_then(Value::as_str),
-            Some("pass")
+            Some("reject")
         );
+        let reasons = migrated
+            .pointer("/runReport/fissionVerifierReport/candidates/0/reasonCodes")
+            .and_then(Value::as_array)
+            .expect("candidate refusal reasons");
+        assert!(reasons
+            .iter()
+            .any(|code| code == "fission.deterministic_verifier_evidence_missing"));
+        assert!(reasons
+            .iter()
+            .any(|code| code == "fission.output_oracle_evidence_missing"));
     }
 
     #[test]
-    fn fission_readiness_report_passes_with_generic_metadata() {
+    fn fission_readiness_refuses_serialized_candidate_without_current_run_registry() {
         let manifest = gpu_compile_manifest();
         let digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let sidecar = json!({
@@ -4492,26 +4504,38 @@ mod tests {
             migrated
                 .pointer("/fissionReadinessReport/status")
                 .and_then(Value::as_str),
-            Some("ready")
+            Some("not_ready"),
+            "{}",
+            migrated["fissionReadinessReport"]
         );
         assert_eq!(
             migrated
                 .pointer("/fissionReadinessReport/ready")
                 .and_then(Value::as_bool),
-            Some(true)
+            Some(false)
         );
         assert_eq!(
             migrated
                 .pointer("/runReport/fissionReadinessReport/status")
                 .and_then(Value::as_str),
-            Some("ready")
+            Some("not_ready")
         );
         assert_eq!(
             migrated
                 .pointer("/fissionReadinessReport/acceptedCandidateCount")
                 .and_then(Value::as_u64),
-            Some(1)
+            Some(0)
         );
+        let reasons = migrated
+            .pointer("/fissionReadinessReport/reasonCodes")
+            .and_then(Value::as_array)
+            .expect("readiness refusal reasons");
+        assert!(reasons
+            .iter()
+            .any(|code| code == "fission.verifier_not_accepted"));
+        assert!(reasons
+            .iter()
+            .any(|code| code == "fission.artifact_identity_not_ready"));
     }
 
     #[test]

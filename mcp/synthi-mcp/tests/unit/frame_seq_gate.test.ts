@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { session, FRAME_ADVANCE_FRESHNESS_WINDOW_MS } from "../../src/session.js";
+import {
+  session,
+  FRAME_ADVANCE_FRESHNESS_WINDOW_MS,
+  FRAME_GATE_TOKEN_MAX_ENTRIES,
+  FRAME_GATE_TOKEN_MAX_RETENTION_MS,
+} from "../../src/session.js";
 import { eventLog } from "../../src/events/index.js";
 import { runWait } from "../../src/wait/engine.js";
 import { buildManifest, resolvePipelineBudgetMs } from "../../src/protocol/index.js";
@@ -36,6 +41,37 @@ function installFakeAttached(frames?: {
       for (const l of listeners) l(msg);
     },
   };
+}
+
+function bindGpuProofTrustInvalidation(): {
+  invalidate: () => void;
+  unsubscribe: () => void;
+} {
+  let listener: (() => void) | null = null;
+  const hmr = {
+    onGpuProofTrustInvalidated(cb: () => void): () => void {
+      listener = cb;
+      return (): void => {
+        if (listener === cb) listener = null;
+      };
+    },
+  };
+  const unsubscribe = (session as unknown as {
+    bindFrameGateTokenRevocation: (source: typeof hmr) => () => void;
+  }).bindFrameGateTokenRevocation(hmr);
+  return {
+    invalidate: (): void => {
+      if (listener === null) throw new Error("proof trust invalidation listener not bound");
+      listener();
+    },
+    unsubscribe,
+  };
+}
+
+function frameGateTokenCount(): number {
+  return (session as unknown as {
+    frameGateTokens: Map<string, unknown>;
+  }).frameGateTokens.size;
 }
 
 describe("session frame-advance tracker", () => {
@@ -85,10 +121,310 @@ describe("session frame-advance tracker", () => {
     expect(r).toBeNull();
   });
 
+  it("awaitFrameAdvanceAtOrAfter removes its listener when aborted", async () => {
+    session.setFrameAdvance(1, 1_000);
+    const controller = new AbortController();
+    const pending = session.awaitFrameAdvanceAtOrAfter(
+      2_000,
+      60_000,
+      controller.signal,
+    );
+    const frameAdvanceListeners = (
+      session as unknown as {
+        frameAdvanceListeners: Set<(frameAdvance: unknown) => void>;
+      }
+    ).frameAdvanceListeners;
+
+    expect(frameAdvanceListeners.size).toBe(1);
+    controller.abort();
+
+    await expect(pending).resolves.toBeNull();
+    expect(frameAdvanceListeners.size).toBe(0);
+  });
+
   it("awaitFrameAdvanceAtOrAfter returns null when the gate is disabled", async () => {
     expect(session.frameSeqGateEnabled()).toBe(false);
     const r = await session.awaitFrameAdvanceAtOrAfter(1_000, 40);
     expect(r).toBeNull();
+  });
+});
+
+describe("session frame gate tokens", () => {
+  beforeEach(() => {
+    session._resetForTests();
+  });
+
+  it("stores an immutable issuer-owned evidence binding and returns it on consume", () => {
+    const sourceBinding: Record<string, unknown> = {
+      schema_version: "test.evidence_binding.v1",
+      observation: {
+        event_id: "event-1",
+        labels: ["initial"],
+      },
+    };
+    const issued = session.issueFrameGateToken({
+      session_id: "fixture",
+      frame_seq: 7,
+      ts_ms: 1_500,
+      evidence_binding: sourceBinding,
+      now: 1_000,
+      ttl_ms: 1_000,
+    });
+
+    const sourceObservation = sourceBinding["observation"] as {
+      event_id: string;
+      labels: string[];
+    };
+    sourceObservation.event_id = "source-mutated";
+    sourceObservation.labels.push("source-mutated");
+
+    const issuedObservation = issued.evidence_binding?.["observation"] as Record<string, unknown>;
+    expect(Object.isFrozen(issued.evidence_binding)).toBe(true);
+    expect(Object.isFrozen(issuedObservation)).toBe(true);
+    expect(Reflect.set(issuedObservation, "event_id", "issued-token-mutated")).toBe(false);
+
+    const validation = session.consumeFrameGateToken({
+      token: issued.token,
+      session_id: "fixture",
+      frame_seq: 7,
+      ts_ms: 1_500,
+      now: 1_001,
+    });
+    const expectedBinding = {
+      schema_version: "test.evidence_binding.v1",
+      observation: {
+        event_id: "event-1",
+        labels: ["initial"],
+      },
+    };
+    expect(validation.accepted).toBe(true);
+    expect(validation.evidence_binding).toEqual(expectedBinding);
+    expect(validation.token?.evidence_binding).toEqual(expectedBinding);
+    expect(validation.evidence_binding_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(validation.token?.evidence_binding_hash).toBe(validation.evidence_binding_hash);
+  });
+
+  it("hashes evidence bindings canonically regardless of object key order", () => {
+    const first = session.issueFrameGateToken({
+      session_id: "fixture",
+      evidence_binding: { outer: { z: 2, a: 1 }, enabled: true },
+    });
+    const second = session.issueFrameGateToken({
+      session_id: "fixture",
+      evidence_binding: { enabled: true, outer: { a: 1, z: 2 } },
+    });
+
+    expect(first.evidence_binding_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(second.evidence_binding_hash).toBe(first.evidence_binding_hash);
+  });
+
+  it("rejects lossy, non-plain, unsafe, and cyclic evidence bindings", () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic["self"] = cyclic;
+    const sparseArray: unknown[] = [];
+    sparseArray.length = 1;
+    const extraPropertyArray = ["entry"] as unknown[] & { extra?: string };
+    extraPropertyArray.extra = "not-json";
+    const accessorArray: unknown[] = [];
+    Object.defineProperty(accessorArray, 0, {
+      enumerable: true,
+      get: () => {
+        throw new Error("array accessor must not execute");
+      },
+    });
+    const nonEnumerable: Record<string, unknown> = {};
+    Object.defineProperty(nonEnumerable, "hidden", { value: "not-json" });
+    const invalidBindings: Array<Record<string, unknown>> = [
+      { omitted: undefined },
+      { non_finite: Number.NaN },
+      { callable: (() => true) as unknown },
+      { date: new Date(0) },
+      { constructor: "unsafe" },
+      { sparse: sparseArray },
+      { extra_array_property: extraPropertyArray },
+      { accessor_array: accessorArray },
+      { non_enumerable: nonEnumerable },
+      cyclic,
+    ];
+
+    for (const evidenceBinding of invalidBindings) {
+      expect(() => session.issueFrameGateToken({
+        session_id: "fixture",
+        evidence_binding: evidenceBinding,
+      })).toThrow(TypeError);
+    }
+  });
+
+  it("preserves legacy tokens and enforces session, frame, timestamp, and one-time use", () => {
+    const issued = session.issueFrameGateToken({
+      session_id: "fixture",
+      frame_seq: 9,
+      ts_ms: 2_000,
+      now: 1_000,
+      ttl_ms: 1_000,
+    });
+    expect(issued.evidence_binding).toBeUndefined();
+    expect(issued.evidence_binding_hash).toBeUndefined();
+
+    expect(session.consumeFrameGateToken({
+      token: issued.token,
+      session_id: "other-session",
+      frame_seq: 9,
+      ts_ms: 2_000,
+      now: 1_001,
+    })).toEqual({ accepted: false, reason: "frame_gate_token_session_mismatch" });
+    expect(session.consumeFrameGateToken({
+      token: issued.token,
+      session_id: "fixture",
+      frame_seq: 8,
+      ts_ms: 2_000,
+      now: 1_002,
+    })).toEqual({ accepted: false, reason: "frame_gate_token_frame_seq_mismatch" });
+    expect(session.consumeFrameGateToken({
+      token: issued.token,
+      session_id: "fixture",
+      frame_seq: 9,
+      ts_ms: 1_999,
+      now: 1_003,
+    })).toEqual({ accepted: false, reason: "frame_gate_token_timestamp_mismatch" });
+
+    const accepted = session.consumeFrameGateToken({
+      token: issued.token,
+      session_id: "fixture",
+      frame_seq: 9,
+      ts_ms: 2_000,
+      now: 1_004,
+    });
+    expect(accepted.accepted).toBe(true);
+    expect(accepted.token?.evidence_binding).toBeUndefined();
+    expect(accepted.evidence_binding).toBeUndefined();
+    expect(session.consumeFrameGateToken({
+      token: issued.token,
+      session_id: "fixture",
+      frame_seq: 9,
+      ts_ms: 2_000,
+      now: 1_005,
+    })).toEqual({ accepted: false, reason: "frame_gate_token_unknown" });
+  });
+
+  it("revokes every outstanding token when GPU proof trust is invalidated", () => {
+    const trust = bindGpuProofTrustInvalidation();
+    const proofBound = session.issueFrameGateToken({
+      session_id: "fixture",
+      frame_seq: 10,
+      ts_ms: 2_100,
+      evidence_binding: { proof_ref: "proof-before-invalidation" },
+    });
+    const legacy = session.issueFrameGateToken({
+      session_id: "fixture",
+      frame_seq: 11,
+      ts_ms: 2_200,
+    });
+    expect(frameGateTokenCount()).toBe(2);
+
+    trust.invalidate();
+
+    expect(frameGateTokenCount()).toBe(0);
+    for (const issued of [proofBound, legacy]) {
+      expect(session.consumeFrameGateToken({
+        token: issued.token,
+        session_id: issued.session_id,
+        frame_seq: issued.frame_seq,
+        ts_ms: issued.ts_ms,
+      })).toEqual({ accepted: false, reason: "frame_gate_token_unknown" });
+    }
+    expect(() => session.issueFrameGateToken({
+      session_id: "fixture",
+      frame_seq: 12,
+      ts_ms: 2_300,
+      evidence_binding: { proof_ref: "proof-after-invalidation" },
+    })).toThrow("frame_gate_gpu_proof_trust_invalidated");
+    const unboundCapture = session.issueFrameGateToken({
+      session_id: "fixture",
+      frame_seq: 13,
+      ts_ms: 2_400,
+    });
+    expect(session.consumeFrameGateToken({
+      token: unboundCapture.token,
+      session_id: "fixture",
+      frame_seq: 13,
+      ts_ms: 2_400,
+    }).accepted).toBe(true);
+    trust.unsubscribe();
+
+    const nextSessionTrust = bindGpuProofTrustInvalidation();
+    const nextSessionProofBound = session.issueFrameGateToken({
+      session_id: "next-fixture",
+      evidence_binding: { proof_ref: "proof-after-new-trust-domain" },
+    });
+    expect(nextSessionProofBound.evidence_binding).toBeDefined();
+    nextSessionTrust.unsubscribe();
+  });
+
+  it("clears tokens on close, including the already-closed fast path", async () => {
+    const first = session.issueFrameGateToken({ session_id: "fixture" });
+    await session.close();
+    expect(session.consumeFrameGateToken({
+      token: first.token,
+      session_id: "fixture",
+    })).toEqual({ accepted: false, reason: "frame_gate_token_unknown" });
+
+    const issuedAfterClose = session.issueFrameGateToken({ session_id: "fixture" });
+    await session.close();
+    expect(session.consumeFrameGateToken({
+      token: issuedAfterClose.token,
+      session_id: "fixture",
+    })).toEqual({ accepted: false, reason: "frame_gate_token_unknown" });
+  });
+
+  it("preserves shorter TTLs and caps token retention", () => {
+    const shortLived = session.issueFrameGateToken({
+      session_id: "fixture",
+      ttl_ms: 1_000,
+      now: 5_000,
+    });
+    const retentionBounded = session.issueFrameGateToken({
+      session_id: "fixture",
+      ttl_ms: FRAME_GATE_TOKEN_MAX_RETENTION_MS * 2,
+      now: 5_000,
+    });
+
+    expect(shortLived.expires_at_ms - shortLived.issued_at_ms).toBe(1_000);
+    expect(retentionBounded.expires_at_ms - retentionBounded.issued_at_ms)
+      .toBe(FRAME_GATE_TOKEN_MAX_RETENTION_MS);
+    expect(session.consumeFrameGateToken({
+      token: shortLived.token,
+      session_id: "fixture",
+      now: 6_001,
+    })).toEqual({ accepted: false, reason: "frame_gate_token_unknown" });
+  });
+
+  it("evicts the oldest token when the protocol-generic capacity is exceeded", () => {
+    const issued = Array.from(
+      { length: FRAME_GATE_TOKEN_MAX_ENTRIES + 1 },
+      (_, index) => session.issueFrameGateToken({
+        session_id: "fixture",
+        frame_seq: index,
+        now: 1_000,
+      }),
+    );
+    const oldest = issued[0];
+    const newest = issued.at(-1);
+    if (oldest === undefined || newest === undefined) throw new Error("token fixture missing");
+
+    expect(frameGateTokenCount()).toBe(FRAME_GATE_TOKEN_MAX_ENTRIES);
+    expect(session.consumeFrameGateToken({
+      token: oldest.token,
+      session_id: "fixture",
+      frame_seq: oldest.frame_seq,
+      now: 1_001,
+    })).toEqual({ accepted: false, reason: "frame_gate_token_unknown" });
+    expect(session.consumeFrameGateToken({
+      token: newest.token,
+      session_id: "fixture",
+      frame_seq: newest.frame_seq,
+      now: 1_001,
+    }).accepted).toBe(true);
   });
 });
 

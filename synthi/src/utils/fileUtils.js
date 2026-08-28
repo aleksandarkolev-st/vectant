@@ -77,7 +77,7 @@ export const findFirstFile = (nodes) => {
     return null;
 };
 
-// TO DO: MERGE findFileInTree and findFolderInTree into a single function with a type parameter.
+// TO DO: MERGE findFileInTree and findFolderInTree into a single function with a type parameter.  <-- This to do has been sitting here from before Nov 7 2025
 
 /**
  * Recursively finds a file by its full path for existence check (Creation validation).

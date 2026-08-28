@@ -76,11 +76,18 @@ def extract_launch_graph(files: Mapping[str, str]) -> List[LaunchSite]:
     for path, source in files.items():
         if not _looks_like_host_source(path):
             continue
-        parsed_source = _mask_comments_preserving_len(source)
-        sites.extend(_extract_raw_launches(path, parsed_source))
-        sites.extend(_extract_boundary_launches(path, parsed_source))
-        sites.extend(_extract_runtime_object_launches(path, parsed_source))
+        sites.extend(extract_launch_sites(path, source))
     return sites
+
+
+def extract_launch_sites(path: str, source: str) -> List[LaunchSite]:
+    """Extract launch sites from source bytes without inferring language from its path."""
+    parsed_source = _mask_comments_preserving_len(source or "")
+    return [
+        *_extract_raw_launches(path, parsed_source),
+        *_extract_boundary_launches(path, parsed_source),
+        *_extract_runtime_object_launches(path, parsed_source),
+    ]
 
 
 def launch_graph_as_dicts(files: Mapping[str, str]) -> List[dict]:

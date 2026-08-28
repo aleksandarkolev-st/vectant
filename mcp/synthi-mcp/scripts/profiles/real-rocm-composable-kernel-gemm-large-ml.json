@@ -1,0 +1,92 @@
+{
+  "schemaVersion": "synthi.gpu.hmr.real_rocm_profile.v1",
+  "id": "real-rocm-composable-kernel-gemm-large-ml",
+  "repo": {
+    "url": "https://github.com/ROCm/composable_kernel.git",
+    "name": "composable-kernel",
+    "commit": "713f1fbf46ae73755c06a0b115f01795cea9a4f9"
+  },
+  "target": {
+    "entryFile": "example/01_gemm/gemm_xdl_fp32_v3.cpp",
+    "deltaFile": "example/01_gemm/gemm_xdl_fp32_v3.cpp",
+    "targetName": "example_gemm_xdl_fp32_v3",
+    "buildSubdir": ".",
+    "cmakeArgs": [
+      "-DCMAKE_CXX_COMPILER=${ROCM_LLVM_BIN}/amdclang++",
+      "-DBUILD_TESTING=OFF",
+      "-DENABLE_CLANG_CPP_CHECKS=OFF",
+      "-DBUILD_DEV=OFF",
+      "-DBUILD_CK_EXAMPLES=ON",
+      "-DBUILD_CK_TUTORIALS=OFF",
+      "-DBUILD_CK_DEVICE_INSTANCES=OFF",
+      "-DBUILD_CK_PROFILER=OFF",
+      "-DBUILD_CK_TILE_ENGINE=OFF",
+      "-DBUILD_CK_TILE_ENGINE_TESTS=OFF",
+      "-DBUILD_CK_TILE_FMHA_TESTS=OFF",
+      "-DFORCE_DISABLE_WMMA=ON",
+      "-DDTYPES=fp32"
+    ],
+    "upstreamRunCommand": "./build/bin/example_gemm_xdl_fp32_v3",
+    "nativeLaunchSymbols": [
+      "DeviceGemm_Xdl_CShuffleV3",
+      "GridwiseGemm"
+    ]
+  },
+  "sourceDelta": {
+    "before": "        64, 64, ",
+    "after": "        64, 128, ",
+    "second": {
+      "file": "example/01_gemm/gemm_xdl_fp32_v3.cpp",
+      "before": "        64, 128, ",
+      "after": "        128, 128, "
+    },
+    "extraDeltas": [
+      {
+        "label": "negative-edit",
+        "kind": "negative_edit",
+        "expectedRefusal": true,
+        "file": "example/01_gemm/gemm_xdl_fp32_v3.cpp",
+        "before": "        128, 128, ",
+        "after": "        \"layout_breaking\", 128, "
+      }
+    ]
+  },
+  "outputOracle": {
+    "profile": "none"
+  },
+  "runtimeAdapter": {
+    "enabled": true,
+    "template": "runtime_boundary_log_harvest_v1",
+    "workingDirectory": ".",
+    "resultPath": ".gpu-hmr-test-logs/real-rocm-runtime-adapter-results/real-rocm-composable-kernel-gemm-large-ml-runtime-adapter.json",
+    "eventManifestPath": ".gpu-hmr-test-logs/real-rocm-runtime-adapter-events/real-rocm-composable-kernel-gemm-large-ml-runtime-boundary-events.json",
+    "runWhen": "after_lifecycle_attempt",
+    "requiresSuccessfulBuild": false,
+    "requiresSuccessfulRun": false,
+    "timeoutMs": 120000,
+    "evidenceRefs": [
+      "real-rocm-runtime-adapter-template:runtime_boundary_log_harvest_v1",
+      "real-rocm-composable-kernel-gemm-large-ml:runtime-boundary-log-harvest"
+    ]
+  },
+  "proofObligations": {
+    "acceptanceMode": "refusal_only",
+    "targetClass": "large_rocm_ml_infrastructure",
+    "requiresFullRuntimeProof": true,
+    "requiresOutputOracle": true,
+    "requiresAppHookContract": true,
+    "requiresRunModes": true,
+    "requiresNegativeEdit": true
+  },
+  "targetProgression": {
+    "phase": "final-acceptance",
+    "finalAcceptanceTarget": "example_gemm_xdl_fp32_v3",
+    "required": true
+  },
+  "preview": {
+    "renderPreview": false,
+    "expectScreenshot": false,
+    "width": 800,
+    "height": 600
+  }
+}

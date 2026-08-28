@@ -1,0 +1,118 @@
+{
+  "schemaVersion": "synthi.gpu.hmr.real_rocm_profile.v1",
+  "id": "real-rocm-miopen-activation-large-ml",
+  "repo": {
+    "url": "https://github.com/ROCm/MIOpen.git",
+    "commit": "06977176afd94476c18d5290f21cb40745bb73a9"
+  },
+  "target": {
+    "entryFile": "src/kernels/MIOpenNeuron.cl",
+    "deltaFile": "src/kernels/activation_functions.h",
+    "targetName": "MIOpenDriver",
+    "buildSubdir": ".",
+    "cmakeArgs": [
+      "-DCMAKE_C_COMPILER=${ROCM_LLVM_BIN}/amdclang",
+      "-DCMAKE_CXX_COMPILER=${ROCM_LLVM_BIN}/amdclang++",
+      "-DBoost_USE_STATIC_LIBS=OFF",
+      "-DMIOPEN_BACKEND=HIP",
+      "-DMIOPEN_USE_COMPOSABLEKERNEL=OFF",
+      "-DMIOPEN_USE_ROCBLAS=OFF",
+      "-DMIOPEN_USE_HIPBLASLT=OFF",
+      "-DMIOPEN_USE_MLIR=OFF",
+      "-DHALF_INCLUDE_DIR=${REAL_ROCM_EXTERNAL_INCLUDE:rocm-half}",
+      "-DBUILD_TESTING=OFF",
+      "-DMIOPEN_ENABLE_AI_KERNEL_TUNING=OFF",
+      "-DMIOPEN_ENABLE_AI_IMMED_MODE_FALLBACK=OFF",
+      "-DMIOPEN_USE_ROCTRACER=OFF",
+      "-DMIOPEN_BUILD_DRIVER=ON"
+    ],
+    "upstreamRunCommand": "./build/bin/MIOpenDriver activ -n 1 -c 1 -H 8 -W 8 -F 1 -V 1 -t 1",
+    "nativeLaunchSymbols": [
+      "MIOpenActivationForward",
+      "miopenActivationForward"
+    ]
+  },
+  "sourceDelta": {
+    "before": "res[i] = data[i] * (data[i] > 0);",
+    "after": "res[i] = data[i] * ((data[i] > 0) ? (_FLOAT_PREC)1.f : (_FLOAT_PREC)0.25f);",
+    "second": {
+      "file": "src/kernels/activation_functions.h",
+      "before": "res[i] = data[i] * ((data[i] > 0) ? (_FLOAT_PREC)1.f : (_FLOAT_PREC)0.25f);",
+      "after": "res[i] = data[i] * ((data[i] > 0) ? (_FLOAT_PREC)1.f : (_FLOAT_PREC)0.50f);"
+    },
+    "extraDeltas": [
+      {
+        "label": "negative-edit",
+        "kind": "negative_edit",
+        "expectedRefusal": true,
+        "file": "src/kernels/activation_functions.h",
+        "before": "res[i] = data[i] * ((data[i] > 0) ? (_FLOAT_PREC)1.f : (_FLOAT_PREC)0.50f);",
+        "after": "res[i] = data[i] * miopen_layout_breaking_probe(data[i]);"
+      }
+    ]
+  },
+  "outputOracle": {
+    "profile": "none"
+  },
+  "externalHeaderPrerequisites": [
+    {
+      "id": "rocm-half",
+      "sourceKind": "git",
+      "repo": {
+        "url": "https://github.com/ROCm/half.git",
+        "commit": "10abd99e7815f0ca5d892f58dd7d15a23b7cf92c"
+      },
+      "install": {
+        "mode": "cmake_install",
+        "buildSubdir": ".synthi-build",
+        "installSubdir": ".synthi-install",
+        "cmakeArgs": [
+          "-DCMAKE_PREFIX_PATH=${ROCM_PREFIX}"
+        ]
+      },
+      "includeRoot": ".synthi-install/include",
+      "requiredHeaders": [
+        "half/half.hpp"
+      ],
+      "evidenceRefs": [
+        "miopen:requirements.txt:ROCm/half@10abd99e7815f0ca5d892f58dd7d15a23b7cf92c",
+        "miopen:README.md:half-header-prerequisite"
+      ]
+    }
+  ],
+  "runtimeAdapter": {
+    "enabled": true,
+    "template": "runtime_boundary_log_harvest_v1",
+    "workingDirectory": ".",
+    "resultPath": ".gpu-hmr-test-logs/real-rocm-runtime-adapter-results/real-rocm-miopen-activation-large-ml-runtime-adapter.json",
+    "eventManifestPath": ".gpu-hmr-test-logs/real-rocm-runtime-adapter-events/real-rocm-miopen-activation-large-ml-runtime-boundary-events.json",
+    "runWhen": "after_lifecycle_attempt",
+    "requiresSuccessfulBuild": false,
+    "requiresSuccessfulRun": false,
+    "timeoutMs": 120000,
+    "evidenceRefs": [
+      "real-rocm-runtime-adapter-template:runtime_boundary_log_harvest_v1",
+      "real-rocm-miopen-activation-large-ml:runtime-boundary-log-harvest"
+    ]
+  },
+  "proofObligations": {
+    "acceptanceMode": "refusal_only",
+    "targetClass": "large_rocm_ml_infrastructure",
+    "requiresFullRuntimeProof": true,
+    "requiresOutputOracle": true,
+    "requiresAppHookContract": true,
+    "requiresRunModes": true,
+    "requiresNegativeEdit": true
+  },
+  "targetProgression": {
+    "phase": "final-acceptance",
+    "finalAcceptanceTarget": "MIOpenDriver",
+    "required": true
+  },
+  "preview": {
+    "renderPreview": false,
+    "expectScreenshot": false,
+    "width": 800,
+    "height": 600
+  }
+}

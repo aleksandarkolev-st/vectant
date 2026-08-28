@@ -35,16 +35,23 @@ manifest, and the same call covers the GPU sub-block).
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import posixpath
 import re
+import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from agents.abi_stamper import mask_comments_for_parsing, stamp_device_source
 from agents.gpu_detect import GpuDetectionResult
-from agents.gpu_device_markers import GPU_DEVICE_MARKER_RE as _GPU_DEVICE_MARKER_RE
+from agents.gpu_deterministic_split import (
+    DeterministicGpuSplitUnsupported,
+    try_build_deterministic_gpu_split,
+)
+from agents.gpu_device_markers import has_gpu_device_marker
 from agents.gpu_split_repair import (
     REPAIR_SCHEMA_VERSION,
     canonicalize_source_backed_device_roles,
@@ -53,6 +60,16 @@ from agents.gpu_split_repair import (
 from agents.gpu_source_context import build_project_source_context
 from agents.launch_graph_extractor import launch_graph_as_dicts
 from llm.prompts import GPU_SPLIT_PROMPT
+from llm.provider_diagnostics import (
+    build_provider_diagnostic,
+    format_provider_diagnostic,
+    provider_failure_reason,
+)
+from generated_path_policy import (
+    GeneratedPathViolation,
+    normalize_generated_path_list,
+    normalize_generated_relative_path,
+)
 from verifier_gpu import SplitVerificationResult, Violation, verify_split_output
 
 if TYPE_CHECKING:  # avoid pulling the provider factory + its heavy SDK deps
@@ -77,6 +94,7 @@ class KernelSplitResult:
     source_context_report: dict = field(default_factory=dict)
     verification: Optional[SplitVerificationResult] = None
     repair_report: dict = field(default_factory=dict)
+    provider_call_receipt: Optional[dict] = None
     raw_response: str = ""
 
     def to_dict(self) -> dict:
@@ -89,14 +107,392 @@ class KernelSplitResult:
             "source_context_report": self.source_context_report,
             "verification": self.verification.to_dict() if self.verification else None,
             "repair_report": self.repair_report,
+            "provider_call_receipt": self.provider_call_receipt,
         }
 
 
 MAX_DETERMINISTIC_REPAIR_PASSES = 4
+PROVIDER_CALL_REQUEST_SCHEMA_VERSION = "synthi.ai.provider_call_request.v2"
+PROVIDER_CALL_RECEIPT_SCHEMA_VERSION = "synthi.ai.provider_call_receipt.v1"
+PROVIDER_CALL_RECEIPT_AUTHORITY = "request_bound_provider_call_only_not_gpu_hmr_success"
+PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION = "synthi.ai.provider_call_challenge.v1"
+_PROVIDER_AUTHORITY_CLAIM_KEYS = {
+    "acceptedforgpuhmr",
+    "gpuhmrsuccess",
+    "cansatisfyruntimeproof",
+    "cansatisfydispatchproof",
+}
+_PROVIDER_CALL_NONCE_RE = re.compile(r"^provider-call:[0-9a-f]{32}$")
+_PROVIDER_AVAILABILITY_TIMESTAMP_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
+)
+_PROVIDER_CALL_CHALLENGE_RE = re.compile(
+    r"<synthi_provider_call_challenge>\s*(\{.*?\})\s*</synthi_provider_call_challenge>",
+    re.DOTALL,
+)
+
+
+def _sha256_prefixed(value: str) -> str:
+    return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
+
+
+def _ordered_json_hash(values: Sequence[Any]) -> str:
+    material = json.dumps(
+        list(values),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return _sha256_prefixed(material)
+
+
+def provider_call_request_binding(
+    *,
+    nonce: str,
+    user_code: str,
+    lang: str,
+    files: Optional[Sequence[Mapping[str, Any]]],
+    focus: Optional[str],
+    provider: Optional[str],
+    model: Optional[str],
+    gpu_arch_hint: Optional[str],
+    extra_instructions: Optional[str],
+) -> tuple[dict, str]:
+    normalized_nonce = str(nonce or "").strip().lower()
+    if not _PROVIDER_CALL_NONCE_RE.fullmatch(normalized_nonce):
+        raise ValueError("provider call request requires a caller-generated nonce")
+    requested_provider = str(provider or "").strip().lower()
+    if not requested_provider:
+        raise ValueError("provider call request requires an explicit provider")
+    requested_model = str(model or "").strip()
+    if not requested_model:
+        raise ValueError("provider call request requires an explicit model")
+    source_files: Dict[str, str] = {}
+    for index, item in enumerate(files or []):
+        if isinstance(item, Mapping):
+            path_value = item.get("path") or item.get("name") or item.get("filename")
+            content_value = item.get("content")
+        else:
+            path_value = (
+                getattr(item, "path", None)
+                or getattr(item, "name", None)
+                or getattr(item, "filename", None)
+            )
+            content_value = getattr(item, "content", None)
+        path_value = str(path_value or f"input-{index}.cpp").strip().replace("\\", "/")
+        if isinstance(content_value, str):
+            source_files[path_value] = content_value
+    file_entries = [
+        [path, _sha256_prefixed(content)]
+        for path, content in sorted(source_files.items())
+    ]
+    file_manifest_hash = _ordered_json_hash([
+        "synthi.ai.provider_call_file_manifest.v1",
+        file_entries,
+    ])
+    binding = {
+        "schema_version": PROVIDER_CALL_REQUEST_SCHEMA_VERSION,
+        "nonce": normalized_nonce,
+        "mode": "split",
+        "request_mode": "split",
+        "language": str(lang or "").strip(),
+        "focus": str(focus or "").strip().replace("\\", "/"),
+        "requested_provider": requested_provider,
+        "requested_model": requested_model,
+        "gpu_arch": str(gpu_arch_hint or "").strip(),
+        "source_hash": _sha256_prefixed(user_code),
+        "file_manifest_hash": file_manifest_hash,
+        "file_count": len(file_entries),
+        "extra_instructions_hash": _sha256_prefixed(extra_instructions or ""),
+    }
+    request_hash = _ordered_json_hash([
+        binding["schema_version"],
+        binding["nonce"],
+        binding["mode"],
+        binding["request_mode"],
+        binding["language"],
+        binding["focus"],
+        binding["requested_provider"],
+        binding["requested_model"],
+        binding["gpu_arch"],
+        binding["source_hash"],
+        binding["file_manifest_hash"],
+        binding["file_count"],
+        binding["extra_instructions_hash"],
+    ])
+    return binding, request_hash
+
+
+def _provider_call_challenge(
+    *,
+    request_binding: Mapping[str, Any],
+    request_hash: str,
+    prompt_payload: str,
+) -> tuple[dict, str]:
+    challenge = {
+        "schema_version": PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION,
+        "request_nonce": str(request_binding.get("nonce") or ""),
+        "request_hash": request_hash,
+        "prompt_payload_hash": _sha256_prefixed(prompt_payload),
+    }
+    challenge_hash = _ordered_json_hash([
+        challenge["schema_version"],
+        challenge["request_nonce"],
+        challenge["request_hash"],
+        challenge["prompt_payload_hash"],
+    ])
+    challenge["challenge_hash"] = challenge_hash
+    encoded = json.dumps(challenge, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    contract = (
+        "\n\nFRESH PROVIDER CALL CHALLENGE (mandatory):\n"
+        "This challenge is unique to the caller's current source tree and request. "
+        "Emit the following tag exactly once in your response, outside generated source files. "
+        "Do not alter, omit, or explain it.\n"
+        f"<synthi_provider_call_challenge>{encoded}</synthi_provider_call_challenge>"
+    )
+    return challenge, contract
+
+
+def _validate_provider_call_challenge_echo(raw_response: str, challenge: Mapping[str, Any]) -> None:
+    encoded = json.dumps(
+        dict(challenge),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    expected_tag = (
+        f"<synthi_provider_call_challenge>{encoded}"
+        "</synthi_provider_call_challenge>"
+    )
+    matches = list(_PROVIDER_CALL_CHALLENGE_RE.finditer(raw_response))
+    if len(matches) != 1 or matches[0].group(0) != expected_tag:
+        raise ValueError("provider response did not echo the exact fresh-call challenge")
+
+
+def _contains_provider_authority_claim(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            normalized_key = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if normalized_key in _PROVIDER_AUTHORITY_CLAIM_KEYS and nested is not False:
+                return True
+            if _contains_provider_authority_claim(nested):
+                return True
+        return False
+    if isinstance(value, (list, tuple)):
+        return any(_contains_provider_authority_claim(item) for item in value)
+    return False
+
+
+def _provider_response_contains_authority_claim(raw_response: str) -> bool:
+    response_without_challenge = _PROVIDER_CALL_CHALLENGE_RE.sub("", raw_response).strip()
+    for candidate in (raw_response, response_without_challenge):
+        try:
+            decoded_response = json.loads(candidate)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if _contains_provider_authority_claim(decoded_response):
+            return True
+
+    for pattern in (
+        _JSON_BLOCK_RE,
+        _MANIFEST_BLOCK_RE,
+        _KERNEL_HASHES_BLOCK_RE,
+        _LAUNCH_GRAPH_BLOCK_RE,
+    ):
+        for match in pattern.finditer(raw_response):
+            try:
+                decoded_block = json.loads(match.group("body").strip())
+            except json.JSONDecodeError:
+                continue
+            if _contains_provider_authority_claim(decoded_block):
+                return True
+    return False
+
+
+def _valid_provider_availability_timestamp(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    timestamp = value.strip()
+    if not _PROVIDER_AVAILABILITY_TIMESTAMP_RE.fullmatch(timestamp):
+        return False
+    if timestamp.endswith("Z"):
+        timestamp = f"{timestamp[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(timestamp)
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() is not None
+
+
+def _provider_call_receipt(
+    *,
+    request_binding: Mapping[str, Any],
+    request_hash: str,
+    challenge: Mapping[str, Any],
+    raw_response: str,
+    provider_metadata: Mapping[str, Any],
+    started_monotonic_ns: int,
+    completed_monotonic_ns: int,
+    started_unix_ns: int,
+    completed_unix_ns: int,
+) -> dict:
+    provider_value = provider_metadata.get("provider")
+    provider = provider_value.strip().lower() if isinstance(provider_value, str) else ""
+    requested_model_value = provider_metadata.get("requested_model")
+    requested_model = (
+        requested_model_value.strip() if isinstance(requested_model_value, str) else ""
+    )
+    actual_model_value = provider_metadata.get("actual_model")
+    actual_model = actual_model_value.strip() if isinstance(actual_model_value, str) else ""
+    request_mode_value = provider_metadata.get("request_mode")
+    request_mode = (
+        request_mode_value.strip().lower() if isinstance(request_mode_value, str) else ""
+    )
+    provider_status_value = provider_metadata.get("provider_model_status")
+    provider_status = (
+        provider_status_value.strip() if isinstance(provider_status_value, str) else ""
+    )
+    fallback_model_value = provider_metadata.get("fallback_model")
+    fallback_model = (
+        fallback_model_value.strip() if isinstance(fallback_model_value, str) else ""
+    )
+    fallback_used = provider_metadata.get("fallback_used")
+    alias_resolved_to_value = provider_metadata.get("provider_model_alias_resolved_to")
+    alias_resolved_to = (
+        alias_resolved_to_value.strip()
+        if isinstance(alias_resolved_to_value, str)
+        else ""
+    )
+    shutdown_or_deprecation_detected = provider_metadata.get(
+        "provider_shutdown_or_deprecation_detected"
+    )
+    checked_at_value = provider_metadata.get("model_availability_checked_at")
+    checked_at = checked_at_value.strip() if isinstance(checked_at_value, str) else ""
+    hard_infra_failure = provider_metadata.get("hard_infra_failure")
+    if not provider or provider.lower() == "deterministic_static_splitter":
+        raise ValueError("provider call receipt requires a non-deterministic provider identity")
+    if provider != str(request_binding.get("requested_provider") or "").strip().lower():
+        raise ValueError("provider call receipt provider does not match request binding")
+    if requested_model != request_binding.get("requested_model"):
+        raise ValueError("provider call receipt requested model does not match request binding")
+    if actual_model != requested_model:
+        raise ValueError("provider call receipt actual model must exactly match requested model")
+    if request_mode != "split":
+        raise ValueError("provider call receipt requires request_mode=split")
+    if provider_status != "available":
+        raise ValueError("provider call receipt requires provider model status=available")
+    if fallback_used is not False:
+        raise ValueError("provider call receipt requires fallback_used=false")
+    if fallback_model_value is not None and (
+        not isinstance(fallback_model_value, str) or fallback_model
+    ):
+        raise ValueError("provider call receipt does not permit a fallback model")
+    if alias_resolved_to_value is not None and (
+        not isinstance(alias_resolved_to_value, str) or alias_resolved_to
+    ):
+        raise ValueError("provider call receipt does not permit model alias resolution")
+    if shutdown_or_deprecation_detected is not False:
+        raise ValueError("provider call receipt requires model lifecycle state=false")
+    if not _valid_provider_availability_timestamp(checked_at_value):
+        raise ValueError("provider call receipt requires a valid model availability timestamp")
+    if hard_infra_failure is not False:
+        raise ValueError("provider call receipt requires explicit non-failed infrastructure state")
+    if _contains_provider_authority_claim(provider_metadata):
+        raise ValueError("provider metadata claims GPU HMR, runtime, or dispatch authority")
+    if _provider_response_contains_authority_claim(raw_response):
+        raise ValueError("provider response claims GPU HMR, runtime, or dispatch authority")
+    if completed_monotonic_ns <= started_monotonic_ns:
+        raise ValueError("provider call receipt monotonic interval is invalid")
+    _validate_provider_call_challenge_echo(raw_response, challenge)
+
+    response_hash = _sha256_prefixed(raw_response)
+    challenge_hash = str(challenge.get("challenge_hash") or "")
+    expected_challenge_hash = _ordered_json_hash([
+        PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION,
+        challenge.get("request_nonce"),
+        challenge.get("request_hash"),
+        challenge.get("prompt_payload_hash"),
+    ])
+    if (
+        challenge.get("schema_version") != PROVIDER_CALL_CHALLENGE_SCHEMA_VERSION
+        or challenge.get("request_nonce") != request_binding.get("nonce")
+        or challenge.get("request_hash") != request_hash
+        or challenge_hash != expected_challenge_hash
+    ):
+        raise ValueError("provider call receipt challenge hash is invalid")
+    started_at = datetime.fromtimestamp(started_unix_ns / 1_000_000_000, tz=timezone.utc).isoformat()
+    completed_at = datetime.fromtimestamp(completed_unix_ns / 1_000_000_000, tz=timezone.utc).isoformat()
+    receipt_values = [
+        PROVIDER_CALL_RECEIPT_SCHEMA_VERSION,
+        PROVIDER_CALL_RECEIPT_AUTHORITY,
+        request_binding["nonce"],
+        request_hash,
+        response_hash,
+        challenge_hash,
+        provider,
+        requested_model,
+        actual_model,
+        request_mode,
+        provider_status,
+        fallback_model,
+        fallback_used,
+        alias_resolved_to,
+        shutdown_or_deprecation_detected,
+        checked_at,
+        str(started_monotonic_ns),
+        str(completed_monotonic_ns),
+        str(started_unix_ns),
+        str(completed_unix_ns),
+    ]
+    receipt_hash = _ordered_json_hash(receipt_values)
+    return {
+        "schema_version": PROVIDER_CALL_RECEIPT_SCHEMA_VERSION,
+        "proof_authority": PROVIDER_CALL_RECEIPT_AUTHORITY,
+        "accepted": True,
+        "provider_call_used": True,
+        "request_binding": dict(request_binding),
+        "request_nonce": request_binding["nonce"],
+        "request_hash": request_hash,
+        "response_hash": response_hash,
+        "challenge": dict(challenge),
+        "challenge_hash": challenge_hash,
+        "challenge_echo_verified": True,
+        "provider": provider,
+        "requested_model": requested_model,
+        "actual_model": actual_model,
+        "request_mode": request_mode,
+        "provider_model_status": provider_status,
+        "fallback_model": fallback_model or None,
+        "fallback_used": fallback_used,
+        "provider_model_alias_resolved_to": alias_resolved_to or None,
+        "provider_shutdown_or_deprecation_detected": shutdown_or_deprecation_detected,
+        "model_availability_checked_at": checked_at,
+        "hard_infra_failure": False,
+        "started_monotonic_ns": str(started_monotonic_ns),
+        "completed_monotonic_ns": str(completed_monotonic_ns),
+        "started_unix_ns": str(started_unix_ns),
+        "completed_unix_ns": str(completed_unix_ns),
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "receipt_hash": receipt_hash,
+        "call_id": f"provider-call:{receipt_hash}",
+        "accepted_for_gpu_hmr": False,
+        "gpu_hmr_success": False,
+        "can_satisfy_runtime_proof": False,
+        "can_satisfy_dispatch_proof": False,
+        "limitations": ["provider_transport_not_cryptographically_attested"],
+    }
 
 
 def _reason_codes(verification: SplitVerificationResult) -> List[str]:
     return [violation.rule for violation in verification.violations]
+
+
+def _deterministic_protected_kernel_names(report: Mapping[str, Any]) -> List[str]:
+    seed_plan = report.get("seedPlan") if isinstance(report, Mapping) else None
+    kernel = seed_plan.get("kernel") if isinstance(seed_plan, Mapping) else None
+    if not isinstance(kernel, str) or not kernel.strip():
+        return []
+    return [kernel.strip()]
 
 
 def _append_unique(target: List[str], values: Sequence[Any]) -> None:
@@ -113,6 +509,7 @@ def _apply_split_repairs_until_stable(
     manifest_arch: Sequence[str],
     source_files: Mapping[str, str],
     verification: SplitVerificationResult,
+    protected_generated_kernels: Optional[Sequence[str]] = None,
     max_passes: int = MAX_DETERMINISTIC_REPAIR_PASSES,
 ) -> tuple[Dict[str, str], SplitVerificationResult, dict]:
     """Apply deterministic generated-artifact repairs to a fixed point.
@@ -146,6 +543,7 @@ def _apply_split_repairs_until_stable(
             manifest=manifest,
             source_files=source_files,
             verification=current_verification,
+            protected_generated_kernels=protected_generated_kernels,
         )
         pass_record = dict(pass_report)
         pass_record["pass"] = pass_index + 1
@@ -236,32 +634,107 @@ class KernelSplitProviderError(Exception):
     """Raised when the upstream AI provider fails before producing a split."""
 
     def __init__(self, original: BaseException):
-        self.original = original
-        message = (
-            f"{type(original).__name__}: {original}"
-            if str(original)
-            else type(original).__name__
+        endpoint_role = (
+            "provider_preflight"
+            if isinstance(original, KernelSplitProviderPreflightError)
+            else "split_generation"
         )
+        self.diagnostic = dict(
+            build_provider_diagnostic(original, endpoint_role=endpoint_role)
+        )
+        self.reason_code = self.diagnostic["reasonCode"]
+        super().__init__(format_provider_diagnostic(self.diagnostic))
+
+
+class KernelSplitProviderPreflightError(RuntimeError):
+    """Diagnostic-only provider readiness failure before generation."""
+
+    def __init__(
+        self,
+        reason_code: str,
+        message: str,
+        *,
+        provider: Optional[str] = None,
+        metadata: Optional[Mapping[str, Any]] = None,
+    ):
+        self.reason_code = reason_code
+        self.provider = provider
+        self.metadata = dict(metadata or {})
         super().__init__(message)
 
 
 def split_provider_failure_verification(exc: BaseException) -> SplitVerificationResult:
     """Represent an AI provider failure as reason-coded split evidence."""
 
-    original = exc.original if isinstance(exc, KernelSplitProviderError) else exc
-    err_type = type(original).__name__
-    message = str(original)
-    lowered = f"{err_type} {message}".lower()
-    if isinstance(original, TimeoutError) or "timeout" in lowered:
-        rule = "ai_provider_timeout"
-    elif "rate limit" in lowered or "429" in lowered:
-        rule = "ai_provider_rate_limited"
-    elif "unavailable" in lowered or "overload" in lowered or "503" in lowered:
-        rule = "ai_provider_unavailable"
-    else:
-        rule = "ai_provider_error"
-    detail = f"{err_type}: {message}" if message else err_type
-    return split_failure_verification(rule, detail)
+    diagnostic = (
+        dict(exc.diagnostic)
+        if isinstance(exc, KernelSplitProviderError)
+        else dict(build_provider_diagnostic(exc, endpoint_role="split_generation"))
+    )
+    return split_failure_verification(
+        str(diagnostic["reasonCode"]),
+        format_provider_diagnostic(diagnostic),
+    )
+
+
+def _provider_preflight_failure_reason(preflight: Mapping[str, Any]) -> str:
+    for key in ("reasonCode", "reason_code", "rule", "code"):
+        value = preflight.get(key)
+        if isinstance(value, str) and value.startswith("ai_provider_"):
+            return value
+    return "ai_provider_error"
+
+
+def _provider_preflight_failure_message(preflight: Mapping[str, Any]) -> str:
+    reason = _provider_preflight_failure_reason(preflight)
+    return f"provider preflight failed: {reason}"
+
+
+async def _run_provider_preflight(
+    provider: "AiProvider",
+    *,
+    model: Optional[str],
+    api_key: Optional[str],
+    mode: str,
+    request_mode: str,
+) -> Mapping[str, Any]:
+    preflight = getattr(provider, "preflight", None)
+    if not callable(preflight):
+        return {
+            "ok": True,
+            "provider": getattr(provider, "name", type(provider).__name__),
+            "proof_authority": "provider_preflight_not_available",
+            "accepted_for_gpu_hmr": False,
+            "gpu_hmr_success": False,
+            "can_satisfy_runtime_proof": False,
+        }
+    result = preflight(
+        model=model,
+        api_key=api_key,
+        mode=mode,
+        request_mode=request_mode,
+    )
+    if inspect.isawaitable(result):
+        result = await result
+    if result is None:
+        return {
+            "ok": True,
+            "provider": getattr(provider, "name", type(provider).__name__),
+            "proof_authority": "provider_preflight_empty_diagnostic",
+            "accepted_for_gpu_hmr": False,
+            "gpu_hmr_success": False,
+            "can_satisfy_runtime_proof": False,
+        }
+    if not isinstance(result, Mapping):
+        return {
+            "ok": True,
+            "provider": getattr(provider, "name", type(provider).__name__),
+            "proof_authority": "provider_preflight_unstructured_diagnostic",
+            "accepted_for_gpu_hmr": False,
+            "gpu_hmr_success": False,
+            "can_satisfy_runtime_proof": False,
+        }
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -569,13 +1042,6 @@ _LAUNCH_GRAPH_BLOCK_RE = re.compile(
     r"<synthi_launch_graph>(?P<body>.*?)</synthi_launch_graph>", re.DOTALL
 )
 
-_ROLE_FILENAMES = {
-    "shared": "shared.h",
-    "core": "core.cpp",
-    "gui": "gui.cpp",
-    "host_runner": "host_runner.cpp",
-    "device": "device.cu",
-}
 _SOURCE_GLOBAL_KERNEL_RE = re.compile(
     r"\b(?:"
     r"__global__\s+(?:void\s+)?"
@@ -592,12 +1058,17 @@ _DEVICE_PRESERVATION_PER_FILE_MAX_CHARS = 8000
 
 
 def _looks_like_source_file(name: str) -> bool:
-    return bool(re.search(r"\.(?:h|hpp|hh|cpp|cc|cxx|cu|hip)$", name.replace("\\", "/"), re.I))
+    return bool(re.search(
+        r"\.(?:h|hpp|hh|cpp|cc|cxx|cu|cuh|hip|cl|opencl|wgsl|glsl|vert|frag|"
+        r"geom|comp|tesc|tese|hlsl|metal|slang|js|jsx|ts|tsx)$",
+        name.replace("\\", "/"),
+        re.I,
+    ))
 
 
 def _has_gpu_device_marker(source: str) -> bool:
     code = mask_comments_for_parsing(source or "")
-    return bool(_GPU_DEVICE_MARKER_RE.search(code) or ("<<<" in code and ">>>" in code))
+    return bool(has_gpu_device_marker(code) or ("<<<" in code and ">>>" in code))
 
 
 def _extract_embedded_source_object(value: str) -> Optional[str]:
@@ -692,85 +1163,203 @@ def _decode_structural_source_escapes(value: str) -> str:
     return "".join(out)
 
 
-def _is_file_map_like(value: Mapping[str, Any]) -> bool:
-    return any(
-        key in _ROLE_FILENAMES or _looks_like_source_file(str(key))
-        for key in value.keys()
-    )
+_FILE_RECORD_NAME_KEYS = ("filename", "path", "name")
+_FILE_RECORD_CONTENT_KEYS = ("content", "file_content", "source")
 
 
-def _normalise_file_map(files: Mapping[str, Any]) -> Dict[str, str]:
+def _generated_file_map_error(reason_code: str, message: str) -> KernelSplitterError:
+    error = KernelSplitterError(f"{reason_code}: {message}")
+    error.reason_code = reason_code
+    return error
+
+
+def _mapping_fields(
+    value: Mapping[str, Any],
+    names: Sequence[str],
+) -> List[tuple[str, Any]]:
+    return [(name, value[name]) for name in names if name in value]
+
+
+def _is_file_map_like(
+    value: Mapping[str, Any],
+    *,
+    declared_paths: Iterable[str] = (),
+) -> bool:
+    """Return whether a decoded object structurally contains generated files.
+
+    Generated filenames are opaque relative paths. Extensions and semantic role
+    names are not evidence; an explicit file-record object is the only object
+    shape that is not treated as a nested file map.
+    """
+
+    if not value:
+        return False
+    declared = set(declared_paths)
+    normalized_keys: List[str] = []
+    for key in value:
+        try:
+            normalized_keys.append(normalize_generated_relative_path(key))
+        except GeneratedPathViolation:
+            # Let the recursive normalizer produce the typed path-policy error.
+            normalized_keys.append("")
+    if declared and any(path in declared for path in normalized_keys):
+        return True
+
+    name_fields = _mapping_fields(value, _FILE_RECORD_NAME_KEYS)
+    content_fields = _mapping_fields(value, _FILE_RECORD_CONTENT_KEYS)
+    if content_fields and (name_fields or len(value) == 1):
+        return False
+    return all(isinstance(item, (str, Mapping)) for item in value.values())
+
+
+def _manifest_declared_generated_paths(
+    manifest: Optional[Mapping[str, Any]],
+) -> set[str]:
+    if not isinstance(manifest, Mapping):
+        return set()
+    module_files = manifest.get("module_files")
+    if not isinstance(module_files, Mapping):
+        return set()
+    try:
+        return set(normalize_generated_path_list(
+            path for path in module_files.values() if path is not None
+        ))
+    except GeneratedPathViolation as exc:
+        raise _generated_file_map_error(exc.reason_code, str(exc)) from exc
+
+
+def _normalise_file_map(
+    files: Mapping[str, Any],
+    *,
+    declared_paths: Iterable[str] = (),
+) -> Dict[str, str]:
     """Accept common LLM file-map variants and return filename -> source."""
 
     out: Dict[str, str] = {}
+    owners_by_collision_key: Dict[str, object] = {}
+    declared = set(declared_paths)
 
-    def add(name: str, value: Any) -> None:
-        clean_name = str(name).strip().replace("\\", "/")
-        if clean_name in _ROLE_FILENAMES:
-            clean_name = _ROLE_FILENAMES[clean_name]
-        if isinstance(value, str) and value.strip().startswith("{"):
-            try:
-                decoded = json.loads(value)
-            except json.JSONDecodeError:
-                decoded = None
-            if isinstance(decoded, Mapping):
-                if _is_file_map_like(decoded):
-                    for nested_name, nested_value in decoded.items():
-                        if nested_name in _ROLE_FILENAMES or _looks_like_source_file(str(nested_name)):
-                            add(str(nested_name), nested_value)
-                    return
-                add(clean_name, decoded)
+    def normalized_name(name: object) -> str:
+        try:
+            return normalize_generated_relative_path(name)
+        except GeneratedPathViolation as exc:
+            raise _generated_file_map_error(exc.reason_code, str(exc)) from exc
+
+    def store(name: object, content: str) -> None:
+        clean_name = normalized_name(name)
+        collision_key = clean_name.lower()
+        if collision_key in owners_by_collision_key:
+            previous = owners_by_collision_key[collision_key]
+            raise _generated_file_map_error(
+                "generated.case_collision_rejected",
+                f"provider file paths {previous!r} and {name!r} alias",
+            )
+        owners_by_collision_key[collision_key] = name
+        out[clean_name] = _decode_structural_source_escapes(content)
+
+    def invalid_value(name: object, value: Any) -> KernelSplitterError:
+        return _generated_file_map_error(
+            "generated.invalid_file_value_rejected",
+            (
+                f"provider file {name!r} must contain a non-empty source string "
+                f"or an explicit file record; got {type(value).__name__}"
+            ),
+        )
+
+    def decoded_object(value: str) -> Optional[Mapping[str, Any]]:
+        if not value.strip().startswith("{"):
+            return None
+        try:
+            decoded = json.loads(value, object_pairs_hook=_reject_duplicate_file_keys)
+        except json.JSONDecodeError:
+            return None
+        return decoded if isinstance(decoded, Mapping) else None
+
+    def record_content(
+        target_name: object,
+        content: Any,
+        *,
+        allow_embedded_map: bool,
+    ) -> None:
+        if not isinstance(content, str) or not content.strip():
+            raise invalid_value(target_name, content)
+
+        decoded = decoded_object(content)
+        if isinstance(decoded, Mapping):
+            nested_name_fields = _mapping_fields(decoded, _FILE_RECORD_NAME_KEYS)
+            nested_content_fields = _mapping_fields(decoded, _FILE_RECORD_CONTENT_KEYS)
+            if nested_content_fields and not nested_name_fields and len(decoded) == 1:
+                nested_content = nested_content_fields[0][1]
+                if not isinstance(nested_content, str) or not nested_content.strip():
+                    raise invalid_value(target_name, nested_content)
+                store(target_name, nested_content)
                 return
-            embedded = _extract_embedded_source_object(value)
-            if embedded and _looks_like_source_file(clean_name):
-                out[clean_name] = _decode_structural_source_escapes(embedded)
+            if allow_embedded_map and _is_file_map_like(
+                decoded,
+                declared_paths=declared,
+            ):
+                for nested_name, nested_value in decoded.items():
+                    add(nested_name, nested_value)
                 return
-        if isinstance(value, str) and value.strip() and _looks_like_source_file(clean_name):
-            out[clean_name] = _decode_structural_source_escapes(value)
-        elif isinstance(value, Mapping):
-            filename = value.get("filename") or value.get("path") or value.get("name")
-            content = value.get("content") or value.get("file_content") or value.get("source")
-            if filename and isinstance(content, str) and content.strip():
-                target_name = str(filename).strip().replace("\\", "/")
-                if content.strip().startswith("{"):
-                    try:
-                        decoded = json.loads(content)
-                    except json.JSONDecodeError:
-                        decoded = None
-                    if isinstance(decoded, Mapping) and _is_file_map_like(decoded):
-                        for nested_name, nested_value in decoded.items():
-                            if nested_name in _ROLE_FILENAMES or _looks_like_source_file(str(nested_name)):
-                                add(str(nested_name), nested_value)
-                        return
-                    embedded = _extract_embedded_source_object(content)
-                    if embedded:
-                        out[target_name] = _decode_structural_source_escapes(embedded)
-                        return
-                out[target_name] = _decode_structural_source_escapes(content)
-                return
-            if isinstance(content, str) and content.strip() and _looks_like_source_file(clean_name):
-                if content.strip().startswith("{"):
-                    try:
-                        decoded = json.loads(content)
-                    except json.JSONDecodeError:
-                        decoded = None
-                    if isinstance(decoded, Mapping) and _is_file_map_like(decoded):
-                        for nested_name, nested_value in decoded.items():
-                            if nested_name in _ROLE_FILENAMES or _looks_like_source_file(str(nested_name)):
-                                add(str(nested_name), nested_value)
-                        return
-                    embedded = _extract_embedded_source_object(content)
-                    if embedded:
-                        out[clean_name] = _decode_structural_source_escapes(embedded)
-                        return
-                out[clean_name] = _decode_structural_source_escapes(content)
-                return
-            for nested_name, nested_value in value.items():
-                if _looks_like_source_file(str(nested_name)):
-                    add(str(nested_name), nested_value)
+
+        embedded = _extract_embedded_source_object(content)
+        if embedded is not None:
+            if not embedded.strip():
+                raise invalid_value(target_name, embedded)
+            store(target_name, embedded)
+            return
+        store(target_name, content)
+
+    def add(name: object, value: Any) -> None:
+        clean_name = normalized_name(name)
+        if isinstance(value, str):
+            decoded = decoded_object(value)
+            nested_declared = bool(
+                isinstance(decoded, Mapping)
+                and any(
+                    normalized_name(nested_name) in declared
+                    for nested_name in decoded
+                )
+            )
+            record_content(
+                name,
+                value,
+                allow_embedded_map=bool(decoded) and (not declared or nested_declared),
+            )
+            return
+        if not isinstance(value, Mapping):
+            raise invalid_value(name, value)
+
+        name_fields = _mapping_fields(value, _FILE_RECORD_NAME_KEYS)
+        content_fields = _mapping_fields(value, _FILE_RECORD_CONTENT_KEYS)
+        if len(name_fields) > 1 or len(content_fields) > 1:
+            raise _generated_file_map_error(
+                "generated.invalid_file_value_rejected",
+                f"provider file record {clean_name!r} contains ambiguous alias fields",
+            )
+        if name_fields:
+            if not content_fields:
+                raise invalid_value(name, value)
+            record_content(
+                name_fields[0][1],
+                content_fields[0][1],
+                allow_embedded_map=True,
+            )
+            return
+        if content_fields:
+            record_content(
+                name,
+                content_fields[0][1],
+                allow_embedded_map=True,
+            )
+            return
+        if not value:
+            raise invalid_value(name, value)
+        for nested_name, nested_value in value.items():
+            add(nested_name, nested_value)
 
     for key, value in files.items():
-        add(str(key), value)
+        add(key, value)
     return out
 
 
@@ -781,21 +1370,31 @@ def _source_file_map(files: Optional[Sequence[Mapping[str, Any]]]) -> Dict[str, 
     for index, item in enumerate(files):
         if isinstance(item, Mapping):
             name = item.get("path") or item.get("name") or item.get("filename")
-            content = item.get("content") or item.get("source") or item.get("file_content")
+            content = next(
+                (
+                    item.get(key)
+                    for key in ("content", "source", "file_content")
+                    if isinstance(item.get(key), str)
+                ),
+                None,
+            )
         else:
             name = (
                 getattr(item, "path", None)
                 or getattr(item, "name", None)
                 or getattr(item, "filename", None)
             )
-            content = (
-                getattr(item, "content", None)
-                or getattr(item, "source", None)
-                or getattr(item, "file_content", None)
+            content = next(
+                (
+                    getattr(item, key, None)
+                    for key in ("content", "source", "file_content")
+                    if isinstance(getattr(item, key, None), str)
+                ),
+                None,
             )
         if not name:
             name = f"input-{index}.cpp"
-        if isinstance(content, str) and content.strip():
+        if isinstance(content, str):
             out[str(name).strip().replace("\\", "/")] = content
     return out
 
@@ -1313,11 +1912,31 @@ def _extract_block(pattern: re.Pattern, text: str) -> str:
     return m.group("body").strip() if m else ""
 
 
-def _parse_json_block(label: str, body: str) -> Any:
+def _reject_duplicate_file_keys(pairs: Sequence[tuple[str, Any]]) -> Dict[str, Any]:
+    value: Dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise _generated_file_map_error(
+                "generated.case_collision_rejected",
+                f"provider file object contains duplicate JSON key {key!r}",
+            )
+        value[key] = item
+    return value
+
+
+def _parse_json_block(
+    label: str,
+    body: str,
+    *,
+    reject_duplicate_keys: bool = False,
+) -> Any:
     if not body:
         return None
     try:
-        return json.loads(body)
+        return json.loads(
+            body,
+            object_pairs_hook=_reject_duplicate_file_keys if reject_duplicate_keys else None,
+        )
     except json.JSONDecodeError as e:
         raise KernelSplitterError(
             f"{label} block is not valid JSON: {e}; first 200 chars: {body[:200]!r}"
@@ -1335,19 +1954,21 @@ def parse_kernel_split_response(raw: str) -> Dict[str, Any]:
         raise KernelSplitterError(
             "Response missing <JSON>...</JSON> file block — AI did not follow the response format."
         )
-    files = _parse_json_block("<JSON>", files_body)
+    files = _parse_json_block("<JSON>", files_body, reject_duplicate_keys=True)
     if not isinstance(files, dict):
         raise KernelSplitterError(
             "<JSON> block did not parse to a dict; "
             f"got {type(files).__name__}"
         )
-    files = _normalise_file_map(files)
-    if not files:
-        raise KernelSplitterError("<JSON> block did not contain any source files")
 
     arch_body = _extract_block(_ARCH_BLOCK_RE, raw)
     manifest_body = _extract_block(_MANIFEST_BLOCK_RE, arch_body or raw)
     manifest = _parse_json_block("<synthi_build_manifest>", manifest_body) if manifest_body else None
+    declared_paths = _manifest_declared_generated_paths(manifest)
+
+    files = _normalise_file_map(files, declared_paths=declared_paths)
+    if not files:
+        raise KernelSplitterError("<JSON> block did not contain any generated files")
 
     kernel_hashes_body = _extract_block(_KERNEL_HASHES_BLOCK_RE, arch_body or raw)
     kernel_hashes = _parse_json_block("<synthi_kernel_hashes>", kernel_hashes_body) or {}
@@ -1382,11 +2003,13 @@ def _manifest_device_path(
     module_files = manifest.get("module_files") if isinstance(manifest, Mapping) else None
     if isinstance(module_files, Mapping):
         device = module_files.get("device")
-        if isinstance(device, str) and device.strip() in files:
-            return device.strip()
-    for path in sorted(files):
-        if path.replace("\\", "/").lower().endswith((".cu", ".hip")):
-            return path
+        if isinstance(device, str) and device:
+            try:
+                declared = normalize_generated_relative_path(device)
+            except GeneratedPathViolation:
+                return None
+            if declared in files:
+                return declared
     return None
 
 
@@ -1439,12 +2062,13 @@ def _core_path_for_generated_split(
     module_files = manifest.get("module_files") if isinstance(manifest, Mapping) else None
     if isinstance(module_files, Mapping):
         core = module_files.get("core")
-        if isinstance(core, str) and core.strip() in files:
-            return core.strip()
-    for path in sorted(files):
-        normalized = path.replace("\\", "/").lower()
-        if normalized.endswith("core.cpp") or normalized.endswith("/core.cpp"):
-            return path
+        if isinstance(core, str) and core:
+            try:
+                declared = normalize_generated_relative_path(core)
+            except GeneratedPathViolation:
+                return None
+            if declared in files:
+                return declared
     return None
 
 
@@ -1605,6 +2229,11 @@ async def run_kernel_splitter(
     api_key: Optional[str] = None,
     files: Optional[Sequence[Mapping[str, Any]]] = None,
     focus: Optional[str] = None,
+    gpu_arch_hint: Optional[str] = None,
+    require_provider_call: bool = False,
+    provider_call_request: Optional[Mapping[str, Any]] = None,
+    provider_call_request_hash: Optional[str] = None,
+    provider_call_binding_instructions: Optional[str] = None,
 ) -> KernelSplitResult:
     """Run the Kernel Splitter Agent end-to-end.
 
@@ -1665,6 +2294,118 @@ async def run_kernel_splitter(
             ),
             source_context_report=source_context_report,
         )
+    try:
+        deterministic = try_build_deterministic_gpu_split(
+            source_files=scoped_source_map,
+            source_context_report=source_context_report,
+            vendor_hint=(
+                _runtime_vendor_hint()
+                or (detection.vendor_hint if detection is not None else None)
+            ),
+            arch_hint=gpu_arch_hint or _runtime_arch_hint(),
+            focus=focus,
+        )
+    except DeterministicGpuSplitUnsupported as exc:
+        source_context_report = dict(source_context_report)
+        source_context_report["deterministicSplit"] = {
+            **exc.report,
+            "supported": False,
+            "reasonCode": exc.reason_code,
+            "message": str(exc),
+        }
+    else:
+        parsed = {
+            "files": deterministic.files,
+            "manifest": deterministic.manifest,
+            "architecture_md": deterministic.architecture_md,
+            "launch_graph": deterministic.launch_graph,
+        }
+        arch_list: List[str] = []
+        gpu_block = deterministic.manifest.get("gpu") if isinstance(deterministic.manifest, dict) else None
+        if isinstance(gpu_block, Mapping):
+            arch_value = gpu_block.get("arch")
+            if isinstance(arch_value, list):
+                arch_list = [str(a) for a in arch_value]
+        verification = verify_split_output(
+            files=parsed["files"],
+            manifest_arch=arch_list,
+            manifest=deterministic.manifest,
+            source_files=scoped_source_map,
+        )
+        parsed["files"], verification, stable_repair_report = _apply_split_repairs_until_stable(
+            files=parsed["files"],
+            manifest=deterministic.manifest,
+            manifest_arch=arch_list,
+            source_files=scoped_source_map,
+            verification=verification,
+            protected_generated_kernels=_deterministic_protected_kernel_names(
+                deterministic.report
+            ),
+        )
+        parsed["kernel_hashes"] = _kernel_hashes_for_generated_split(
+            files=parsed["files"],
+            manifest=deterministic.manifest,
+            source_files=scoped_source_map,
+        )
+        stamped_files = _stamp_core_device_kernel_sig_hashes(
+            files=parsed["files"],
+            manifest=deterministic.manifest,
+            kernel_hashes=parsed["kernel_hashes"],
+        )
+        if stamped_files != parsed["files"]:
+            parsed["files"] = stamped_files
+            verification = verify_split_output(
+                files=parsed["files"],
+                manifest_arch=arch_list,
+                manifest=deterministic.manifest,
+                source_files=scoped_source_map,
+            )
+        deterministic_report = {
+            "schemaVersion": REPAIR_SCHEMA_VERSION,
+            "repaired": False,
+            "scope": "deterministic_static_splitter",
+            "deterministicSplit": deterministic.report,
+            "providerCallUsed": False,
+            "inputReasonCodes": [],
+            "repairRules": [],
+            "changedFiles": [],
+            "passes": [],
+            "remainingReasonCodes": _reason_codes(verification),
+        }
+        source_context_report = dict(source_context_report)
+        merged_deterministic_report = _merge_split_repair_reports(
+            deterministic_report,
+            stable_repair_report,
+        )
+        if verification.ok:
+            if not require_provider_call:
+                source_context_report["deterministicSplit"] = deterministic.report
+                return KernelSplitResult(
+                    files=parsed["files"],
+                    manifest=deterministic.manifest,
+                    architecture_md=parsed["architecture_md"],
+                    kernel_hashes=parsed["kernel_hashes"],
+                    launch_graph=parsed["launch_graph"],
+                    source_context_report=source_context_report,
+                    verification=verification,
+                    repair_report=merged_deterministic_report,
+                    raw_response="",
+                )
+            source_context_report["deterministicSplit"] = {
+                **deterministic.report,
+                "supported": True,
+                "selected": False,
+                "providerCallRequired": True,
+                "reasonCode": "provider_call_required_by_caller",
+            }
+        else:
+            source_context_report["deterministicSplit"] = {
+                **deterministic.report,
+                "supported": False,
+                "reasonCode": "deterministic_split_verifier_rejected",
+                "verifierReasonCodes": _reason_codes(verification),
+                "repairReport": merged_deterministic_report,
+            }
     prompt = build_prompt(
         user_code,
         detection=detection,
@@ -1690,7 +2431,51 @@ async def run_kernel_splitter(
         ),
     )
 
+    provider_receipt: Optional[dict] = None
+    provider_challenge: Optional[dict] = None
     try:
+        expected_provider_request: Optional[dict] = None
+        expected_provider_request_hash: Optional[str] = None
+        if require_provider_call:
+            expected_provider_request, expected_provider_request_hash = provider_call_request_binding(
+                nonce=str((provider_call_request or {}).get("nonce") or ""),
+                user_code=user_code,
+                lang=lang,
+                files=files,
+                focus=focus,
+                provider=str(getattr(provider, "name", "") or "").strip().lower(),
+                model=model,
+                gpu_arch_hint=gpu_arch_hint,
+                extra_instructions=provider_call_binding_instructions,
+            )
+            if dict(provider_call_request or {}) != expected_provider_request:
+                raise ValueError("provider call request binding does not match split request")
+            if provider_call_request_hash != expected_provider_request_hash:
+                raise ValueError("provider call request hash does not match split request")
+            provider_challenge, challenge_contract = _provider_call_challenge(
+                request_binding=expected_provider_request,
+                request_hash=expected_provider_request_hash,
+                prompt_payload=prompt,
+            )
+            prompt = f"{prompt}{challenge_contract}"
+        preflight = await _run_provider_preflight(
+            provider,
+            model=model,
+            api_key=api_key,
+            mode="split",
+            request_mode="split",
+        )
+        if preflight.get("ok") is False:
+            raise KernelSplitProviderPreflightError(
+                _provider_preflight_failure_reason(preflight),
+                _provider_preflight_failure_message(preflight),
+                provider=str(preflight.get("provider") or getattr(provider, "name", "")),
+                metadata=preflight,
+            )
+        if require_provider_call:
+            setattr(provider, "last_call_metadata", {})
+        started_monotonic_ns = time.monotonic_ns()
+        started_unix_ns = time.time_ns()
         raw = await provider.ask_llm(
             user_code,
             lang,
@@ -1702,8 +2487,22 @@ async def run_kernel_splitter(
             api_key=api_key,
             request_mode="split",
         )
+        completed_monotonic_ns = time.monotonic_ns()
+        completed_unix_ns = time.time_ns()
+        if require_provider_call:
+            provider_receipt = _provider_call_receipt(
+                request_binding=expected_provider_request or {},
+                request_hash=expected_provider_request_hash or "",
+                challenge=provider_challenge or {},
+                raw_response=raw,
+                provider_metadata=dict(getattr(provider, "last_call_metadata", {}) or {}),
+                started_monotonic_ns=started_monotonic_ns,
+                completed_monotonic_ns=completed_monotonic_ns,
+                started_unix_ns=started_unix_ns,
+                completed_unix_ns=completed_unix_ns,
+            )
     except Exception as exc:
-        raise KernelSplitProviderError(exc) from exc
+        raise KernelSplitProviderError(exc) from None
 
     parsed = parse_kernel_split_response(raw)
     arch_list: List[str] = []
@@ -1763,5 +2562,6 @@ async def run_kernel_splitter(
         source_context_report=source_context_report,
         verification=verification,
         repair_report=repair_report,
+        provider_call_receipt=provider_receipt,
         raw_response=raw,
     )

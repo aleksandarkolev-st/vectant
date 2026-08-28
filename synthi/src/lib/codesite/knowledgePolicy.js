@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { EXPERTISE_POLICY, resolveExpertisePolicy } from './expertisePolicy';
 
 export const KNOWLEDGE_KINDS = Object.freeze([
   'discovery',
@@ -6,6 +7,7 @@ export const KNOWLEDGE_KINDS = Object.freeze([
   'shared_skill',
   'impact_notice',
   'handoff',
+  'agent_question',
 ]);
 
 export const KNOWLEDGE_REFERENCE_LIMITS = Object.freeze({
@@ -26,6 +28,8 @@ const KIND_ALIASES = new Map([
   ['impact_notice', 'impact_notice'],
   ['impactnotice', 'impact_notice'],
   ['handoff', 'handoff'],
+  ['agent_question', 'agent_question'],
+  ['question', 'agent_question'],
 ]);
 
 const KNOWLEDGE_STATUSES = Object.freeze({
@@ -34,6 +38,19 @@ const KNOWLEDGE_STATUSES = Object.freeze({
   shared_skill: Object.freeze(['draft', 'pending_review', 'published', 'rejected', 'deprecated', 'revoked']),
   impact_notice: Object.freeze(['pending', 'acknowledged', 'rebasing', 'resolved', 'irrelevant', 'aborted', 'expired']),
   handoff: Object.freeze(['draft', 'ready', 'acknowledged', 'reopened', 'completed', 'declined', 'cancelled', 'expired']),
+  agent_question: Object.freeze(['open', 'answered', 'stale', 'archived']),
+});
+
+// Only evidence that has reached a project-trusted state may influence
+// expertise. This is policy, not agent data: records that are still drafts,
+// rejected, stale, dismissed, or archived must not make an agent look more
+// knowledgeable than the control plane has established.
+export const EXPERTISE_ELIGIBLE_KNOWLEDGE_STATUSES = Object.freeze({
+  discovery: Object.freeze(['verified']),
+  lead: Object.freeze(['open', 'claimed', 'escalated', 'resolved']),
+  shared_skill: Object.freeze(['published']),
+  handoff: Object.freeze(['ready', 'acknowledged', 'reopened', 'completed']),
+  agent_question: Object.freeze(['answered']),
 });
 
 const DEFAULT_STATUS = Object.freeze({
@@ -42,6 +59,7 @@ const DEFAULT_STATUS = Object.freeze({
   shared_skill: 'draft',
   impact_notice: 'pending',
   handoff: 'draft',
+  agent_question: 'open',
 });
 
 const STATUS_TRANSITIONS = Object.freeze({
@@ -87,10 +105,22 @@ const STATUS_TRANSITIONS = Object.freeze({
     cancelled: Object.freeze([]),
     expired: Object.freeze([]),
   }),
+  agent_question: Object.freeze({
+    open: Object.freeze(['answered', 'stale', 'archived']),
+    answered: Object.freeze(['stale', 'archived']),
+    stale: Object.freeze(['archived']),
+    archived: Object.freeze([]),
+  }),
 });
 
-const VISIBILITIES = new Set(['project', 'restricted', 'owner_private']);
-const REDACTION_CLASSES = new Set(['project_fact', 'project_notice', 'owner_private']);
+const VISIBILITIES = new Set(['project', 'restricted', 'owner_private', 'workspace', 'learning_network']);
+const REDACTION_CLASSES = new Set([
+  'project_fact',
+  'project_notice',
+  'owner_private',
+  'workspace_fact',
+  'learning_network_fact',
+]);
 const SOURCE_ACTOR_TYPES = new Set(['human', 'agent', 'runtime', 'adapter', 'system']);
 const LEAD_PRIORITIES = new Set(['low', 'medium', 'high', 'critical']);
 const DISCOVERY_VERIFICATIONS = new Set(['unverified', 'verified', 'rejected']);
@@ -467,6 +497,12 @@ function normalizeCommon(input, kind) {
   if (visibility === 'owner_private' && redactionClass !== 'owner_private') {
     throw policyError('knowledge_private_visibility_redaction_mismatch');
   }
+  if (visibility === 'workspace' && redactionClass !== 'workspace_fact') {
+    throw policyError('knowledge_workspace_visibility_redaction_mismatch');
+  }
+  if (visibility === 'learning_network' && redactionClass !== 'learning_network_fact') {
+    throw policyError('knowledge_learning_network_visibility_redaction_mismatch');
+  }
   const references = normalizeKnowledgeReferences(input);
   if (referenceCount(references) === 0) throw policyError('knowledge_references_required');
   return {
@@ -517,8 +553,16 @@ function normalizeSharedSkill(input, common) {
   if (common.evidenceRefs.length === 0) throw policyError('knowledge_skill_evidence_required');
   const skillKey = normalizeId(input.skillKey || input.skill_key || input.name, 'skill_key');
   const recipe = validateSharedSkillRecipe(input.recipe, { approvals: input.approvals || {} });
-  if (common.status === 'published' && common.visibility !== 'project' && common.visibility !== 'restricted') {
+  if (common.status === 'published' && !['project', 'restricted', 'workspace', 'learning_network'].includes(common.visibility)) {
     throw policyError('knowledge_skill_published_visibility_invalid');
+  }
+  if (['workspace', 'learning_network'].includes(common.visibility)) {
+    if (common.status !== 'published' || common.confidence == null || common.confidence < 0.8) {
+      throw policyError('knowledge_learning_skill_verification_required');
+    }
+    if (recipe.actionClass !== 'read_only' || recipe.workingDirectory || recipe.requiredEnvironmentKeys.length) {
+      throw policyError('knowledge_learning_skill_recipe_not_portable');
+    }
   }
   return { ...common, skillKey, recipe };
 }
@@ -555,15 +599,51 @@ function normalizeHandoff(input, common) {
   };
 }
 
-export function validateKnowledgeItem(input) {
+const QUESTION_URGENCIES = new Set(['low', 'normal', 'high']);
+
+function normalizeAgentQuestion(input, common, policy = EXPERTISE_POLICY) {
+  const config = resolveExpertisePolicy(policy);
+  const urgency = String(input.urgency || 'normal').trim().toLowerCase();
+  if (!QUESTION_URGENCIES.has(urgency)) throw policyError('knowledge_question_urgency_invalid', { allowedUrgencies: [...QUESTION_URGENCIES] });
+  const suggested = (input.suggestedExpertAgentSessionIds || input.suggested_expert_agent_session_ids) == null
+    ? []
+    : normalizedTextList(
+      input.suggestedExpertAgentSessionIds || input.suggested_expert_agent_session_ids,
+      'question_suggested_expert_agent_session_ids',
+      { limit: config.limits.maxSuggestedExperts, maxLength: KNOWLEDGE_REFERENCE_LIMITS.idLength, allowEmpty: true },
+    ).map((value) => normalizeId(value, 'question_suggested_expert_agent_session_id'));
+  const allowUnrouted = input.allowUnrouted === true || input.allow_unrouted === true;
+  if (!suggested.length && !input.skipSuggestionValidation && !allowUnrouted) {
+    // A question with no suggested expert and no explicit unrouted flag is a
+    // broadcast in disguise; refuse it rather than spamming every peer.
+    throw policyError('knowledge_question_experts_or_unrouted_required');
+  }
+  return {
+    ...common,
+    questionUrgency: urgency,
+    suggestedExpertAgentSessionIds: [...new Set(suggested)],
+    // Stored rows carry answerText/answeredByAgentSessionId once answered;
+    // preserve them through projection re-validation instead of resetting.
+    answerText: optionalText(input.answerText || input.answer_text, 'question_answer_text', 4096),
+    answeredByAgentSessionId: normalizeId(
+      input.answeredByAgentSessionId || input.answered_by_agent_session_id,
+      'question_answered_by_agent_session_id',
+      { required: false },
+    ),
+  };
+}
+
+export function validateKnowledgeItem(input, policy = EXPERTISE_POLICY) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw policyError('knowledge_item_invalid');
   assertNoPrivateMaterial(input);
+  const config = resolveExpertisePolicy(policy);
   const kind = normalizeKind(input.kind || input.type);
   const common = normalizeCommon(input, kind);
   if (kind === 'discovery') return normalizeDiscovery(input, common);
   if (kind === 'lead') return normalizeLead(input, common);
   if (kind === 'shared_skill') return normalizeSharedSkill(input, common);
   if (kind === 'impact_notice') return normalizeImpactNotice(input, common);
+  if (kind === 'agent_question') return normalizeAgentQuestion(input, common, config);
   return normalizeHandoff(input, common);
 }
 
@@ -573,8 +653,14 @@ export function allowedKnowledgeTransitions(kindInput, statusInput) {
   return [...STATUS_TRANSITIONS[kind][status]];
 }
 
+export function isKnowledgeExpertiseEligible(item = {}) {
+  const kind = String(item.kind || '').trim().toLowerCase();
+  const status = String(item.status || '').trim().toLowerCase();
+  return Boolean(EXPERTISE_ELIGIBLE_KNOWLEDGE_STATUSES[kind]?.includes(status));
+}
+
 export function transitionKnowledgeItem(input, nextStatusInput, context = {}) {
-  const item = validateKnowledgeItem(input);
+  const item = validateKnowledgeItem(input, context.policy || EXPERTISE_POLICY);
   const nextStatus = normalizeStatus(item.kind, nextStatusInput);
   if (nextStatus === item.status) return item;
   const allowed = STATUS_TRANSITIONS[item.kind][item.status];
@@ -617,8 +703,8 @@ function safeSource(source) {
   };
 }
 
-export function safeKnowledgeProjection(input) {
-  const item = validateKnowledgeItem(input);
+export function safeKnowledgeProjection(input, policy = EXPERTISE_POLICY) {
+  const item = validateKnowledgeItem(input, policy);
   const base = {
     id: item.id,
     kind: item.kind,
@@ -656,6 +742,16 @@ export function safeKnowledgeProjection(input) {
       responseAction: item.responseAction,
     };
   }
+  if (item.kind === 'agent_question') {
+    return {
+      ...base,
+      questionUrgency: item.questionUrgency,
+      suggestedExpertAgentSessionIds: item.suggestedExpertAgentSessionIds,
+      fromAgentSessionId: item.source?.agentSessionId || null,
+      answerText: item.answerText,
+      answeredByAgentSessionId: item.answeredByAgentSessionId,
+    };
+  }
   return {
     ...base,
     fromAgentSessionId: item.fromAgentSessionId,
@@ -671,15 +767,21 @@ function canonical(value) {
   return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
 }
 
-export function knowledgeDedupeKey(input) {
-  const item = safeKnowledgeProjection(input);
-  const identity = {
-    kind: item.kind,
-    projectId: item.projectId,
-    title: item.title.toLowerCase(),
-    summary: item.summary,
-    references: item.references,
-  };
+export function knowledgeDedupeKey(input, policy = EXPERTISE_POLICY) {
+  const item = safeKnowledgeProjection(input, policy);
+  const identity = item.kind === 'agent_question'
+    ? {
+      kind: item.kind,
+      projectId: item.projectId,
+      references: item.references,
+    }
+    : {
+      kind: item.kind,
+      projectId: item.projectId,
+      title: item.title.toLowerCase(),
+      summary: item.summary,
+      references: item.references,
+    };
   if (item.kind === 'shared_skill') {
     identity.skillKey = item.skillKey;
     identity.commands = Object.fromEntries(item.recipe.commands.map((command, index) => [String(index), command]));
@@ -689,6 +791,11 @@ export function knowledgeDedupeKey(input) {
   } else if (item.kind === 'handoff') {
     identity.fromAgentSessionId = item.fromAgentSessionId;
     identity.toAgentSessionId = item.toAgentSessionId;
+  } else if (item.kind === 'agent_question') {
+    // Questions dedupe on asker + references so a re-ask of the identical
+    // question (even after an answer) returns the existing thread instead of
+    // spawning duplicate notifications.
+    identity.fromAgentSessionId = item.source?.agentSessionId || null;
   }
   const digest = crypto.createHash('sha256').update(JSON.stringify(canonical(identity))).digest('hex');
   return `knowledge:${item.kind}:${digest}`;

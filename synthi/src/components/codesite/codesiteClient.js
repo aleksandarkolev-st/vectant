@@ -1,3 +1,5 @@
+import { EXPERTISE_POLICY } from '../../lib/codesite/expertisePolicy';
+
 const BASE = '/api/workspace';
 
 export const CODE_SITE_LIVE_EVENT_TYPES = Object.freeze([
@@ -30,6 +32,13 @@ export const CODE_SITE_LIVE_EVENT_TYPES = Object.freeze([
   'policy_delta_proposed',
   'policy_delta_promoted',
   'policy_delta_rejected',
+  'fleet_notam_published',
+  'fleet_notam_adopt',
+  'fleet_notam_mute',
+  'fleet_notam_dismiss',
+  'fleet_notam_reactivate',
+  'fleet_notam_withdrawn',
+  'fleet_notam_superseded',
   'rfi',
   'change_order',
   'route_deviation',
@@ -47,10 +56,14 @@ export const CODE_SITE_LIVE_EVENT_TYPES = Object.freeze([
   'lead_dismissed',
   'shared_skill_published',
   'shared_skill_updated',
+  'workspace_learning_adopted',
   'impact_notice_created',
   'impact_notice_responded',
   'handoff_ready',
   'handoff_acknowledged',
+  'agent_question_asked',
+  'agent_question_answered',
+  'agent_question_feedback_submitted',
   'codesite_stream_error',
 ]);
 
@@ -60,6 +73,7 @@ const PROJECT_KNOWLEDGE_KINDS = new Set([
   'shared_skill',
   'impact_notice',
   'handoff',
+  'agent_question',
 ]);
 const PROJECT_KNOWLEDGE_STATUS_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 
@@ -88,7 +102,12 @@ async function request(path, init = {}) {
 }
 
 function uniqueValues(values) {
-  return [...new Set((Array.isArray(values) ? values : []).filter(Boolean).map((value) => String(value)))];
+  const input = Array.isArray(values) ? values : values == null ? [] : [values];
+  return [...new Set(input.filter(Boolean).map((value) => String(value)))];
+}
+
+function appendQueryValues(search, key, value) {
+  for (const entry of uniqueValues(value)) search.append(key, entry);
 }
 
 function codeSiteBase(workspaceSlug) {
@@ -211,6 +230,85 @@ export async function fetchCodeSiteEvents(workspaceSlug, projectId) {
   return body.events || [];
 }
 
+export async function fetchCodeSiteFleetNotams(workspaceSlug, projectId, options = {}) {
+  if (!workspaceSlug || !projectId) return { advisories: [], suppressed: 0 };
+  const input = options && typeof options === 'object' && !Array.isArray(options) ? options : {};
+  const search = new URLSearchParams();
+  for (const key of ['includeOwn', 'includeMuted', 'includeInactive']) {
+    if (input[key] === true) {
+      search.set(key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`), 'true');
+    }
+  }
+  if (typeof input.route === 'string' && input.route.trim()) search.set('route', input.route.trim());
+  const query = search.toString();
+  const body = await request(`${projectBase(workspaceSlug, projectId)}/fleet-notams${query ? `?${query}` : ''}`);
+  return {
+    advisories: Array.isArray(body.advisories) ? body.advisories : [],
+    suppressed: Number.isFinite(Number(body.suppressed)) ? Number(body.suppressed) : 0,
+  };
+}
+
+export async function publishCodeSiteFleetNotam(workspaceSlug, projectId, payload = {}) {
+  if (!workspaceSlug || !projectId) return null;
+  const body = await request(`${projectBase(workspaceSlug, projectId)}/fleet-notams/publish`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  return body.fleetNotam || null;
+}
+
+export async function decideCodeSiteFleetNotam(workspaceSlug, projectId, notamId, payload = {}) {
+  if (!workspaceSlug || !projectId || !notamId) return null;
+  const body = await request(
+    `${projectBase(workspaceSlug, projectId)}/fleet-notams/${encodeURIComponent(notamId)}/decision`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+  return body.fleetNotam || null;
+}
+
+export async function withdrawCodeSiteFleetNotam(workspaceSlug, projectId, notamId, payload = {}) {
+  if (!workspaceSlug || !projectId || !notamId) return null;
+  const body = await request(
+    `${projectBase(workspaceSlug, projectId)}/fleet-notams/${encodeURIComponent(notamId)}/withdraw`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+  return body.fleetNotam || null;
+}
+
+export async function supersedeCodeSiteFleetNotam(workspaceSlug, projectId, notamId, payload = {}) {
+  if (!workspaceSlug || !projectId || !notamId) return null;
+  return request(
+    `${projectBase(workspaceSlug, projectId)}/fleet-notams/${encodeURIComponent(notamId)}/supersede`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+}
+
+export async function fetchCodeSiteLearningCatalog(workspaceSlug, projectId) {
+  if (!workspaceSlug || !projectId) return { learning: [], networkEnabled: false };
+  const body = await request(`${projectBase(workspaceSlug, projectId)}/learning-catalog`);
+  return {
+    learning: Array.isArray(body.learning) ? body.learning : [],
+    networkEnabled: body.networkEnabled === true,
+  };
+}
+
+export async function adoptCodeSiteLearningCatalogEntry(workspaceSlug, projectId, learningId) {
+  if (!workspaceSlug || !projectId || !learningId) return null;
+  return request(
+    `${projectBase(workspaceSlug, projectId)}/learning-catalog/${encodeURIComponent(learningId)}/adopt`,
+    { method: 'POST', body: JSON.stringify({}) },
+  );
+}
+
+export async function updateCodeSiteProjectControlPlan(workspaceSlug, projectId, payload = {}) {
+  if (!workspaceSlug || !projectId) return null;
+  const body = await request(`${projectBase(workspaceSlug, projectId)}/control-plan`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  return body.project || null;
+}
+
 export async function fetchCodeSiteProjectKnowledge(workspaceSlug, projectId, filters = {}) {
   if (!workspaceSlug || !projectId) return [];
   const input = filters && typeof filters === 'object' && !Array.isArray(filters) ? filters : {};
@@ -219,15 +317,80 @@ export async function fetchCodeSiteProjectKnowledge(workspaceSlug, projectId, fi
   const status = typeof input.status === 'string' ? input.status.trim().toLowerCase() : '';
   if (PROJECT_KNOWLEDGE_KINDS.has(kind)) search.set('kind', kind);
   if (PROJECT_KNOWLEDGE_STATUS_PATTERN.test(status)) search.set('status', status);
-  if (Number.isInteger(input.limit) && input.limit >= 1 && input.limit <= 100) {
+  if (
+    Number.isInteger(input.limit) &&
+    input.limit >= 1 &&
+    input.limit <= EXPERTISE_POLICY.knowledge.pageMaxLimit
+  ) {
     search.set('limit', String(input.limit));
+  }
+  if (typeof input.cursor === 'string' && input.cursor.trim()) {
+    search.set('cursor', input.cursor.trim());
   }
   const since = safeKnowledgeSince(input.since);
   if (since) search.set('since', since);
   const query = search.toString();
   const suffix = query ? `?${query}` : '';
   const body = await request(`${projectBase(workspaceSlug, projectId)}/knowledge${suffix}`);
-  return Array.isArray(body.knowledge) ? body.knowledge : [];
+  const knowledge = Array.isArray(body.knowledge) ? body.knowledge : [];
+  if (typeof body.nextCursor === 'string' && body.nextCursor.trim()) {
+    Object.defineProperty(knowledge, 'nextCursor', {
+      value: body.nextCursor.trim(),
+      enumerable: false,
+      configurable: true,
+    });
+  }
+  return knowledge;
+}
+
+export async function fetchCodeSiteProjectExperts(workspaceSlug, projectId, references = {}, options = {}) {
+  if (!workspaceSlug || !projectId) return null;
+  const input = references && typeof references === 'object' && !Array.isArray(references)
+    ? references
+    : {};
+  const search = new URLSearchParams();
+  appendQueryValues(search, 'path', input.paths ?? input.path);
+  appendQueryValues(search, 'symbol', input.symbols ?? input.symbol);
+  appendQueryValues(search, 'contract', input.contracts ?? input.contract);
+  if (Number.isInteger(options?.limit) && options.limit >= 1) {
+    search.set('limit', String(options.limit));
+  }
+  const query = search.toString();
+  return request(`${projectBase(workspaceSlug, projectId)}/experts${query ? `?${query}` : ''}`);
+}
+
+export async function answerCodeSiteProjectQuestion(
+  workspaceSlug,
+  projectId,
+  knowledgeItemId,
+  answer,
+  evidenceRefs = [],
+) {
+  if (!workspaceSlug || !projectId || !knowledgeItemId) return null;
+  return request(`${projectBase(workspaceSlug, projectId)}/questions/${encodeURIComponent(knowledgeItemId)}/answer`, {
+    method: 'POST',
+    body: JSON.stringify({
+      answer: typeof answer === 'string' ? answer : String(answer ?? ''),
+      evidenceRefs: uniqueValues(evidenceRefs),
+    }),
+  });
+}
+
+export async function submitCodeSiteProjectQuestionFeedback(
+  workspaceSlug,
+  projectId,
+  knowledgeItemId,
+  { verdict, correction, evidenceRefs = [] } = {},
+) {
+  if (!workspaceSlug || !projectId || !knowledgeItemId) return null;
+  return request(`${projectBase(workspaceSlug, projectId)}/knowledge/${encodeURIComponent(knowledgeItemId)}/feedback`, {
+    method: 'POST',
+    body: JSON.stringify({
+      verdict: typeof verdict === 'string' ? verdict : String(verdict ?? ''),
+      ...(correction == null ? {} : { correction: typeof correction === 'string' ? correction : String(correction) }),
+      evidenceRefs: uniqueValues(evidenceRefs),
+    }),
+  });
 }
 
 function safeKnowledgeSince(value) {

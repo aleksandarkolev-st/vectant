@@ -1,5 +1,30 @@
-use serde::{Deserialize, Serialize};
+use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+
+use super::compute_expected_output_semantics::ComputeExpectedOutputSemantics;
+
+pub const GPU_PROOF_TRANSPORT_REQUEST_NONCE_PREFIX: &str = "gpu-proof-transport-request:";
+pub const COMPUTE_EXPECTED_OUTPUT_CONTRACT_HASH_PREFIX: &str = "sha256:";
+
+pub fn gpu_proof_transport_request_nonce_valid(value: &str) -> bool {
+    let Some(nonce) = value.strip_prefix(GPU_PROOF_TRANSPORT_REQUEST_NONCE_PREFIX) else {
+        return false;
+    };
+    nonce.len() == 32
+        && nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+pub fn compute_expected_output_contract_hash_valid(value: &str) -> bool {
+    let Some(digest) = value.strip_prefix(COMPUTE_EXPECTED_OUTPUT_CONTRACT_HASH_PREFIX) else {
+        return false;
+    };
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
 
 #[derive(Debug, Deserialize)]
 pub struct IceServerEnv {
@@ -85,6 +110,59 @@ pub struct CompileRequest {
         alias = "require_fresh_ai_split"
     )]
     pub bypass_ai_split_cache: bool,
+    /// Bypass Synthi's device artifact cache and execute the device compiler
+    /// under the recorded cache-control contract. This does not claim an
+    /// observed external cache miss or complete toolchain-input closure.
+    #[serde(default)]
+    pub bypass_device_compile_cache: bool,
+    /// Require the split result to come from an observed AI provider call.
+    /// This is an evidence-mode constraint; deterministic splitting remains
+    /// the default when the caller does not request provider execution.
+    #[serde(
+        default,
+        alias = "require_provider_call",
+        alias = "force_ai_provider_call"
+    )]
+    pub require_ai_provider_call: bool,
+    /// Caller-generated nonce that binds a required provider call to the
+    /// concrete compile request. The worker rejects missing or malformed
+    /// nonces whenever `require_ai_provider_call` is enabled.
+    #[serde(default, alias = "provider_call_nonce", alias = "aiProviderCallNonce")]
+    pub ai_provider_call_nonce: Option<String>,
+    /// MCP-generated nonce that correlates any later parent-observed GPU proof
+    /// with this concrete compile dispatch. It is transport context only and
+    /// cannot authorize GPU HMR by itself.
+    #[serde(
+        default,
+        alias = "gpuProofTransportNonce",
+        deserialize_with = "deserialize_optional_gpu_proof_transport_nonce"
+    )]
+    pub gpu_proof_transport_nonce: Option<String>,
+    /// Caller-owned semantic output expectation captured before compile dispatch.
+    /// The hash is an intent binding only; runtime proof must still carry and
+    /// independently satisfy the matching canonical expected-output contract.
+    #[serde(
+        default,
+        alias = "computeExpectedOutputContractHash",
+        deserialize_with = "deserialize_optional_compute_expected_output_contract_hash"
+    )]
+    pub compute_expected_output_contract_hash: Option<String>,
+    /// Caller-owned output meaning captured before compilation. Its embedded
+    /// hash is recomputed during deserialization; it remains non-authoritative
+    /// until later compiler/runtime stages bind it to immutable artifact bytes.
+    #[serde(default, alias = "computeExpectedOutputSemantics")]
+    pub compute_expected_output_semantics: Option<ComputeExpectedOutputSemantics>,
+    /// Explicit AI provider selected by the caller for split requests.
+    #[serde(
+        default,
+        alias = "provider",
+        alias = "provider_name",
+        alias = "aiProvider"
+    )]
+    pub ai_provider: Option<String>,
+    /// Explicit AI model selected by the caller for split requests.
+    #[serde(default, alias = "model", alias = "model_name", alias = "aiModel")]
+    pub ai_model: Option<String>,
     /// Explicit user request for AI-assisted compilation (Loop B).
     #[serde(default)]
     pub user_requested_ai: bool,
@@ -109,6 +187,10 @@ pub struct CompileRequest {
     /// Same JSON shape as `.synthi_split_meta.json::compile_manifest`.
     #[serde(default, alias = "manifest")]
     pub compile_manifest: Option<serde_json::Value>,
+    /// Source-first request metadata forwarded across the compile wire.
+    /// This wire-only field is not interpreted as compile or runtime authority.
+    #[serde(default, deserialize_with = "deserialize_optional_json_object")]
+    pub source_first_request_intent: Option<serde_json::Value>,
     /// Target platform for execution: "native" (default), "react-native-emulator", etc.
     #[serde(default)]
     pub target: Option<String>,
@@ -122,6 +204,56 @@ pub struct CompileRequest {
 
 fn default_prefer_gpu_pipeline() -> bool {
     true
+}
+
+fn deserialize_optional_json_object<'de, D>(
+    deserializer: D,
+) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if value.is_object() {
+        Ok(Some(value))
+    } else {
+        Err(D::Error::custom("expected a JSON object"))
+    }
+}
+
+fn deserialize_optional_gpu_proof_transport_nonce<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    if value
+        .as_deref()
+        .is_some_and(|value| !gpu_proof_transport_request_nonce_valid(value))
+    {
+        return Err(D::Error::custom(
+            "invalid GPU proof transport request nonce",
+        ));
+    }
+    Ok(value)
+}
+
+fn deserialize_optional_compute_expected_output_contract_hash<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    if value
+        .as_deref()
+        .is_some_and(|value| !compute_expected_output_contract_hash_valid(value))
+    {
+        return Err(D::Error::custom(
+            "invalid compute expected-output contract hash",
+        ));
+    }
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -142,6 +274,39 @@ mod tests {
         let req: CompileRequest = serde_json::from_value(base_request()).expect("compile request");
 
         assert!(!req.bypass_ai_split_cache);
+        assert!(!req.bypass_device_compile_cache);
+        assert!(!req.require_ai_provider_call);
+        assert!(req.ai_provider_call_nonce.is_none());
+        assert!(req.gpu_proof_transport_nonce.is_none());
+        assert!(req.compute_expected_output_contract_hash.is_none());
+        assert!(req.ai_provider.is_none());
+        assert!(req.ai_model.is_none());
+    }
+
+    #[test]
+    fn compile_request_requires_honest_device_cache_bypass_field() {
+        let mut canonical = base_request();
+        canonical
+            .as_object_mut()
+            .expect("object")
+            .insert("bypass_device_compile_cache".to_string(), json!(true));
+        let req: CompileRequest =
+            serde_json::from_value(canonical).expect("canonical compile request");
+        assert!(req.bypass_device_compile_cache);
+
+        for field in ["force_fresh_device_compile", "require_fresh_device_compile"] {
+            let mut raw = base_request();
+            raw.as_object_mut()
+                .expect("object")
+                .insert(field.to_string(), json!(true));
+
+            let req: CompileRequest = serde_json::from_value(raw).expect("compile request");
+
+            assert!(
+                !req.bypass_device_compile_cache,
+                "misleading legacy alias must not assert a cache miss: {field}"
+            );
+        }
     }
 
     #[test]
@@ -160,6 +325,234 @@ mod tests {
             let req: CompileRequest = serde_json::from_value(raw).expect("compile request");
 
             assert!(req.bypass_ai_split_cache, "alias {field}");
+        }
+    }
+
+    #[test]
+    fn compile_request_accepts_provider_call_requirement_aliases() {
+        for field in [
+            "require_ai_provider_call",
+            "require_provider_call",
+            "force_ai_provider_call",
+        ] {
+            let mut raw = base_request();
+            raw.as_object_mut()
+                .expect("object")
+                .insert(field.to_string(), json!(true));
+
+            let req: CompileRequest = serde_json::from_value(raw).expect("compile request");
+
+            assert!(req.require_ai_provider_call, "alias {field}");
+        }
+    }
+
+    #[test]
+    fn compile_request_accepts_provider_call_nonce_aliases() {
+        for field in [
+            "ai_provider_call_nonce",
+            "provider_call_nonce",
+            "aiProviderCallNonce",
+        ] {
+            let mut raw = base_request();
+            raw.as_object_mut().expect("object").insert(
+                field.to_string(),
+                json!("provider-call:0123456789abcdef0123456789abcdef"),
+            );
+
+            let req: CompileRequest = serde_json::from_value(raw).expect("compile request");
+
+            assert_eq!(
+                req.ai_provider_call_nonce.as_deref(),
+                Some("provider-call:0123456789abcdef0123456789abcdef"),
+                "alias {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn compile_request_accepts_gpu_proof_transport_nonce_alias() {
+        for field in ["gpu_proof_transport_nonce", "gpuProofTransportNonce"] {
+            let mut raw = base_request();
+            raw.as_object_mut().expect("object").insert(
+                field.to_string(),
+                json!("gpu-proof-transport-request:0123456789abcdef0123456789abcdef"),
+            );
+
+            let req: CompileRequest = serde_json::from_value(raw).expect("compile request");
+
+            assert_eq!(
+                req.gpu_proof_transport_nonce.as_deref(),
+                Some("gpu-proof-transport-request:0123456789abcdef0123456789abcdef"),
+                "alias {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn compile_request_rejects_invalid_gpu_proof_transport_nonce() {
+        for value in [
+            "",
+            "gpu-proof-transport-request:",
+            "gpu-proof-transport-request:ABCDEF0123456789abcdef0123456789",
+            "gpu-proof-transport-request:0123456789abcdef0123456789abcdeg",
+            "provider-call:0123456789abcdef0123456789abcdef",
+        ] {
+            let mut raw = base_request();
+            raw.as_object_mut()
+                .expect("object")
+                .insert("gpu_proof_transport_nonce".to_string(), json!(value));
+
+            assert!(
+                serde_json::from_value::<CompileRequest>(raw).is_err(),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn compile_request_accepts_compute_expected_output_contract_hash_alias() {
+        let expected = format!("sha256:{}", "a".repeat(64));
+        for field in [
+            "compute_expected_output_contract_hash",
+            "computeExpectedOutputContractHash",
+        ] {
+            let mut raw = base_request();
+            raw.as_object_mut()
+                .expect("object")
+                .insert(field.to_string(), json!(expected));
+
+            let req: CompileRequest = serde_json::from_value(raw).expect("compile request");
+
+            assert_eq!(
+                req.compute_expected_output_contract_hash.as_deref(),
+                Some(expected.as_str()),
+                "alias {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn compile_request_accepts_absent_or_null_compute_expected_output_contract_hash() {
+        let absent: CompileRequest =
+            serde_json::from_value(base_request()).expect("absent contract hash");
+        assert!(absent.compute_expected_output_contract_hash.is_none());
+
+        let mut raw = base_request();
+        raw.as_object_mut().expect("object").insert(
+            "compute_expected_output_contract_hash".to_string(),
+            json!(null),
+        );
+        let null: CompileRequest = serde_json::from_value(raw).expect("null contract hash");
+        assert!(null.compute_expected_output_contract_hash.is_none());
+    }
+
+    #[test]
+    fn compile_request_rejects_noncanonical_compute_expected_output_contract_hash() {
+        for value in [
+            "",
+            " sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ",
+            "SHA256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaag",
+        ] {
+            let mut raw = base_request();
+            raw.as_object_mut().expect("object").insert(
+                "compute_expected_output_contract_hash".to_string(),
+                json!(value),
+            );
+
+            assert!(
+                serde_json::from_value::<CompileRequest>(raw).is_err(),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn compile_request_accepts_canonical_compute_expected_output_semantics() {
+        let semantics = json!({
+            "schemaVersion": "synthi.gpu_hmr.compute_expected_output_semantics.v1",
+            "comparisonMode": "exact_bytes",
+            "outputTargetId": "output:tensor:0",
+            "byteOffset": 64,
+            "byteLength": 16,
+            "dtype": "u32",
+            "shape": [2, 2],
+            "elementCount": 4,
+            "byteOrder": "little_endian",
+            "toleranceDecimal": "0",
+            "expectedValuesDecimal": null,
+            "expectedValuesHash": null,
+            "expectedRawHash": format!("sha256:{}", "a".repeat(64)),
+            "semanticsHash": "sha256:cd7074de01fc4bc0fb0eab922f457e4499c886128cadff30232b7e5f6df3bdde",
+        });
+        for field in [
+            "compute_expected_output_semantics",
+            "computeExpectedOutputSemantics",
+        ] {
+            let mut raw = base_request();
+            raw.as_object_mut()
+                .expect("object")
+                .insert(field.to_string(), semantics.clone());
+
+            let request: CompileRequest =
+                serde_json::from_value(raw).expect("canonical semantic preimage");
+            let accepted = request
+                .compute_expected_output_semantics
+                .expect("semantic preimage");
+            assert_eq!(
+                accepted.semantics_hash(),
+                "sha256:cd7074de01fc4bc0fb0eab922f457e4499c886128cadff30232b7e5f6df3bdde"
+            );
+        }
+    }
+
+    #[test]
+    fn compile_request_rejects_semantics_with_rehashed_but_invalid_fields() {
+        let mut raw = base_request();
+        raw.as_object_mut().expect("object").insert(
+            "compute_expected_output_semantics".to_string(),
+            json!({
+                "schemaVersion": "synthi.gpu_hmr.compute_expected_output_semantics.v1",
+                "comparisonMode": "exact_bytes",
+                "outputTargetId": "output:tensor:0",
+                "byteOffset": 2,
+                "byteLength": 16,
+                "dtype": "u32",
+                "shape": [2, 2],
+                "elementCount": 4,
+                "byteOrder": "little_endian",
+                "toleranceDecimal": "0",
+                "expectedValuesDecimal": null,
+                "expectedValuesHash": null,
+                "expectedRawHash": format!("sha256:{}", "a".repeat(64)),
+                "semanticsHash": format!("sha256:{}", "b".repeat(64)),
+            }),
+        );
+
+        assert!(serde_json::from_value::<CompileRequest>(raw).is_err());
+    }
+
+    #[test]
+    fn compile_request_accepts_provider_and_model_aliases() {
+        for (provider_field, model_field) in [
+            ("ai_provider", "ai_model"),
+            ("provider", "model"),
+            ("provider_name", "model_name"),
+            ("aiProvider", "aiModel"),
+        ] {
+            let mut raw = base_request();
+            let object = raw.as_object_mut().expect("object");
+            object.insert(provider_field.to_string(), json!("generic-provider"));
+            object.insert(model_field.to_string(), json!("generic-model"));
+
+            let req: CompileRequest = serde_json::from_value(raw).expect("compile request");
+
+            assert_eq!(req.ai_provider.as_deref(), Some("generic-provider"));
+            assert_eq!(req.ai_model.as_deref(), Some("generic-model"));
         }
     }
 }

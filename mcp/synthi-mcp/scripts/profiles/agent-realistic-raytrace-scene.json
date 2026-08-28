@@ -1,0 +1,186 @@
+{
+  "schemaVersion": "synthi.gpu_hmr.agent_split_visual_profile.v1",
+  "profileId": "agent-realistic-raytrace-scene",
+  "profileClass": "generated_rocm_hip_preview_visual",
+  "source": {
+    "entryPath": "src/main.cpp",
+    "fixture": "realistic-raytrace",
+    "files": [
+      {
+        "path": "src/main.cpp",
+        "sourcePath": "sources/agent-realistic-raytrace-scene/main.cpp",
+        "contentHash": "sha256:20f72849bfe5ac1328a3bec28c39501eb78fe48cff6ecd48a86af81129bce96e"
+      },
+      {
+        "path": "src/scene_config.h",
+        "sourcePath": "sources/agent-realistic-raytrace-scene/scene_config.h",
+        "contentHash": "sha256:347d94f7f096ecbfaa1bc25817ebb09a7f1e1b50fd727d6e05d7a38eb2fb96f6"
+      }
+    ]
+  },
+  "compile": {
+    "width": 800,
+    "height": 600
+  },
+  "requireDeclaredEdits": true,
+  "visualProof": {
+    "minChangedRatio": 0.035,
+    "minMeanAbs": 2.25,
+    "controlMultiplier": 4.0,
+    "controlChangedRatioPadding": 0.004,
+    "controlMeanAbsPadding": 0.5
+  },
+  "deterministicVisualMode": {
+    "fixedSeed": "builtin_fixture_deterministic_no_rng",
+    "frozenCamera": true,
+    "temporalAccumulationDisabled": true,
+    "taaDisabled": true,
+    "denoiserDisabled": true,
+    "fixedResolution": {
+      "width": 800,
+      "height": 600
+    },
+    "fixedSwapchainImageCount": true,
+    "frameCaptureAfterEpochDispatch": true,
+    "presentationFenceOrFrameBoundary": "mcp_frame_gate_after_synthi_wait_hmr",
+    "warmupFrames": 2,
+    "convergenceWindow": {
+      "frameStart": 1,
+      "frameEnd": 2,
+      "metric": "oracle_region_delta"
+    }
+  },
+  "visualSceneManifestHash": "sha256:bf1393aa93f4df9c8fe350f7d33be2a95b29d2748c2d6013a02e0d047eabbdf2",
+  "visualSceneManifest": {
+    "schemaVersion": "synthi.gpu_hmr.visual_scene_manifest.v1",
+    "sceneId": "realistic-faceted-diamond-tabletop",
+    "sceneClass": "deterministic_single_file_rocm_hip_raytrace",
+    "renderer": {
+      "backend": "hip",
+      "kernelEntry": "render_realistic_raytrace",
+      "framebuffer": "uint32_argb_device_buffer",
+      "sampling": {
+        "subpixelSamplesPerPixel": 4,
+        "samplePattern": [
+          [0.30, 0.30],
+          [0.70, 0.30],
+          [0.30, 0.70],
+          [0.70, 0.70]
+        ],
+        "temporalSamples": 1
+      },
+      "lightingModel": "direct_shadow_reflection_refraction_environment"
+    },
+    "camera": {
+      "position": [-0.28, 0.92, 3.18],
+      "target": [0.04, 0.52, -0.30],
+      "up": [0.0, 1.0, 0.0],
+      "fovDegrees": 50.0,
+      "frozen": true
+    },
+    "rayPolicy": {
+      "maxBounces": 3,
+      "fixedSeed": "no_random_jitter",
+      "temporalAccumulation": "disabled",
+      "taa": "disabled",
+      "denoiser": "disabled"
+    },
+    "materials": [
+      {
+        "id": "hero-diamond-glass",
+        "kind": "dielectric",
+        "iorBase": 1.47,
+        "usesFresnel": true,
+        "usesDispersionFacetTerm": true
+      },
+      {
+        "id": "small-gem-glass",
+        "kind": "dielectric",
+        "iorBase": 1.39,
+        "usesFresnel": true
+      },
+      {
+        "id": "stone-tabletop",
+        "kind": "diffuse_glossy",
+        "receivesContactShadows": true
+      },
+      {
+        "id": "metal-setting",
+        "kind": "brushed_metal",
+        "reflective": true
+      }
+    ],
+    "objects": [
+      {
+        "id": "hero-faceted-diamond",
+        "kind": "analytic_clipped_faceted_diamond",
+        "material": "hero-diamond-glass",
+        "semanticRegion": [278, 96, 248, 238]
+      },
+      {
+        "id": "scatter-diamonds",
+        "kind": "analytic_ellipsoid_gem_cluster",
+        "material": "small-gem-glass",
+        "count": 22
+      },
+      {
+        "id": "tabletop",
+        "kind": "plane_with_cobble_texture",
+        "material": "stone-tabletop"
+      },
+      {
+        "id": "metal-accent",
+        "kind": "small_reflective_box_primitives",
+        "material": "metal-setting"
+      }
+    ],
+    "lights": [
+      {
+        "id": "soft-key",
+        "kind": "directional_area_approximation",
+        "direction": [-0.42, 0.88, -0.34],
+        "intensityToken": "sceneLight"
+      },
+      {
+        "id": "warm-sun-glint",
+        "kind": "environment_highlight",
+        "direction": [-0.35, 0.62, -0.28]
+      },
+      {
+        "id": "caustic-fill",
+        "kind": "procedural_caustic_facet_term"
+      }
+    ],
+    "semanticProbes": [
+      {
+        "id": "hero-diamond-highlight",
+        "region": [300, 110, 190, 150],
+        "expected": "higher_scene_light_changes_refraction_glints_and_shadow_edges"
+      },
+      {
+        "id": "contact-shadow-tabletop",
+        "region": [170, 355, 410, 118],
+        "expected": "scene_light_delta_changes_tabletop_shadow_contrast"
+      },
+      {
+        "id": "scatter-gem-sparkle",
+        "region": [72, 228, 640, 238],
+        "expected": "sequential_device_exposure_deltas_change_small_gem_specular_response"
+      }
+    ]
+  },
+  "deviceEdits": [
+    {
+      "runMode": "hot_delta_1",
+      "label": "increase deterministic device exposure",
+      "find": "return mul3(color, exposure * rigExposure * (0.72f + 0.28f * clampf(vignette, 0.0f, 1.0f)));",
+      "replace": "return mul3(color, exposure * 1.42f * rigExposure * (0.72f + 0.28f * clampf(vignette, 0.0f, 1.0f)));"
+    },
+    {
+      "runMode": "hot_delta_2",
+      "label": "decrease deterministic device exposure",
+      "find": "return mul3(color, exposure * 1.42f * rigExposure * (0.72f + 0.28f * clampf(vignette, 0.0f, 1.0f)));",
+      "replace": "return mul3(color, exposure * 0.72f * rigExposure * (0.72f + 0.28f * clampf(vignette, 0.0f, 1.0f)));"
+    }
+  ]
+}

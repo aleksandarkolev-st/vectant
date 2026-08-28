@@ -1,0 +1,47 @@
+{
+  "schema": "synthi.generated_path_policy.conformance.v1",
+  "valid": [
+    {
+      "input": "objects/alpha.payload",
+      "normalized": "objects/alpha.payload"
+    },
+    {
+      "input": "./nested\\unit.hip",
+      "normalized": "nested/unit.hip"
+    },
+    {
+      "input": "ordinary/\u666e\u901a.hip",
+      "normalized": "ordinary/\u666e\u901a.hip"
+    },
+    {
+      "input": "unicode/cafe\u0301.hip",
+      "normalized": "unicode/caf\u00e9.hip"
+    }
+  ],
+  "invalid": [
+    { "input": "/absolute/unit" },
+    { "input": "C:/absolute/unit" },
+    { "input": "\\\\server\\share\\unit" },
+    { "input": "../escape/unit" },
+    { "input": "nested/../escape" },
+    { "input": "unit:stream" },
+    { "input": "unit?.hip" },
+    { "input": "unit*.hip" },
+    { "input": "unit|pipe.hip" },
+    { "input": "unit<left.hip" },
+    { "input": "unit>right.hip" },
+    { "input": "unit\"quoted.hip" },
+    { "input": "folder/CON.hip" },
+    { "input": "folder/COM1.hip" },
+    { "input": "folder/LPT\u00b9.hip" },
+    { "input": "folder/CONIN$.hip" },
+    { "input": "folder/trailing. " },
+    { "input": "folder//unit.hip" },
+    { "input": "folder/./unit.hip" },
+    { "input": "unit\u0000source" }
+  ],
+  "collisions": [
+    { "inputs": ["Units/A", "units/a"] },
+    { "inputs": ["caf\u00e9/unit", "cafe\u0301/unit"] }
+  ]
+}

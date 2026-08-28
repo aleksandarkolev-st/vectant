@@ -1,4 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import {
+  COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+  computeExpectedOutputSemanticsHash,
+  type ComputeExpectedOutputSemantics,
+  type ComputeExpectedOutputSemanticsMaterial,
+} from "../../src/compute_expected_output_semantics.js";
 import { compileTool } from "../../src/tools/compile.js";
 import { eventLog } from "../../src/events/index.js";
 import { session } from "../../src/session.js";
@@ -6,6 +12,8 @@ import { session } from "../../src/session.js";
 interface SentPayload {
   raw: string;
   parsed: Record<string, unknown>;
+  computeExpectedOutputContractHash: string | undefined;
+  computeExpectedOutputSemantics: ComputeExpectedOutputSemantics | undefined;
 }
 
 function installFakeAttached(): { sent: SentPayload[]; setReadyState: (s: string) => void } {
@@ -22,12 +30,34 @@ function installFakeAttached(): { sent: SentPayload[]; setReadyState: (s: string
       dimensions: () => ({ width: 800, height: 600 }),
     },
     channels: {
-      sendCompileRequest: async (payload: Record<string, unknown>) => {
+      sendCompileRequest: async (
+        payload: Record<string, unknown>,
+        computeExpectedOutputContractHash?: string,
+        computeExpectedOutputSemantics?: ComputeExpectedOutputSemantics,
+      ) => {
         if (readyState !== "open") {
           throw new Error(`compile_channel_not_open:${readyState}`);
         }
         const raw = JSON.stringify(payload);
-        sent.push({ raw, parsed: payload });
+        sent.push({
+          raw,
+          parsed: payload,
+          computeExpectedOutputContractHash,
+          computeExpectedOutputSemantics,
+        });
+        return {
+          schemaVersion: "synthi.gpu_hmr.compile_dispatch_correlation.v1" as const,
+          proofAuthority:
+            "compile_dispatch_correlation_only_not_gpu_hmr_acceptance" as const,
+          dispatchedAt: Date.now(),
+          proofCorrelationId:
+            `gpu-proof-compile-correlation:sha256:${"a".repeat(64)}`,
+          computeExpectedOutputSemanticsHash:
+            computeExpectedOutputSemantics?.semanticsHash ?? null,
+          acceptedForGpuHmr: false as const,
+          gpuHmrSuccess: false as const,
+          canSatisfyRuntimeProof: false as const,
+        };
       },
     },
   };
@@ -44,6 +74,25 @@ describe("synthi_compile", () => {
     session._resetForTests();
     eventLog._resetForTests();
   });
+
+  function exactOutputSemantics(): ComputeExpectedOutputSemantics {
+    const material: ComputeExpectedOutputSemanticsMaterial = {
+      schemaVersion: COMPUTE_EXPECTED_OUTPUT_SEMANTICS_SCHEMA_VERSION,
+      comparisonMode: "exact_bytes",
+      outputTargetId: "output:tensor:0",
+      byteOffset: 64,
+      byteLength: 16,
+      dtype: "u32",
+      shape: [2, 2],
+      elementCount: 4,
+      byteOrder: "little_endian",
+      toleranceDecimal: "0",
+      expectedValuesDecimal: null,
+      expectedValuesHash: null,
+      expectedRawHash: `sha256:${"a".repeat(64)}`,
+    };
+    return { ...material, semanticsHash: computeExpectedOutputSemanticsHash(material) };
+  }
 
   it("rejects when language is missing", async () => {
     installFakeAttached();
@@ -100,6 +149,104 @@ describe("synthi_compile", () => {
     expect(payload["is_gui"]).toBe(true);
     expect(payload["use_ai_split"]).toBe(true);
     expect(payload["bypass_ai_split_cache"]).toBe(true);
+    expect(fake.sent[0]!.computeExpectedOutputContractHash).toBeUndefined();
+    expect((res.structuredContent as Record<string, unknown>).gpu_proof_dispatch_correlation)
+      .toMatchObject({
+        schema_version: "synthi.gpu_hmr.compile_dispatch_correlation.v1",
+        evidence_authority: "compile_dispatch_correlation_only_not_gpu_hmr_acceptance",
+        correlation_id: `gpu-proof-compile-correlation:sha256:${"a".repeat(64)}`,
+        accepted_for_gpu_hmr: false,
+        gpu_hmr_success: false,
+        can_satisfy_runtime_proof: false,
+      });
+  });
+
+  it("forwards an exact pre-dispatch compute expected-output contract hash separately", async () => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+    const expectedOutputContractHash = `sha256:${"a".repeat(64)}`;
+
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      compute_expected_output_contract_hash: expectedOutputContractHash,
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.sent[0]!.computeExpectedOutputContractHash)
+      .toBe(expectedOutputContractHash);
+    expect(fake.sent[0]!.parsed)
+      .not.toHaveProperty("compute_expected_output_contract_hash");
+  });
+
+  it.each([
+    `sha256:${"A".repeat(64)}`,
+    ` sha256:${"a".repeat(64)}`,
+    null,
+    "sha256:short",
+    `sha256:${"g".repeat(64)}`,
+  ])("rejects a non-canonical compute expected-output contract hash (%j)", async (
+    computeExpectedOutputContractHash,
+  ) => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      compute_expected_output_contract_hash: computeExpectedOutputContractHash,
+    });
+
+    expect(res.isError).toBe(true);
+    expect((res.structuredContent as { field?: string }).field)
+      .toBe("compute_expected_output_contract_hash");
+    expect(fake.sent).toHaveLength(0);
+  });
+
+  it("forwards a validated caller-owned semantic preimage outside the mutable payload", async () => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+    const semantics = exactOutputSemantics();
+
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      compute_expected_output_semantics: semantics,
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.sent[0]!.parsed).not.toHaveProperty("compute_expected_output_semantics");
+    expect(fake.sent[0]!.computeExpectedOutputSemantics).toEqual(semantics);
+    expect(
+      (res.structuredContent as Record<string, unknown>)
+        .gpu_proof_dispatch_correlation,
+    ).toMatchObject({
+      compute_expected_output_semantics_hash: semantics.semanticsHash,
+      accepted_for_gpu_hmr: false,
+      gpu_hmr_success: false,
+    });
+  });
+
+  it("rejects malformed semantic preimages before compile dispatch", async () => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+    const semantics = {
+      ...exactOutputSemantics(),
+      byteOffset: 2,
+    };
+
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      compute_expected_output_semantics: semantics,
+    });
+
+    expect(res.isError).toBe(true);
+    expect((res.structuredContent as { field?: string }).field)
+      .toBe("compute_expected_output_semantics");
+    expect(fake.sent).toHaveLength(0);
   });
 
   it("forwards fresh AI split cache policy aliases", async () => {
@@ -122,6 +269,148 @@ describe("synthi_compile", () => {
       session._resetForTests();
       eventLog._resetForTests();
     }
+  });
+
+  it("forwards an explicit device compile cache bypass without granting authority", async () => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      bypass_device_compile_cache: true,
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.sent[0]!.parsed["bypass_device_compile_cache"]).toBe(true);
+    expect(fake.sent[0]!.parsed["bypass_ai_split_cache"]).toBeUndefined();
+
+    const input = eventLog.query({ kind: "input" })[0] as {
+      payload: Record<string, unknown>;
+    };
+    expect(input.payload["bypass_device_compile_cache"]).toBe(true);
+  });
+
+  it("preserves explicit false and omits the device compile cache field by default", async () => {
+    const explicitFalse = installFakeAttached();
+    session.setWireState("running");
+    const falseRes = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      bypass_device_compile_cache: false,
+    });
+
+    expect(falseRes.isError).toBeUndefined();
+    expect(explicitFalse.sent[0]!.parsed["bypass_device_compile_cache"]).toBe(false);
+    const falseInput = eventLog.query({ kind: "input" })[0] as {
+      payload: Record<string, unknown>;
+    };
+    expect(falseInput.payload["bypass_device_compile_cache"]).toBe(false);
+
+    session._resetForTests();
+    eventLog._resetForTests();
+    const defaultRequest = installFakeAttached();
+    session.setWireState("running");
+    const defaultRes = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+    });
+
+    expect(defaultRes.isError).toBeUndefined();
+    expect(defaultRequest.sent[0]!.parsed).not.toHaveProperty("bypass_device_compile_cache");
+    const defaultInput = eventLog.query({ kind: "input" })[0] as {
+      payload: Record<string, unknown>;
+    };
+    expect(defaultInput.payload).not.toHaveProperty("bypass_device_compile_cache");
+  });
+
+  it.each(["true", 1, null, {}])(
+    "rejects a non-boolean device compile cache bypass (%j)",
+    async (bypassDeviceCompileCache) => {
+      const fake = installFakeAttached();
+      session.setWireState("running");
+      const res = await compileTool({
+        language: "cpp",
+        source: "int main(){return 0;}",
+        bypass_device_compile_cache: bypassDeviceCompileCache,
+      });
+
+      expect(res.isError).toBe(true);
+      expect((res.structuredContent as { field?: string; expected?: string }).field).toBe(
+        "bypass_device_compile_cache",
+      );
+      expect((res.structuredContent as { expected?: string }).expected).toBe("boolean");
+      expect(fake.sent).toHaveLength(0);
+      session._resetForTests();
+      eventLog._resetForTests();
+    },
+  );
+
+  it("forwards request-bound provider proof fields and a backend routing hint", async () => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+    const nonce = "provider-call:0123456789abcdef0123456789abcdef";
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      require_ai_provider_call: true,
+      ai_provider_call_nonce: nonce,
+      ai_provider: "generic-provider",
+      ai_model: "generic-model",
+      gpu_mode: "rocm",
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect(fake.sent[0]!.parsed["require_ai_provider_call"]).toBe(true);
+    expect(fake.sent[0]!.parsed["ai_provider_call_nonce"]).toBe(nonce);
+    expect(fake.sent[0]!.parsed["ai_provider"]).toBe("generic-provider");
+    expect(fake.sent[0]!.parsed["ai_model"]).toBe("generic-model");
+    expect(fake.sent[0]!.parsed["gpu_mode"]).toBe("rocm");
+  });
+
+  it("normalizes provider and model aliases onto canonical worker keys", async () => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      provider_name: "  Generic-Provider  ",
+      model_name: "  generic-model  ",
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect(fake.sent[0]!.parsed["ai_provider"]).toBe("generic-provider");
+    expect(fake.sent[0]!.parsed["ai_model"]).toBe("generic-model");
+  });
+
+  it("forwards provider proof field aliases using canonical worker keys", async () => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+    const nonce = "provider-call:fedcba9876543210fedcba9876543210";
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      force_ai_provider_call: true,
+      provider_call_nonce: nonce,
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect(fake.sent[0]!.parsed["require_ai_provider_call"]).toBe(true);
+    expect(fake.sent[0]!.parsed["ai_provider_call_nonce"]).toBe(nonce);
+  });
+
+  it("rejects a required provider call without a valid caller nonce", async () => {
+    installFakeAttached();
+    session.setWireState("running");
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      require_ai_provider_call: true,
+      ai_provider_call_nonce: "provider-call:not-hex",
+    });
+
+    expect(res.isError).toBe(true);
+    expect((res.structuredContent as { field?: string }).field).toBe("ai_provider_call_nonce");
   });
 
   it("forwards workspace file refs without requiring inline contents", async () => {
@@ -181,6 +470,93 @@ describe("synthi_compile", () => {
     expect(p["slug"]).toBe("counter");
   });
 
+  it("forwards a bounded support-only source-first request intent unchanged", async () => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+    const intent = {
+      schemaVersion: "synthi.gpu_hmr.source_first_request_intent.v1",
+      proofAuthority: "source_first_request_intent_only_not_runtime_proof",
+      acceptedForGpuHmr: false,
+      gpuHmrSuccess: false,
+      canSatisfyRuntimeProof: false,
+      canSatisfyDispatchProof: false,
+      sourcePaths: ["src/main.cpp"],
+      evidence: { intentHash: "sha256:0123456789abcdef" },
+    };
+
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      source_first_request_intent: intent,
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.sent[0]!.parsed["source_first_request_intent"]).toEqual(intent);
+    expect(fake.sent[0]!.raw).toContain('"source_first_request_intent"');
+  });
+
+  it.each([null, [], "intent", 1])(
+    "rejects a non-object source-first request intent (%j)",
+    async (sourceFirstRequestIntent) => {
+      const fake = installFakeAttached();
+      session.setWireState("running");
+
+      const res = await compileTool({
+        language: "cpp",
+        source: "int main(){return 0;}",
+        source_first_request_intent: sourceFirstRequestIntent,
+      });
+
+      expect(res.isError).toBe(true);
+      expect((res.structuredContent as { field?: string }).field).toBe(
+        "source_first_request_intent",
+      );
+      expect(fake.sent).toHaveLength(0);
+    },
+  );
+
+  it("rejects an oversized source-first request intent", async () => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      source_first_request_intent: { metadata: "x".repeat(64 * 1024) },
+    });
+
+    expect(res.isError).toBe(true);
+    expect((res.structuredContent as { field?: string; reason?: string }).field).toBe(
+      "source_first_request_intent",
+    );
+    expect((res.structuredContent as { reason?: string }).reason).toContain("exceeds 65536 bytes");
+    expect(fake.sent).toHaveLength(0);
+  });
+
+  it.each([
+    { gpuHmrSuccess: true },
+    { nested: { can_satisfy_runtime_proof: true } },
+    { nested: { dispatchAuthority: true } },
+    { nested: { runtime_authority: "accepted" } },
+  ])("rejects source-first authority claims (%j)", async (sourceFirstRequestIntent) => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){return 0;}",
+      source_first_request_intent: sourceFirstRequestIntent,
+    });
+
+    expect(res.isError).toBe(true);
+    expect((res.structuredContent as { field?: string; reason?: string }).field).toBe(
+      "source_first_request_intent",
+    );
+    expect((res.structuredContent as { reason?: string }).reason).toContain("authority claim");
+    expect(fake.sent).toHaveLength(0);
+  });
+
   it("emits an input event with payload metadata", async () => {
     installFakeAttached();
     session.setWireState("running");
@@ -189,12 +565,24 @@ describe("synthi_compile", () => {
     expect(inputs).toHaveLength(1);
     const ev = inputs[0] as unknown as {
       action: string;
-      payload: { language: string; use_ai_split: boolean; source_chars: number };
+      payload: {
+        language: string;
+        use_ai_split: boolean;
+        source_chars: number;
+        gpu_proof_dispatch_correlation: {
+          evidence_authority: string;
+          accepted_for_gpu_hmr: boolean;
+        };
+      };
     };
     expect(ev.action).toBe("compile:start");
     expect(ev.payload.language).toBe("cpp");
     expect(ev.payload.use_ai_split).toBe(true);
     expect(ev.payload.source_chars).toBeGreaterThan(0);
+    expect(ev.payload.gpu_proof_dispatch_correlation).toMatchObject({
+      evidence_authority: "compile_dispatch_correlation_only_not_gpu_hmr_acceptance",
+      accepted_for_gpu_hmr: false,
+    });
   });
 
   it("surfaces compile_channel_not_open when DC is closed", async () => {

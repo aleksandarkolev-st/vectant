@@ -25,11 +25,11 @@ use crate::hmr::adapter_lifecycle_fsm::{AdapterLifecycleFsm, LifecycleEvent};
 use crate::hmr::adapter_matrix::{AdapterFamily, AdapterMatrix};
 use crate::hmr::adapter_registry::{create_adapter_for_language, AdapterRegistry};
 use crate::hmr::adapter_trait::{
-    AdapterHealth, AdapterReloadRequest, AdapterReloadResult, ReloadArtifactBlob,
-    ReloadCapsuleMetadata, ReloadFirewallEvidence,
+    normalized_reload_source_edit_id, AdapterHealth, AdapterReloadRequest, AdapterReloadResult,
+    ReloadArtifactBlob, ReloadCapsuleMetadata, ReloadFirewallEvidence,
 };
 use crate::hmr::ai_gate::{AiGate, AiGateDecision};
-use crate::hmr::build_manifest::BuildManifest;
+use crate::hmr::build_manifest::{ArtifactSetIdentityError, BuildManifest};
 use crate::hmr::candidate::CandidateState;
 use crate::hmr::candidate_bridge::{bridge_tick, BridgeAction, BridgeConfig};
 use crate::hmr::candidate_notification::CandidateNotification;
@@ -264,17 +264,18 @@ impl HmrPipeline {
         &mut self,
         manifest: &BuildManifest,
         planner_output: &PlannerOutput,
-    ) -> PipelineNotifications {
+    ) -> Result<PipelineNotifications, ArtifactSetIdentityError> {
         let mut notifications = PipelineNotifications::new();
+        let artifact_set_identity = manifest.artifact_set_identity()?;
 
         if let Some(active) = self.candidate_queue.active() {
             match should_supersede(
                 active,
-                &manifest.artifact_hash,
+                manifest,
                 &self.bridge_config.supersession_policy,
-            ) {
+            )? {
                 SupersessionVerdict::Duplicate => {
-                    return notifications;
+                    return Ok(notifications);
                 }
                 SupersessionVerdict::Supersede => {
                     if let Some(active_candidate) = self.candidate_queue.active_mut() {
@@ -284,6 +285,7 @@ impl HmrPipeline {
                         notifications.push_json(&CandidateNotification::Discarded {
                             preview_id: summary.preview_id,
                             generation: summary.generation,
+                            artifact_set_identity: summary.artifact_set_identity,
                             reason: "superseded_by_newer_candidate".into(),
                         });
                     }
@@ -296,15 +298,16 @@ impl HmrPipeline {
             manifest.clone(),
             planner_output.decision,
             planner_output.reason.state_strategy,
-        );
+        )?;
 
         notifications.push_json(&CandidateNotification::Enqueued {
-            preview_id: manifest.preview_id.clone(),
+            preview_id: self.candidate_queue.preview_id().to_string(),
             generation,
             artifact_hash: manifest.artifact_hash.clone(),
+            artifact_set_identity,
         });
 
-        notifications
+        Ok(notifications)
     }
 
     pub fn validate_active_candidate(&mut self, total_reload_ms: u64) -> PipelineNotifications {
@@ -315,8 +318,9 @@ impl HmrPipeline {
             if active.state == CandidateState::Loading {
                 active.begin_health_check();
                 notifications.push_json(&CandidateNotification::HealthCheckStarted {
-                    preview_id: active.id.preview_id.clone(),
-                    generation: active.id.generation,
+                    preview_id: active.id().preview_id().to_string(),
+                    generation: active.id().generation(),
+                    artifact_set_identity: active.id().artifact_set_identity().to_string(),
                 });
             }
 
@@ -325,8 +329,9 @@ impl HmrPipeline {
             };
             active.record_health(result.clone());
             notifications.push_json(&CandidateNotification::HealthCheckCompleted {
-                preview_id: active.id.preview_id.clone(),
-                generation: active.id.generation,
+                preview_id: active.id().preview_id().to_string(),
+                generation: active.id().generation(),
+                artifact_set_identity: active.id().artifact_set_identity().to_string(),
                 result,
             });
             validated = true;
@@ -352,6 +357,7 @@ impl HmrPipeline {
             notifications.push_json(&CandidateNotification::RolledBack {
                 preview_id: summary.preview_id,
                 generation: summary.generation,
+                artifact_set_identity: summary.artifact_set_identity,
                 reason,
             });
         }
@@ -463,6 +469,7 @@ impl HmrPipeline {
         // Dispatch to the adapter
         let reload_req = AdapterReloadRequest {
             reload_id: reload_id.to_string(),
+            source_edit_id: None,
             module_id: manifest.slot_name(),
             changed_files: manifest.dirty_units.clone().unwrap_or_default(),
             build_manifest: manifest.clone(),
@@ -646,6 +653,7 @@ impl HmrPipeline {
         manifest: &BuildManifest,
         artifact_blob: Option<ReloadArtifactBlob>,
         capsule_metadata: Option<ReloadCapsuleMetadata>,
+        source_edit_id: Option<&str>,
         reload_id: &str,
     ) -> (AdapterReloadResult, PipelineNotifications) {
         let start = Instant::now();
@@ -660,8 +668,10 @@ impl HmrPipeline {
 
         let firewall_process_id_before = std::process::id();
         let firewall_process_id_after = std::process::id();
+        let source_edit_id = normalized_reload_source_edit_id(source_edit_id);
         let reload_req = AdapterReloadRequest {
             reload_id: reload_id.to_string(),
+            source_edit_id,
             module_id: manifest.slot_name(),
             changed_files: manifest.dirty_units.clone().unwrap_or_default(),
             build_manifest: manifest.clone(),
@@ -834,15 +844,16 @@ impl HmrPipeline {
                 BridgeAction::BeginLoad { .. } => {
                     if let Some(active) = self.candidate_queue.activate_next() {
                         notifications.push_json(&CandidateNotification::Loading {
-                            preview_id: active.id.preview_id.clone(),
-                            generation: active.id.generation,
+                            preview_id: active.id().preview_id().to_string(),
+                            generation: active.id().generation(),
+                            artifact_set_identity: active.id().artifact_set_identity().to_string(),
                         });
                         mutated = true;
                     }
                 }
                 BridgeAction::Promote { generation } => {
                     if let Some(active) = self.candidate_queue.active_mut() {
-                        if active.id.generation == generation {
+                        if active.id().generation() == generation {
                             active.promote();
                             mutated = true;
                         }
@@ -853,6 +864,7 @@ impl HmrPipeline {
                             notifications.push_json(&CandidateNotification::Promoted {
                                 preview_id: summary.preview_id,
                                 generation: summary.generation,
+                                artifact_set_identity: summary.artifact_set_identity,
                                 total_reload_ms: summary.age_ms,
                             });
                         }
@@ -860,7 +872,7 @@ impl HmrPipeline {
                 }
                 BridgeAction::Rollback { generation, reason } => {
                     if let Some(active) = self.candidate_queue.active_mut() {
-                        if active.id.generation == generation {
+                        if active.id().generation() == generation {
                             active.rollback(reason.clone());
                             mutated = true;
                         }
@@ -871,6 +883,7 @@ impl HmrPipeline {
                             notifications.push_json(&CandidateNotification::RolledBack {
                                 preview_id: summary.preview_id,
                                 generation: summary.generation,
+                                artifact_set_identity: summary.artifact_set_identity,
                                 reason,
                             });
                         }
@@ -878,7 +891,7 @@ impl HmrPipeline {
                 }
                 BridgeAction::Discard { generation, reason } => {
                     if let Some(active) = self.candidate_queue.active_mut() {
-                        if active.id.generation == generation {
+                        if active.id().generation() == generation {
                             active.discard();
                             mutated = true;
                         }
@@ -889,6 +902,7 @@ impl HmrPipeline {
                             notifications.push_json(&CandidateNotification::Discarded {
                                 preview_id: summary.preview_id,
                                 generation: summary.generation,
+                                artifact_set_identity: summary.artifact_set_identity,
                                 reason,
                             });
                         }
@@ -987,10 +1001,79 @@ fn current_time_ms() -> u64 {
 #[cfg(test)]
 mod current_api_tests {
     use super::*;
+    use crate::hmr::adapter_matrix::CapabilityTier;
+    use crate::hmr::adapter_trait::{Adapter, AdapterInfo, ReloadOutputOracleProfileCommitment};
     use crate::hmr::build_manifest::{
         BuildSlot, HealthcheckStrategy, PreviewPreservationMode, SnapshotMode,
     };
     use crate::hmr::planner_decision::ReloadDecision;
+    use std::sync::{Arc, Mutex};
+
+    struct RecordingAdapter {
+        requests: Arc<Mutex<Vec<AdapterReloadRequest>>>,
+    }
+
+    impl Adapter for RecordingAdapter {
+        fn info(&self) -> AdapterInfo {
+            AdapterInfo {
+                name: "recording-gpu".into(),
+                family: AdapterFamily::DynamicLibrary,
+                capability_tier: CapabilityTier::Tier0,
+                supported_languages: vec!["recording-gpu".into()],
+                extra: HashMap::new(),
+            }
+        }
+
+        fn initialize(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn shutdown(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn reload(&mut self, req: &AdapterReloadRequest) -> AdapterReloadResult {
+            self.requests.lock().unwrap().push(req.clone());
+            AdapterReloadResult::Success {
+                reload_ms: 0,
+                state_preserved: true,
+            }
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, String> {
+            Ok(Vec::new())
+        }
+
+        fn restore_state(&mut self, _data: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn healthcheck(&self) -> AdapterHealth {
+            AdapterHealth::Healthy
+        }
+    }
+
+    fn recording_gpu_pipeline() -> (HmrPipeline, Arc<Mutex<Vec<AdapterReloadRequest>>>) {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let mut pipeline = HmrPipeline::new("test-preview");
+        pipeline.adapter_registry.register(
+            "recording-gpu",
+            Box::new(RecordingAdapter {
+                requests: requests.clone(),
+            }),
+        );
+        (pipeline, requests)
+    }
+
+    fn capsule_with_source_edit_id(source_edit_id: &str) -> ReloadCapsuleMetadata {
+        ReloadCapsuleMetadata {
+            output_oracle_profile_commitment: Some(ReloadOutputOracleProfileCommitment {
+                edit_id: source_edit_id.into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
 
     fn make_manifest(language: &str) -> BuildManifest {
         BuildManifest {
@@ -1000,7 +1083,8 @@ mod current_api_tests {
             capability_tier: 2,
             slot: BuildSlot::Core,
             artifact_path: "/tmp/test.so".into(),
-            artifact_hash: "abc123".into(),
+            artifact_hash: format!("sha256:{}", "a".repeat(64)),
+            artifacts: None,
             toolchain_fingerprint: "gcc-12".into(),
             abi_version: "1.0".into(),
             state_schema_hash: "s1".into(),
@@ -1038,6 +1122,56 @@ mod current_api_tests {
     }
 
     #[test]
+    fn gpu_device_reload_uses_explicit_source_edit_id_not_capsule_commitment() {
+        let (mut pipeline, requests) = recording_gpu_pipeline();
+        let capsule_source_edit_id = format!("source-edit:sha256:{}", "c".repeat(64));
+        let request_source_edit_id = format!("source-edit:sha256:{}", "d".repeat(64));
+        let capsule = capsule_with_source_edit_id(&capsule_source_edit_id);
+
+        let _ = pipeline.execute_gpu_device_reload(
+            "recording-gpu",
+            &make_manifest("rocm"),
+            None,
+            Some(capsule),
+            Some(&request_source_edit_id),
+            "reload-correlation",
+        );
+
+        let requests = requests.lock().unwrap();
+        let request = requests.last().expect("recorded device reload request");
+        assert_eq!(
+            request.source_edit_id.as_deref(),
+            Some(request_source_edit_id.as_str())
+        );
+        assert_eq!(
+            request
+                .capsule_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.output_oracle_profile_commitment.as_ref())
+                .map(|commitment| commitment.edit_id.as_str()),
+            Some(capsule_source_edit_id.as_str())
+        );
+    }
+
+    #[test]
+    fn gpu_device_reload_does_not_backfill_source_edit_id_from_capsule() {
+        let (mut pipeline, requests) = recording_gpu_pipeline();
+
+        let _ = pipeline.execute_gpu_device_reload(
+            "recording-gpu",
+            &make_manifest("rocm"),
+            None,
+            Some(capsule_with_source_edit_id("source-edit:capsule")),
+            None,
+            "reload-correlation",
+        );
+
+        let requests = requests.lock().unwrap();
+        let request = requests.last().expect("recorded device reload request");
+        assert_eq!(request.source_edit_id, None);
+    }
+
+    #[test]
     fn candidate_validation_clears_consecutive_failures() {
         let mut pipeline = HmrPipeline::new("test");
         let manifest = make_manifest("cpp");
@@ -1048,6 +1182,33 @@ mod current_api_tests {
         let _ = pipeline.validate_active_candidate(42);
 
         assert_eq!(pipeline.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn enqueue_notification_uses_canonical_preview_and_transaction_identity() {
+        let mut pipeline = HmrPipeline::new("canonical-preview");
+        let mut manifest = make_manifest("open-vocabulary-label");
+        manifest.preview_id = "incoming-preview".into();
+        let expected_identity = manifest.artifact_set_identity().unwrap();
+
+        let notifications = pipeline
+            .enqueue_candidate(&manifest, &warm_planner_output())
+            .unwrap();
+        assert_eq!(notifications.messages.len(), 1);
+        let notification: CandidateNotification =
+            serde_json::from_str(&notifications.messages[0]).unwrap();
+
+        match notification {
+            CandidateNotification::Enqueued {
+                preview_id,
+                artifact_set_identity,
+                ..
+            } => {
+                assert_eq!(preview_id, "canonical-preview");
+                assert_eq!(artifact_set_identity, expected_identity);
+            }
+            other => panic!("expected enqueued notification, got {other:?}"),
+        }
     }
 }
 

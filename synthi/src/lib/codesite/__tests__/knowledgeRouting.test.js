@@ -97,6 +97,44 @@ describe('knowledge relevance routing', () => {
     expect(first[0].dedupeKey).toMatch(/^impact:[a-f0-9]{64}$/);
   });
 
+  it('routes an agent question only to its explicit recipient', () => {
+    const result = buildKnowledgeDeliveryPlan({
+      item: item({
+        kind: 'agent_question',
+        recipientAgentSessionIds: ['claude-agent'],
+      }),
+      sessions,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      agentSessionId: 'claude-agent',
+      reasons: expect.arrayContaining(['explicit_agent_reference']),
+    });
+  });
+
+  it('uses the trusted expertise policy for routing status eligibility', () => {
+    const result = buildKnowledgeDeliveryPlan({
+      item: item({ references: { paths: ['src/queued/**'] } }),
+      sessions: [{ id: 'queued-agent', ownerUserId: 'eve', status: 'attached', subscriptionsJson: '[]' }],
+      executionPlans: [{ id: 'queued-plan', agentSessionId: 'queued-agent', status: 'queued', routeJson: '["src/queued/**"]' }],
+      transactions: [{ id: 'queued-txn', agentSessionId: 'queued-agent', status: 'queued', readSetJson: '["src/queued/file.ts"]' }],
+      policy: {
+        statuses: {
+          eligibleSession: ['attached'],
+          activePlan: ['queued'],
+          activeTransaction: ['queued'],
+        },
+      },
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].reasons).toEqual(expect.arrayContaining([
+      'route:queued-plan',
+      'transaction_path:queued-txn',
+    ]));
+  });
+
   it('rejects incomplete routing inputs instead of falling back to broadcast', () => {
     expect(() => buildKnowledgeDeliveryPlan({ item: { kind: 'lead' } })).toThrow('knowledge_delivery_item_required');
   });

@@ -108,6 +108,7 @@ mod tests {
             slot: BuildSlot::Core,
             artifact_path: "/tmp/t.so".into(),
             artifact_hash: "h".into(),
+            artifacts: None,
             toolchain_fingerprint: String::new(),
             abi_version: abi.into(),
             state_schema_hash: schema.into(),

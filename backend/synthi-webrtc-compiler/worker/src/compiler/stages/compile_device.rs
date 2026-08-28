@@ -43,13 +43,18 @@ use anyhow::Result;
 #[cfg(feature = "gpu-hmr")]
 use regex::Regex;
 use serde::Serialize;
-#[cfg(feature = "gpu-hmr")]
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 #[cfg(feature = "gpu-hmr")]
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+#[cfg(all(feature = "gpu-hmr", target_os = "linux"))]
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 #[cfg(feature = "gpu-hmr")]
-use tokio::io::AsyncReadExt;
+use std::sync::{OnceLock, Weak};
+#[cfg(feature = "gpu-hmr")]
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 #[cfg(feature = "gpu-hmr")]
 use tokio::time::{timeout, Duration};
 
@@ -58,8 +63,6 @@ pub const DEVICE_CU_FILENAME: &str = "device.cu";
 pub const DEVICE_HIP_FILENAME: &str = "device.hip";
 #[cfg(feature = "gpu-hmr")]
 const DEFAULT_DEVICE_FULL_COMPILE_TIMEOUT_SECS: u64 = 180;
-#[cfg(feature = "gpu-hmr")]
-const DEFAULT_DEVICE_PARTIAL_COMPILE_TIMEOUT_SECS: u64 = 60;
 #[cfg(feature = "gpu-hmr")]
 const DEVICE_ARTIFACT_CACHE_SCHEMA: &str = "synthi.gpu.device_artifact_cache.v1";
 #[cfg(feature = "gpu-hmr")]
@@ -78,6 +81,55 @@ const DEVICE_CACHE_MAX_INCLUDED_BYTES: u64 = 256 * 1024 * 1024;
 const DEVICE_CACHE_MAX_SINGLE_INCLUDE_BYTES: u64 = 64 * 1024 * 1024;
 #[cfg(feature = "gpu-hmr")]
 const DEVICE_DEPFILE_TIMEOUT_SECS: u64 = 15;
+const DEVICE_COMPILER_CACHE_POLICY: &str =
+    "empty_parent_environment_external_cache_state_unobserved";
+const DEVICE_COMPILER_CACHE_EVIDENCE_SCOPE: &str =
+    "no_declared_cache_controls_not_cache_miss_attestation";
+const DEVICE_COMPILER_ENVIRONMENT_SCOPE: &str =
+    "empty_parent_environment_with_explicit_content_bound_control_contract";
+const DEVICE_COMPILER_IDENTITY_SCOPE: &str =
+    "held_compiler_driver_entry_file_bytes_bound_to_linux_parent_procfd_execution_child_toolchain_not_attested";
+const DEVICE_COMPILER_IDENTITY_METHOD: &str =
+    "held_compiler_driver_entry_file_sha256+version_output";
+const DEVICE_COMPILER_EXECUTION_TRANSPORT: &str =
+    "linux_parent_procfd_held_compiler_driver_entry_file";
+const DEVICE_COMPILE_COMMAND_HASH_SCOPE: &str =
+    "explicit_preprocess_and_compile_program_args_cwd_environment_overrides_piped_input_hashes_and_stdout_artifact_transport";
+const DEVICE_COMPILER_INPUT_MODE: &str = "compiler_preprocessed_translation_unit_piped_stdin";
+const DEVICE_COMPILER_OUTPUT_TRANSPORT: &str =
+    "compiler_stdout_parent_materialized_held_reservation";
+const DEVICE_COMPILER_SOURCE_EVIDENCE_SCOPE: &str =
+    "generated_device_stage_transform_chain_preprocessor_input_and_preprocessed_translation_unit_bound_to_compiler_input_not_original_request_provenance";
+const DEVICE_COMPILER_DEPENDENCY_METHOD: &str = "compiler_preprocessed_translation_unit_sha256";
+
+#[cfg(feature = "gpu-hmr")]
+type DeviceSourceLockMap = HashMap<String, Weak<tokio::sync::Mutex<()>>>;
+
+#[cfg(feature = "gpu-hmr")]
+static DEVICE_SOURCE_COMPILE_LOCKS: OnceLock<tokio::sync::Mutex<DeviceSourceLockMap>> =
+    OnceLock::new();
+
+#[cfg(feature = "gpu-hmr")]
+async fn acquire_device_source_compile_lock(
+    source_path: &Path,
+) -> tokio::sync::OwnedMutexGuard<()> {
+    let key = normalize_path_key(source_path);
+    let lock = {
+        let locks =
+            DEVICE_SOURCE_COMPILE_LOCKS.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
+        let mut locks = locks.lock().await;
+        locks.retain(|_, existing| existing.strong_count() > 0);
+        match locks.get(&key).and_then(Weak::upgrade) {
+            Some(existing) => existing,
+            None => {
+                let created = Arc::new(tokio::sync::Mutex::new(()));
+                locks.insert(key, Arc::downgrade(&created));
+                created
+            }
+        }
+    };
+    lock.lock_owned().await
+}
 
 /// Compile result attached alongside the cubin/hsaco path. The
 /// diagnostics surface to the IDE (badges) and feed the Tier-2 healer
@@ -116,6 +168,12 @@ pub struct DeviceCompileOutcome {
 pub struct DeviceCompileProofMetadata {
     pub compiler_executable: Option<String>,
     pub compiler_identity: Option<String>,
+    pub compiler_resolved_path: Option<String>,
+    pub compiler_executable_hash: Option<String>,
+    pub compiler_identity_method: Option<String>,
+    pub compiler_driver_entry_file_attested: bool,
+    pub compiler_process_image_attested: bool,
+    pub compiler_execution_transport: String,
     pub device_compiler: Option<String>,
     pub gpu_vendor: Option<String>,
     pub gpu_arch: Vec<String>,
@@ -128,12 +186,305 @@ pub struct DeviceCompileProofMetadata {
     pub dependency_method: Option<String>,
     pub artifact_cache_key: Option<String>,
     pub cache_hit: bool,
+    pub artifact_cache_bypassed: bool,
+    pub compiler_process_executed: bool,
+    pub preprocessor_process_executed: bool,
+    pub preprocessor_identity_verified_after_execution: bool,
+    pub preprocessor_command_hash: Option<String>,
+    pub preprocessor_elapsed_ms: Option<u64>,
+    pub compiler_output_freshly_created: bool,
+    pub compiler_path_identity_verified_after_execution: bool,
+    pub compiler_cache_policy: String,
+    pub compiler_cache_controls: BTreeMap<String, String>,
+    pub compiler_cache_evidence_scope: String,
+    pub compiler_environment_scope: String,
+    pub compiler_identity_scope: String,
+    pub compile_command_hash_scope: String,
+    pub compiler_input_mode: String,
+    pub compiler_output_transport: String,
+    pub compiler_source_evidence_scope: String,
+    pub request_source_sha256: Option<String>,
+    pub request_source_bytes: Option<usize>,
+    pub transformed_source_sha256: Option<String>,
+    pub transformed_source_bytes: Option<usize>,
+    pub preprocessor_input_sha256: Option<String>,
+    pub preprocessor_input_bytes: Option<usize>,
+    pub source_transforms: Vec<DeviceSourceTransformEvidence>,
+    pub compiled_source_sha256: Option<String>,
+    pub compiled_source_bytes: Option<usize>,
+    pub source_bytes_verified_after_execution: bool,
+    #[serde(skip)]
+    pub request_source_snapshot: Option<Arc<[u8]>>,
+    #[serde(skip)]
+    pub compiler_input_snapshot: Option<Arc<[u8]>>,
+    #[cfg(feature = "gpu-hmr")]
+    #[serde(skip)]
+    pub(crate) compiler_execution_snapshot: Option<Arc<DeviceCompilerExecutableSnapshot>>,
+    pub artifact_sha256: Option<String>,
+    pub artifact_bytes: Option<usize>,
+    #[serde(skip)]
+    pub artifact_snapshot: Option<Arc<[u8]>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceSourceTransformEvidence {
+    pub transform: String,
+    pub attempt: usize,
+    pub input_sha256: String,
+    pub input_bytes: usize,
+    pub output_sha256: String,
+    pub output_bytes: usize,
+}
+
+pub fn enforce_requested_cold_device_compile(
+    required: bool,
+    outcome: Option<&DeviceCompileOutcome>,
+) -> Result<()> {
+    if !required {
+        return Ok(());
+    }
+
+    let Some(outcome) = outcome else {
+        anyhow::bail!("cold device compile required but no device compiler outcome was produced");
+    };
+    let metadata = &outcome.proof_metadata;
+    let mut gaps = Vec::new();
+    if !metadata.artifact_cache_bypassed {
+        gaps.push("synthi_artifact_cache_not_bypassed");
+    }
+    if metadata.artifact_cache_key.is_some() || metadata.cache_hit {
+        gaps.push("synthi_artifact_cache_reuse_observed");
+    }
+    if !metadata.compiler_process_executed {
+        gaps.push("compiler_process_not_executed");
+    }
+    if !metadata.preprocessor_process_executed {
+        gaps.push("compiler_preprocessor_not_executed");
+    }
+    if !metadata.preprocessor_identity_verified_after_execution {
+        gaps.push("compiler_preprocessor_identity_not_verified");
+    }
+    if !metadata
+        .preprocessor_command_hash
+        .as_deref()
+        .is_some_and(canonical_sha256_value)
+    {
+        gaps.push("compiler_preprocessor_command_hash_missing");
+    }
+    if metadata.preprocessor_elapsed_ms.is_none() {
+        gaps.push("compiler_preprocessor_timing_missing");
+    }
+    if !metadata.compiler_output_freshly_created {
+        gaps.push("fresh_compiler_output_missing");
+    }
+    if !metadata.compiler_path_identity_verified_after_execution {
+        gaps.push("compiler_path_identity_not_verified_after_execution");
+    }
+    if metadata.compiler_cache_policy != DEVICE_COMPILER_CACHE_POLICY {
+        gaps.push("compiler_cache_policy_mismatch");
+    }
+    if metadata.compiler_cache_evidence_scope != DEVICE_COMPILER_CACHE_EVIDENCE_SCOPE {
+        gaps.push("compiler_cache_evidence_scope_mismatch");
+    }
+    if metadata.compiler_environment_scope != DEVICE_COMPILER_ENVIRONMENT_SCOPE {
+        gaps.push("compiler_environment_scope_mismatch");
+    }
+    if metadata.compiler_identity_scope != DEVICE_COMPILER_IDENTITY_SCOPE {
+        gaps.push("compiler_identity_scope_mismatch");
+    }
+    if metadata.compile_command_hash_scope != DEVICE_COMPILE_COMMAND_HASH_SCOPE {
+        gaps.push("compile_command_hash_scope_mismatch");
+    }
+    if !metadata
+        .compile_command_hash
+        .as_deref()
+        .is_some_and(canonical_sha256_value)
+    {
+        gaps.push("compile_command_hash_missing");
+    }
+    if metadata.compiler_input_mode != DEVICE_COMPILER_INPUT_MODE {
+        gaps.push("compiler_input_mode_mismatch");
+    }
+    if metadata.compiler_output_transport != DEVICE_COMPILER_OUTPUT_TRANSPORT {
+        gaps.push("compiler_output_transport_mismatch");
+    }
+    if metadata.compiler_source_evidence_scope != DEVICE_COMPILER_SOURCE_EVIDENCE_SCOPE {
+        gaps.push("compiler_source_evidence_scope_mismatch");
+    }
+    if !metadata.compiler_cache_controls.is_empty() {
+        gaps.push("compiler_cache_controls_mismatch");
+    }
+    if metadata.compiler_identity_method.as_deref() != Some(DEVICE_COMPILER_IDENTITY_METHOD) {
+        gaps.push("compiler_identity_method_mismatch");
+    }
+    if !metadata.compiler_driver_entry_file_attested {
+        gaps.push("compiler_driver_entry_file_not_attested");
+    }
+    if metadata.compiler_process_image_attested {
+        gaps.push("compiler_process_tree_attestation_overclaimed");
+    }
+    if metadata.compiler_execution_transport != DEVICE_COMPILER_EXECUTION_TRANSPORT {
+        gaps.push("compiler_execution_transport_mismatch");
+    }
+    if !metadata
+        .compiler_resolved_path
+        .as_deref()
+        .is_some_and(|path| {
+            Path::new(path).is_absolute() && !path.chars().any(|ch| matches!(ch, '\r' | '\n'))
+        })
+    {
+        gaps.push("compiler_invocation_path_missing");
+    }
+    for (name, value) in [
+        ("compiler_identity", metadata.compiler_identity.as_deref()),
+        (
+            "compiler_executable_hash",
+            metadata.compiler_executable_hash.as_deref(),
+        ),
+    ] {
+        let digest = value
+            .and_then(|value| value.strip_prefix("sha256:").or(Some(value)))
+            .unwrap_or_default();
+        if digest.len() != 64 || !digest.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            gaps.push(name);
+        }
+    }
+    let transformed_source_hash =
+        format!("sha256:{}", hex_sha256(outcome.compiled_source.as_bytes()));
+    if metadata.transformed_source_sha256.as_deref() != Some(transformed_source_hash.as_str())
+        || metadata.transformed_source_bytes != Some(outcome.compiled_source.len())
+    {
+        gaps.push("transformed_source_binding_mismatch");
+    }
+    match metadata.request_source_snapshot.as_deref() {
+        Some(bytes) if !bytes.is_empty() => {
+            let request_source_hash = format!("sha256:{}", hex_sha256(bytes));
+            if metadata.request_source_sha256.as_deref() != Some(request_source_hash.as_str())
+                || metadata.request_source_bytes != Some(bytes.len())
+            {
+                gaps.push("request_source_binding_mismatch");
+            }
+            let mut previous_hash = request_source_hash;
+            let mut previous_bytes = bytes.len();
+            for transform in &metadata.source_transforms {
+                if transform.transform.trim().is_empty()
+                    || transform.input_sha256 != previous_hash
+                    || transform.input_bytes != previous_bytes
+                    || !canonical_sha256_value(&transform.output_sha256)
+                {
+                    gaps.push("source_transform_chain_mismatch");
+                    break;
+                }
+                previous_hash = transform.output_sha256.clone();
+                previous_bytes = transform.output_bytes;
+            }
+            if previous_hash != transformed_source_hash
+                || previous_bytes != outcome.compiled_source.len()
+            {
+                gaps.push("source_transform_final_binding_mismatch");
+            }
+        }
+        _ => gaps.push("request_source_snapshot_missing"),
+    }
+    let preprocessor_input = cold_device_compiler_input(
+        metadata.source_filename.as_deref().unwrap_or_default(),
+        &outcome.compiled_source,
+    )?;
+    let preprocessor_input_hash = format!("sha256:{}", hex_sha256(&preprocessor_input));
+    if metadata.preprocessor_input_sha256.as_deref() != Some(preprocessor_input_hash.as_str())
+        || metadata.preprocessor_input_bytes != Some(preprocessor_input.len())
+    {
+        gaps.push("preprocessor_input_binding_mismatch");
+    }
+    match metadata.compiler_input_snapshot.as_deref() {
+        Some(bytes) if !bytes.is_empty() => {
+            let input_hash = format!("sha256:{}", hex_sha256(bytes));
+            if metadata.compiled_source_sha256.as_deref() != Some(input_hash.as_str())
+                || metadata.compiled_source_bytes != Some(bytes.len())
+                || metadata.dependency_hash.as_deref() != Some(input_hash.as_str())
+                || metadata.dependency_method.as_deref() != Some(DEVICE_COMPILER_DEPENDENCY_METHOD)
+                || !metadata.source_bytes_verified_after_execution
+            {
+                gaps.push("compiler_input_binding_mismatch");
+            }
+        }
+        _ => gaps.push("compiler_input_snapshot_missing"),
+    }
+    match metadata.artifact_snapshot.as_deref() {
+        Some(bytes) if !bytes.is_empty() => {
+            let artifact_hash = format!("{:x}", Sha256::digest(bytes));
+            if metadata.artifact_sha256.as_deref()
+                != Some(format!("sha256:{artifact_hash}").as_str())
+                || metadata.artifact_bytes != Some(bytes.len())
+            {
+                gaps.push("artifact_snapshot_binding_mismatch");
+            }
+            match (
+                std::fs::symlink_metadata(&outcome.artifact_path),
+                std::fs::read(&outcome.artifact_path),
+            ) {
+                (Ok(path_metadata), Ok(path_bytes))
+                    if path_metadata.file_type().is_file()
+                        && !path_metadata.file_type().is_symlink()
+                        && path_bytes.as_slice() == bytes => {}
+                _ => gaps.push("artifact_path_snapshot_mismatch"),
+            }
+        }
+        _ => gaps.push("fresh_artifact_snapshot_missing"),
+    }
+
+    if gaps.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!("cold device compile proof incomplete: {}", gaps.join(","))
+    }
+}
+
+fn cold_device_compiler_input(source_filename: &str, source: &str) -> Result<Vec<u8>> {
+    let normalized = source_filename.replace('\\', "/");
+    if normalized.trim().is_empty()
+        || normalized
+            .chars()
+            .any(|ch| matches!(ch, '\r' | '\n' | '\0'))
+    {
+        anyhow::bail!("cold device compiler source filename is invalid");
+    }
+    let escaped = normalized.replace('\\', "\\\\").replace('"', "\\\"");
+    let mut input = format!("#line 1 \"{escaped}\"\n").into_bytes();
+    input.extend_from_slice(source.as_bytes());
+    Ok(input)
+}
+
+fn device_source_transform_evidence(
+    transform: &str,
+    attempt: usize,
+    input: &[u8],
+    output: &[u8],
+) -> DeviceSourceTransformEvidence {
+    DeviceSourceTransformEvidence {
+        transform: transform.to_string(),
+        attempt,
+        input_sha256: format!("sha256:{}", hex_sha256(input)),
+        input_bytes: input.len(),
+        output_sha256: format!("sha256:{}", hex_sha256(output)),
+        output_bytes: output.len(),
+    }
+}
+
+fn canonical_sha256_value(value: &str) -> bool {
+    let digest = value.strip_prefix("sha256:").unwrap_or(value);
+    digest.len() == 64
+        && digest
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase())
 }
 
 /// Phase-0 entry point. Returns `Ok(None)` when:
 ///
 ///   - the `gpu-hmr` feature is disabled at build time, or
 ///   - `device_source` is empty, or
+///   - no explicit generated device source filename is supplied, or
 ///   - the manifest has no `gpu` block (the orchestrator shouldn't call
 ///     us in that case, but we guard rather than panic).
 ///
@@ -149,6 +500,31 @@ pub async fn compile_device_phase0(
     source_filename_override: Option<&str>,
     manifest: &CompileManifest,
 ) -> Result<Option<DeviceCompileOutcome>> {
+    compile_device_phase0_with_cache_policy(
+        workspace_dir,
+        output_dir,
+        timestamp,
+        device_source,
+        source_filename_override,
+        manifest,
+        false,
+    )
+    .await
+}
+
+/// Compile a device source with an explicit Synthi-cache policy. When
+/// `bypass_artifact_cache` is true, the request cannot be satisfied from
+/// Synthi's device artifact cache and the compiler receives an empty parent
+/// environment. External compiler cache state remains explicitly unobserved.
+pub async fn compile_device_phase0_with_cache_policy(
+    workspace_dir: &std::path::Path,
+    output_dir: &std::path::Path,
+    timestamp: i64,
+    device_source: &str,
+    source_filename_override: Option<&str>,
+    manifest: &CompileManifest,
+    bypass_artifact_cache: bool,
+) -> Result<Option<DeviceCompileOutcome>> {
     if device_source.trim().is_empty() {
         eprintln!("[compile-device] skipping — empty device source");
         return Ok(None);
@@ -157,6 +533,16 @@ pub async fn compile_device_phase0(
         eprintln!("[compile-device] manifest has no gpu block — falling through");
         return Ok(None);
     };
+    if source_filename_override
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .is_none()
+    {
+        eprintln!(
+            "[compile-device] skipping - explicit generated device source filename is required"
+        );
+        return Ok(None);
+    }
 
     #[cfg(not(feature = "gpu-hmr"))]
     {
@@ -186,6 +572,7 @@ pub async fn compile_device_phase0(
             source_filename_override,
             manifest,
             gpu,
+            bypass_artifact_cache,
         )
         .await
     }
@@ -200,18 +587,30 @@ async fn compile_device_inner(
     source_filename_override: Option<&str>,
     manifest: &CompileManifest,
     gpu: &crate::hmr::compile_manifest::GpuBuildBlock,
+    bypass_artifact_cache: bool,
 ) -> Result<Option<DeviceCompileOutcome>> {
+    if bypass_artifact_cache && !cfg!(target_os = "linux") {
+        anyhow::bail!(
+            "content-bound device compiler entry-file execution currently requires a Linux worker; host Windows/WSL orchestration must run the compiler inside the Linux worker"
+        );
+    }
     // Pick filename + executable from the manifest. `select_compiler`
     // owns the dispatch; we resolve to the canonical name here so the
     // log lines name the actual binary the worker spawned.
     let compiler_exe = manifest.select_compiler(crate::hmr::compile_manifest::ModuleKind::Device);
-    let (default_source_filename, artifact_ext) = match gpu.vendor {
-        DeviceVendor::Cuda => (DEVICE_CU_FILENAME, "cubin"),
-        DeviceVendor::Rocm => (DEVICE_HIP_FILENAME, "hsaco"),
+    let artifact_ext = match gpu.vendor {
+        DeviceVendor::Cuda => "cubin",
+        DeviceVendor::Rocm => "hsaco",
     };
-    let source_filename = source_filename_override
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or(default_source_filename);
+    let Some(source_filename) = source_filename_override
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        eprintln!(
+            "[compile-device] skipping - explicit generated device source filename is required"
+        );
+        return Ok(None);
+    };
 
     let source_path = workspace_dir.join(source_filename);
     if let Some(parent) = source_path.parent() {
@@ -222,17 +621,20 @@ async fn compile_device_inner(
     tokio::fs::create_dir_all(output_dir)
         .await
         .context("creating device output dir")?;
+    let _source_compile_guard = acquire_device_source_compile_lock(&source_path).await;
 
-    let artifact_path = output_dir.join(format!("device_{}.{}", timestamp, artifact_ext));
-    let heal_allowed = is_internal_generated_device_source(source_filename);
+    let heal_allowed =
+        !bypass_artifact_cache && manifest_declares_device_role(manifest, source_filename);
     let max_heal_attempts = if heal_allowed { 2 } else { 0 };
     if !heal_allowed {
         eprintln!(
-            "[compile-device] AI heal disabled - source is not an internal generated role: {}",
+            "[compile-device] AI heal disabled - source is not a manifest-declared device role: {}",
             source_filename
         );
     }
 
+    let requested_source_snapshot = Arc::<[u8]>::from(device_source.as_bytes());
+    let mut source_transforms = Vec::new();
     let mut current_source = device_source.to_string();
     for attempt in 0..=max_heal_attempts {
         if heal_allowed {
@@ -248,6 +650,12 @@ async fn compile_device_inner(
                     eprintln!(
                         "[compile-device] pruned redundant generated device include bridge entries before compile"
                     );
+                    source_transforms.push(device_source_transform_evidence(
+                        "prune_redundant_generated_device_includes",
+                        attempt,
+                        current_source.as_bytes(),
+                        sanitized.as_bytes(),
+                    ));
                     current_source = sanitized;
                 }
                 Ok(_) => {}
@@ -267,6 +675,12 @@ async fn compile_device_inner(
                     eprintln!(
                         "[compile-device] removed source-owned generated device forward declarations before compile"
                     );
+                    source_transforms.push(device_source_transform_evidence(
+                        "remove_source_owned_device_forward_declarations",
+                        attempt,
+                        current_source.as_bytes(),
+                        sanitized.as_bytes(),
+                    ));
                     current_source = sanitized;
                 }
                 Ok(_) => {}
@@ -280,31 +694,43 @@ async fn compile_device_inner(
             .await
             .context("writing device source")?;
 
-        let cache_key = device_artifact_cache_key(
+        let cache_key = if bypass_artifact_cache {
+            None
+        } else {
+            device_artifact_cache_key(
+                workspace_dir,
+                compiler_exe,
+                gpu,
+                source_filename,
+                &current_source,
+            )
+            .await?
+        };
+        let mut proof_metadata = device_compile_proof_metadata(
             workspace_dir,
             compiler_exe,
             gpu,
             source_filename,
+            requested_source_snapshot.clone(),
             &current_source,
-        )
-        .await?;
-        let proof_metadata = device_compile_proof_metadata(
-            workspace_dir,
-            compiler_exe,
-            gpu,
-            source_filename,
-            &current_source,
+            source_transforms.clone(),
             cache_key.as_ref(),
+            false,
+            bypass_artifact_cache,
             false,
         )
         .await?;
+        let artifact_reservation =
+            reserve_device_artifact_path(output_dir, timestamp, artifact_ext).await?;
+        let artifact_path = artifact_reservation.path.clone();
         if let Some(cache_key) = cache_key.as_ref() {
             if restore_cached_device_artifact(workspace_dir, &cache_key.cache_key, &artifact_path)
                 .await?
             {
+                let mut proof_metadata = proof_metadata.clone();
+                bind_device_artifact_snapshot(&mut proof_metadata, &artifact_path).await?;
                 let artifact_exported_symbols =
                     inspect_device_artifact_exported_symbols(gpu.vendor, &artifact_path).await;
-                let mut proof_metadata = proof_metadata.clone();
                 proof_metadata.cache_hit = true;
                 eprintln!(
                     "[compile-device] artifact cache hit key={} dependency_hash={} dependency_method={} compile_command_hash={} artifact={}",
@@ -334,18 +760,120 @@ async fn compile_device_inner(
             }
         }
 
+        let compiler_invocation_exe = if bypass_artifact_cache {
+            proof_metadata
+                .compiler_execution_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.execution_path.clone())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "cold device compiler process image cannot be bound to an open executable"
+                    )
+                })?
+        } else {
+            compiler_exe.to_string()
+        };
+        let piped_compiler_input = if bypass_artifact_cache {
+            let request_source = cold_device_compiler_input(source_filename, &current_source)?;
+            let preprocessed = run_cold_device_preprocessor(
+                &compiler_invocation_exe,
+                workspace_dir,
+                gpu,
+                source_filename,
+                &request_source,
+                proof_metadata
+                    .compiler_execution_snapshot
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("cold device compiler snapshot missing"))?,
+                &format!("sha256:{}", hex_sha256(current_source.as_bytes())),
+                current_source.len(),
+            )
+            .await?;
+            let preprocessed_hash = format!("sha256:{}", hex_sha256(preprocessed.bytes.as_ref()));
+            let normalized_command = normalized_device_compile_command_tokens(
+                workspace_dir,
+                &compiler_invocation_exe,
+                gpu,
+                source_filename,
+                true,
+                Some(&preprocessed_hash),
+            );
+            proof_metadata.preprocessor_process_executed = true;
+            proof_metadata.preprocessor_identity_verified_after_execution = true;
+            proof_metadata.preprocessor_command_hash = Some(preprocessed.command_hash);
+            proof_metadata.preprocessor_elapsed_ms = Some(preprocessed.elapsed_ms);
+            proof_metadata.compile_command_hash =
+                Some(hash_string_sequence("compile_command", &normalized_command));
+            proof_metadata.dependency_hash = Some(preprocessed_hash.clone());
+            proof_metadata.dependency_method = Some(DEVICE_COMPILER_DEPENDENCY_METHOD.to_string());
+            proof_metadata.compiled_source_sha256 = Some(preprocessed_hash);
+            proof_metadata.compiled_source_bytes = Some(preprocessed.bytes.len());
+            proof_metadata.compiler_input_snapshot = Some(preprocessed.bytes.clone());
+            Some(preprocessed.bytes)
+        } else {
+            None
+        };
         let compile = run_device_compile_once(
-            compiler_exe,
+            &compiler_invocation_exe,
             workspace_dir,
             gpu,
             source_filename,
-            &artifact_path,
+            &artifact_reservation,
+            bypass_artifact_cache,
+            bypass_artifact_cache
+                .then_some(proof_metadata.compiler_execution_snapshot.as_deref())
+                .flatten(),
+            proof_metadata
+                .compiled_source_sha256
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("device compiler source hash missing"))?,
+            proof_metadata
+                .compiled_source_bytes
+                .ok_or_else(|| anyhow::anyhow!("device compiler source byte length missing"))?,
+            piped_compiler_input.as_deref(),
+            &format!("sha256:{}", hex_sha256(current_source.as_bytes())),
+            current_source.len(),
         )
         .await?;
 
         if compile.status.success() {
+            if bypass_artifact_cache {
+                let artifact_bytes =
+                    read_device_artifact_reservation(&artifact_reservation).await?;
+                if !has_elf_magic_bytes(&artifact_bytes) {
+                    anyhow::bail!(
+                        "cold device compiler stdout did not contain an ELF device code object"
+                    );
+                }
+            }
             if gpu.vendor == DeviceVendor::Rocm {
-                normalize_rocm_artifact_if_bundled(&artifact_path).await?;
+                if bypass_artifact_cache
+                    && has_clang_offload_bundle_header_bytes(
+                        &read_device_artifact_reservation(&artifact_reservation).await?,
+                    )
+                {
+                    anyhow::bail!(
+                        "cold device compile produced a bundled ROCm artifact; strict proof requires direct compiler output without an unattested post-compiler transformer"
+                    );
+                }
+                if !bypass_artifact_cache {
+                    normalize_rocm_artifact_if_bundled(&artifact_path).await?;
+                }
+            }
+            finalize_device_compile_proof_metadata(
+                &mut proof_metadata,
+                &compile,
+                bypass_artifact_cache,
+            )
+            .await?;
+            if bypass_artifact_cache {
+                bind_device_artifact_reservation_snapshot(
+                    &mut proof_metadata,
+                    &artifact_reservation,
+                )
+                .await?;
+            } else {
+                bind_device_artifact_snapshot(&mut proof_metadata, &artifact_path).await?;
             }
 
             eprintln!(
@@ -355,8 +883,12 @@ async fn compile_device_inner(
                 compile.elapsed_ms,
                 compile.diagnostics.register_pressure.len()
             );
-            let artifact_exported_symbols =
-                inspect_device_artifact_exported_symbols(gpu.vendor, &artifact_path).await;
+            let artifact_exported_symbols = if bypass_artifact_cache {
+                Vec::new()
+            } else {
+                inspect_device_artifact_exported_symbols(gpu.vendor, &artifact_path).await
+            };
+            verify_device_artifact_snapshot(&proof_metadata, &artifact_path).await?;
 
             if let Some(cache_key) = cache_key.as_ref() {
                 if let Err(e) =
@@ -389,6 +921,14 @@ async fn compile_device_inner(
             "[compile-device] {} FAILED status={} compiler_ms={}\n{}",
             compiler_exe, compile.status, compile.elapsed_ms, compile.stderr
         );
+        if let Err(error) = tokio::fs::remove_file(&artifact_path).await {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "[compile-device] failed artifact cleanup skipped path={} error={error}",
+                    artifact_path.display()
+                );
+            }
+        }
 
         if attempt >= max_heal_attempts {
             anyhow::bail!(
@@ -399,7 +939,7 @@ async fn compile_device_inner(
         }
 
         let (shared_for_heal, heal_arch_md) =
-            read_device_heal_context(workspace_dir, &source_path).await;
+            read_device_heal_context(workspace_dir, manifest, source_filename).await;
         let heal_arch_hint = heal_arch_md.as_deref().filter(|s| !s.trim().is_empty());
 
         eprintln!(
@@ -436,6 +976,12 @@ async fn compile_device_inner(
         tokio::fs::write(&source_path, &fixed)
             .await
             .context("writing healed device source")?;
+        source_transforms.push(device_source_transform_evidence(
+            "ai_heal_after_compiler_failure",
+            attempt,
+            current_source.as_bytes(),
+            fixed.as_bytes(),
+        ));
         current_source = fixed;
     }
 
@@ -1039,15 +1585,6 @@ fn normalize_path_key(path: &Path) -> String {
 }
 
 #[cfg(feature = "gpu-hmr")]
-fn is_partial_device_source_filename(source_filename: &str) -> bool {
-    source_filename
-        .replace('\\', "/")
-        .rsplit('/')
-        .next()
-        .is_some_and(|name| name.contains(".partial."))
-}
-
-#[cfg(feature = "gpu-hmr")]
 fn positive_timeout_secs(value: Option<String>) -> Option<u64> {
     value
         .and_then(|raw| raw.parse::<u64>().ok())
@@ -1056,29 +1593,19 @@ fn positive_timeout_secs(value: Option<String>) -> Option<u64> {
 
 #[cfg(feature = "gpu-hmr")]
 fn device_compile_timeout_secs_for(
-    source_filename: &str,
     global_override: Option<u64>,
-    partial_override: Option<u64>,
     full_override: Option<u64>,
 ) -> u64 {
     if let Some(secs) = global_override {
         return secs;
     }
-    if is_partial_device_source_filename(source_filename) {
-        partial_override.unwrap_or(DEFAULT_DEVICE_PARTIAL_COMPILE_TIMEOUT_SECS)
-    } else {
-        full_override.unwrap_or(DEFAULT_DEVICE_FULL_COMPILE_TIMEOUT_SECS)
-    }
+    full_override.unwrap_or(DEFAULT_DEVICE_FULL_COMPILE_TIMEOUT_SECS)
 }
 
 #[cfg(feature = "gpu-hmr")]
-fn device_compile_timeout_secs(source_filename: &str) -> u64 {
+fn device_compile_timeout_secs() -> u64 {
     device_compile_timeout_secs_for(
-        source_filename,
         positive_timeout_secs(std::env::var("SYNTHI_GPU_HMR_DEVICE_COMPILE_TIMEOUT_SECS").ok()),
-        positive_timeout_secs(
-            std::env::var("SYNTHI_GPU_HMR_DEVICE_PARTIAL_COMPILE_TIMEOUT_SECS").ok(),
-        ),
         positive_timeout_secs(
             std::env::var("SYNTHI_GPU_HMR_DEVICE_FULL_COMPILE_TIMEOUT_SECS").ok(),
         ),
@@ -1115,12 +1642,13 @@ fn cache_hex(hasher: Sha256) -> String {
 }
 
 #[cfg(feature = "gpu-hmr")]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 struct DeviceArtifactCacheKey {
     cache_key: String,
     dependency_hash: String,
     dependency_method: String,
     compile_command_hash: String,
+    compiler_identity: DeviceCompilerIdentityEvidence,
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -1142,13 +1670,25 @@ async fn device_artifact_cache_key(
         return Ok(None);
     }
 
-    let normalized_command =
-        normalized_device_compile_command_tokens(workspace_dir, compiler_exe, gpu, source_filename);
+    let normalized_command = normalized_device_compile_command_tokens(
+        workspace_dir,
+        compiler_exe,
+        gpu,
+        source_filename,
+        false,
+        None,
+    );
     let compile_command_hash = hash_string_sequence("compile_command", &normalized_command);
 
-    let Some(dependency_digest) =
-        device_dependency_cache_hash(workspace_dir, compiler_exe, gpu, source_filename, source)
-            .await?
+    let Some(dependency_digest) = device_dependency_cache_hash(
+        workspace_dir,
+        compiler_exe,
+        gpu,
+        source_filename,
+        source,
+        false,
+    )
+    .await?
     else {
         return Ok(None);
     };
@@ -1160,20 +1700,18 @@ async fn device_artifact_cache_key(
         DEVICE_ARTIFACT_CACHE_KEY_SCHEMA,
     );
     cache_update_str(&mut hasher, "artifact_schema", DEVICE_ARTIFACT_CACHE_SCHEMA);
-    cache_update_str(
-        &mut hasher,
-        "artifact_kind",
-        if is_partial_device_source_filename(source_filename) {
-            "partial"
-        } else {
-            "full"
-        },
-    );
+    cache_update_str(&mut hasher, "artifact_kind", "device_sidecar");
     cache_update_str(&mut hasher, "compiler_exe", compiler_exe);
-    let Some(compiler_identity) = device_compiler_identity(compiler_exe).await? else {
+    let Some(compiler_identity) =
+        device_compiler_identity_evidence(workspace_dir, compiler_exe).await?
+    else {
         return Ok(None);
     };
-    cache_update_str(&mut hasher, "compiler_identity", &compiler_identity);
+    cache_update_str(
+        &mut hasher,
+        "compiler_identity",
+        &compiler_identity.identity_hash,
+    );
     cache_update_str(
         &mut hasher,
         "sdk_version",
@@ -1193,7 +1731,7 @@ async fn device_artifact_cache_key(
         "target_triple",
         &target_triple_fingerprint(gpu),
     );
-    for (name, value) in device_compiler_env_fingerprint(gpu) {
+    for (name, value) in device_compiler_env_fingerprint() {
         cache_update_str(&mut hasher, "env_name", &name);
         cache_update_str(&mut hasher, "env_value", &value);
     }
@@ -1221,6 +1759,7 @@ async fn device_artifact_cache_key(
         dependency_hash: dependency_digest.hash,
         dependency_method: dependency_digest.method,
         compile_command_hash,
+        compiler_identity,
     }))
 }
 
@@ -1230,26 +1769,106 @@ async fn device_compile_proof_metadata(
     compiler_exe: &str,
     gpu: &crate::hmr::compile_manifest::GpuBuildBlock,
     source_filename: &str,
+    requested_source_snapshot: Arc<[u8]>,
     source: &str,
+    source_transforms: Vec<DeviceSourceTransformEvidence>,
     cache_key: Option<&DeviceArtifactCacheKey>,
     cache_hit: bool,
+    artifact_cache_bypassed: bool,
+    compiler_process_executed: bool,
 ) -> Result<DeviceCompileProofMetadata> {
-    let normalized_command =
-        normalized_device_compile_command_tokens(workspace_dir, compiler_exe, gpu, source_filename);
-    let dependency_digest = match cache_key {
-        Some(cache_key) => Some(DeviceDependencyDigest {
-            hash: cache_key.dependency_hash.clone(),
-            method: cache_key.dependency_method.clone(),
-        }),
-        None => {
-            device_dependency_cache_hash(workspace_dir, compiler_exe, gpu, source_filename, source)
+    let compiler_identity = match cache_key {
+        Some(cache_key) => Some(cache_key.compiler_identity.clone()),
+        None => device_compiler_identity_evidence(workspace_dir, compiler_exe).await?,
+    };
+    if artifact_cache_bypassed && compiler_identity.is_none() {
+        anyhow::bail!(
+            "cold device compile requires a resolved, byte-hashed compiler executable: {compiler_exe}"
+        );
+    }
+    let compiler_invocation_exe = if artifact_cache_bypassed {
+        compiler_identity
+            .as_ref()
+            .map(|identity| identity.resolved_path.as_str())
+            .ok_or_else(|| anyhow::anyhow!("cold device compiler invocation path missing"))?
+    } else {
+        compiler_exe
+    };
+    let preprocessor_input = if artifact_cache_bypassed {
+        cold_device_compiler_input(source_filename, source)?
+    } else {
+        source.as_bytes().to_vec()
+    };
+    let request_source_sha256 =
+        format!("sha256:{}", hex_sha256(requested_source_snapshot.as_ref()));
+    let transformed_source_sha256 = format!("sha256:{}", hex_sha256(source.as_bytes()));
+    let preprocessor_input_sha256 = format!("sha256:{}", hex_sha256(&preprocessor_input));
+    let normalized_command = normalized_device_compile_command_tokens(
+        workspace_dir,
+        compiler_invocation_exe,
+        gpu,
+        source_filename,
+        artifact_cache_bypassed,
+        artifact_cache_bypassed.then_some(preprocessor_input_sha256.as_str()),
+    );
+    let dependency_digest = if artifact_cache_bypassed {
+        None
+    } else {
+        match cache_key {
+            Some(cache_key) => Some(DeviceDependencyDigest {
+                hash: cache_key.dependency_hash.clone(),
+                method: cache_key.dependency_method.clone(),
+            }),
+            None => {
+                device_dependency_cache_hash(
+                    workspace_dir,
+                    compiler_invocation_exe,
+                    gpu,
+                    source_filename,
+                    source,
+                    artifact_cache_bypassed,
+                )
                 .await?
+            }
         }
     };
+    let compiler_cache_controls = if artifact_cache_bypassed {
+        device_compiler_cache_controls()
+    } else {
+        BTreeMap::new()
+    };
+    let compiler_execution_snapshot = artifact_cache_bypassed
+        .then(|| {
+            compiler_identity
+                .as_ref()
+                .and_then(|identity| identity.execution_snapshot.clone())
+        })
+        .flatten();
+    let compiler_execution_available = compiler_execution_snapshot.is_some();
 
     Ok(DeviceCompileProofMetadata {
         compiler_executable: Some(compiler_exe.to_string()),
-        compiler_identity: device_compiler_identity(compiler_exe).await?,
+        compiler_identity: compiler_identity
+            .as_ref()
+            .map(|identity| identity.identity_hash.clone()),
+        compiler_resolved_path: compiler_identity
+            .as_ref()
+            .map(|identity| identity.resolved_path.clone()),
+        compiler_executable_hash: compiler_identity
+            .as_ref()
+            .map(|identity| identity.executable_hash.clone()),
+        compiler_identity_method: compiler_identity
+            .as_ref()
+            .map(|identity| identity.identity_method.clone()),
+        compiler_driver_entry_file_attested: false,
+        compiler_process_image_attested: false,
+        compiler_execution_transport: if compiler_execution_available {
+            DEVICE_COMPILER_EXECUTION_TRANSPORT.to_string()
+        } else if artifact_cache_bypassed {
+            "unavailable".to_string()
+        } else {
+            "not_requested".to_string()
+        },
         device_compiler: Some(gpu.device_compiler.executable().to_string()),
         gpu_vendor: Some(gpu.vendor.as_str().to_string()),
         gpu_arch: gpu.arch.clone(),
@@ -1257,18 +1876,126 @@ async fn device_compile_proof_metadata(
         sdk_version: Some(gpu_sdk_version_fingerprint(gpu)),
         source_filename: Some(source_filename.replace('\\', "/")),
         effective_device_flags: gpu.device_flags.clone(),
-        compile_command_hash: Some(
-            cache_key
-                .map(|cache_key| cache_key.compile_command_hash.clone())
-                .unwrap_or_else(|| hash_string_sequence("compile_command", &normalized_command)),
-        ),
+        compile_command_hash: if artifact_cache_bypassed {
+            None
+        } else {
+            Some(
+                cache_key
+                    .map(|cache_key| cache_key.compile_command_hash.clone())
+                    .unwrap_or_else(|| {
+                        hash_string_sequence("compile_command", &normalized_command)
+                    }),
+            )
+        },
         dependency_hash: dependency_digest.as_ref().map(|digest| digest.hash.clone()),
         dependency_method: dependency_digest
             .as_ref()
             .map(|digest| digest.method.clone()),
         artifact_cache_key: cache_key.map(|cache_key| cache_key.cache_key.clone()),
         cache_hit,
+        artifact_cache_bypassed,
+        compiler_process_executed,
+        preprocessor_process_executed: false,
+        preprocessor_identity_verified_after_execution: false,
+        preprocessor_command_hash: None,
+        preprocessor_elapsed_ms: None,
+        compiler_output_freshly_created: false,
+        compiler_path_identity_verified_after_execution: false,
+        compiler_cache_policy: if artifact_cache_bypassed {
+            DEVICE_COMPILER_CACHE_POLICY.to_string()
+        } else {
+            "not_requested".to_string()
+        },
+        compiler_cache_controls,
+        compiler_cache_evidence_scope: if artifact_cache_bypassed {
+            DEVICE_COMPILER_CACHE_EVIDENCE_SCOPE.to_string()
+        } else {
+            "not_requested".to_string()
+        },
+        compiler_environment_scope: DEVICE_COMPILER_ENVIRONMENT_SCOPE.to_string(),
+        compiler_identity_scope: if compiler_execution_available {
+            DEVICE_COMPILER_IDENTITY_SCOPE.to_string()
+        } else if artifact_cache_bypassed {
+            "unavailable".to_string()
+        } else {
+            "compiler_identity_for_cache_key_only".to_string()
+        },
+        compile_command_hash_scope: DEVICE_COMPILE_COMMAND_HASH_SCOPE.to_string(),
+        compiler_input_mode: if artifact_cache_bypassed {
+            DEVICE_COMPILER_INPUT_MODE.to_string()
+        } else {
+            "workspace_path".to_string()
+        },
+        compiler_output_transport: if artifact_cache_bypassed {
+            DEVICE_COMPILER_OUTPUT_TRANSPORT.to_string()
+        } else {
+            "compiler_path_output".to_string()
+        },
+        compiler_source_evidence_scope: if artifact_cache_bypassed {
+            DEVICE_COMPILER_SOURCE_EVIDENCE_SCOPE.to_string()
+        } else {
+            "workspace_path_before_after".to_string()
+        },
+        request_source_sha256: artifact_cache_bypassed.then_some(request_source_sha256),
+        request_source_bytes: artifact_cache_bypassed.then_some(requested_source_snapshot.len()),
+        transformed_source_sha256: artifact_cache_bypassed.then_some(transformed_source_sha256),
+        transformed_source_bytes: artifact_cache_bypassed.then_some(source.len()),
+        preprocessor_input_sha256: artifact_cache_bypassed.then_some(preprocessor_input_sha256),
+        preprocessor_input_bytes: artifact_cache_bypassed.then_some(preprocessor_input.len()),
+        source_transforms,
+        compiled_source_sha256: (!artifact_cache_bypassed)
+            .then(|| format!("sha256:{}", hex_sha256(&preprocessor_input))),
+        compiled_source_bytes: (!artifact_cache_bypassed).then_some(preprocessor_input.len()),
+        source_bytes_verified_after_execution: false,
+        request_source_snapshot: artifact_cache_bypassed.then_some(requested_source_snapshot),
+        compiler_input_snapshot: None,
+        compiler_execution_snapshot,
+        artifact_sha256: None,
+        artifact_bytes: None,
+        artifact_snapshot: None,
     })
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn device_compiler_cache_controls() -> BTreeMap<String, String> {
+    BTreeMap::new()
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn device_compiler_command(
+    compiler_exe: &str,
+    isolate_parent_environment: bool,
+) -> tokio::process::Command {
+    device_compiler_command_for_platform(
+        compiler_exe,
+        isolate_parent_environment,
+        cfg!(target_os = "windows"),
+    )
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn device_compiler_command_for_platform(
+    compiler_exe: &str,
+    isolate_parent_environment: bool,
+    windows_wsl: bool,
+) -> tokio::process::Command {
+    let mut cmd = if windows_wsl {
+        let mut cmd = tokio::process::Command::new("wsl");
+        if isolate_parent_environment {
+            cmd.arg("env").arg("-i");
+        }
+        cmd.arg(compiler_exe);
+        cmd
+    } else {
+        tokio::process::Command::new(compiler_exe)
+    };
+    if isolate_parent_environment {
+        cmd.env_clear();
+    }
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    cmd
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -1287,18 +2014,70 @@ fn normalized_device_compile_command_tokens(
     compiler_exe: &str,
     gpu: &crate::hmr::compile_manifest::GpuBuildBlock,
     source_filename: &str,
+    isolate_parent_environment: bool,
+    piped_input_sha256: Option<&str>,
 ) -> Vec<String> {
-    let mut cmd = tokio::process::Command::new(compiler_exe);
-    let artifact_placeholder = PathBuf::from("__synthi_device_artifact__");
-    populate_device_command(&mut cmd, gpu, source_filename, &artifact_placeholder);
-    normalize_compile_command_tokens(
+    let mut cmd = device_compiler_command(compiler_exe, isolate_parent_environment);
+    if isolate_parent_environment {
+        populate_device_command_with_piped_source(&mut cmd, gpu, source_filename, Path::new("-"));
+    } else {
+        let artifact_placeholder = PathBuf::from("__synthi_device_artifact__");
+        populate_device_command(&mut cmd, gpu, source_filename, &artifact_placeholder);
+    }
+    normalized_device_process_command_tokens(
         workspace_dir,
-        compiler_exe,
+        source_filename,
+        &cmd,
+        isolate_parent_environment,
+        piped_input_sha256,
+    )
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn normalized_device_process_command_tokens(
+    workspace_dir: &Path,
+    source_filename: &str,
+    cmd: &tokio::process::Command,
+    isolate_parent_environment: bool,
+    piped_input_sha256: Option<&str>,
+) -> Vec<String> {
+    let program = cmd.as_std().get_program().to_string_lossy().into_owned();
+    let mut tokens = vec![
+        format!("cwd={}", normalize_path_key(workspace_dir)),
+        format!(
+            "parent-environment={}",
+            if isolate_parent_environment {
+                "empty"
+            } else {
+                "inherited"
+            }
+        ),
+    ];
+    let mut environment = cmd
+        .as_std()
+        .get_envs()
+        .map(|(name, value)| {
+            let name = name.to_string_lossy();
+            match value {
+                Some(value) => format!("env:{name}={}", value.to_string_lossy()),
+                None => format!("env-unset:{name}"),
+            }
+        })
+        .collect::<Vec<_>>();
+    environment.sort();
+    tokens.extend(environment);
+    tokens.extend(normalize_compile_command_tokens(
+        workspace_dir,
+        &program,
         source_filename,
         cmd.as_std()
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned()),
-    )
+    ));
+    if let Some(input_hash) = piped_input_sha256 {
+        tokens.push(format!("stdin-content={input_hash}"));
+    }
+    tokens
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -1471,28 +2250,13 @@ fn target_triple_fingerprint(gpu: &crate::hmr::compile_manifest::GpuBuildBlock) 
 }
 
 #[cfg(feature = "gpu-hmr")]
-fn device_compiler_env_fingerprint(
-    gpu: &crate::hmr::compile_manifest::GpuBuildBlock,
-) -> Vec<(String, String)> {
-    let mut names = vec![
-        "CPATH",
-        "CPLUS_INCLUDE_PATH",
-        "HIP_PATH",
-        "HIP_PLATFORM",
-        "HIPCC_VERBOSE",
-        "HSA_OVERRIDE_GFX_VERSION",
-        "ROCM_HOME",
-        "ROCM_PATH",
-    ];
-    if gpu.vendor == DeviceVendor::Cuda {
-        names.extend(["CUDA_HOME", "CUDA_PATH"]);
-    }
-    let mut out = names
-        .into_iter()
-        .filter_map(|name| {
-            std::env::var(name)
-                .ok()
-                .map(|value| (name.to_string(), value))
+fn device_compiler_env_fingerprint() -> Vec<(String, String)> {
+    let mut out = std::env::vars_os()
+        .map(|(name, value)| {
+            (
+                os_string_content_hash(name.as_os_str()),
+                os_string_content_hash(value.as_os_str()),
+            )
         })
         .collect::<Vec<_>>();
     out.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1500,25 +2264,51 @@ fn device_compiler_env_fingerprint(
 }
 
 #[cfg(feature = "gpu-hmr")]
+fn os_string_content_hash(value: &std::ffi::OsStr) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        format!("sha256:{}", hex_sha256(value.as_bytes()))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let bytes = value
+            .encode_wide()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        format!("sha256:{}", hex_sha256(&bytes))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        format!("sha256:{}", hex_sha256(value.to_string_lossy().as_bytes()))
+    }
+}
+
+#[cfg(feature = "gpu-hmr")]
 fn gpu_sdk_version_fingerprint(gpu: &crate::hmr::compile_manifest::GpuBuildBlock) -> String {
     match gpu.vendor {
         DeviceVendor::Rocm => {
-            let root = std::env::var("ROCM_PATH")
-                .or_else(|_| std::env::var("ROCM_HOME"))
-                .unwrap_or_else(|_| "/opt/rocm".to_string());
-            let version_file = PathBuf::from(root).join(".info/version");
-            std::fs::read_to_string(&version_file)
-                .map(|raw| format!("rocm:{}", raw.trim()))
-                .unwrap_or_else(|_| "rocm:unavailable".to_string())
+            match std::env::var("ROCM_PATH").or_else(|_| std::env::var("ROCM_HOME")) {
+                Ok(root) => {
+                    let version_file = PathBuf::from(root).join(".info/version");
+                    std::fs::read_to_string(&version_file)
+                        .map(|raw| format!("rocm:{}", raw.trim()))
+                        .unwrap_or_else(|_| "rocm:unavailable".to_string())
+                }
+                Err(_) => "rocm:unavailable:sdk_root_unproven".to_string(),
+            }
         }
         DeviceVendor::Cuda => {
-            let root = std::env::var("CUDA_HOME")
-                .or_else(|_| std::env::var("CUDA_PATH"))
-                .unwrap_or_else(|_| "/usr/local/cuda".to_string());
-            let version_file = PathBuf::from(root).join("version.txt");
-            std::fs::read_to_string(&version_file)
-                .map(|raw| format!("cuda:{}", raw.trim()))
-                .unwrap_or_else(|_| "cuda:unavailable".to_string())
+            match std::env::var("CUDA_HOME").or_else(|_| std::env::var("CUDA_PATH")) {
+                Ok(root) => {
+                    let version_file = PathBuf::from(root).join("version.txt");
+                    std::fs::read_to_string(&version_file)
+                        .map(|raw| format!("cuda:{}", raw.trim()))
+                        .unwrap_or_else(|_| "cuda:unavailable".to_string())
+                }
+                Err(_) => "cuda:unavailable:sdk_root_unproven".to_string(),
+            }
         }
     }
 }
@@ -1530,10 +2320,16 @@ async fn device_dependency_cache_hash(
     gpu: &crate::hmr::compile_manifest::GpuBuildBlock,
     source_filename: &str,
     source: &str,
+    isolate_parent_environment: bool,
 ) -> Result<Option<DeviceDependencyDigest>> {
-    if let Some(depfile_hash) =
-        compiler_depfile_dependency_cache_hash(workspace_dir, compiler_exe, gpu, source_filename)
-            .await?
+    if let Some(depfile_hash) = compiler_depfile_dependency_cache_hash(
+        workspace_dir,
+        compiler_exe,
+        gpu,
+        source_filename,
+        isolate_parent_environment,
+    )
+    .await?
     {
         return Ok(Some(depfile_hash));
     }
@@ -1548,6 +2344,7 @@ async fn compiler_depfile_dependency_cache_hash(
     compiler_exe: &str,
     gpu: &crate::hmr::compile_manifest::GpuBuildBlock,
     source_filename: &str,
+    isolate_parent_environment: bool,
 ) -> Result<Option<DeviceDependencyDigest>> {
     if std::env::var("SYNTHI_GPU_HMR_DEVICE_DEPFILE_CACHE")
         .ok()
@@ -1572,7 +2369,7 @@ async fn compiler_depfile_dependency_cache_hash(
     );
     let depfile = dep_dir.join(format!("{dep_stem}.d"));
 
-    let mut cmd = crate::infra::utils::system_command(compiler_exe);
+    let mut cmd = device_compiler_command(compiler_exe, isolate_parent_environment);
     cmd.current_dir(workspace_dir)
         .arg("-M")
         .arg("-MT")
@@ -1726,30 +2523,316 @@ fn parse_make_depfile_paths(raw: &str) -> Vec<String> {
 }
 
 #[cfg(feature = "gpu-hmr")]
-async fn device_compiler_identity(compiler_exe: &str) -> Result<Option<String>> {
-    let mut cmd = crate::infra::utils::system_command(compiler_exe);
-    cmd.arg("--version").kill_on_drop(true);
-    let out = match timeout(Duration::from_secs(5), cmd.output()).await {
-        Ok(Ok(out)) => out,
-        Ok(Err(e)) => {
+#[derive(Debug, Clone)]
+struct DeviceCompilerIdentityEvidence {
+    identity_hash: String,
+    resolved_path: String,
+    executable_hash: String,
+    identity_method: String,
+    execution_snapshot: Option<Arc<DeviceCompilerExecutableSnapshot>>,
+}
+
+#[cfg(feature = "gpu-hmr")]
+#[derive(Debug)]
+pub(crate) struct DeviceCompilerExecutableSnapshot {
+    handle: tokio::fs::File,
+    execution_path: String,
+    executable_hash: String,
+    executable_bytes: usize,
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn device_compiler_path_resolution_command(
+    workspace_dir: &Path,
+    compiler_exe: &str,
+) -> tokio::process::Command {
+    let mut resolve_cmd = crate::infra::utils::system_command("sh");
+    resolve_cmd
+        .current_dir(workspace_dir)
+        .arg("-lc")
+        .arg("resolved=$(command -v -- \"$1\") || exit 1; case \"$resolved\" in /*) printf '%s\\n' \"$resolved\" ;; *) exit 2 ;; esac")
+        .arg("synthi-device-compiler-resolve")
+        .arg(compiler_exe)
+        .kill_on_drop(true);
+    resolve_cmd
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn device_compiler_version_command(
+    workspace_dir: &Path,
+    execution_path: &str,
+) -> tokio::process::Command {
+    let mut cmd = device_compiler_command(execution_path, true);
+    cmd.current_dir(workspace_dir)
+        .arg("--version")
+        .kill_on_drop(true);
+    cmd
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn device_compiler_identity_evidence(
+    workspace_dir: &Path,
+    compiler_exe: &str,
+) -> Result<Option<DeviceCompilerIdentityEvidence>> {
+    let mut resolve_cmd = device_compiler_path_resolution_command(workspace_dir, compiler_exe);
+    let resolved_out = match timeout(Duration::from_secs(5), resolve_cmd.output()).await {
+        Ok(Ok(out)) if out.status.success() => out,
+        Ok(Ok(out)) => {
             eprintln!(
-                "[compile-device] artifact cache disabled - compiler identity probe failed: {e}"
+                "[compile-device] compiler path resolution failed status={} stderr={}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
             );
+            return Ok(None);
+        }
+        Ok(Err(error)) => {
+            eprintln!("[compile-device] compiler path resolution failed: {error}");
             return Ok(None);
         }
         Err(_) => {
-            eprintln!(
-                "[compile-device] artifact cache disabled - compiler identity probe timed out"
-            );
+            eprintln!("[compile-device] compiler path resolution timed out");
             return Ok(None);
         }
     };
+    let resolved_path = String::from_utf8_lossy(&resolved_out.stdout)
+        .trim()
+        .to_string();
+    if !Path::new(&resolved_path).is_absolute()
+        || resolved_path.chars().any(|ch| matches!(ch, '\r' | '\n'))
+    {
+        eprintln!(
+            "[compile-device] compiler path resolution returned an invalid path: {:?}",
+            resolved_path
+        );
+        return Ok(None);
+    }
+
+    #[cfg(target_os = "linux")]
+    let execution_snapshot = {
+        let handle = tokio::fs::File::open(&resolved_path)
+            .await
+            .with_context(|| format!("opening resolved device compiler {resolved_path}"))?;
+        let metadata = handle
+            .metadata()
+            .await
+            .with_context(|| format!("inspecting resolved device compiler {resolved_path}"))?;
+        if !metadata.is_file() {
+            eprintln!("[compile-device] resolved compiler is not a regular file: {resolved_path}");
+            return Ok(None);
+        }
+        let mut reader = handle
+            .try_clone()
+            .await
+            .context("cloning held device compiler executable")?;
+        reader
+            .seek(std::io::SeekFrom::Start(0))
+            .await
+            .context("seeking held device compiler executable")?;
+        let mut bytes = Vec::new();
+        reader
+            .read_to_end(&mut bytes)
+            .await
+            .context("reading held device compiler executable")?;
+        if bytes.is_empty() {
+            eprintln!("[compile-device] resolved compiler executable is empty: {resolved_path}");
+            return Ok(None);
+        }
+        if !bytes.starts_with(b"\x7fELF") {
+            eprintln!(
+                "[compile-device] exact compiler entry-file binding requires a native ELF executable: {resolved_path}"
+            );
+            return Ok(None);
+        }
+        let executable_hash = format!("sha256:{}", hex_sha256(&bytes));
+        let execution_path = format!("/proc/{}/fd/{}", std::process::id(), handle.as_raw_fd());
+        Arc::new(DeviceCompilerExecutableSnapshot {
+            handle,
+            execution_path,
+            executable_hash,
+            executable_bytes: bytes.len(),
+        })
+    };
+    #[cfg(target_os = "linux")]
+    let execution_path = execution_snapshot.execution_path.clone();
+    #[cfg(target_os = "linux")]
+    let executable_hash = execution_snapshot.executable_hash.clone();
+
+    #[cfg(not(target_os = "linux"))]
+    let execution_path = resolved_path.clone();
+    #[cfg(not(target_os = "linux"))]
+    let executable_hash = {
+        let bytes = read_stable_regular_file(
+            Path::new(&resolved_path),
+            "resolved device compiler executable",
+        )
+        .await?;
+        format!("sha256:{}", hex_sha256(&bytes))
+    };
+
+    // The Linux path names the already-open executable description, so the
+    // version probe and later compile cannot be redirected by replacing the
+    // workspace or PATH entry after measurement.
+    let mut cmd = device_compiler_version_command(workspace_dir, &execution_path);
+    let out = match timeout(Duration::from_secs(5), cmd.output()).await {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => {
+            eprintln!("[compile-device] compiler identity probe failed: {e}");
+            return Ok(None);
+        }
+        Err(_) => {
+            eprintln!("[compile-device] compiler identity probe timed out");
+            return Ok(None);
+        }
+    };
+    if !out.status.success() {
+        eprintln!(
+            "[compile-device] compiler identity probe returned {}",
+            out.status
+        );
+        return Ok(None);
+    }
+
     let mut hasher = Sha256::new();
-    cache_update_str(&mut hasher, "compiler", compiler_exe);
+    cache_update_str(&mut hasher, "invocation_path", &resolved_path);
+    cache_update_str(&mut hasher, "executable_hash", &executable_hash);
     cache_update_bytes(&mut hasher, "stdout", &out.stdout);
     cache_update_bytes(&mut hasher, "stderr", &out.stderr);
     cache_update_str(&mut hasher, "status", &out.status.to_string());
-    Ok(Some(cache_hex(hasher)))
+    Ok(Some(DeviceCompilerIdentityEvidence {
+        identity_hash: cache_hex(hasher),
+        resolved_path,
+        executable_hash,
+        identity_method: if cfg!(target_os = "linux") {
+            DEVICE_COMPILER_IDENTITY_METHOD.to_string()
+        } else {
+            "path_resolved_invocation_sha256+version_output".to_string()
+        },
+        #[cfg(target_os = "linux")]
+        execution_snapshot: Some(execution_snapshot),
+        #[cfg(not(target_os = "linux"))]
+        execution_snapshot: None,
+    }))
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn verify_device_compiler_execution_snapshot(
+    snapshot: &DeviceCompilerExecutableSnapshot,
+) -> Result<()> {
+    let mut reader = snapshot
+        .handle
+        .try_clone()
+        .await
+        .context("cloning held device compiler executable for verification")?;
+    reader
+        .seek(std::io::SeekFrom::Start(0))
+        .await
+        .context("seeking held device compiler executable for verification")?;
+    let mut bytes = Vec::new();
+    reader
+        .read_to_end(&mut bytes)
+        .await
+        .context("reading held device compiler executable for verification")?;
+    if bytes.len() != snapshot.executable_bytes
+        || format!("sha256:{}", hex_sha256(&bytes)) != snapshot.executable_hash
+    {
+        anyhow::bail!("held device compiler executable bytes changed during cold compilation");
+    }
+    Ok(())
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn finalize_device_compile_proof_metadata(
+    metadata: &mut DeviceCompileProofMetadata,
+    compile: &DeviceCompileAttempt,
+    cold_compile: bool,
+) -> Result<()> {
+    if !compile.artifact_freshly_created {
+        anyhow::bail!("device compiler did not create a fresh nonempty artifact");
+    }
+    metadata.compiler_process_executed = true;
+    metadata.compiler_output_freshly_created = true;
+    metadata.source_bytes_verified_after_execution = compile.source_bytes_verified_after_execution;
+
+    if !cold_compile {
+        return Ok(());
+    }
+
+    let snapshot = metadata
+        .compiler_execution_snapshot
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("cold device compiler execution snapshot missing"))?;
+    verify_device_compiler_execution_snapshot(&snapshot).await?;
+    if metadata.compiler_executable_hash.as_deref() != Some(snapshot.executable_hash.as_str()) {
+        anyhow::bail!("cold device compiler executable hash does not match held driver entry file");
+    }
+    metadata.compiler_path_identity_verified_after_execution = true;
+    metadata.compiler_driver_entry_file_attested = true;
+    metadata.compiler_process_image_attested = false;
+    metadata.compiler_execution_transport = DEVICE_COMPILER_EXECUTION_TRANSPORT.to_string();
+    metadata.compiler_identity_method = Some(DEVICE_COMPILER_IDENTITY_METHOD.to_string());
+    Ok(())
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn bind_device_artifact_snapshot(
+    metadata: &mut DeviceCompileProofMetadata,
+    artifact_path: &Path,
+) -> Result<()> {
+    let bytes = read_stable_regular_file(artifact_path, "device compiler artifact").await?;
+    if bytes.is_empty() {
+        anyhow::bail!(
+            "device compiler artifact snapshot is empty: {}",
+            artifact_path.display()
+        );
+    }
+    metadata.artifact_sha256 = Some(format!("sha256:{}", hex_sha256(&bytes)));
+    metadata.artifact_bytes = Some(bytes.len());
+    metadata.artifact_snapshot = Some(Arc::<[u8]>::from(bytes));
+    Ok(())
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn bind_device_artifact_reservation_snapshot(
+    metadata: &mut DeviceCompileProofMetadata,
+    reservation: &DeviceArtifactReservation,
+) -> Result<()> {
+    let handle_bytes = read_device_artifact_reservation(reservation).await?;
+    let path_bytes =
+        read_stable_regular_file(&reservation.path, "device compiler artifact").await?;
+    if handle_bytes.is_empty() || handle_bytes != path_bytes {
+        anyhow::bail!(
+            "device compiler artifact path does not match the held output reservation: {}",
+            reservation.path.display()
+        );
+    }
+    metadata.artifact_sha256 = Some(format!("sha256:{}", hex_sha256(&handle_bytes)));
+    metadata.artifact_bytes = Some(handle_bytes.len());
+    metadata.artifact_snapshot = Some(Arc::<[u8]>::from(handle_bytes));
+    Ok(())
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn verify_device_artifact_snapshot(
+    metadata: &DeviceCompileProofMetadata,
+    artifact_path: &Path,
+) -> Result<()> {
+    let expected_hash = metadata
+        .artifact_sha256
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("device artifact snapshot hash missing"))?;
+    let expected_bytes = metadata
+        .artifact_bytes
+        .ok_or_else(|| anyhow::anyhow!("device artifact snapshot byte length missing"))?;
+    let observed = read_stable_regular_file(artifact_path, "device compiler artifact").await?;
+    if observed.len() != expected_bytes
+        || format!("sha256:{}", hex_sha256(&observed)) != expected_hash
+    {
+        anyhow::bail!(
+            "device artifact path changed after its immutable snapshot was captured: {}",
+            artifact_path.display()
+        );
+    }
+    Ok(())
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -2150,19 +3233,302 @@ async fn store_cached_device_artifact(
     Ok(())
 }
 
-#[cfg(feature = "gpu-hmr")]
 fn hex_sha256(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    cache_hex(hasher)
+    format!("{:x}", hasher.finalize())
 }
 
 #[cfg(feature = "gpu-hmr")]
+#[derive(Debug)]
 struct DeviceCompileAttempt {
     status: std::process::ExitStatus,
     diagnostics: GpuToolchainDiagnostics,
     stderr: String,
     elapsed_ms: u64,
+    artifact_freshly_created: bool,
+    source_bytes_verified_after_execution: bool,
+}
+
+#[cfg(feature = "gpu-hmr")]
+struct DevicePreprocessAttempt {
+    bytes: Arc<[u8]>,
+    command_hash: String,
+    elapsed_ms: u64,
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn same_file_identity(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    #[cfg(target_family = "unix")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        left.dev() == right.dev() && left.ino() == right.ino()
+    }
+    #[cfg(not(target_family = "unix"))]
+    {
+        left.len() == right.len()
+            && left.modified().ok() == right.modified().ok()
+            && left.created().ok() == right.created().ok()
+    }
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn read_stable_regular_file(path: &Path, label: &str) -> Result<Vec<u8>> {
+    let path_before = tokio::fs::symlink_metadata(path)
+        .await
+        .with_context(|| format!("inspecting {label} path {}", path.display()))?;
+    if !path_before.file_type().is_file() || path_before.file_type().is_symlink() {
+        anyhow::bail!(
+            "{label} path is not a regular non-symlink file: {}",
+            path.display()
+        );
+    }
+
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .with_context(|| format!("opening {label} {}", path.display()))?;
+    let handle_before = file
+        .metadata()
+        .await
+        .with_context(|| format!("inspecting open {label} handle {}", path.display()))?;
+    if !same_file_identity(&path_before, &handle_before) {
+        anyhow::bail!(
+            "{label} path changed while it was opened: {}",
+            path.display()
+        );
+    }
+
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .await
+        .with_context(|| format!("reading {label} {}", path.display()))?;
+    let handle_after = file
+        .metadata()
+        .await
+        .with_context(|| format!("rechecking open {label} handle {}", path.display()))?;
+    let path_after = tokio::fs::symlink_metadata(path)
+        .await
+        .with_context(|| format!("rechecking {label} path {}", path.display()))?;
+    if !path_after.file_type().is_file()
+        || path_after.file_type().is_symlink()
+        || !same_file_identity(&handle_before, &handle_after)
+        || !same_file_identity(&handle_after, &path_after)
+        || handle_after.len() != bytes.len() as u64
+    {
+        anyhow::bail!(
+            "{label} changed while bytes were captured: {}",
+            path.display()
+        );
+    }
+    Ok(bytes)
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn verify_compiler_source_bytes(
+    workspace_dir: &Path,
+    source_filename: &str,
+    expected_sha256: &str,
+    expected_bytes: usize,
+) -> Result<()> {
+    let source_path = workspace_dir.join(source_filename);
+    let bytes = read_stable_regular_file(&source_path, "device compiler source").await?;
+    let observed_sha256 = format!("sha256:{}", hex_sha256(&bytes));
+    if bytes.len() != expected_bytes || observed_sha256 != expected_sha256 {
+        anyhow::bail!(
+            "device compiler source bytes do not match the request-bound source: {}",
+            source_path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "gpu-hmr")]
+struct DeviceArtifactReservation {
+    path: PathBuf,
+    handle: tokio::fs::File,
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn read_device_artifact_reservation(
+    reservation: &DeviceArtifactReservation,
+) -> Result<Vec<u8>> {
+    let mut handle = reservation
+        .handle
+        .try_clone()
+        .await
+        .context("cloning open device artifact reservation")?;
+    handle
+        .seek(std::io::SeekFrom::Start(0))
+        .await
+        .context("seeking open device artifact reservation")?;
+    let mut bytes = Vec::new();
+    handle
+        .read_to_end(&mut bytes)
+        .await
+        .context("reading open device artifact reservation")?;
+    Ok(bytes)
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn materialize_device_artifact_reservation(
+    reservation: &DeviceArtifactReservation,
+    compiler_stdout: &[u8],
+) -> Result<()> {
+    if compiler_stdout.is_empty() {
+        anyhow::bail!("successful cold device compiler produced no artifact bytes on stdout");
+    }
+    if compiler_stdout.len() as u64 > DEVICE_CACHE_MAX_INCLUDED_BYTES {
+        anyhow::bail!(
+            "cold device compiler artifact exceeds {} bytes",
+            DEVICE_CACHE_MAX_INCLUDED_BYTES
+        );
+    }
+    let mut handle = reservation
+        .handle
+        .try_clone()
+        .await
+        .context("cloning held device artifact reservation for materialization")?;
+    handle
+        .seek(std::io::SeekFrom::Start(0))
+        .await
+        .context("seeking held device artifact reservation for materialization")?;
+    handle
+        .set_len(0)
+        .await
+        .context("truncating held device artifact reservation for materialization")?;
+    handle
+        .write_all(compiler_stdout)
+        .await
+        .context("writing compiler stdout to held device artifact reservation")?;
+    handle
+        .flush()
+        .await
+        .context("flushing held device artifact reservation")?;
+    Ok(())
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn reserve_device_artifact_path(
+    output_dir: &Path,
+    timestamp: i64,
+    artifact_ext: &str,
+) -> Result<DeviceArtifactReservation> {
+    for _ in 0..8 {
+        let nonce = uuid::Uuid::new_v4().simple();
+        let path = output_dir.join(format!("device_{timestamp}_{nonce}.{artifact_ext}"));
+        match tokio::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .await
+        {
+            Ok(handle) => return Ok(DeviceArtifactReservation { path, handle }),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("reserving device artifact {}", path.display()));
+            }
+        }
+    }
+    anyhow::bail!("unable to reserve a unique device artifact path after 8 attempts")
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn run_cold_device_preprocessor(
+    compiler_exe: &str,
+    workspace_dir: &Path,
+    gpu: &crate::hmr::compile_manifest::GpuBuildBlock,
+    source_filename: &str,
+    request_source: &[u8],
+    compiler_snapshot: &DeviceCompilerExecutableSnapshot,
+    workspace_source_sha256: &str,
+    workspace_source_bytes: usize,
+) -> Result<DevicePreprocessAttempt> {
+    verify_compiler_source_bytes(
+        workspace_dir,
+        source_filename,
+        workspace_source_sha256,
+        workspace_source_bytes,
+    )
+    .await?;
+    verify_device_compiler_execution_snapshot(compiler_snapshot).await?;
+    if compiler_exe != compiler_snapshot.execution_path {
+        anyhow::bail!("cold device preprocessor did not use the held compiler executable");
+    }
+
+    let mut cmd = device_compiler_command(compiler_exe, true);
+    populate_device_preprocess_command(&mut cmd, gpu, source_filename);
+    cmd.current_dir(workspace_dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let request_hash = format!("sha256:{}", hex_sha256(request_source));
+    let command_tokens = normalized_device_process_command_tokens(
+        workspace_dir,
+        source_filename,
+        &cmd,
+        true,
+        Some(&request_hash),
+    );
+    let command_hash = hash_string_sequence("preprocess_command", &command_tokens);
+    let timeout_secs = device_compile_timeout_secs();
+    let started = std::time::Instant::now();
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("spawning cold device preprocessor {compiler_exe}"))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("cold device preprocessor stdin pipe is unavailable"))?;
+    let request_source = request_source.to_vec();
+    let writer = tokio::spawn(async move {
+        stdin.write_all(&request_source).await?;
+        stdin.shutdown().await
+    });
+    let output = match timeout(Duration::from_secs(timeout_secs), child.wait_with_output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => return Err(error.into()),
+        Err(_) => {
+            writer.abort();
+            anyhow::bail!("Device preprocessing timed out after {timeout_secs}s")
+        }
+    };
+    writer
+        .await
+        .context("joining cold device preprocessor stdin writer")?
+        .context("writing request-bound cold device preprocessor stdin")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "cold device preprocessing failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    if output.stdout.is_empty() {
+        anyhow::bail!("cold device preprocessing produced an empty translation unit");
+    }
+    if output.stdout.len() as u64 > DEVICE_CACHE_MAX_INCLUDED_BYTES {
+        anyhow::bail!(
+            "cold device preprocessed translation unit exceeds {} bytes",
+            DEVICE_CACHE_MAX_INCLUDED_BYTES
+        );
+    }
+    verify_compiler_source_bytes(
+        workspace_dir,
+        source_filename,
+        workspace_source_sha256,
+        workspace_source_bytes,
+    )
+    .await?;
+    verify_device_compiler_execution_snapshot(compiler_snapshot).await?;
+
+    Ok(DevicePreprocessAttempt {
+        bytes: Arc::<[u8]>::from(output.stdout),
+        command_hash,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    })
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -2171,13 +3537,69 @@ async fn run_device_compile_once(
     workspace_dir: &std::path::Path,
     gpu: &crate::hmr::compile_manifest::GpuBuildBlock,
     source_filename: &str,
-    artifact_path: &Path,
+    artifact_reservation: &DeviceArtifactReservation,
+    isolate_parent_environment: bool,
+    compiler_snapshot: Option<&DeviceCompilerExecutableSnapshot>,
+    expected_source_sha256: &str,
+    expected_source_bytes: usize,
+    piped_compiler_input: Option<&[u8]>,
+    workspace_source_sha256: &str,
+    workspace_source_bytes: usize,
 ) -> Result<DeviceCompileAttempt> {
-    let mut cmd = crate::infra::utils::system_command(compiler_exe);
-    populate_device_command(&mut cmd, gpu, source_filename, artifact_path);
+    let artifact_path = artifact_reservation.path.as_path();
+    verify_compiler_source_bytes(
+        workspace_dir,
+        source_filename,
+        workspace_source_sha256,
+        workspace_source_bytes,
+    )
+    .await?;
+    if let Some(input) = piped_compiler_input {
+        if input.len() != expected_source_bytes
+            || format!("sha256:{}", hex_sha256(input)) != expected_source_sha256
+        {
+            anyhow::bail!("cold device compiler piped input does not match proof metadata");
+        }
+    }
+    if let Some(snapshot) = compiler_snapshot {
+        verify_device_compiler_execution_snapshot(snapshot).await?;
+        if compiler_exe != snapshot.execution_path {
+            anyhow::bail!("cold device compile did not use the held compiler executable");
+        }
+    }
+    let reserved_path = tokio::fs::symlink_metadata(artifact_path)
+        .await
+        .with_context(|| {
+            format!(
+                "inspecting reserved device artifact {}",
+                artifact_path.display()
+            )
+        })?;
+    let reserved_path_bytes =
+        read_stable_regular_file(artifact_path, "reserved device compiler artifact").await?;
+    let reserved_handle_bytes = read_device_artifact_reservation(artifact_reservation).await?;
+    if !reserved_path.file_type().is_file()
+        || reserved_path.file_type().is_symlink()
+        || !reserved_path_bytes.is_empty()
+        || !reserved_handle_bytes.is_empty()
+        || reserved_path_bytes != reserved_handle_bytes
+    {
+        anyhow::bail!(
+            "device compile output reservation is missing, replaced, or nonempty: {}",
+            artifact_path.display()
+        );
+    }
+
+    let mut cmd = device_compiler_command(compiler_exe, isolate_parent_environment);
+    if piped_compiler_input.is_some() {
+        populate_device_command_with_piped_source(&mut cmd, gpu, source_filename, Path::new("-"));
+        cmd.stdin(std::process::Stdio::piped());
+    } else {
+        populate_device_command(&mut cmd, gpu, source_filename, artifact_path);
+    }
     cmd.current_dir(workspace_dir);
     cmd.kill_on_drop(true);
-    let timeout_secs = device_compile_timeout_secs(source_filename);
+    let timeout_secs = device_compile_timeout_secs();
 
     eprintln!(
         "[compile-device] {} -> {}  timeout_secs={} args={:?}",
@@ -2188,20 +3610,85 @@ async fn run_device_compile_once(
     );
 
     let started = std::time::Instant::now();
-    let child = cmd
+    let mut child = cmd
         .spawn()
         .with_context(|| format!("spawning {compiler_exe}"))?;
+    let mut input_writer = if let Some(input) = piped_compiler_input {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("cold device compiler stdin pipe is unavailable"))?;
+        let input = input.to_vec();
+        Some(tokio::spawn(async move {
+            stdin.write_all(&input).await?;
+            stdin.shutdown().await
+        }))
+    } else {
+        None
+    };
     let out = match timeout(Duration::from_secs(timeout_secs), child.wait_with_output()).await {
         Ok(Ok(out)) => out,
         Ok(Err(e)) => return Err(e.into()),
-        Err(_) => anyhow::bail!("Device compile timed out after {timeout_secs}s"),
+        Err(_) => {
+            if let Some(writer) = input_writer.take() {
+                writer.abort();
+            }
+            anyhow::bail!("Device compile timed out after {timeout_secs}s")
+        }
     };
+    if let Some(writer) = input_writer {
+        writer
+            .await
+            .context("joining cold device compiler stdin writer")?
+            .context("writing request-bound cold device compiler stdin")?;
+    }
+
+    if out.status.success() && piped_compiler_input.is_some() {
+        materialize_device_artifact_reservation(artifact_reservation, &out.stdout).await?;
+    }
 
     let stderr_str = String::from_utf8_lossy(&out.stderr).to_string();
     let elapsed_ms = started.elapsed().as_millis() as u64;
+    verify_compiler_source_bytes(
+        workspace_dir,
+        source_filename,
+        workspace_source_sha256,
+        workspace_source_bytes,
+    )
+    .await?;
+    if let Some(snapshot) = compiler_snapshot {
+        verify_device_compiler_execution_snapshot(snapshot).await?;
+    }
     let diagnostics = match gpu.vendor {
         DeviceVendor::Cuda => parse_ptxas(&stderr_str),
         DeviceVendor::Rocm => GpuToolchainDiagnostics::default(),
+    };
+
+    let artifact_freshly_created = if out.status.success() {
+        let path_metadata = tokio::fs::symlink_metadata(artifact_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "successful device compiler did not create artifact {}",
+                    artifact_path.display()
+                )
+            })?;
+        let path_bytes =
+            read_stable_regular_file(artifact_path, "successful device compiler artifact").await?;
+        let handle_bytes = read_device_artifact_reservation(artifact_reservation).await?;
+        if !path_metadata.file_type().is_file()
+            || path_metadata.file_type().is_symlink()
+            || path_bytes.is_empty()
+            || handle_bytes != path_bytes
+        {
+            anyhow::bail!(
+                "successful device compiler did not populate the held artifact reservation bytes: {}",
+                artifact_path.display()
+            );
+        }
+        true
+    } else {
+        false
     };
 
     Ok(DeviceCompileAttempt {
@@ -2209,52 +3696,75 @@ async fn run_device_compile_once(
         diagnostics,
         stderr: stderr_str,
         elapsed_ms,
+        artifact_freshly_created,
+        source_bytes_verified_after_execution: true,
     })
 }
 
 #[cfg(feature = "gpu-hmr")]
-fn is_internal_generated_device_source(source_filename: &str) -> bool {
-    let normalized = source_filename
-        .replace('\\', "/")
+fn normalized_manifest_role_path(path: &str) -> String {
+    path.replace('\\', "/")
         .trim()
         .trim_start_matches("./")
-        .to_string();
-    normalized.starts_with(".synthi/generated/") || normalized.contains("/.synthi/generated/")
+        .to_string()
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn manifest_declares_device_role(manifest: &CompileManifest, source_filename: &str) -> bool {
+    let source_filename = normalized_manifest_role_path(source_filename);
+    manifest
+        .module_files
+        .device
+        .as_deref()
+        .is_some_and(|path| normalized_manifest_role_path(path) == source_filename)
+        || manifest.gpu.as_ref().is_some_and(|gpu| {
+            gpu.device_roles
+                .iter()
+                .any(|role| normalized_manifest_role_path(&role.path) == source_filename)
+        })
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn manifest_device_architecture(
+    manifest: &CompileManifest,
+    source_filename: &str,
+) -> Option<String> {
+    let source_filename = normalized_manifest_role_path(source_filename);
+    let gpu = manifest.gpu.as_ref()?;
+    let role_arch = gpu
+        .device_roles
+        .iter()
+        .find(|role| normalized_manifest_role_path(&role.path) == source_filename)
+        .map(|role| role.arch.as_slice())
+        .filter(|arch| !arch.is_empty());
+    let architecture = role_arch.unwrap_or(gpu.arch.as_slice());
+    (!architecture.is_empty()).then(|| architecture.join(","))
 }
 
 #[cfg(feature = "gpu-hmr")]
 async fn read_device_heal_context(
     workspace_dir: &std::path::Path,
-    source_path: &std::path::Path,
+    manifest: &CompileManifest,
+    source_filename: &str,
 ) -> (String, Option<String>) {
-    let mut shared_candidates: Vec<PathBuf> = Vec::new();
-    if let Some(parent) = source_path.parent() {
-        shared_candidates.push(parent.join("shared.h"));
-    }
-    shared_candidates.push(workspace_dir.join(".synthi/generated/gpu/shared.h"));
-    shared_candidates.push(workspace_dir.join("shared.h"));
-
     let mut shared_content = String::new();
-    for candidate in shared_candidates {
-        match tokio::fs::read_to_string(&candidate).await {
-            Ok(content) if !content.trim().is_empty() => {
-                shared_content = content;
-                break;
+    if let Some(shared_role) = manifest.module_files.shared.as_deref() {
+        let candidate = workspace_dir.join(shared_role);
+        if let (Ok(canonical_workspace), Ok(canonical_candidate)) = (
+            tokio::fs::canonicalize(workspace_dir).await,
+            tokio::fs::canonicalize(&candidate).await,
+        ) {
+            if canonical_candidate.starts_with(canonical_workspace) {
+                if let Ok(content) = tokio::fs::read_to_string(canonical_candidate).await {
+                    if !content.trim().is_empty() {
+                        shared_content = content;
+                    }
+                }
             }
-            _ => {}
         }
     }
 
-    let architecture = tokio::fs::read_to_string(workspace_dir.join(".synthi_split_meta.json"))
-        .await
-        .ok()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-        .and_then(|value| {
-            value
-                .get("architecture")
-                .and_then(|architecture| architecture.as_str())
-                .map(|architecture| architecture.to_string())
-        });
+    let architecture = manifest_device_architecture(manifest, source_filename);
 
     (shared_content, architecture)
 }
@@ -2364,7 +3874,14 @@ async fn inspect_device_artifact_exported_symbols(
 ) -> Vec<String> {
     let mut candidates = Vec::new();
     if vendor == DeviceVendor::Rocm {
-        candidates.push("/opt/rocm/llvm/bin/llvm-readobj".to_string());
+        if let Ok(root) = std::env::var("ROCM_PATH").or_else(|_| std::env::var("ROCM_HOME")) {
+            candidates.push(
+                PathBuf::from(root)
+                    .join("llvm/bin/llvm-readobj")
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
     }
     candidates.push("llvm-readobj".to_string());
 
@@ -2486,7 +4003,6 @@ fn is_device_export_symbol(symbol: &str) -> bool {
 
 #[cfg(feature = "gpu-hmr")]
 async fn has_clang_offload_bundle_header(path: &Path) -> Result<bool> {
-    const HEADER: &[u8] = b"__CLANG_OFFLOAD_BUNDLE__";
     let mut file = tokio::fs::File::open(path)
         .await
         .with_context(|| format!("opening device artifact {}", path.display()))?;
@@ -2495,7 +4011,18 @@ async fn has_clang_offload_bundle_header(path: &Path) -> Result<bool> {
         .read(&mut buf)
         .await
         .with_context(|| format!("reading device artifact {}", path.display()))?;
-    Ok(n >= HEADER.len() && &buf[..HEADER.len()] == HEADER)
+    Ok(has_clang_offload_bundle_header_bytes(&buf[..n]))
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn has_clang_offload_bundle_header_bytes(bytes: &[u8]) -> bool {
+    const HEADER: &[u8] = b"__CLANG_OFFLOAD_BUNDLE__";
+    bytes.len() >= HEADER.len() && &bytes[..HEADER.len()] == HEADER
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn has_elf_magic_bytes(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"\x7fELF")
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -2506,6 +4033,133 @@ fn parse_hip_offload_target(target_list: &str) -> Option<String> {
         .find(|line| line.starts_with("hip"))
         .filter(|line| !line.is_empty())
         .map(ToOwned::to_owned)
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn populate_device_preprocess_command(
+    cmd: &mut tokio::process::Command,
+    gpu: &crate::hmr::compile_manifest::GpuBuildBlock,
+    source_filename: &str,
+) {
+    cmd.arg("-E");
+    match gpu.device_compiler {
+        DeviceCompiler::Nvcc => {
+            for arch in &gpu.arch {
+                cmd.arg(format!("-arch={arch}"));
+            }
+            cmd.arg("-x").arg("cu");
+        }
+        DeviceCompiler::ClangCuda => {
+            for arch in &gpu.arch {
+                cmd.arg(format!("--cuda-gpu-arch={arch}"));
+            }
+            cmd.arg("-x").arg("cuda");
+        }
+        DeviceCompiler::Hipcc => {
+            for arch in &gpu.arch {
+                cmd.arg(format!("--offload-arch={arch}"));
+            }
+            cmd.arg("-x").arg("hip");
+        }
+    }
+    if let Some(parent) = Path::new(source_filename)
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        cmd.arg("-I").arg(parent);
+    }
+    append_device_preprocessor_flags(cmd, &gpu.device_flags);
+    cmd.arg("-");
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn append_device_preprocessor_flags(cmd: &mut tokio::process::Command, device_flags: &[String]) {
+    let mut index = 0;
+    while index < device_flags.len() {
+        let flag = &device_flags[index];
+        if matches!(flag.as_str(), "-o" | "--output-file" | "-x") {
+            index = index.saturating_add(2);
+            continue;
+        }
+        if matches!(
+            flag.as_str(),
+            "-E" | "-c"
+                | "--compile"
+                | "--cubin"
+                | "--genco"
+                | "--offload-device-only"
+                | "--no-gpu-bundle-output"
+                | "-S"
+                | "--ptx"
+        ) || flag.starts_with("-o=")
+            || flag.starts_with("--output-file=")
+            || (flag.starts_with("-x") && flag.len() > 2)
+        {
+            index += 1;
+            continue;
+        }
+        cmd.arg(flag);
+        index += 1;
+    }
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn cold_preprocessor_only_flag_takes_value(flag: &str) -> bool {
+    matches!(
+        flag,
+        "-I" | "-isystem"
+            | "-iquote"
+            | "-idirafter"
+            | "-include"
+            | "--include"
+            | "--include-directory"
+            | "--system-include"
+            | "--pre-include"
+            | "-imacros"
+            | "-D"
+            | "-U"
+            | "-x"
+    )
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn append_device_codegen_flags(
+    cmd: &mut tokio::process::Command,
+    device_flags: &[String],
+    preprocessed_source: bool,
+) {
+    if !preprocessed_source {
+        cmd.args(device_flags);
+        return;
+    }
+
+    let mut index = 0;
+    while index < device_flags.len() {
+        let flag = &device_flags[index];
+        if cold_preprocessor_only_flag_takes_value(flag) {
+            index = index.saturating_add(2);
+            continue;
+        }
+        if flag.starts_with("-I")
+            || flag.starts_with("-isystem")
+            || flag.starts_with("-iquote")
+            || flag.starts_with("-idirafter")
+            || flag.starts_with("-include")
+            || flag.starts_with("--include=")
+            || flag.starts_with("--include-directory=")
+            || flag.starts_with("--system-include=")
+            || flag.starts_with("--pre-include=")
+            || flag.starts_with("-imacros")
+            || flag.starts_with("-D")
+            || flag.starts_with("-U")
+            || flag.starts_with("-x")
+        {
+            index += 1;
+            continue;
+        }
+        cmd.arg(flag);
+        index += 1;
+    }
 }
 
 /// Pure helper that builds the device-compiler command line from a
@@ -2529,21 +4183,47 @@ pub fn populate_device_command(
     source_filename: &str,
     artifact_path: &std::path::Path,
 ) {
+    populate_device_command_inner(cmd, gpu, source_filename, artifact_path, None, false);
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn populate_device_command_with_piped_source(
+    cmd: &mut tokio::process::Command,
+    gpu: &crate::hmr::compile_manifest::GpuBuildBlock,
+    _source_filename: &str,
+    artifact_path: &std::path::Path,
+) {
+    populate_device_command_inner(cmd, gpu, "-", artifact_path, None, true);
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn populate_device_command_inner(
+    cmd: &mut tokio::process::Command,
+    gpu: &crate::hmr::compile_manifest::GpuBuildBlock,
+    source_argument: &str,
+    artifact_path: &std::path::Path,
+    piped_source_parent: Option<&Path>,
+    preprocessed_source: bool,
+) {
     match gpu.device_compiler {
         DeviceCompiler::Nvcc => {
             cmd.arg("--cubin");
             for arch in &gpu.arch {
                 cmd.arg(format!("-arch={arch}"));
             }
+            if let Some(parent) = piped_source_parent {
+                cmd.arg("-x").arg("cu");
+                cmd.arg("-I").arg(parent);
+            } else if source_argument == "-" {
+                cmd.arg("-x").arg("cu");
+            }
             // -lineinfo, --use_fast_math, -O3 etc. flow through verbatim;
             // the GPU error triage path (§11.2) parses ptxas-info so the
             // user's `--ptxas-options=-v` is honoured as-is.
-            for flag in &gpu.device_flags {
-                cmd.arg(flag);
-            }
+            append_device_codegen_flags(cmd, &gpu.device_flags, preprocessed_source);
             cmd.arg("--ptxas-options=-v");
             cmd.arg("-o").arg(artifact_path);
-            cmd.arg(source_filename);
+            cmd.arg(source_argument);
         }
         DeviceCompiler::ClangCuda => {
             // clang's CUDA front-end driven by `--cuda-gpu-arch`.
@@ -2551,11 +4231,19 @@ pub fn populate_device_command(
             for arch in &gpu.arch {
                 cmd.arg(format!("--cuda-gpu-arch={arch}"));
             }
-            for flag in &gpu.device_flags {
-                cmd.arg(flag);
+            if source_argument == "-" {
+                cmd.arg("-x").arg(if preprocessed_source {
+                    "cuda-cpp-output"
+                } else {
+                    "cuda"
+                });
+                if let Some(parent) = piped_source_parent {
+                    cmd.arg("-I").arg(parent);
+                }
             }
+            append_device_codegen_flags(cmd, &gpu.device_flags, preprocessed_source);
             cmd.arg("-o").arg(artifact_path);
-            cmd.arg(source_filename);
+            cmd.arg(source_argument);
         }
         DeviceCompiler::Hipcc => {
             if gpu.arch.len() == 1 {
@@ -2567,11 +4255,19 @@ pub fn populate_device_command(
             for arch in &gpu.arch {
                 cmd.arg(format!("--offload-arch={arch}"));
             }
-            for flag in &gpu.device_flags {
-                cmd.arg(flag);
+            if source_argument == "-" {
+                cmd.arg("-x").arg(if preprocessed_source {
+                    "hip-cpp-output"
+                } else {
+                    "hip"
+                });
+                if let Some(parent) = piped_source_parent {
+                    cmd.arg("-I").arg(parent);
+                }
             }
+            append_device_codegen_flags(cmd, &gpu.device_flags, preprocessed_source);
             cmd.arg("-o").arg(artifact_path);
-            cmd.arg(source_filename);
+            cmd.arg(source_argument);
         }
     }
 }
@@ -2623,18 +4319,9 @@ mod tests {
 
     #[cfg(feature = "gpu-hmr")]
     #[test]
-    fn device_compile_timeout_keeps_partial_compiles_tight() {
+    fn device_compile_timeout_is_identity_independent() {
         assert_eq!(
-            device_compile_timeout_secs_for(
-                ".synthi/generated/gpu/device.partial.abc.hip",
-                None,
-                None,
-                None
-            ),
-            DEFAULT_DEVICE_PARTIAL_COMPILE_TIMEOUT_SECS
-        );
-        assert_eq!(
-            device_compile_timeout_secs_for(".synthi/generated/gpu/device.hip", None, None, None),
+            device_compile_timeout_secs_for(None, None),
             DEFAULT_DEVICE_FULL_COMPILE_TIMEOUT_SECS
         );
     }
@@ -2642,18 +4329,8 @@ mod tests {
     #[cfg(feature = "gpu-hmr")]
     #[test]
     fn device_compile_timeout_honors_scoped_overrides() {
-        assert_eq!(
-            device_compile_timeout_secs_for("device.partial.abc.hip", None, Some(12), Some(240)),
-            12
-        );
-        assert_eq!(
-            device_compile_timeout_secs_for("device.hip", None, Some(12), Some(240)),
-            240
-        );
-        assert_eq!(
-            device_compile_timeout_secs_for("device.hip", Some(30), Some(12), Some(240)),
-            30
-        );
+        assert_eq!(device_compile_timeout_secs_for(None, Some(240)), 240);
+        assert_eq!(device_compile_timeout_secs_for(Some(30), Some(240)), 30);
     }
 
     #[cfg(feature = "gpu-hmr")]
@@ -2689,6 +4366,66 @@ mod tests {
 
     #[cfg(feature = "gpu-hmr")]
     #[test]
+    fn cold_command_hash_binds_opaque_flags_without_identity_policy() {
+        let workspace = PathBuf::from("/workspace/project");
+        let mut first = rocm_block();
+        first.device_flags = vec!["--arbitrary-backend-option=value-a".to_string()];
+        let mut second = first.clone();
+        second.device_flags = vec!["--arbitrary-backend-option=value-b".to_string()];
+
+        let first_tokens = normalized_device_compile_command_tokens(
+            &workspace,
+            "/opt/toolchain/compiler",
+            &first,
+            "src/device.hip",
+            true,
+            Some("sha256:input"),
+        );
+        let second_tokens = normalized_device_compile_command_tokens(
+            &workspace,
+            "/opt/toolchain/compiler",
+            &second,
+            "src/device.hip",
+            true,
+            Some("sha256:input"),
+        );
+
+        assert_ne!(
+            hash_string_sequence("compile_command", &first_tokens),
+            hash_string_sequence("compile_command", &second_tokens)
+        );
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn cold_codegen_command_drops_preprocessor_only_inputs() {
+        let mut block = rocm_block();
+        block.device_flags = vec![
+            "-O2".to_string(),
+            "-I".to_string(),
+            "include".to_string(),
+            "--pre-include".to_string(),
+            "generated_config.h".to_string(),
+            "-DSCALE=2".to_string(),
+        ];
+        let mut cmd = tokio::process::Command::new("hipcc");
+        populate_device_command_with_piped_source(&mut cmd, &block, "device.hip", Path::new("-"));
+        let args = args_of(&cmd);
+
+        assert!(args.iter().any(|arg| arg == "-O2"));
+        for omitted in [
+            "-I",
+            "include",
+            "--pre-include",
+            "generated_config.h",
+            "-DSCALE=2",
+        ] {
+            assert!(!args.iter().any(|arg| arg == omitted), "{omitted:?}");
+        }
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
     fn hipcc_multi_arch_uses_bundled_output() {
         let mut block = rocm_block();
         block.arch.push("gfx1100".to_string());
@@ -2705,15 +4442,40 @@ mod tests {
 
     #[cfg(feature = "gpu-hmr")]
     #[test]
-    fn device_heal_only_targets_internal_generated_roles() {
-        assert!(is_internal_generated_device_source(
-            ".synthi/generated/gpu/device.hip"
+    fn device_heal_requires_an_explicit_manifest_role() {
+        let mut manifest = CompileManifest::generic_fallback();
+        manifest.module_files.device = Some("units/accelerator-A.payload".to_string());
+        let mut gpu = rocm_block();
+        gpu.arch = vec!["arch-default".to_string()];
+        gpu.device_roles
+            .push(crate::hmr::compile_manifest::GpuDeviceRole {
+                id: "role-B".to_string(),
+                path: "modules/device-B.src".to_string(),
+                arch: vec!["arch-role".to_string()],
+                ..Default::default()
+            });
+        manifest.gpu = Some(gpu);
+
+        assert!(manifest_declares_device_role(
+            &manifest,
+            "./units/accelerator-A.payload"
         ));
-        assert!(is_internal_generated_device_source(
-            "/workspace/app/.synthi/generated/gpu/device.cu"
+        assert!(manifest_declares_device_role(
+            &manifest,
+            "modules\\device-B.src"
         ));
-        assert!(!is_internal_generated_device_source("device.hip"));
-        assert!(!is_internal_generated_device_source("src/gpu/raster.hip"));
+        assert!(!manifest_declares_device_role(
+            &manifest,
+            "undeclared/location/device.src"
+        ));
+        assert_eq!(
+            manifest_device_architecture(&manifest, "modules/device-B.src").as_deref(),
+            Some("arch-role")
+        );
+        assert_eq!(
+            manifest_device_architecture(&manifest, "units/accelerator-A.payload").as_deref(),
+            Some("arch-default")
+        );
     }
 
     #[cfg(feature = "gpu-hmr")]
@@ -2789,6 +4551,8 @@ mod tests {
             "hipcc",
             &block,
             ".synthi\\generated\\gpu\\device.partial.test.hip",
+            false,
+            None,
         );
 
         assert!(tokens.iter().any(|token| token == "-I"));
@@ -3095,6 +4859,13 @@ extern "C" __global__ void shade(int* out) { *out = LIMIT; }
             dependency_hash: "dep".to_string(),
             dependency_method: "test".to_string(),
             compile_command_hash: "cmd".to_string(),
+            compiler_identity: DeviceCompilerIdentityEvidence {
+                identity_hash: "identity".to_string(),
+                resolved_path: "/usr/bin/compiler".to_string(),
+                executable_hash: format!("sha256:{}", "a".repeat(64)),
+                identity_method: "test".to_string(),
+                execution_snapshot: None,
+            },
         };
         store_cached_device_artifact(tmp.path(), &cache_key, &artifact)
             .await
@@ -3370,6 +5141,614 @@ extern "C" __global__ void apply(float* out) { *out = 1.0f; }
         assert!(args.iter().any(|a| a == "--cuda-gpu-arch=sm_80"));
     }
 
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn cold_device_compile_uses_an_identity_independent_empty_environment() {
+        let native = device_compiler_command_for_platform("hipcc", true, false);
+        let native_env = native
+            .as_std()
+            .get_envs()
+            .map(|(name, value)| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(native.as_std().get_program(), "hipcc");
+        assert!(native_env.is_empty());
+        assert!(device_compiler_cache_controls().is_empty());
+
+        let wsl = device_compiler_command_for_platform("hipcc", true, true);
+        let wsl_args = wsl
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(wsl.as_std().get_program(), "wsl");
+        assert_eq!(wsl_args, vec!["env", "-i", "hipcc"]);
+
+        let hot = device_compiler_command_for_platform("hipcc", false, false);
+        assert_eq!(hot.as_std().get_program(), "hipcc");
+        assert_eq!(hot.as_std().get_envs().count(), 0);
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn device_compiler_identity_probes_use_the_workspace_directory() {
+        let workspace = tempfile::tempdir().unwrap();
+        let resolution = device_compiler_path_resolution_command(workspace.path(), "hipcc");
+        assert_eq!(
+            resolution.as_std().get_current_dir(),
+            Some(workspace.path())
+        );
+
+        let version = device_compiler_version_command(workspace.path(), "/opt/rocm/bin/hipcc");
+        assert_eq!(version.as_std().get_current_dir(), Some(workspace.path()));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn requested_cold_device_compile_requires_complete_outcome() {
+        let tmp = tempfile::tempdir().unwrap();
+        let artifact_path = tmp.path().join("device.hsaco");
+        let artifact_bytes = b"fresh-device-bytes";
+        let compiled_source = "device-source";
+        let compiler_input = cold_device_compiler_input("device.hip", compiled_source).unwrap();
+        std::fs::write(&artifact_path, artifact_bytes).unwrap();
+        let metadata = DeviceCompileProofMetadata {
+            compiler_executable: Some("hipcc".to_string()),
+            compiler_identity: Some("a".repeat(64)),
+            compiler_resolved_path: Some("/opt/rocm/bin/hipcc".to_string()),
+            compiler_executable_hash: Some(format!("sha256:{}", "b".repeat(64))),
+            compiler_identity_method: Some(DEVICE_COMPILER_IDENTITY_METHOD.to_string()),
+            compiler_driver_entry_file_attested: true,
+            compiler_process_image_attested: false,
+            compiler_execution_transport: DEVICE_COMPILER_EXECUTION_TRANSPORT.to_string(),
+            artifact_cache_bypassed: true,
+            compiler_process_executed: true,
+            preprocessor_process_executed: true,
+            preprocessor_identity_verified_after_execution: true,
+            preprocessor_command_hash: Some("c".repeat(64)),
+            preprocessor_elapsed_ms: Some(1),
+            compiler_output_freshly_created: true,
+            compiler_path_identity_verified_after_execution: true,
+            compiler_cache_policy: DEVICE_COMPILER_CACHE_POLICY.to_string(),
+            compiler_cache_controls: device_compiler_cache_controls(),
+            compiler_cache_evidence_scope: DEVICE_COMPILER_CACHE_EVIDENCE_SCOPE.to_string(),
+            compiler_environment_scope: DEVICE_COMPILER_ENVIRONMENT_SCOPE.to_string(),
+            compiler_identity_scope: DEVICE_COMPILER_IDENTITY_SCOPE.to_string(),
+            compile_command_hash_scope: DEVICE_COMPILE_COMMAND_HASH_SCOPE.to_string(),
+            compiler_input_mode: DEVICE_COMPILER_INPUT_MODE.to_string(),
+            compiler_output_transport: DEVICE_COMPILER_OUTPUT_TRANSPORT.to_string(),
+            compiler_source_evidence_scope: DEVICE_COMPILER_SOURCE_EVIDENCE_SCOPE.to_string(),
+            compile_command_hash: Some("d".repeat(64)),
+            dependency_hash: Some(format!("sha256:{}", hex_sha256(&compiler_input))),
+            dependency_method: Some(DEVICE_COMPILER_DEPENDENCY_METHOD.to_string()),
+            request_source_sha256: Some(format!(
+                "sha256:{}",
+                hex_sha256(compiled_source.as_bytes())
+            )),
+            request_source_bytes: Some(compiled_source.len()),
+            transformed_source_sha256: Some(format!(
+                "sha256:{}",
+                hex_sha256(compiled_source.as_bytes())
+            )),
+            transformed_source_bytes: Some(compiled_source.len()),
+            preprocessor_input_sha256: Some(format!("sha256:{}", hex_sha256(&compiler_input))),
+            preprocessor_input_bytes: Some(compiler_input.len()),
+            source_transforms: Vec::new(),
+            compiled_source_sha256: Some(format!("sha256:{}", hex_sha256(&compiler_input))),
+            compiled_source_bytes: Some(compiler_input.len()),
+            source_filename: Some("device.hip".to_string()),
+            source_bytes_verified_after_execution: true,
+            request_source_snapshot: Some(Arc::<[u8]>::from(compiled_source.as_bytes())),
+            compiler_input_snapshot: Some(Arc::<[u8]>::from(compiler_input.as_slice())),
+            artifact_sha256: Some(format!("sha256:{}", hex_sha256(artifact_bytes))),
+            artifact_bytes: Some(artifact_bytes.len()),
+            artifact_snapshot: Some(Arc::<[u8]>::from(artifact_bytes.as_slice())),
+            ..Default::default()
+        };
+        let mut outcome = DeviceCompileOutcome {
+            artifact_path,
+            compiled_source: compiled_source.to_string(),
+            compiler_elapsed_ms: 1,
+            partial_module: false,
+            target_symbols: Vec::new(),
+            fallback_used: false,
+            fallback_reason: None,
+            requested_artifact_kind: None,
+            selected_artifact_kind: None,
+            selected_artifact_bytes: None,
+            full_device_bytes: None,
+            artifact_exported_symbols: Vec::new(),
+            diagnostics: GpuToolchainDiagnostics::default(),
+            stderr: String::new(),
+            proof_metadata: metadata,
+        };
+
+        enforce_requested_cold_device_compile(true, Some(&outcome)).unwrap();
+        enforce_requested_cold_device_compile(false, None).unwrap();
+        assert!(enforce_requested_cold_device_compile(true, None).is_err());
+
+        outcome.proof_metadata.cache_hit = true;
+        let error = enforce_requested_cold_device_compile(true, Some(&outcome)).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("synthi_artifact_cache_reuse_observed"));
+    }
+
+    #[cfg(all(feature = "gpu-hmr", target_os = "linux"))]
+    #[tokio::test]
+    async fn exact_compiler_entry_binding_rejects_interpreter_scripts() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let compiler = tmp.path().join("compiler-entry");
+        tokio::fs::write(&compiler, "#!/bin/sh\nexit 0\n")
+            .await
+            .unwrap();
+        let mut permissions = tokio::fs::metadata(&compiler).await.unwrap().permissions();
+        permissions.set_mode(0o755);
+        tokio::fs::set_permissions(&compiler, permissions)
+            .await
+            .unwrap();
+
+        let evidence = device_compiler_identity_evidence(tmp.path(), &compiler.to_string_lossy())
+            .await
+            .unwrap();
+        assert!(evidence.is_none());
+    }
+
+    #[cfg(all(feature = "gpu-hmr", target_os = "linux"))]
+    #[tokio::test]
+    async fn cold_device_compile_requires_reserved_output_and_binds_driver_identity() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let compiler_target = tmp.path().join("compiler-driver");
+        let compiler_replacement = tmp.path().join("compiler-driver-replacement");
+        let compiler_link = tmp.path().join("hipcc");
+        let source_path = tmp.path().join("device.hip");
+        let dependency_path = tmp.path().join("dependency.h");
+        let stale_artifact_path = tmp.path().join("device-stale.hsaco");
+        let source = "#include \"dependency.h\"\nextern \"C\" __global__ void apply(float* out) { *out = DEPENDENCY_VALUE; }";
+        let dependency_before = "#define DEPENDENCY_VALUE 2.0f\n";
+        let dependency_after = "#define DEPENDENCY_VALUE 9.0f\n";
+        let helper_source_path = tmp.path().join("compiler-driver.c");
+        let helper_source = r##"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+extern char **environ;
+
+static int copy_stream(FILE *input, FILE *output) {
+    unsigned char buffer[4096];
+    size_t count;
+    while ((count = fread(buffer, 1, sizeof(buffer), input)) > 0) {
+        if (fwrite(buffer, 1, count, output) != count) return 1;
+    }
+    return ferror(input) ? 1 : 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "--version") == 0) {
+        if (environ && environ[0]) return 89;
+        if (access("dependency.h", R_OK) != 0) return 90;
+        puts("synthi-test-compiler 1.0");
+        return 0;
+    }
+
+    const char *depfile = NULL;
+    const char *output_path = NULL;
+    int preprocess = 0;
+    int replace_output = 0;
+    for (int index = 1; index < argc; ++index) {
+        if (strcmp(argv[index], "-E") == 0) preprocess = 1;
+        else if (strcmp(argv[index], "-MF") == 0 && index + 1 < argc) depfile = argv[++index];
+        else if (strcmp(argv[index], "-o") == 0 && index + 1 < argc) output_path = argv[++index];
+        else if (strcmp(argv[index], "--synthi-test-replace-output") == 0) replace_output = 1;
+    }
+
+    if (environ && environ[0]) return 91;
+    if (depfile) {
+        FILE *file = fopen(depfile, "wb");
+        if (!file) return 94;
+        fputs("synthi_device_artifact: device.hip\n", file);
+        return fclose(file) == 0 ? 0 : 95;
+    }
+
+    char first_line[256];
+    if (!fgets(first_line, sizeof(first_line), stdin)) return 96;
+    if (strcmp(first_line, "#line 1 \"device.hip\"\n") != 0) return 97;
+    if (preprocess) {
+        fputs(first_line, stdout);
+        if (copy_stream(stdin, stdout) != 0) return 98;
+        FILE *dependency = fopen("dependency.h", "rb");
+        if (!dependency) return 99;
+        int copied = copy_stream(dependency, stdout);
+        fclose(dependency);
+        return copied == 0 ? 0 : 100;
+    }
+    if (!output_path) return 101;
+    if (replace_output) sleep(1);
+
+    FILE *output = strcmp(output_path, "-") == 0 ? stdout : fopen(output_path, "wb");
+    if (!output) return 102;
+    fputc(0x7f, output);
+    fputs("ELFfresh:native:1:1:1", output);
+    fputs(first_line, output);
+    int copied = copy_stream(stdin, output);
+    if (output != stdout) fclose(output);
+    return copied == 0 ? 0 : 103;
+}
+"##;
+        tokio::fs::write(&helper_source_path, helper_source)
+            .await
+            .unwrap();
+        let helper_compile = std::process::Command::new("cc")
+            .arg("-O2")
+            .arg(&helper_source_path)
+            .arg("-o")
+            .arg(&compiler_target)
+            .output()
+            .unwrap();
+        assert!(
+            helper_compile.status.success(),
+            "native compiler fixture failed: {}",
+            String::from_utf8_lossy(&helper_compile.stderr)
+        );
+        tokio::fs::write(
+            &compiler_replacement,
+            "#!/bin/sh\nprintf '%s' 'replacement-compiler-used' >&2\nexit 88\n",
+        )
+        .await
+        .unwrap();
+        let mut replacement_permissions = tokio::fs::metadata(&compiler_replacement)
+            .await
+            .unwrap()
+            .permissions();
+        replacement_permissions.set_mode(0o755);
+        tokio::fs::set_permissions(&compiler_replacement, replacement_permissions)
+            .await
+            .unwrap();
+        symlink(&compiler_target, &compiler_link).unwrap();
+        tokio::fs::write(&source_path, source).await.unwrap();
+        tokio::fs::write(&dependency_path, dependency_before)
+            .await
+            .unwrap();
+        tokio::fs::write(&stale_artifact_path, b"stale-artifact")
+            .await
+            .unwrap();
+
+        let block = rocm_block();
+        let compiler = compiler_link.to_string_lossy().into_owned();
+        let mut metadata = device_compile_proof_metadata(
+            tmp.path(),
+            &compiler,
+            &block,
+            "device.hip",
+            Arc::<[u8]>::from(source.as_bytes()),
+            source,
+            Vec::new(),
+            None,
+            false,
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            metadata.compiler_resolved_path.as_deref(),
+            Some(compiler.as_str())
+        );
+        assert!(metadata.dependency_method.is_none());
+        let compiler_snapshot = metadata
+            .compiler_execution_snapshot
+            .clone()
+            .expect("held compiler executable snapshot");
+        let compiler_invocation = compiler_snapshot.execution_path.clone();
+        let request_source = cold_device_compiler_input("device.hip", source).unwrap();
+        let preprocessed = run_cold_device_preprocessor(
+            &compiler_invocation,
+            tmp.path(),
+            &block,
+            "device.hip",
+            &request_source,
+            &compiler_snapshot,
+            &format!("sha256:{}", hex_sha256(source.as_bytes())),
+            source.len(),
+        )
+        .await
+        .unwrap();
+        let preprocessed_hash = format!("sha256:{}", hex_sha256(preprocessed.bytes.as_ref()));
+        metadata.preprocessor_process_executed = true;
+        metadata.preprocessor_identity_verified_after_execution = true;
+        metadata.preprocessor_command_hash = Some(preprocessed.command_hash);
+        metadata.preprocessor_elapsed_ms = Some(preprocessed.elapsed_ms);
+        metadata.dependency_hash = Some(preprocessed_hash.clone());
+        metadata.dependency_method = Some(DEVICE_COMPILER_DEPENDENCY_METHOD.to_string());
+        metadata.compiled_source_sha256 = Some(preprocessed_hash.clone());
+        metadata.compiled_source_bytes = Some(preprocessed.bytes.len());
+        metadata.compiler_input_snapshot = Some(preprocessed.bytes.clone());
+        assert!(String::from_utf8_lossy(preprocessed.bytes.as_ref()).contains(dependency_before));
+        let cold_command_tokens = normalized_device_compile_command_tokens(
+            tmp.path(),
+            &compiler_invocation,
+            &block,
+            "device.hip",
+            true,
+            Some(&preprocessed_hash),
+        );
+        assert!(cold_command_tokens
+            .iter()
+            .any(|token| token == "parent-environment=empty"));
+        assert!(!cold_command_tokens
+            .iter()
+            .any(|token| token.starts_with("env:")));
+        metadata.compile_command_hash = Some(hash_string_sequence(
+            "compile_command",
+            &cold_command_tokens,
+        ));
+        tokio::fs::remove_file(&compiler_link).await.unwrap();
+        symlink(&compiler_replacement, &compiler_link).unwrap();
+        tokio::fs::write(&source_path, "tampered-device-source")
+            .await
+            .unwrap();
+        let piped_input = preprocessed.bytes;
+        let stale_handle = tokio::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&stale_artifact_path)
+            .await
+            .unwrap();
+        let stale_reservation = DeviceArtifactReservation {
+            path: stale_artifact_path.clone(),
+            handle: stale_handle,
+        };
+        let source_error = run_device_compile_once(
+            &compiler_invocation,
+            tmp.path(),
+            &block,
+            "device.hip",
+            &stale_reservation,
+            true,
+            Some(&compiler_snapshot),
+            metadata.compiled_source_sha256.as_deref().unwrap(),
+            metadata.compiled_source_bytes.unwrap(),
+            Some(&piped_input),
+            &format!("sha256:{}", hex_sha256(source.as_bytes())),
+            source.len(),
+        )
+        .await
+        .unwrap_err();
+        assert!(source_error
+            .to_string()
+            .contains("source bytes do not match the request-bound source"));
+        tokio::fs::write(&source_path, source).await.unwrap();
+        tokio::fs::write(&dependency_path, dependency_after)
+            .await
+            .unwrap();
+
+        let stale_error = run_device_compile_once(
+            &compiler_invocation,
+            tmp.path(),
+            &block,
+            "device.hip",
+            &stale_reservation,
+            true,
+            Some(&compiler_snapshot),
+            metadata.compiled_source_sha256.as_deref().unwrap(),
+            metadata.compiled_source_bytes.unwrap(),
+            Some(&piped_input),
+            &format!("sha256:{}", hex_sha256(source.as_bytes())),
+            source.len(),
+        )
+        .await
+        .unwrap_err();
+        assert!(stale_error
+            .to_string()
+            .contains("output reservation is missing, replaced, or nonempty"));
+
+        let replaced_artifact = reserve_device_artifact_path(tmp.path(), 42, "hsaco")
+            .await
+            .unwrap();
+        tokio::fs::remove_file(&replaced_artifact.path)
+            .await
+            .unwrap();
+        symlink(&stale_artifact_path, &replaced_artifact.path).unwrap();
+        let replaced_error = run_device_compile_once(
+            &compiler_invocation,
+            tmp.path(),
+            &block,
+            "device.hip",
+            &replaced_artifact,
+            true,
+            Some(&compiler_snapshot),
+            metadata.compiled_source_sha256.as_deref().unwrap(),
+            metadata.compiled_source_bytes.unwrap(),
+            Some(&piped_input),
+            &format!("sha256:{}", hex_sha256(source.as_bytes())),
+            source.len(),
+        )
+        .await
+        .unwrap_err();
+        assert!(replaced_error
+            .to_string()
+            .contains("not a regular non-symlink file"));
+
+        let replaced_during_compile = reserve_device_artifact_path(tmp.path(), 42, "hsaco")
+            .await
+            .unwrap();
+        let mut replacing_block = block.clone();
+        replacing_block
+            .device_flags
+            .push("--synthi-test-replace-output".to_string());
+        let replacement_path = replaced_during_compile.path.clone();
+        let replacement = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::fs::remove_file(&replacement_path).await.unwrap();
+            tokio::fs::write(&replacement_path, b"path-replaced-during-compile")
+                .await
+                .unwrap();
+        });
+        let replaced_during_error = run_device_compile_once(
+            &compiler_invocation,
+            tmp.path(),
+            &replacing_block,
+            "device.hip",
+            &replaced_during_compile,
+            true,
+            Some(&compiler_snapshot),
+            metadata.compiled_source_sha256.as_deref().unwrap(),
+            metadata.compiled_source_bytes.unwrap(),
+            Some(&piped_input),
+            &format!("sha256:{}", hex_sha256(source.as_bytes())),
+            source.len(),
+        )
+        .await
+        .unwrap_err();
+        replacement.await.unwrap();
+        assert!(
+            replaced_during_error
+                .to_string()
+                .contains("did not populate the held artifact reservation bytes"),
+            "unexpected replacement-during-compile refusal: {replaced_during_error:#}"
+        );
+
+        let (first_reservation, second_reservation) = tokio::join!(
+            reserve_device_artifact_path(tmp.path(), 42, "hsaco"),
+            reserve_device_artifact_path(tmp.path(), 42, "hsaco"),
+        );
+        let artifact_reservation = first_reservation.unwrap();
+        let concurrent_artifact_reservation = second_reservation.unwrap();
+        assert_ne!(
+            artifact_reservation.path,
+            concurrent_artifact_reservation.path
+        );
+
+        let compile = run_device_compile_once(
+            &compiler_invocation,
+            tmp.path(),
+            &block,
+            "device.hip",
+            &artifact_reservation,
+            true,
+            Some(&compiler_snapshot),
+            metadata.compiled_source_sha256.as_deref().unwrap(),
+            metadata.compiled_source_bytes.unwrap(),
+            Some(&piped_input),
+            &format!("sha256:{}", hex_sha256(source.as_bytes())),
+            source.len(),
+        )
+        .await
+        .unwrap();
+        assert!(compile.status.success());
+        finalize_device_compile_proof_metadata(&mut metadata, &compile, true)
+            .await
+            .unwrap();
+        bind_device_artifact_reservation_snapshot(&mut metadata, &artifact_reservation)
+            .await
+            .unwrap();
+        verify_device_artifact_snapshot(&metadata, &artifact_reservation.path)
+            .await
+            .unwrap();
+
+        let artifact_bytes = tokio::fs::read(&artifact_reservation.path).await.unwrap();
+        let artifact_text = String::from_utf8_lossy(&artifact_bytes);
+        assert!(artifact_text.starts_with("\u{7f}ELFfresh:"));
+        assert!(artifact_text.contains(":1:1:1"));
+        assert!(!artifact_text.contains("replacement-compiler-used"));
+        assert!(artifact_text.contains(dependency_before));
+        assert!(!artifact_text.contains(dependency_after));
+        assert!(metadata.artifact_cache_bypassed);
+        assert!(metadata.compiler_process_executed);
+        assert!(metadata.compiler_output_freshly_created);
+        assert!(metadata.compiler_path_identity_verified_after_execution);
+        assert!(metadata.source_bytes_verified_after_execution);
+        assert_eq!(metadata.compiled_source_bytes, Some(piped_input.len()));
+        assert_eq!(metadata.artifact_bytes, Some(artifact_bytes.len()));
+        assert_eq!(
+            metadata.compiler_identity_method.as_deref(),
+            Some(DEVICE_COMPILER_IDENTITY_METHOD)
+        );
+        assert!(metadata.compiler_driver_entry_file_attested);
+        assert!(!metadata.compiler_process_image_attested);
+        assert_eq!(
+            metadata.compiler_execution_transport,
+            DEVICE_COMPILER_EXECUTION_TRANSPORT
+        );
+        assert_eq!(metadata.compiler_cache_policy, DEVICE_COMPILER_CACHE_POLICY);
+        assert_eq!(
+            metadata.compiler_output_transport,
+            DEVICE_COMPILER_OUTPUT_TRANSPORT
+        );
+        assert_eq!(
+            metadata.compiler_cache_controls,
+            device_compiler_cache_controls()
+        );
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[tokio::test]
+    async fn cold_device_compile_real_rocm_toolchain_when_requested() {
+        if std::env::var("SYNTHI_TEST_REAL_ROCM_COLD_COMPILE").as_deref() != Ok("1") {
+            return;
+        }
+        let arch = std::env::var("SYNTHI_TEST_GPU_ARCH")
+            .expect("SYNTHI_TEST_GPU_ARCH must identify the live ROCm device architecture");
+        assert!(!arch.trim().is_empty());
+
+        let tmp = tempfile::tempdir().unwrap();
+        let source_filename = ".synthi/generated/gpu/device.hip";
+        let source_parent = tmp.path().join(".synthi/generated/gpu");
+        tokio::fs::create_dir_all(&source_parent).await.unwrap();
+        tokio::fs::write(
+            source_parent.join("compile_config.h"),
+            b"#define SYNTHI_TEST_SCALE 3.0f\n",
+        )
+        .await
+        .unwrap();
+        let source = r#"#include "compile_config.h"
+extern "C" __global__ void synthi_test_apply(float* out) {
+    if (threadIdx.x == 0) out[0] = SYNTHI_TEST_SCALE;
+}
+"#;
+        let mut block = rocm_block();
+        block.arch = vec![arch];
+        block.device_flags = vec!["-O2".to_string()];
+        let mut manifest = CompileManifest::generic_fallback();
+        manifest.gpu = Some(block);
+
+        let outcome = compile_device_phase0_with_cache_policy(
+            tmp.path(),
+            tmp.path(),
+            chrono::Utc::now().timestamp_millis(),
+            source,
+            Some(source_filename),
+            &manifest,
+            true,
+        )
+        .await
+        .expect("real cold ROCm compile")
+        .expect("real cold ROCm compiler outcome");
+
+        enforce_requested_cold_device_compile(true, Some(&outcome))
+            .expect("complete real cold ROCm compiler receipt");
+        let artifact = outcome
+            .proof_metadata
+            .artifact_snapshot
+            .as_deref()
+            .expect("bound real compiler artifact snapshot");
+        assert!(artifact.starts_with(b"\x7fELF"));
+        assert_eq!(
+            tokio::fs::read(&outcome.artifact_path).await.unwrap(),
+            artifact
+        );
+    }
+
     #[tokio::test]
     async fn empty_source_returns_none() {
         let mut manifest = CompileManifest::generic_fallback();
@@ -3396,6 +5775,38 @@ extern "C" __global__ void apply(float* out) { *out = 1.0f; }
         .await
         .unwrap();
         assert!(out.is_none());
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[tokio::test]
+    async fn explicit_source_filename_is_required_for_device_compile() {
+        let mut manifest = CompileManifest::generic_fallback();
+        manifest.gpu = Some(rocm_block());
+        let tmp = tempfile::tempdir().unwrap();
+
+        let out = compile_device_phase0(
+            tmp.path(),
+            tmp.path(),
+            1,
+            "extern \"C\" __global__ void k(float* x) { x[0] = 1.0f; }",
+            None,
+            &manifest,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            out.is_none(),
+            "device compile must require an explicit manifest/generated source filename"
+        );
+        assert!(
+            !tmp.path().join(DEVICE_HIP_FILENAME).exists(),
+            "vendor default device.hip must not be materialized"
+        );
+        assert!(
+            !tmp.path().join(DEVICE_CU_FILENAME).exists(),
+            "vendor default device.cu must not be materialized"
+        );
     }
 
     #[cfg(not(feature = "gpu-hmr"))]

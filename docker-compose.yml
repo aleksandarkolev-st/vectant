@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: password
       POSTGRES_DB: synthi
     ports:
-      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-15432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -122,6 +122,8 @@ services:
       # Writable CodeSite artifact projection root. Release proofs verify these
       # files from tmp/codesite-dojo-proof/app-artifacts/<workspace-slug>/...
       - ./tmp/codesite-dojo-proof/app-artifacts:/codesite-app-artifacts
+      # Shared GPU-HMR artifact CAS used by frontend, MCP, and worker.
+      - ./mcp/synthi-mcp/.gpu-hmr-shared-cas:/var/lib/synthi/artifact-cas
     environment:
       # Non-secret local defaults. Auth, OAuth, DB, GCP, and AI credentials
       # are loaded from the gitignored .env.local file.
@@ -162,7 +164,7 @@ services:
       CLOUDFLARE_TURN_TOKEN_ID: ""
       CLOUDFLARE_TURN_API_TOKEN: ""
       # Local TURN (returned to browser via /api/turn-credentials)
-      LOCAL_TURN_URL: "turn:localhost:${TURN_HOST_PORT:-3478}"
+      LOCAL_TURN_URL: "turn:localhost:${COTURN_HOST_PORT:-3478}"
       LOCAL_TURN_USERNAME: "synthi"
       LOCAL_TURN_CREDENTIAL: "synthi"
       # Public URLs
@@ -173,6 +175,8 @@ services:
       NEXT_PUBLIC_CODE_INTEL_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
       NEXT_PUBLIC_AI_ENGINE_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
       NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS: "${NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS:-}"
+      SYNTHI_GPU_HMR_CAS_ROOT: "/var/lib/synthi/artifact-cas"
+      SYNTHI_GPU_HMR_SHARED_CAS_MOUNTS_JSON: '[{"role":"frontend","root":"/var/lib/synthi/artifact-cas"},{"role":"mcp","root":"/var/lib/synthi/artifact-cas"},{"role":"worker","root":"/var/lib/synthi/artifact-cas"}]'
       # Server-side (API routes) reach the collab-server by its compose hostname,
       # not localhost. Without this, program manifest discovery / install / launch
       # / publish fall back to localhost:1234 inside this container and fail.
@@ -423,9 +427,9 @@ services:
   coturn:
     image: coturn/coturn:4.7.0-r2@sha256:203b9bf51e84199f91025d411a7bcc7358d50c43a4d9c588079e282a3bbf4ba1
     ports:
-      - "127.0.0.1:${TURN_HOST_PORT:-3478}:3478"
-      - "127.0.0.1:${TURN_HOST_PORT:-3478}:3478/udp"
-      - "127.0.0.1:${TURN_RELAY_HOST_PORT_RANGE:-49152-49200}:49152-49200/udp"
+      - "127.0.0.1:${COTURN_HOST_PORT:-3478}:3478"
+      - "127.0.0.1:${COTURN_HOST_PORT:-3478}:3478/udp"
+      - "127.0.0.1:${COTURN_RELAY_PORT_MIN:-40000}-${COTURN_RELAY_PORT_MAX:-40049}:${COTURN_RELAY_PORT_MIN:-40000}-${COTURN_RELAY_PORT_MAX:-40049}/udp"
 
     command: >
       --no-tls
@@ -435,8 +439,8 @@ services:
       --realm=synthi.local
       --no-cli
       --fingerprint
-      --min-port=49152
-      --max-port=49200
+      --min-port=${COTURN_RELAY_PORT_MIN:-40000}
+      --max-port=${COTURN_RELAY_PORT_MAX:-40049}
       --listening-ip=0.0.0.0
       --verbose
       --log-file=stdout
@@ -465,6 +469,10 @@ services:
       - worker
     environment:
       AI_BACKEND_URL: "http://ai-engine:8000"
+      SYNTHI_GPU_HMR_CAS_ROOT: "/var/lib/synthi/artifact-cas"
+      SYNTHI_GPU_HMR_SHARED_CAS_MOUNTS_JSON: '[{"role":"frontend","root":"/var/lib/synthi/artifact-cas"},{"role":"mcp","root":"/var/lib/synthi/artifact-cas"},{"role":"worker","root":"/var/lib/synthi/artifact-cas"}]'
+    volumes:
+      - ./mcp/synthi-mcp/.gpu-hmr-shared-cas:/var/lib/synthi/artifact-cas
     restart: unless-stopped
 
   worker:
@@ -509,8 +517,11 @@ services:
       # so Docker health/proof gates do not depend on /dev/dxg or nvidia-smi.
       SYNTHI_GPU_HMR: "${SYNTHI_GPU_HMR:-0}"
       HSA_ENABLE_DXG_DETECTION: "${HSA_ENABLE_DXG_DETECTION:-}"
+      SYNTHI_GPU_HMR_CAS_ROOT: "/var/lib/synthi/artifact-cas"
+      SYNTHI_GPU_HMR_SHARED_CAS_MOUNTS_JSON: '[{"role":"frontend","root":"/var/lib/synthi/artifact-cas"},{"role":"mcp","root":"/var/lib/synthi/artifact-cas"},{"role":"worker","root":"/var/lib/synthi/artifact-cas"}]'
     volumes:
       - collab-data:/data:ro
+      - ./mcp/synthi-mcp/.gpu-hmr-shared-cas:/var/lib/synthi/artifact-cas
     cap_drop:
       - ALL
     security_opt:

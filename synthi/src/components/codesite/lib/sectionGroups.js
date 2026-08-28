@@ -1,7 +1,7 @@
 import { CodeSiteIcons } from "../icons";
 
 /**
- * Eleven sections is more than a panel this size can present flat, which is why the
+ * Thirteen sections is more than a panel this size can present flat, which is why the
  * old rail needed a horizontal scroller and a status card beside it to explain
  * which one you were on. Workflows solves the same problem next door with two
  * levels: a four-tile command strip over a sub-view strip. These four groups are
@@ -14,13 +14,13 @@ export const SECTION_GROUPS = [
     key: "live",
     label: "Live",
     icon: CodeSiteIcons.liveState,
-    sections: ["overview", "radar", "tower", "channels"],
+    sections: ["overview", "radar", "tower", "channels", "expertise"],
   },
   {
     key: "decisions",
     label: "Decisions",
     icon: CodeSiteIcons.governance,
-    sections: ["governance", "runway", "quarantine"],
+    sections: ["governance", "notams", "learning", "runway", "quarantine"],
   },
   {
     key: "proof",

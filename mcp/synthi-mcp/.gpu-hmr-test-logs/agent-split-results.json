@@ -3,132 +3,246 @@
     "name": "gpu vendor",
     "status": "pass",
     "detail": "rocm arch=gfx1201",
-    "ts": "2026-06-09T08:00:24.646Z"
+    "ts": "2026-06-27T17:51:25.869Z"
   },
   {
     "name": "fixture",
     "status": "pass",
-    "detail": "ray-light",
-    "ts": "2026-06-09T08:00:24.648Z"
+    "detail": "flow",
+    "ts": "2026-06-27T17:51:25.870Z"
+  },
+  {
+    "name": "agent visual profile",
+    "status": "pass",
+    "detail": "id=agent-realistic-raytrace-scene source=profile_declared_builtin_fixture_source edits=2 hash=sha256:c2ed5719c2e81f07f274c8ad5e9f227a57473ee7f9934dc2cd15785ee18429e8 source_hash=sha256:d9dd4179c4a0777d4e0581c24109066a4a93caaf9e157237c58a4b8daadd77bc",
+    "ts": "2026-06-27T17:51:25.871Z"
   },
   {
     "name": "monolithic source has no Synthi ABI",
     "status": "pass",
-    "detail": "",
-    "ts": "2026-06-09T08:00:24.648Z"
+    "detail": "sha256:d9dd4179c4a0777d4e0581c24109066a4a93caaf9e157237c58a4b8daadd77bc",
+    "ts": "2026-06-27T17:51:25.871Z"
   },
   {
     "name": "validation workspace fallback",
     "status": "warn",
-    "detail": "frontend workspace API requires auth; using collab-backed validation workspace slug=ray-light-gpu-hmr-proof-20260609-run-modes-hardened",
-    "ts": "2026-06-09T08:00:24.742Z"
+    "detail": "frontend workspace API requires auth; using collab-backed validation workspace slug=gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5",
+    "ts": "2026-06-27T17:51:25.988Z"
   },
   {
     "name": "create workspace",
     "status": "pass",
-    "detail": "id=ray-light-gpu-hmr-proof-20260609-run-modes-hardened slug=ray-light-gpu-hmr-proof-20260609-run-modes-hardened",
-    "ts": "2026-06-09T08:00:24.742Z"
+    "detail": "id=gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5 slug=gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5",
+    "ts": "2026-06-27T17:51:25.988Z"
   },
   {
-    "name": "seed monolithic user source",
+    "name": "seed profile/fixture source",
     "status": "pass",
-    "detail": "main.cpp",
-    "ts": "2026-06-09T08:00:24.861Z"
+    "detail": "src/main.cpp",
+    "ts": "2026-06-27T17:51:26.067Z"
   },
   {
     "name": "workspace commit seed",
     "status": "pass",
     "detail": "",
-    "ts": "2026-06-09T08:00:24.979Z"
+    "ts": "2026-06-27T17:51:26.169Z"
   },
   {
     "name": "mcp tools/list",
     "status": "pass",
     "detail": "count=97",
-    "ts": "2026-06-09T08:00:26.586Z"
+    "ts": "2026-06-27T17:51:27.212Z"
   },
   {
     "name": "mcp attach",
     "status": "pass",
     "detail": "attached",
-    "ts": "2026-06-09T08:00:27.931Z"
+    "ts": "2026-06-27T17:51:28.536Z"
   },
   {
     "name": "mcp wait_hmr proof gate",
     "status": "pass",
-    "detail": "{\"role\":null,\"module\":null,\"since_ts\":1780992027888,\"requireGpuFullRuntimeProof\":false,\"requiredGpuProofState\":null,\"status\":\"applied\",\"frame_gate\":{\"status\":\"satisfied\",\"frame_seq\":87,\"ts_ms\":1780992032300,\"session_id\":\"ray-light-gpu-hmr-proof-20260609-run-modes-hardened\",\"gate_token\":\"frame-gate:c008cbd2-d87e-4e8a-923d-8aea58318404\",\"gate_token_issued_at_ms\":1780992032332,\"gate_token_expires_at_ms\":1780993232332,\"capture_binding_required\":true,\"capture_binding_source\":\"decoded_frame\",\"pipeline_budget_ms\":80,\"frame_advance_fallback_used\":true},\"timingMetrics\":{\"schemaVersion\":\"synthi.gpu.hmr.runner_timing_metrics.v1\",\"metricClock\":\"monotonic_ns\",\"metric_clock\":\"monotonic_ns\",\"metricScope\":\"cold\",\"metric_scope\":\"cold\",\"cacheState\":\"clean\",\"cache_state\":\"clean\",\"editId\":\"initial-ai-split\",\"edit_id\":\"initial-ai-split\",\"editHash\":\"sha256:549b5b243f8fc332e1ba0e23a2f2b8d8503f6102c8f8805a72ac72adfe0b8d65\",\"edit_hash\":\"sha256:549b5b243f8fc332e1ba0e23a2f2b8d8503f6102c8f8805a72ac72adfe0b8d65\",\"editKind\":\"cold_split\",\"edit_kind\":\"cold_split\",\"differentEdit\":false,\"different_edit\":false,\"timings\":{\"device_compile_wall_time\":10019500,\"runtime_probe_time\":4379571200,\"total_validator_wall_time\":4389908400}},\"timing_metrics\":{\"schemaVersion\":\"synthi.gpu.hmr.runner_timing_metrics.v1\",\"metricClock\":\"monotonic_ns\",\"metric_clock\":\"monotonic_ns\",\"metricScope\":\"cold\",\"metric_scope\":\"cold\",\"cacheState\":\"clean\",\"cache_state\":\"clean\",\"editId\":\"initial-ai-split\",\"edit_id\":\"initial-ai-split\",\"editHash\":\"sha256:549b5b243f8fc332e1ba0e23a2f2b8d8503f6102c8f8805a72ac72adfe0b8d65\",\"edit_hash\":\"sha256:549b5b243f8fc332e1ba0e23a2f2b8d8503f6102c8f8805a72ac72adfe0b8d65\",\"editKind\":\"cold_split\",\"edit_kind\":\"cold_split\",\"differentEdit\":false,\"different_edit\":false,\"timings\":{\"device_compile_wall_time\":10019500,\"runtime_probe_time\":4379571200,\"total_validator_wall_time\":4389908400}},\"gpu_proof_validation\":{\"validated\":false,\"satisfied\":false,\"reason\":\"proof_state_not_requested\"},\"gpu_proof_telemetry\":{\"schemaVersion\":\"synthi.gpu.hmr.proof.v1\",\"proofId\":\"gpu-proof:76e266faef5ebc670b49e64e30c1a531c7267ab63af18ee4f9ec088ef5baf754\",\"proofArtifactPath\":\".synthi/gpu-hmr/proofs/gpu-proof_76e266faef5ebc670b49e64e30c1a531c7267ab63af18ee4f9ec088ef5baf754.json\",\"resultState\":\"gpu-hmr-compile-proven\",\"degradedState\":\"gpu-hmr-dispatch-unobserved\",\"degradedReason\":\"runtime_dispatch_not_observed\",\"label\":\"gpu-hmr-full-device\",\"source\":\"gpu-proof-state\",\"observedAt\":1780992031024}}",
-    "ts": "2026-06-09T08:00:32.321Z"
+    "detail": "{\"role\":null,\"module\":null,\"since_ts\":1782582688779,\"requireGpuFullRuntimeProof\":false,\"requiredGpuProofState\":\"gpu-hmr-compile-proven\",\"status\":\"applied\",\"frame_gate\":{\"status\":\"satisfied\",\"frame_seq\":61,\"ts_ms\":1782582692311,\"session_id\":\"gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\",\"gate_token\":\"frame-gate:58238d04-83be-4dc6-abe8-302f74bcf7be\",\"gate_token_issued_at_ms\":1782582692331,\"gate_token_expires_at_ms\":1782583892331,\"capture_binding_required\":true,\"capture_binding_source\":\"decoded_frame\",\"pipeline_budget_ms\":80,\"frame_advance_fallback_used\":true},\"timingMetrics\":{\"schemaVersion\":\"synthi.gpu.hmr.runner_timing_metrics.v1\",\"metricClock\":\"monotonic_ns\",\"metric_clock\":\"monotonic_ns\",\"metricScope\":\"cold\",\"metric_scope\":\"cold\",\"cacheState\":\"clean\",\"cache_state\":\"clean\",\"editId\":\"initial-ai-split\",\"edit_id\":\"initial-ai-split\",\"editHash\":\"sha256:d9dd4179c4a0777d4e0581c24109066a4a93caaf9e157237c58a4b8daadd77bc\",\"edit_hash\":\"sha256:d9dd4179c4a0777d4e0581c24109066a4a93caaf9e157237c58a4b8daadd77bc\",\"editKind\":\"cold_split\",\"edit_kind\":\"cold_split\",\"differentEdit\":false,\"different_edit\":false,\"timings\":{\"device_compile_wall_time\":10518500,\"runtime_probe_time\":3874824800,\"total_validator_wall_time\":3885608900}},\"timing_metrics\":{\"schemaVersion\":\"synthi.gpu.hmr.runner_timing_metrics.v1\",\"metricClock\":\"monotonic_ns\",\"metric_clock\":\"monotonic_ns\",\"metricScope\":\"cold\",\"metric_scope\":\"cold\",\"cacheState\":\"clean\",\"cache_state\":\"clean\",\"editId\":\"initial-ai-split\",\"edit_id\":\"initial-ai-split\",\"editHash\":\"sha256:d9dd4179c4a0777d4e0581c24109066a4a93caaf9e157237c58a4b8daadd77bc\",\"edit_hash\":\"sha256:d9dd4179c4a0777d4e0581c24109066a4a93caaf9e157237c58a4b8daadd77bc\",\"editKind\":\"cold_split\",\"edit_kind\":\"cold_split\",\"differentEdit\":false,\"different_edit\":false,\"timings\":{\"device_compile_wall_time\":10518500,\"runtime_probe_time\":3874824800,\"total_validator_wall_time\":3885608900}},\"gpu_proof_validation\":{\"requiredState\":\"gpu-hmr-compile-proven\",\"requiredRank\":1,\"resultState\":\"gpu-hmr-compile-proven\",\"resultRank\":1,\"effectiveResultRank\":1,\"degradedState\":\"gpu-hmr-dispatch-unobserved\",\"degradedStateRankCap\":4,\"satisfied\":true},\"gpu_proof_telemetry\":{\"schemaVersion\":\"synthi.gpu.hmr.proof.v1\",\"proofId\":\"gpu-proof:d9042e47c45c9c3557a3dc4b09579587206f3fe86ca37d12eafaf2feb98b2d10\",\"proofArtifactPath\":\".synthi/gpu-hmr/proofs/gpu-proof_d9042e47c45c9c3557a3dc4b09579587206f3fe86ca37d12eafaf2feb98b2d10.json\",\"resultState\":\"gpu-hmr-compile-proven\",\"degradedState\":\"gpu-hmr-dispatch-unobserved\",\"degradedReason\":\"runtime_dispatch_not_observed\",\"label\":\"gpu-hmr-full-device\",\"source\":\"gpu-proof-state\",\"observedAt\":1782582691245}}",
+    "ts": "2026-06-27T17:51:32.422Z"
   },
   {
     "name": "first compile via MCP",
     "status": "pass",
     "detail": "use_ai_split=true prefer_gpu_pipeline=true",
-    "ts": "2026-06-09T08:00:32.322Z"
+    "ts": "2026-06-27T17:51:32.422Z"
   },
   {
     "name": "generated device compiled",
     "status": "pass",
-    "detail": "Device sidecar reload vendor=rocm artifact=/tmp/.tmpozv75x/build/device_1780992027.hsaco kernels=trace_light_rays result=Success",
-    "ts": "2026-06-09T08:04:36.072Z"
+    "detail": "structured_proof={\"accepted\":true,\"waitStatus\":\"applied\",\"validationSatisfied\":true,\"validation_satisfied\":true,\"proofId\":\"gpu-proof:d9042e47c45c9c3557a3dc4b09579587206f3fe86ca37d12eafaf2feb98b2d10\",\"proof_id\":\"gpu-proof:d9042e47c45c9c3557a3dc4b09579587206f3fe86ca37d12eafaf2feb98b2d10\",\"proofArtifactPath\":\".synthi/gpu-hmr/proofs/gpu-proof_d9042e47c45c9c3557a3dc4b09579587206f3fe86ca37d12eafaf2feb98b2d10.json\",\"proof_artifact_path\":\".synthi/gpu-hmr/proofs/gpu-proof_d9042e47c45c9c3557a3dc4b09579587206f3fe86ca37d12eafaf2feb98b2d10.json\",\"resultState\":\"gpu-hmr-compile-proven\",\"result_state\":\"gpu-hmr-compile-proven\",\"validatedResultState\":\"gpu-hmr-compile-proven\",\"validated_result_state\":\"gpu-hmr-compile-proven\",\"resultRank\":1,\"result_rank\":1,\"requiredState\":\"gpu-hmr-compile-proven\",\"required_state\":\"gpu-hmr-compile-proven\",\"requiredRank\":1,\"required_rank\":1,\"effectiveResultRank\":1,\"effective_result_rank\":1,\"degradedState\":\"gpu-hmr-dispatch-unobserved\",\"degraded_state\":\"gpu-hmr-dispatch-unobserved\",\"degradedStateRankCap\":4,\"degraded_state_rank_cap\":4,\"degradedReason\":\"runtime_dispatch_not_observed\",\"degraded_reason\":\"runtime_dispatch_not_observed\",\"source\":\"gpu-proof-state\",\"observedAt\":1782582691245,\"observed_at\":1782582691245}",
+    "ts": "2026-06-27T17:54:50.824Z"
   },
   {
     "name": "mcp screenshot before hmr",
     "status": "pass",
-    "detail": "800x600 seq=7382->7402 visible=210015/210049 luma=20.2/20.2 bytes~101412/101343 frame_gate_after=false images=mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\ray-light-gpu-hmr-proof-20260609-run-modes-hardened\\before-hmr-first.png,mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\ray-light-gpu-hmr-proof-20260609-run-modes-hardened\\before-hmr-second.png metadata=mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\ray-light-gpu-hmr-proof-20260609-run-modes-hardened\\before-hmr-metadata.json",
-    "ts": "2026-06-09T08:04:36.751Z"
+    "detail": "800x600 seq=5523->5539 visible=480000/480000 luma=188.3/188.3 bytes~135606/135561 frame_gate_after=false images=mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\\before-hmr-first.png,mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\\before-hmr-second.png metadata=mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\\before-hmr-metadata.json",
+    "ts": "2026-06-27T17:54:51.511Z"
   },
   {
     "name": "read generated split from worker",
     "status": "pass",
-    "detail": "worker=/tmp/.tmpozv75x",
-    "ts": "2026-06-09T08:04:41.534Z"
+    "detail": "worker=/tmp/.tmpd46nY8",
+    "ts": "2026-06-27T17:54:55.440Z"
   },
   {
     "name": "worker used GPU split endpoint",
     "status": "pass",
     "detail": "gpu_manifest=true generated_files=5 sidecar_reports=device_mapping_report|launch_indirection_report|model_provenance",
-    "ts": "2026-06-09T08:04:41.535Z"
+    "ts": "2026-06-27T17:54:55.441Z"
+  },
+  {
+    "name": "source-first AI split provenance-only evidence",
+    "status": "pass",
+    "detail": "agent-split-source-first-ingestion:sha256:8635b2e650b011f771473237e9b5c283cc1067058312c5beaab7520d43889f8e",
+    "ts": "2026-06-27T17:54:55.444Z"
   },
   {
     "name": "generated split contains HMR ABI",
     "status": "pass",
     "detail": ".synthi/generated/gpu/shared.h, .synthi/generated/gpu/core.cpp, .synthi/generated/gpu/gui.cpp, .synthi/generated/gpu/host_runner.cpp, .synthi/generated/gpu/device.hip",
-    "ts": "2026-06-09T08:04:41.535Z"
+    "ts": "2026-06-27T17:54:55.444Z"
   },
   {
     "name": "generated split HMR granularity",
     "status": "pass",
     "detail": "claim=device_translation_unit_hmr device_tus=1 device_roles=1 kernels=1 smallest_safe_fission=not_proven rejected_claims=smallest_safe_fission_island|per_kernel_hmr",
-    "ts": "2026-06-09T08:04:41.536Z"
+    "ts": "2026-06-27T17:54:55.448Z"
   },
   {
     "name": "generated split granularity artifact",
     "status": "pass",
-    "detail": "mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\ray-light-gpu-hmr-proof-20260609-run-modes-hardened\\generated-split-granularity.json",
-    "ts": "2026-06-09T08:04:41.537Z"
+    "detail": "mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\\generated-split-granularity.json",
+    "ts": "2026-06-27T17:54:55.457Z"
   },
   {
     "name": "persist generated split to workspace",
     "status": "pass",
     "detail": "16 files",
-    "ts": "2026-06-09T08:04:41.734Z"
+    "ts": "2026-06-27T17:54:55.901Z"
   },
   {
     "name": "workspace commit generated split",
     "status": "pass",
     "detail": "",
-    "ts": "2026-06-09T08:04:41.879Z"
+    "ts": "2026-06-27T17:54:56.120Z"
+  },
+  {
+    "name": "mcp wait_hmr proof gate",
+    "status": "pass",
+    "detail": "{\"role\":\"device\",\"module\":\"device\",\"since_ts\":1782582898290,\"requireGpuFullRuntimeProof\":true,\"requiredGpuProofState\":null,\"status\":\"applied\",\"frame_gate\":{\"status\":\"satisfied\",\"frame_seq\":5848,\"ts_ms\":1782582904016,\"session_id\":\"gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\",\"gate_token\":\"frame-gate:65a08dff-3fcb-45ee-83b4-9e30e1998491\",\"gate_token_issued_at_ms\":1782582904044,\"gate_token_expires_at_ms\":1782584104044,\"capture_binding_required\":true,\"capture_binding_source\":\"decoded_frame\",\"pipeline_budget_ms\":80,\"frame_advance_fallback_used\":true},\"timingMetrics\":{\"schemaVersion\":\"synthi.gpu.hmr.runner_timing_metrics.v1\",\"metricClock\":\"monotonic_ns\",\"metric_clock\":\"monotonic_ns\",\"metricScope\":\"hot_delta_1\",\"metric_scope\":\"hot_delta_1\",\"cacheState\":\"compiler_cache_warm\",\"cache_state\":\"compiler_cache_warm\",\"editId\":\"hot-delta-1:3f9337d5f5ea7d61\",\"edit_id\":\"hot-delta-1:3f9337d5f5ea7d61\",\"editHash\":\"sha256:409814b2db8b94a5f6c287163860ac4c0f8a4a06f4d26859b592806dc388aadc\",\"edit_hash\":\"sha256:409814b2db8b94a5f6c287163860ac4c0f8a4a06f4d26859b592806dc388aadc\",\"editKind\":\"gpu_artifact_edit\",\"edit_kind\":\"gpu_artifact_edit\",\"differentEdit\":false,\"different_edit\":false,\"timings\":{\"device_compile_wall_time\":118919700,\"runtime_probe_time\":6302420900,\"total_validator_wall_time\":6421730900}},\"timing_metrics\":{\"schemaVersion\":\"synthi.gpu.hmr.runner_timing_metrics.v1\",\"metricClock\":\"monotonic_ns\",\"metric_clock\":\"monotonic_ns\",\"metricScope\":\"hot_delta_1\",\"metric_scope\":\"hot_delta_1\",\"cacheState\":\"compiler_cache_warm\",\"cache_state\":\"compiler_cache_warm\",\"editId\":\"hot-delta-1:3f9337d5f5ea7d61\",\"edit_id\":\"hot-delta-1:3f9337d5f5ea7d61\",\"editHash\":\"sha256:409814b2db8b94a5f6c287163860ac4c0f8a4a06f4d26859b592806dc388aadc\",\"edit_hash\":\"sha256:409814b2db8b94a5f6c287163860ac4c0f8a4a06f4d26859b592806dc388aadc\",\"editKind\":\"gpu_artifact_edit\",\"edit_kind\":\"gpu_artifact_edit\",\"differentEdit\":false,\"different_edit\":false,\"timings\":{\"device_compile_wall_time\":118919700,\"runtime_probe_time\":6302420900,\"total_validator_wall_time\":6421730900}},\"gpu_proof_validation\":{\"requiredState\":\"gpu-hmr-full-runtime-proven\",\"requiredRank\":9,\"resultState\":\"gpu-hmr-full-runtime-proven\",\"resultRank\":9,\"effectiveResultRank\":9,\"degradedState\":null,\"degradedStateRankCap\":null,\"satisfied\":true,\"proofLedgerValidation\":{\"schemaVersion\":\"synthi.gpu.hmr.proof_ledger.v1\",\"proofId\":\"gpu-ledger-proof:sha256:30b08fdbd5553743e8216cc0590e6fc8436a8ce9cfa861f0cb0e60fe082939c5\",\"gpuHmrSuccess\":true,\"failedInvariants\":[]},\"runtimeProofArtifactValidation\":{\"present\":true,\"accepted\":true,\"source\":\"runtimeProofArtifact\",\"failedGates\":[]}},\"gpu_proof_telemetry\":{\"schemaVersion\":\"synthi.gpu.hmr.proof.v1\",\"proofId\":\"gpu-runtime-proof:sha256:f0c79661dc0d34c203135636ff6b8731e0c5042382f5cf46da4e849d6ef12568\",\"proofArtifactPath\":null,\"resultState\":\"gpu-hmr-full-runtime-proven\",\"degradedState\":null,\"degradedReason\":null,\"label\":null,\"source\":\"gpu_hmr_proof\",\"observedAt\":1782582903935}}",
+    "ts": "2026-06-27T17:55:02.600Z"
+  },
+  {
+    "name": "device edit compile via MCP",
+    "status": "pass",
+    "detail": ".synthi/generated/gpu/device.hip",
+    "ts": "2026-06-27T17:55:02.804Z"
+  },
+  {
+    "name": "generated device file used for HMR",
+    "status": "pass",
+    "detail": "{\"accepted\":true,\"selectedPath\":\".synthi/generated/gpu/device.hip\",\"selected_path\":\".synthi/generated/gpu/device.hip\",\"expectedPath\":\".synthi/generated/gpu/device.hip\",\"expected_path\":\".synthi/generated/gpu/device.hip\",\"selectedPathMatches\":true,\"selected_path_matches\":true,\"editHash\":\"sha256:409814b2db8b94a5f6c287163860ac4c0f8a4a06f4d26859b592806dc388aadc\",\"edit_hash\":\"sha256:409814b2db8b94a5f6c287163860ac4c0f8a4a06f4d26859b592806dc388aadc\",\"expectedEditHash\":\"sha256:409814b2db8b94a5f6c287163860ac4c0f8a4a06f4d26859b592806dc388aadc\",\"expected_edit_hash\":\"sha256:409814b2db8b94a5f6c287163860ac4c0f8a4a06f4d26859b592806dc388aadc\",\"editHashMatches\":true,\"edit_hash_matches\":true,\"sourceBaselineAccepted\":true,\"source_baseline_accepted\":true,\"refreshedSourceBaselineAccepted\":true,\"refreshed_source_baseline_accepted\":true}",
+    "ts": "2026-06-27T17:55:02.805Z"
+  },
+  {
+    "name": "device-only GPU HMR observed",
+    "status": "pass",
+    "detail": "{\"accepted\":true,\"waitStatus\":\"applied\",\"validationSatisfied\":true,\"validation_satisfied\":true,\"resultState\":\"gpu-hmr-full-runtime-proven\",\"result_state\":\"gpu-hmr-full-runtime-proven\",\"effectiveResultRank\":9,\"effective_result_rank\":9,\"requiredState\":\"gpu-hmr-full-runtime-proven\",\"required_state\":\"gpu-hmr-full-runtime-proven\",\"requiredRank\":9,\"required_rank\":9,\"runtimeProofId\":\"gpu-runtime-proof:sha256:f0c79661dc0d34c203135636ff6b8731e0c5042382f5cf46da4e849d6ef12568\",\"runtime_proof_id\":\"gpu-runtime-proof:sha256:f0c79661dc0d34c203135636ff6b8731e0c5042382f5cf46da4e849d6ef12568\",\"ledgerProofId\":\"gpu-ledger-proof:sha256:30b08fdbd5553743e8216cc0590e6fc8436a8ce9cfa861f0cb0e60fe082939c5\",\"ledger_proof_id\":\"gpu-ledger-proof:sha256:30b08fdbd5553743e8216cc0590e6fc8436a8ce9cfa861f0cb0e60fe082939c5\",\"gpuHmrSuccess\":true,\"gpu_hmr_success\":true,\"failedInvariants\":[],\"failed_invariants\":[],\"runtimeProofArtifactAccepted\":true,\"runtime_proof_artifact_accepted\":true,\"runtimeProofArtifactSource\":\"runtimeProofArtifact\",\"runtime_proof_artifact_source\":\"runtimeProofArtifact\"}",
+    "ts": "2026-06-27T17:55:02.805Z"
+  },
+  {
+    "name": "mcp screenshot after hmr",
+    "status": "pass",
+    "detail": "800x600 seq=5855->5959 visible=480000/480000 luma=188.3/205.8 bytes~135243/114450 frame_gate_after=true images=mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\\after-hmr-first.png,mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\\after-hmr-second.png metadata=mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\\after-hmr-metadata.json",
+    "ts": "2026-06-27T17:55:06.598Z"
+  },
+  {
+    "name": "mcp screenshot visual delta",
+    "status": "pass",
+    "detail": "changed=82.66% mean_abs=17.89 min_changed=3.50% min_mean_abs=2.25 control_changed=0.00% control_mean_abs=0.03 selected_seq=5944 selected_delta_ms=2965 diff=mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\\before-after-diff.png",
+    "ts": "2026-06-27T17:55:10.674Z"
   },
   {
     "name": "run-mode cold split proof artifact",
     "status": "pass",
-    "detail": "mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\ray-light-gpu-hmr-proof-20260609-run-modes-hardened\\run-mode-cold-split.json",
-    "ts": "2026-06-09T08:04:41.882Z"
+    "detail": "mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\\run-mode-cold-split.json",
+    "ts": "2026-06-27T17:55:10.711Z"
   },
   {
-    "name": "fatal",
-    "status": "fail",
-    "detail": "Error: generated split sidecar lacks compiler-emitted source baseline proof for .synthi/generated/gpu/device.hip: source_baseline_contents_missing|source_baseline_hash_missing\n    at compileGeneratedDevice (file:///C:/Users/polek/Downloads/test-agent/vectant-ade/mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs:1640:11)\n    at run (file:///C:/Users/polek/Downloads/test-agent/vectant-ade/mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs:2240:39)",
-    "ts": "2026-06-09T08:04:41.884Z"
+    "name": "run-mode hot delta 1 proof artifact",
+    "status": "pass",
+    "detail": "mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\\run-mode-hot-delta-1.json",
+    "ts": "2026-06-27T17:55:10.820Z"
+  },
+  {
+    "name": "generated split deterministic fission verifier",
+    "status": "pass",
+    "detail": "accepted=true claim=per_kernel_hmr selected=.synthi/generated/gpu/device.hip kernel=render_realistic_raytrace artifact=mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\\generated-split-deterministic-fission.json failures=",
+    "ts": "2026-06-27T17:55:10.849Z"
+  },
+  {
+    "name": "mcp screenshot before hmr hot delta 2",
+    "status": "pass",
+    "detail": "800x600 seq=6076->6187 visible=480000/480000 luma=205.8/205.8 bytes~114417/114726 frame_gate_after=false images=mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\\before-hmr-2-first.png,mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\\before-hmr-2-second.png metadata=mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\\before-hmr-2-metadata.json",
+    "ts": "2026-06-27T17:55:15.077Z"
+  },
+  {
+    "name": "mcp wait_hmr proof gate hot delta 2",
+    "status": "pass",
+    "detail": "{\"role\":\"device\",\"module\":\"device\",\"since_ts\":1782582915606,\"requireGpuFullRuntimeProof\":true,\"requiredGpuProofState\":null,\"status\":\"applied\",\"frame_gate\":{\"status\":\"satisfied\",\"frame_seq\":6470,\"ts_ms\":1782582927382,\"session_id\":\"gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\",\"gate_token\":\"frame-gate:120909b8-dab4-4c89-ba10-22553157d770\",\"gate_token_issued_at_ms\":1782582927391,\"gate_token_expires_at_ms\":1782584127391,\"capture_binding_required\":true,\"capture_binding_source\":\"decoded_frame\",\"pipeline_budget_ms\":80,\"frame_advance_fallback_used\":true},\"timingMetrics\":{\"schemaVersion\":\"synthi.gpu.hmr.runner_timing_metrics.v1\",\"metricClock\":\"monotonic_ns\",\"metric_clock\":\"monotonic_ns\",\"metricScope\":\"hot_delta_2\",\"metric_scope\":\"hot_delta_2\",\"cacheState\":\"compiler_cache_warm\",\"cache_state\":\"compiler_cache_warm\",\"editId\":\"hot-delta-2:c9e5031a8c830303\",\"edit_id\":\"hot-delta-2:c9e5031a8c830303\",\"editHash\":\"sha256:a6ca8335547425bcccdc1dc1cbb4d91a1ef0222a630e96b7d85d3884f94668b4\",\"edit_hash\":\"sha256:a6ca8335547425bcccdc1dc1cbb4d91a1ef0222a630e96b7d85d3884f94668b4\",\"editKind\":\"different_gpu_edit\",\"edit_kind\":\"different_gpu_edit\",\"differentEdit\":true,\"different_edit\":true,\"timings\":{\"device_compile_wall_time\":68553100,\"runtime_probe_time\":10007965600,\"total_validator_wall_time\":10076596900}},\"timing_metrics\":{\"schemaVersion\":\"synthi.gpu.hmr.runner_timing_metrics.v1\",\"metricClock\":\"monotonic_ns\",\"metric_clock\":\"monotonic_ns\",\"metricScope\":\"hot_delta_2\",\"metric_scope\":\"hot_delta_2\",\"cacheState\":\"compiler_cache_warm\",\"cache_state\":\"compiler_cache_warm\",\"editId\":\"hot-delta-2:c9e5031a8c830303\",\"edit_id\":\"hot-delta-2:c9e5031a8c830303\",\"editHash\":\"sha256:a6ca8335547425bcccdc1dc1cbb4d91a1ef0222a630e96b7d85d3884f94668b4\",\"edit_hash\":\"sha256:a6ca8335547425bcccdc1dc1cbb4d91a1ef0222a630e96b7d85d3884f94668b4\",\"editKind\":\"different_gpu_edit\",\"edit_kind\":\"different_gpu_edit\",\"differentEdit\":true,\"different_edit\":true,\"timings\":{\"device_compile_wall_time\":68553100,\"runtime_probe_time\":10007965600,\"total_validator_wall_time\":10076596900}},\"gpu_proof_validation\":{\"requiredState\":\"gpu-hmr-full-runtime-proven\",\"requiredRank\":9,\"resultState\":\"gpu-hmr-full-runtime-proven\",\"resultRank\":9,\"effectiveResultRank\":9,\"degradedState\":null,\"degradedStateRankCap\":null,\"satisfied\":true,\"proofLedgerValidation\":{\"schemaVersion\":\"synthi.gpu.hmr.proof_ledger.v1\",\"proofId\":\"gpu-ledger-proof:sha256:921b8cf831144396800a46e5836c0def40a319d0b88158ceac3b8abbc0c7d6eb\",\"gpuHmrSuccess\":true,\"failedInvariants\":[]},\"runtimeProofArtifactValidation\":{\"present\":true,\"accepted\":true,\"source\":\"runtimeProofArtifact\",\"failedGates\":[]}},\"gpu_proof_telemetry\":{\"schemaVersion\":\"synthi.gpu.hmr.proof.v1\",\"proofId\":\"gpu-runtime-proof:sha256:4ea52e5b7340385bcb4a5c1f6b80a576d7c3e7fefb8921761863d2cd4924ff99\",\"proofArtifactPath\":null,\"resultState\":\"gpu-hmr-full-runtime-proven\",\"degradedState\":null,\"degradedReason\":null,\"label\":null,\"source\":\"gpu_hmr_proof\",\"observedAt\":1782582927283}}",
+    "ts": "2026-06-27T17:55:25.185Z"
+  },
+  {
+    "name": "device edit compile via MCP hot delta 2",
+    "status": "pass",
+    "detail": ".synthi/generated/gpu/device.hip",
+    "ts": "2026-06-27T17:55:25.492Z"
+  },
+  {
+    "name": "generated device file used for HMR hot delta 2",
+    "status": "pass",
+    "detail": "{\"accepted\":true,\"selectedPath\":\".synthi/generated/gpu/device.hip\",\"selected_path\":\".synthi/generated/gpu/device.hip\",\"expectedPath\":\".synthi/generated/gpu/device.hip\",\"expected_path\":\".synthi/generated/gpu/device.hip\",\"selectedPathMatches\":true,\"selected_path_matches\":true,\"editHash\":\"sha256:a6ca8335547425bcccdc1dc1cbb4d91a1ef0222a630e96b7d85d3884f94668b4\",\"edit_hash\":\"sha256:a6ca8335547425bcccdc1dc1cbb4d91a1ef0222a630e96b7d85d3884f94668b4\",\"expectedEditHash\":\"sha256:a6ca8335547425bcccdc1dc1cbb4d91a1ef0222a630e96b7d85d3884f94668b4\",\"expected_edit_hash\":\"sha256:a6ca8335547425bcccdc1dc1cbb4d91a1ef0222a630e96b7d85d3884f94668b4\",\"editHashMatches\":true,\"edit_hash_matches\":true,\"sourceBaselineAccepted\":true,\"source_baseline_accepted\":true,\"refreshedSourceBaselineAccepted\":true,\"refreshed_source_baseline_accepted\":true}",
+    "ts": "2026-06-27T17:55:25.492Z"
+  },
+  {
+    "name": "device-only GPU HMR observed hot delta 2",
+    "status": "pass",
+    "detail": "{\"accepted\":true,\"waitStatus\":\"applied\",\"validationSatisfied\":true,\"validation_satisfied\":true,\"resultState\":\"gpu-hmr-full-runtime-proven\",\"result_state\":\"gpu-hmr-full-runtime-proven\",\"effectiveResultRank\":9,\"effective_result_rank\":9,\"requiredState\":\"gpu-hmr-full-runtime-proven\",\"required_state\":\"gpu-hmr-full-runtime-proven\",\"requiredRank\":9,\"required_rank\":9,\"runtimeProofId\":\"gpu-runtime-proof:sha256:4ea52e5b7340385bcb4a5c1f6b80a576d7c3e7fefb8921761863d2cd4924ff99\",\"runtime_proof_id\":\"gpu-runtime-proof:sha256:4ea52e5b7340385bcb4a5c1f6b80a576d7c3e7fefb8921761863d2cd4924ff99\",\"ledgerProofId\":\"gpu-ledger-proof:sha256:921b8cf831144396800a46e5836c0def40a319d0b88158ceac3b8abbc0c7d6eb\",\"ledger_proof_id\":\"gpu-ledger-proof:sha256:921b8cf831144396800a46e5836c0def40a319d0b88158ceac3b8abbc0c7d6eb\",\"gpuHmrSuccess\":true,\"gpu_hmr_success\":true,\"failedInvariants\":[],\"failed_invariants\":[],\"runtimeProofArtifactAccepted\":true,\"runtime_proof_artifact_accepted\":true,\"runtimeProofArtifactSource\":\"runtimeProofArtifact\",\"runtime_proof_artifact_source\":\"runtimeProofArtifact\"}",
+    "ts": "2026-06-27T17:55:25.493Z"
+  },
+  {
+    "name": "mcp screenshot after hmr hot delta 2",
+    "status": "pass",
+    "detail": "800x600 seq=6479->6590 visible=480000/480000 luma=205.8/168.9 bytes~114471/138531 frame_gate_after=true images=mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\\after-hmr-2-first.png,mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\\after-hmr-2-second.png metadata=mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\\after-hmr-2-metadata.json",
+    "ts": "2026-06-27T17:55:29.591Z"
+  },
+  {
+    "name": "mcp screenshot visual delta hot delta 2",
+    "status": "pass",
+    "detail": "changed=99.86% mean_abs=37.40 min_changed=3.50% min_mean_abs=2.25 control_changed=0.00% control_mean_abs=0.01 selected_seq=6542 selected_delta_ms=2098 diff=mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\\hot-delta-2-diff.png",
+    "ts": "2026-06-27T17:55:32.779Z"
+  },
+  {
+    "name": "run-mode hot delta 2 proof artifact",
+    "status": "pass",
+    "detail": "mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\\run-mode-hot-delta-2.json",
+    "ts": "2026-06-27T17:55:32.879Z"
+  },
+  {
+    "name": "negative ABI edit refused before GPU HMR",
+    "status": "pass",
+    "detail": "mcp\\synthi-mcp\\.gpu-hmr-test-logs\\agent-split-artifacts\\gpu-agent-realistic-raytrace-source-first-20260627-sourcefacet5\\negative-edit-refusal.json",
+    "ts": "2026-06-27T17:55:32.883Z"
+  },
+  {
+    "name": "runner stayed alive after GPU HMR",
+    "status": "pass",
+    "detail": "no runner crash marker",
+    "ts": "2026-06-27T17:55:56.802Z"
   }
 ]

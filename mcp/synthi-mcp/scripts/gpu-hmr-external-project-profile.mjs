@@ -52,6 +52,21 @@ function optionalString(value, field) {
   return nonEmptyString(value, field);
 }
 
+function firstOptionalString(field, ...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      return nonEmptyString(value, field);
+    }
+  }
+  return null;
+}
+
+function requiredFirstString(field, ...values) {
+  const value = firstOptionalString(field, ...values);
+  if (!value) throw new Error(`external project profile ${field} must be a non-empty string`);
+  return value;
+}
+
 function stringList(value, field) {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) throw new Error(`external project profile ${field} must be an array`);
@@ -177,10 +192,56 @@ function normalizeProfile(rawProfile) {
   const before = nonEmptyString(source.before, 'source.before');
   const after = nonEmptyString(source.after, 'source.after');
   if (before === after) throw new Error('external project profile source.before and source.after must differ');
+  const backend = requiredFirstString(
+    'backend',
+    raw.backend,
+    raw.gpuBackend,
+    raw.gpu_backend,
+    raw.renderBackend,
+    raw.render_backend,
+    raw.shaderBackend,
+    raw.shader_backend,
+    project.backend,
+    project.gpuBackend,
+    project.gpu_backend,
+  );
+  const backendFamily = requiredFirstString(
+    'backendFamily',
+    raw.backendFamily,
+    raw.backend_family,
+    project.backendFamily,
+    project.backend_family,
+  );
+  const libraryFamily = requiredFirstString(
+    'libraryFamily',
+    raw.libraryFamily,
+    raw.library_family,
+    project.libraryFamily,
+    project.library_family,
+  );
+  const runtimeEnvironment = requiredFirstString(
+    'runtimeEnvironment',
+    raw.runtimeEnvironment,
+    raw.runtime_environment,
+    project.runtimeEnvironment,
+    project.runtime_environment,
+  );
+  const profileClass = requiredFirstString(
+    'profileClass',
+    raw.profileClass,
+    raw.profile_class,
+    project.profileClass,
+    project.profile_class,
+  );
 
   const normalized = {
     schemaVersion: raw.schemaVersion ?? SCHEMA_VERSION,
     id,
+    backend,
+    backendFamily,
+    libraryFamily,
+    runtimeEnvironment,
+    profileClass,
     project: {
       name: nonEmptyString(project.name ?? id, 'project.name'),
       repoUrl: optionalString(project.repoUrl, 'project.repoUrl'),
@@ -239,6 +300,89 @@ function normalizeProfile(rawProfile) {
   return normalized;
 }
 
+function profileContractFields(profile = {}) {
+  return {
+    backend: profile.backend ?? null,
+    backendFamily: profile.backendFamily ?? null,
+    backend_family: profile.backendFamily ?? null,
+    libraryFamily: profile.libraryFamily ?? null,
+    library_family: profile.libraryFamily ?? null,
+    runtimeEnvironment: profile.runtimeEnvironment ?? null,
+    runtime_environment: profile.runtimeEnvironment ?? null,
+    profileClass: profile.profileClass ?? null,
+    profile_class: profile.profileClass ?? null,
+  };
+}
+
+function compactStrings(values) {
+  return [...new Set((Array.isArray(values) ? values : [values])
+    .flat()
+    .filter((value) => typeof value === 'string' && value.trim())
+    .map((value) => value.trim()))];
+}
+
+function typedContractValue(profile, fieldName, value, evidenceRefs) {
+  return {
+    value: value ?? null,
+    evidenceRefs: compactStrings([
+      ...evidenceRefs,
+      `external-profile:${profile.id}:field:${fieldName}`,
+    ]),
+  };
+}
+
+function externalProjectContractForProfile(profile, profileSelection, runtimeEvidenceRefs = []) {
+  const selectionEvidenceRefs = compactStrings(profileSelection?.evidenceRefs ?? profileSelection?.evidence_refs);
+  const contractEvidenceRefs = compactStrings([
+    ...selectionEvidenceRefs,
+    `external-profile:${profile.id}:typed-contract`,
+  ]);
+  const manifestHash = profileSelection?.manifestHash ?? profileSelection?.manifest_hash ?? null;
+  return {
+    schemaVersion: 'synthi.gpu_hmr.external_project_contract.v2',
+    accepted: true,
+    profileId: profile.id,
+    profile_id: profile.id,
+    backend: typedContractValue(profile, 'backend', profile.backend, contractEvidenceRefs),
+    backendFamily: typedContractValue(profile, 'backendFamily', profile.backendFamily, contractEvidenceRefs),
+    backend_family: typedContractValue(profile, 'backendFamily', profile.backendFamily, contractEvidenceRefs),
+    libraryFamily: typedContractValue(profile, 'libraryFamily', profile.libraryFamily, contractEvidenceRefs),
+    library_family: typedContractValue(profile, 'libraryFamily', profile.libraryFamily, contractEvidenceRefs),
+    runtimeEnvironment: typedContractValue(profile, 'runtimeEnvironment', profile.runtimeEnvironment, contractEvidenceRefs),
+    runtime_environment: typedContractValue(profile, 'runtimeEnvironment', profile.runtimeEnvironment, contractEvidenceRefs),
+    profileClass: typedContractValue(profile, 'profileClass', profile.profileClass, contractEvidenceRefs),
+    profile_class: typedContractValue(profile, 'profileClass', profile.profileClass, contractEvidenceRefs),
+    profileManifestHash: manifestHash,
+    profile_manifest_hash: manifestHash,
+    evidenceRefs: contractEvidenceRefs,
+    evidence_refs: contractEvidenceRefs,
+    runtimeEvidence: {
+      evidenceRefs: compactStrings(runtimeEvidenceRefs),
+      evidence_refs: compactStrings(runtimeEvidenceRefs),
+    },
+    runtime_evidence: {
+      evidenceRefs: compactStrings(runtimeEvidenceRefs),
+      evidence_refs: compactStrings(runtimeEvidenceRefs),
+    },
+    arbitraryLibraryAccepted: false,
+    arbitrary_library_accepted: false,
+    arbitraryTargetRuntimeAccepted: false,
+    arbitrary_target_runtime_accepted: false,
+  };
+}
+
+function runtimeEvidenceRefsForReport(report = {}) {
+  return compactStrings([
+    report.visualProofArtifact?.proofId,
+    report.visualProofArtifact?.proof_id,
+    report.rejectionProofArtifact?.proofId,
+    report.rejectionProofArtifact?.proof_id,
+    ...(Array.isArray(report.proofArtifactPaths) ? report.proofArtifactPaths : []),
+    report.mcp?.before?.wait?.gpu_proof_validation?.proofLedgerValidation?.proofId,
+    report.mcp?.after?.wait?.gpu_proof_validation?.proofLedgerValidation?.proofId,
+  ]);
+}
+
 function mcpPreviewGpuProofGate(profile) {
   if (profile.proofMode !== 'mcp_preview') {
     return {
@@ -287,6 +431,10 @@ function parseArgs(argv) {
     else throw new Error(`unknown argument: ${arg}`);
   }
   return args;
+}
+
+function relativeRepoPath(targetPath) {
+  return path.relative(REPO_ROOT, targetPath).replace(/\\/g, '/');
 }
 
 function isInsideDirectory(baseDir, targetPath) {
@@ -517,12 +665,61 @@ async function writeSourceDelta(profile, dir) {
     throw new Error(`source.file must stay inside project directory: ${profile.source.file}`);
   }
   const original = await fs.readFile(sourcePath, 'utf8');
-  if (!original.includes(profile.source.before)) {
-    throw new Error(`source.before did not match ${profile.source.file}`);
+  const matchIndexes = [];
+  let nextIndex = original.indexOf(profile.source.before);
+  while (nextIndex !== -1) {
+    matchIndexes.push(nextIndex);
+    nextIndex = original.indexOf(profile.source.before, nextIndex + profile.source.before.length);
   }
-  const edited = original.replace(profile.source.before, profile.source.after);
+  if (matchIndexes.length !== 1) {
+    throw new Error(`source.before must match exactly once in ${profile.source.file}; match_count=${matchIndexes.length}`);
+  }
+  const matchStart = matchIndexes[0];
+  const matchEnd = matchStart + profile.source.before.length;
+  const edited = `${original.slice(0, matchStart)}${profile.source.after}${original.slice(matchEnd)}`;
+  const beforeFileHash = sha256(original);
+  const afterFileHash = sha256(edited);
+  const byteStart = Buffer.byteLength(original.slice(0, matchStart), 'utf8');
+  const byteEnd = byteStart + Buffer.byteLength(profile.source.before, 'utf8');
+  const sourceDeltaEvidence = {
+    schemaVersion: 'synthi.gpu.hmr.external_source_delta_evidence.v1',
+    accepted: true,
+    sourceFile: profile.source.file,
+    source_file: profile.source.file,
+    sourcePath: relativeRepoPath(sourcePath),
+    source_path: relativeRepoPath(sourcePath),
+    matchCount: matchIndexes.length,
+    match_count: matchIndexes.length,
+    matchStartUtf16: matchStart,
+    match_start_utf16: matchStart,
+    matchEndUtf16: matchEnd,
+    match_end_utf16: matchEnd,
+    byteRange: {
+      start: byteStart,
+      end: byteEnd,
+    },
+    byte_range: {
+      start: byteStart,
+      end: byteEnd,
+    },
+    beforeFileHash,
+    before_file_hash: beforeFileHash,
+    afterFileHash,
+    after_file_hash: afterFileHash,
+    beforeSnippetHash: sha256(profile.source.before),
+    before_snippet_hash: sha256(profile.source.before),
+    afterSnippetHash: sha256(profile.source.after),
+    after_snippet_hash: sha256(profile.source.after),
+    evidenceRefs: [`source:${profile.source.file}:unique-before-snippet`],
+    evidence_refs: [`source:${profile.source.file}:unique-before-snippet`],
+  };
   await fs.writeFile(sourcePath, edited);
-  return { sourcePath, original, editedHash: sha256(edited) };
+  return {
+    sourcePath,
+    original,
+    editedHash: afterFileHash,
+    sourceDeltaEvidence,
+  };
 }
 
 async function captureScreenshot(profile, dir, label) {
@@ -857,18 +1054,36 @@ function mcpModelProvenance(cfg, ...compileResults) {
   }
   const observedSplitModels = Array.from(splitModels).sort();
   const observedDeltaModels = Array.from(deltaModels).sort();
+  const expectedModelsSeparated = Boolean(cfg.splitModel && cfg.deltaModel && cfg.splitModel !== cfg.deltaModel);
+  const observedModelEvidenceComplete = observedSplitModels.length > 0 && observedDeltaModels.length > 0;
+  const observedSplitModelMatched = observedSplitModels.includes(cfg.splitModel);
+  const observedDeltaModelMatched = observedDeltaModels.includes(cfg.deltaModel);
+  const accepted =
+    expectedModelsSeparated
+    && observedModelEvidenceComplete
+    && observedSplitModelMatched
+    && observedDeltaModelMatched;
+  const failedGates = [
+    expectedModelsSeparated ? null : 'mcp_model_pins_not_separated',
+    observedModelEvidenceComplete ? null : 'mcp_observed_model_evidence_missing',
+    observedSplitModelMatched ? null : 'mcp_observed_split_model_mismatch',
+    observedDeltaModelMatched ? null : 'mcp_observed_delta_model_mismatch',
+  ].filter(Boolean);
   return {
     schemaVersion: 'synthi.gpu.hmr.mcp_model_provenance.v1',
+    accepted,
     expectedSplitModel: cfg.splitModel,
     expectedDeltaModel: cfg.deltaModel,
-    expectedModelsSeparated: Boolean(cfg.splitModel && cfg.deltaModel && cfg.splitModel !== cfg.deltaModel),
+    expectedModelsSeparated,
     envPinsPropagatedToMcp: true,
     observedSplitModels,
     observedDeltaModels,
-    observedSplitModelMatched: observedSplitModels.length === 0 || observedSplitModels.includes(cfg.splitModel),
-    observedDeltaModelMatched: observedDeltaModels.length === 0 || observedDeltaModels.includes(cfg.deltaModel),
-    observedModelEvidenceComplete: observedSplitModels.length > 0 && observedDeltaModels.length > 0,
-    status: observedSplitModels.length > 0 && observedDeltaModels.length > 0
+    observedSplitModelMatched,
+    observedDeltaModelMatched,
+    observedModelEvidenceComplete,
+    failedGates,
+    failed_gates: failedGates,
+    status: observedModelEvidenceComplete
       ? 'observed'
       : 'configured-only',
   };
@@ -930,33 +1145,83 @@ function waitContractFromCompileResult(result) {
   return result?.wait?.wait_contract ?? result?.wait?.waitContract ?? result?.waitArgs ?? null;
 }
 
-function deterministicVisualModeForMcp(profile, before, after, afterCompile) {
-  const base = isObject(profile.visualProof.deterministicMode)
-    ? profile.visualProof.deterministicMode
-    : {};
+function deterministicVisualModeForMcp(_profile, before, after, afterCompile) {
   return deterministicVisualModeFromMcpEvidence({
-    base,
     before,
     after,
     wait: afterCompile?.wait,
   });
 }
 
-function deterministicVisualModeForExternal(profile, before, after) {
-  if (!isObject(profile.visualProof.deterministicMode)) return null;
-  const base = profile.visualProof.deterministicMode;
+function declaredDeterministicVisualModeEvidence(profile) {
+  const declaredMode = profile?.visualProof?.deterministicMode;
+  if (!isObject(declaredMode) || Object.keys(declaredMode).length === 0) return null;
+  const mode = JSON.parse(JSON.stringify(declaredMode));
+  const declaredModeHash = sha256(stableJson(mode));
+  const facetCore = {
+    schemaVersion: 'synthi.gpu_hmr.declared_deterministic_visual_mode.v1',
+    schema_version: 'synthi.gpu_hmr.declared_deterministic_visual_mode.v1',
+    proofAuthority: 'profile_declaration_only_not_runtime_visual_proof',
+    proof_authority: 'profile_declaration_only_not_runtime_visual_proof',
+    profileId: profile?.id ?? null,
+    profile_id: profile?.id ?? null,
+    declaredMode: mode,
+    declared_mode: mode,
+    declaredModeHash,
+    declared_mode_hash: declaredModeHash,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    canSatisfyVisualProof: false,
+    can_satisfy_visual_proof: false,
+  };
+  const facetHash = sha256(stableJson(facetCore));
+  return {
+    ...facetCore,
+    facetHash,
+    facet_hash: facetHash,
+  };
+}
+
+function deterministicVisualModeForExternal(_profile, before, after) {
   const sameResolution = Number(before?.width) > 0
     && Number(before?.height) > 0
     && Number(before?.width) === Number(after?.width)
     && Number(before?.height) === Number(after?.height);
   return {
-    ...base,
-    fixed_resolution: sameResolution === true ? true : base.fixed_resolution,
+    schema_version: 'synthi.gpu_hmr.deterministic_visual_mode.v1',
+    fixed_resolution: sameResolution === true ? true : null,
+    evidence_authority: 'decoded_external_frame_dimensions_only',
   };
 }
 
 function sha256(value) {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
+}
+
+async function sha256File(filePath) {
+  return `sha256:${createHash('sha256').update(await fs.readFile(filePath)).digest('hex')}`;
+}
+
+async function visualOracleArtifactsForPaths({ beforePath, afterPath, diffPath, extra = {} }) {
+  return {
+    before_image: beforePath,
+    beforeImage: beforePath,
+    before_image_hash: await sha256File(beforePath),
+    beforeImageHash: await sha256File(beforePath),
+    after_image: afterPath,
+    afterImage: afterPath,
+    after_image_hash: await sha256File(afterPath),
+    afterImageHash: await sha256File(afterPath),
+    diff_image: diffPath,
+    diffImage: diffPath,
+    diff_image_hash: await sha256File(diffPath),
+    diffImageHash: await sha256File(diffPath),
+    ...extra,
+  };
 }
 
 function stableJson(value) {
@@ -1063,16 +1328,52 @@ async function writeExternalVisualProofArtifact(profile, report) {
   const acceptedVisualEvidenceArtifacts = visualEvidenceArtifacts
     .filter((artifact) => visualEvidenceArtifactAccepted(artifact));
   const status = deriveExternalVisualProofArtifactStatus(report, paths, visualEvidenceArtifacts);
+  const visualOracleArtifacts = report.visualOracleArtifacts ?? report.visual_oracle_artifacts ?? null;
+  const deterministicVisualMode =
+    report.deterministicVisualMode ?? report.deterministic_visual_mode ?? null;
+  const declaredDeterministicVisualMode =
+    report.declaredDeterministicVisualMode
+    ?? report.declared_deterministic_visual_mode
+    ?? declaredDeterministicVisualModeEvidence(profile);
   const material = {
     schemaVersion: 'synthi.gpu.hmr.external_visual_proof_artifact.v1',
+    proofAuthority: 'external_visual_artifact_bytes_only_not_gpu_hmr_acceptance',
+    proof_authority: 'external_visual_artifact_bytes_only_not_gpu_hmr_acceptance',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
     profileId: profile.id,
     proofMode: report.proofMode,
     status,
     createdAt: new Date().toISOString(),
-    visualOracleArtifacts: report.visualOracleArtifacts ?? null,
-    visualDiff: report.visualDiff ?? null,
-    deterministicVisualMode: report.deterministicVisualMode ?? null,
+    ...profileContractFields(profile),
+    externalProjectContract: externalProjectContractForProfile(
+      profile,
+      report.profileSelection ?? report.profile_selection,
+      runtimeEvidenceRefsForReport(report),
+    ),
+    external_project_contract: externalProjectContractForProfile(
+      profile,
+      report.profileSelection ?? report.profile_selection,
+      runtimeEvidenceRefsForReport(report),
+    ),
+    profileSelection: report.profileSelection ?? report.profile_selection ?? null,
+    profile_selection: report.profileSelection ?? report.profile_selection ?? null,
+    sourceDeltaEvidence: report.sourceDeltaEvidence ?? report.source_delta_evidence ?? null,
+    source_delta_evidence: report.sourceDeltaEvidence ?? report.source_delta_evidence ?? null,
+    visualOracleArtifacts,
+    visual_oracle_artifacts: visualOracleArtifacts,
+    visualDiff: report.visualDiff ?? report.visual_diff ?? null,
+    visual_diff: report.visualDiff ?? report.visual_diff ?? null,
+    deterministicVisualMode,
+    deterministic_visual_mode: deterministicVisualMode,
     deterministicVisualModeEvaluation: report.deterministicVisualModeEvaluation ?? null,
+    deterministic_visual_mode_evaluation: report.deterministicVisualModeEvaluation ?? null,
+    declaredDeterministicVisualMode,
+    declared_deterministic_visual_mode: declaredDeterministicVisualMode,
     mcp: report.mcp ? {
       visualProofGate: report.mcp.visualProofGate ?? null,
       before: report.mcp.before ? {
@@ -1151,6 +1452,9 @@ function externalRejectionReasons(report) {
   if (report.mcp?.visualProofGate && report.mcp.visualProofGate.satisfied !== true) {
     reasons.add('mcp_visual_proof_gate_unsatisfied');
   }
+  if (report.profileSelectionRecovery && report.profileSelectionRecovery.accepted !== true) {
+    reasons.add('profile_selection_recovery_rejected');
+  }
   if (report.proofMode === 'mcp_preview' && !(Array.isArray(report.screenshots) && report.screenshots.length > 0)) {
     reasons.add('visual_frame_missing');
   }
@@ -1175,10 +1479,39 @@ async function writeExternalRejectionProofArtifact(profile, report) {
   await fs.mkdir(LOG_DIR, { recursive: true });
   const material = {
     schemaVersion: 'synthi.gpu.hmr.external_project_rejection.v1',
+    proofAuthority: 'external_project_rejection_only_not_gpu_hmr_acceptance',
+    proof_authority: 'external_project_rejection_only_not_gpu_hmr_acceptance',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
     profileId: profile.id,
     proofMode: report.proofMode,
     status: report.status,
     createdAt: new Date().toISOString(),
+    ...profileContractFields(profile),
+    externalProjectContract: externalProjectContractForProfile(
+      profile,
+      report.profileSelection ?? report.profile_selection,
+      [
+        ...runtimeEvidenceRefsForReport(report),
+        `external-rejection:${profile.id}:${report.status}`,
+      ],
+    ),
+    external_project_contract: externalProjectContractForProfile(
+      profile,
+      report.profileSelection ?? report.profile_selection,
+      [
+        ...runtimeEvidenceRefsForReport(report),
+        `external-rejection:${profile.id}:${report.status}`,
+      ],
+    ),
+    profileSelection: report.profileSelection ?? report.profile_selection ?? null,
+    profile_selection: report.profileSelection ?? report.profile_selection ?? null,
+    profileSelectionRecovery: report.profileSelectionRecovery ?? report.profile_selection_recovery ?? null,
+    profile_selection_recovery: report.profileSelectionRecovery ?? report.profile_selection_recovery ?? null,
+    sourceDeltaEvidence: report.sourceDeltaEvidence ?? report.source_delta_evidence ?? null,
+    source_delta_evidence: report.sourceDeltaEvidence ?? report.source_delta_evidence ?? null,
     rejection: {
       accepted: false,
       reasons: externalRejectionReasons(report),
@@ -1191,6 +1524,10 @@ async function writeExternalRejectionProofArtifact(profile, report) {
     visualDiff: report.visualDiff ?? null,
     deterministicVisualMode: report.deterministicVisualMode ?? null,
     deterministicVisualModeEvaluation: report.deterministicVisualModeEvaluation ?? null,
+    declaredDeterministicVisualMode:
+      report.declaredDeterministicVisualMode
+      ?? report.declared_deterministic_visual_mode
+      ?? declaredDeterministicVisualModeEvidence(profile),
     mcp: report.mcp ? {
       visualProofGate: report.mcp.visualProofGate ?? null,
       before: waitSummaryFromCompileResult(report.mcp.before),
@@ -1213,14 +1550,164 @@ async function writeExternalRejectionProofArtifact(profile, report) {
   };
 }
 
-function profileFromReport(report) {
-  if (report?.profile && typeof report.profile === 'object') return report.profile;
+function hasExternalContractFields(profile = {}) {
+  return Boolean(
+    profile?.backend
+    && (profile?.backendFamily ?? profile?.backend_family)
+    && (profile?.libraryFamily ?? profile?.library_family)
+    && (profile?.runtimeEnvironment ?? profile?.runtime_environment)
+    && (profile?.profileClass ?? profile?.profile_class),
+  );
+}
+
+const EXTERNAL_CONTRACT_FIELD_ALIASES = [
+  ['backend', ['backend']],
+  ['backendFamily', ['backendFamily', 'backend_family']],
+  ['libraryFamily', ['libraryFamily', 'library_family']],
+  ['runtimeEnvironment', ['runtimeEnvironment', 'runtime_environment']],
+  ['profileClass', ['profileClass', 'profile_class']],
+];
+
+function profileContractFieldValue(profile = {}, canonicalField) {
+  const aliases = EXTERNAL_CONTRACT_FIELD_ALIASES
+    .find(([field]) => field === canonicalField)?.[1] ?? [canonicalField];
+  for (const alias of aliases) {
+    const value = profile?.[alias];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function externalContractFieldConflicts(candidate = {}, packagedProfile = {}, candidateSource = 'report') {
+  const conflicts = [];
+  for (const [field] of EXTERNAL_CONTRACT_FIELD_ALIASES) {
+    const candidateValue = profileContractFieldValue(candidate, field);
+    const packagedValue = profileContractFieldValue(packagedProfile, field);
+    if (candidateValue && packagedValue && candidateValue !== packagedValue) {
+      conflicts.push({
+        field,
+        candidateValue,
+        candidate_value: candidateValue,
+        packagedValue,
+        packaged_value: packagedValue,
+        candidateSource,
+        candidate_source: candidateSource,
+      });
+    }
+  }
+  return conflicts;
+}
+
+function externalContractFieldConflictsForReport(report = {}, packagedProfile = {}) {
+  const reportProfile = report?.profile && typeof report.profile === 'object' ? report.profile : {};
+  return [
+    ...externalContractFieldConflicts(reportProfile, packagedProfile, 'report.profile'),
+    ...externalContractFieldConflicts(report, packagedProfile, 'report'),
+  ];
+}
+
+function profileWithContractFieldAliases(profile = {}, fallback = {}) {
   return {
-    id:
-      report?.profileId
-      ?? report?.profile_id
-      ?? report?.profile?.id
-      ?? 'external-project-profile',
+    ...profile,
+    backend: profile.backend ?? fallback.backend ?? null,
+    backendFamily: profile.backendFamily ?? profile.backend_family ?? fallback.backendFamily ?? fallback.backend_family ?? null,
+    backend_family: profile.backend_family ?? profile.backendFamily ?? fallback.backendFamily ?? fallback.backend_family ?? null,
+    libraryFamily: profile.libraryFamily ?? profile.library_family ?? fallback.libraryFamily ?? fallback.library_family ?? null,
+    library_family: profile.library_family ?? profile.libraryFamily ?? fallback.libraryFamily ?? fallback.library_family ?? null,
+    runtimeEnvironment: profile.runtimeEnvironment ?? profile.runtime_environment ?? fallback.runtimeEnvironment ?? fallback.runtime_environment ?? null,
+    runtime_environment: profile.runtime_environment ?? profile.runtimeEnvironment ?? fallback.runtimeEnvironment ?? fallback.runtime_environment ?? null,
+    profileClass: profile.profileClass ?? profile.profile_class ?? fallback.profileClass ?? fallback.profile_class ?? null,
+    profile_class: profile.profile_class ?? profile.profileClass ?? fallback.profileClass ?? fallback.profile_class ?? null,
+    mcpPreview: profile.mcpPreview ?? fallback.mcpPreview ?? {},
+    id: profile.id ?? fallback.id ?? 'external-project-profile',
+  };
+}
+
+async function packagedProfileRecordById(profileId) {
+  const id = typeof profileId === 'string' && profileId.trim() ? profileId.trim() : null;
+  if (!id) return null;
+  for (const profilePath of await discoverPackagedProfiles()) {
+    const absolutePath = path.resolve(REPO_ROOT, profilePath);
+    const manifest = await fs.readFile(absolutePath, 'utf8');
+    const profile = normalizeProfile(JSON.parse(manifest));
+    if (profile.id === id) {
+      return {
+        profile,
+        path: profilePath,
+        manifestHash: sha256(manifest),
+      };
+    }
+  }
+  return null;
+}
+
+async function packagedProfileById(profileId) {
+  return (await packagedProfileRecordById(profileId))?.profile ?? null;
+}
+
+function recoveredProfileSelectionFromPackagedRecord(profileId, record) {
+  if (!record) return null;
+  return {
+    schemaVersion: 'synthi.gpu.hmr.external_profile_selection.v1',
+    accepted: true,
+    explicit: false,
+    recovered: true,
+    recoverySource: 'report_profile_id_packaged_manifest',
+    recovery_source: 'report_profile_id_packaged_manifest',
+    source: 'packaged_profile_recovered_from_report_profile_id',
+    profileId,
+    profile_id: profileId,
+    manifestHash: record.manifestHash,
+    manifest_hash: record.manifestHash,
+    path: record.path,
+    evidenceRefs: [
+      `report:profile_id:${profileId}`,
+      `packaged-profile:${profileId}`,
+    ],
+    evidence_refs: [
+      `report:profile_id:${profileId}`,
+      `packaged-profile:${profileId}`,
+    ],
+  };
+}
+
+async function profileFromReport(report, options = {}) {
+  const reportProfile = report?.profile && typeof report.profile === 'object' ? report.profile : {};
+  const reportProfileId =
+    report?.profileId
+    ?? report?.profile_id
+    ?? reportProfile.id
+    ?? 'external-project-profile';
+  const packagedProfile = await packagedProfileById(reportProfileId);
+  if (options.preferPackagedContractFields && packagedProfile) {
+    return profileWithContractFieldAliases({
+      ...reportProfile,
+      id: reportProfile.id ?? packagedProfile.id,
+      backend: packagedProfile.backend,
+      backendFamily: packagedProfile.backendFamily,
+      backend_family: packagedProfile.backendFamily,
+      libraryFamily: packagedProfile.libraryFamily,
+      library_family: packagedProfile.libraryFamily,
+      runtimeEnvironment: packagedProfile.runtimeEnvironment,
+      runtime_environment: packagedProfile.runtimeEnvironment,
+      profileClass: packagedProfile.profileClass,
+      profile_class: packagedProfile.profileClass,
+      mcpPreview: reportProfile.mcpPreview ?? packagedProfile.mcpPreview,
+    }, packagedProfile);
+  }
+  if (packagedProfile && !hasExternalContractFields(reportProfile)) {
+    return profileWithContractFieldAliases(reportProfile, packagedProfile);
+  }
+  if (Object.keys(reportProfile).length > 0) {
+    return profileWithContractFieldAliases(reportProfile, { id: reportProfileId });
+  }
+  return profileWithContractFieldAliases({
+    id: reportProfileId,
+    backend: report?.backend ?? packagedProfile?.backend ?? null,
+    backendFamily: report?.backendFamily ?? report?.backend_family ?? packagedProfile?.backendFamily ?? null,
+    libraryFamily: report?.libraryFamily ?? report?.library_family ?? packagedProfile?.libraryFamily ?? null,
+    runtimeEnvironment: report?.runtimeEnvironment ?? report?.runtime_environment ?? packagedProfile?.runtimeEnvironment ?? null,
+    profileClass: report?.profileClass ?? report?.profile_class ?? packagedProfile?.profileClass ?? null,
     mcpPreview: report?.mcp?.visualProofGate
       ? {
           requiredGpuProofState: report.mcp.visualProofGate.requiredGpuProofState ?? null,
@@ -1228,7 +1715,59 @@ function profileFromReport(report) {
           hmrModule: report.mcp.visualProofGate.hmrModule ?? null,
         }
       : {},
-  };
+  });
+}
+
+async function rejectionProofInputsFromReport(report) {
+  let profile = await profileFromReport(report);
+  const reportForProof = { ...report };
+  if (!reportForProof.profileSelection && !reportForProof.profile_selection) {
+    const record = await packagedProfileRecordById(profile.id);
+    if (record) {
+      const conflicts = externalContractFieldConflictsForReport(report, record.profile);
+      if (conflicts.length === 0) {
+        profile = await profileFromReport(report, { preferPackagedContractFields: true });
+        const recoveredSelection = recoveredProfileSelectionFromPackagedRecord(profile.id, record);
+        reportForProof.profileSelection = recoveredSelection;
+        reportForProof.profile_selection = recoveredSelection;
+        reportForProof.profileSelectionRecovery = {
+          accepted: true,
+          recovered: true,
+          source: recoveredSelection.source,
+          profileId: profile.id,
+          profile_id: profile.id,
+          manifestHash: record.manifestHash,
+          manifest_hash: record.manifestHash,
+          conflicts: [],
+          evidenceRefs: recoveredSelection.evidenceRefs,
+          evidence_refs: recoveredSelection.evidence_refs,
+        };
+        reportForProof.profile_selection_recovery = reportForProof.profileSelectionRecovery;
+      } else {
+        reportForProof.profileSelectionRecovery = {
+          accepted: false,
+          recovered: false,
+          source: 'packaged_profile_recovered_from_report_profile_id',
+          profileId: profile.id,
+          profile_id: profile.id,
+          manifestHash: record.manifestHash,
+          manifest_hash: record.manifestHash,
+          reason: 'legacy_report_contract_fields_conflict_with_packaged_profile',
+          conflicts,
+          evidenceRefs: [
+            `report:profile_id:${profile.id}`,
+            `packaged-profile:${profile.id}`,
+          ],
+          evidence_refs: [
+            `report:profile_id:${profile.id}`,
+            `packaged-profile:${profile.id}`,
+          ],
+        };
+        reportForProof.profile_selection_recovery = reportForProof.profileSelectionRecovery;
+      }
+    }
+  }
+  return { profile, reportForProof };
 }
 
 async function writeRejectionProofFromReport(reportPath) {
@@ -1240,7 +1779,8 @@ async function writeRejectionProofFromReport(reportPath) {
   if (report.status === 'pass') {
     throw new Error(`external rejection proof requires a non-passing report: ${resolved}`);
   }
-  const artifact = await writeExternalRejectionProofArtifact(profileFromReport(report), report);
+  const { profile, reportForProof } = await rejectionProofInputsFromReport(report);
+  const artifact = await writeExternalRejectionProofArtifact(profile, reportForProof);
   console.log(JSON.stringify({
     schemaVersion: 'synthi.gpu.hmr.external_project_rejection_from_report.v1',
     reportPath: resolved,
@@ -1250,13 +1790,90 @@ async function writeRejectionProofFromReport(reportPath) {
 }
 
 async function loadProfile(args) {
-  if (args.profileJson) return normalizeProfile(JSON.parse(args.profileJson));
+  if (args.profileJson) {
+    const profile = normalizeProfile(JSON.parse(args.profileJson));
+    return {
+      profile,
+      profileSelection: {
+        schemaVersion: 'synthi.gpu.hmr.external_profile_selection.v1',
+        accepted: true,
+        explicit: true,
+        source: 'cli_profile_json',
+        profileId: profile.id,
+        profile_id: profile.id,
+        manifestHash: sha256(args.profileJson),
+        manifest_hash: sha256(args.profileJson),
+        path: null,
+        evidenceRefs: ['cli:--profile-json'],
+        evidence_refs: ['cli:--profile-json'],
+      },
+    };
+  }
   const envJson = process.env.SYNTHI_GPU_HMR_EXTERNAL_PROJECT_PROFILE_JSON;
-  if (envJson?.trim()) return normalizeProfile(JSON.parse(envJson));
-  const profilePath = args.profilePath
-    || process.env.SYNTHI_GPU_HMR_EXTERNAL_PROJECT_PROFILE_PATH
-    || await defaultPackagedProfilePath();
-  return normalizeProfile(JSON.parse(await fs.readFile(path.resolve(REPO_ROOT, profilePath), 'utf8')));
+  if (envJson?.trim()) {
+    const profile = normalizeProfile(JSON.parse(envJson));
+    return {
+      profile,
+      profileSelection: {
+        schemaVersion: 'synthi.gpu.hmr.external_profile_selection.v1',
+        accepted: true,
+        explicit: true,
+        source: 'env_profile_json',
+        profileId: profile.id,
+        profile_id: profile.id,
+        manifestHash: sha256(envJson),
+        manifest_hash: sha256(envJson),
+        path: null,
+        evidenceRefs: ['env:SYNTHI_GPU_HMR_EXTERNAL_PROJECT_PROFILE_JSON'],
+        evidence_refs: ['env:SYNTHI_GPU_HMR_EXTERNAL_PROJECT_PROFILE_JSON'],
+      },
+    };
+  }
+  const cliProfilePath = args.profilePath?.trim();
+  const envProfilePath = process.env.SYNTHI_GPU_HMR_EXTERNAL_PROJECT_PROFILE_PATH?.trim();
+  const defaultProfile = !cliProfilePath && !envProfilePath
+    ? await explicitDefaultPackagedProfilePath()
+    : null;
+  const profilePath = cliProfilePath || envProfilePath || defaultProfile?.path;
+  if (!profilePath) {
+    throw new Error(
+      'external project profile selection must be explicit; use --profile, --profile-json, '
+      + 'SYNTHI_GPU_HMR_EXTERNAL_PROJECT_PROFILE_PATH, SYNTHI_GPU_HMR_EXTERNAL_PROJECT_PROFILE_JSON, '
+      + 'or SYNTHI_GPU_HMR_EXTERNAL_PROJECT_DEFAULT_PROFILE_ID',
+    );
+  }
+  const resolved = path.resolve(REPO_ROOT, profilePath);
+  if (!isInsideDirectory(REPO_ROOT, resolved)) {
+    throw new Error(`external project profile path must stay inside repo workspace: ${resolved}`);
+  }
+  const manifest = await fs.readFile(resolved, 'utf8');
+  const profile = normalizeProfile(JSON.parse(manifest));
+  const source = cliProfilePath
+    ? 'cli_profile_path'
+    : envProfilePath
+      ? 'env_profile_path'
+      : 'env_default_profile_id';
+  const evidenceRef = cliProfilePath
+    ? 'cli:--profile'
+    : envProfilePath
+      ? 'env:SYNTHI_GPU_HMR_EXTERNAL_PROJECT_PROFILE_PATH'
+      : `env:SYNTHI_GPU_HMR_EXTERNAL_PROJECT_DEFAULT_PROFILE_ID:${defaultProfile.id}`;
+  return {
+    profile,
+    profileSelection: {
+      schemaVersion: 'synthi.gpu.hmr.external_profile_selection.v1',
+      accepted: true,
+      explicit: true,
+      source,
+      profileId: profile.id,
+      profile_id: profile.id,
+      manifestHash: sha256(manifest),
+      manifest_hash: sha256(manifest),
+      path: relativeRepoPath(resolved),
+      evidenceRefs: [evidenceRef],
+      evidence_refs: [evidenceRef],
+    },
+  };
 }
 
 async function discoverPackagedProfiles() {
@@ -1278,19 +1895,18 @@ async function discoverPackagedProfiles() {
   return profiles;
 }
 
-async function defaultPackagedProfilePath() {
+async function explicitDefaultPackagedProfilePath() {
   const profiles = await discoverPackagedProfiles();
   const defaultId = process.env.SYNTHI_GPU_HMR_EXTERNAL_PROJECT_DEFAULT_PROFILE_ID?.trim();
   if (defaultId) {
     for (const profilePath of profiles) {
       const profile = normalizeProfile(JSON.parse(await fs.readFile(path.resolve(REPO_ROOT, profilePath), 'utf8')));
-      if (profile.id === defaultId) return profilePath;
+      if (profile.id === defaultId) return { path: profilePath, id: defaultId };
     }
     throw new Error(`external project default profile id was not found: ${defaultId}`);
   }
-  const [first] = profiles;
-  if (!first) throw new Error(`no packaged external project profiles found in ${PROFILE_DIR}`);
-  return first;
+  if (profiles.length === 0) throw new Error(`no packaged external project profiles found in ${PROFILE_DIR}`);
+  return null;
 }
 
 async function selfCheckVisualProofArtifact() {
@@ -1362,8 +1978,21 @@ async function selfCheckVisualProofArtifact() {
   const expectedHashes = [beforeBytes, afterBytes, diffBytes]
     .map((bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`)
     .sort();
+  const selfCheckDeterministicVisualMode = {
+    frozen_camera: true,
+    fixed_resolution: true,
+    frame_capture_after_epoch_dispatch: true,
+    presentation_fence_or_frame_boundary: true,
+    seed_policy_fixed: true,
+    temporal_accumulation_not_applicable: true,
+    taa_not_applicable: true,
+    denoiser_not_applicable: true,
+  };
   const written = await writeExternalVisualProofArtifact({
     id: 'external-visual-proof-self-check',
+    visualProof: {
+      deterministicMode: selfCheckDeterministicVisualMode,
+    },
   }, {
     proofMode: 'mcp_preview',
     status: 'pass',
@@ -1394,16 +2023,7 @@ async function selfCheckVisualProofArtifact() {
       changedPixelRatio: 0.5,
       meanAbsDelta8bit: 16,
     },
-    deterministicVisualMode: {
-      frozen_camera: true,
-      fixed_resolution: true,
-      frame_capture_after_epoch_dispatch: true,
-      presentation_fence_or_frame_boundary: true,
-      seed_policy_fixed: true,
-      temporal_accumulation_not_applicable: true,
-      taa_not_applicable: true,
-      denoiser_not_applicable: true,
-    },
+    deterministicVisualMode: selfCheckDeterministicVisualMode,
     deterministicVisualModeEvaluation: {
       accepted: true,
     },
@@ -1442,6 +2062,18 @@ async function selfCheckVisualProofArtifact() {
   const waitContractPersisted =
     artifact.mcp?.after?.waitContract?.module === 'device'
     && artifact.visualOracleArtifacts?.wait_contract?.module === 'device';
+  const authorityBoundaryPersisted =
+    artifact.proofAuthority === 'external_visual_artifact_bytes_only_not_gpu_hmr_acceptance'
+    && artifact.acceptedForGpuHmr === false
+    && artifact.gpuHmrSuccess === false
+    && artifact.canSatisfyRuntimeProof === false
+    && artifact.visualOracleArtifacts?.camera_state_hash === undefined
+    && artifact.deterministicVisualMode?.seed_policy_hash === undefined
+    && artifact.externalVisualStateMaterialHash === undefined
+    && artifact.declaredDeterministicVisualMode?.proofAuthority
+      === 'profile_declaration_only_not_runtime_visual_proof'
+    && artifact.declaredDeterministicVisualMode?.acceptedForGpuHmr === false
+    && artifact.declaredDeterministicVisualMode?.gpuHmrSuccess === false;
   const acceptedCount = (artifact.visualEvidenceArtifacts ?? [])
     .filter((row) => row.acceptedAsVisualEvidence === true).length;
   return {
@@ -1451,6 +2083,7 @@ async function selfCheckVisualProofArtifact() {
       && written.proofId.startsWith('external-visual-proof:')
       && hashMatch
       && waitContractPersisted
+      && authorityBoundaryPersisted
       && acceptedCount >= 2
       && invalidArtifactRejected
       && invalidProofArtifactFailed,
@@ -1459,6 +2092,7 @@ async function selfCheckVisualProofArtifact() {
     expectedHashes,
     observedHashes,
     acceptedCount,
+    authorityBoundaryPersisted,
     invalidArtifactRejected,
     invalidProofArtifactFailed,
   };
@@ -1474,12 +2108,20 @@ async function selfCheck() {
     const mcpPreviewComplete = profile.proofMode !== 'mcp_preview'
       || Boolean(profile.mcpPreview?.language && profile.mcpPreview?.entryFile);
     const mcpPreviewGpuProof = mcpPreviewGpuProofGate(profile);
-    const deterministicVisualProfile = evaluateGpuHmrDeterministicVisualMode({
+    const declaredDeterministicVisualProfile = evaluateGpuHmrDeterministicVisualMode({
       ...(profile.visualProof.deterministicMode ?? {}),
       fixed_resolution: true,
       frame_capture_after_epoch_dispatch: true,
       presentation_fence_or_frame_boundary: true,
     });
+    const declaredDeterministicVisualMode = declaredDeterministicVisualModeEvidence(profile);
+    const observedOnlyDeterministicVisualMode = deterministicVisualModeForExternal(
+      profile,
+      { width: 640, height: 480 },
+      { width: 640, height: 480 },
+    );
+    const observedOnlyDeterministicVisualModeEvaluation =
+      evaluateGpuHmrDeterministicVisualMode(observedOnlyDeterministicVisualMode);
     const runtimeCommandComplete = profile.proofMode === 'mcp_preview'
       || Boolean(profile.runtime.run?.command);
     checks.push({
@@ -1491,7 +2133,16 @@ async function selfCheck() {
         && screenshotHasOutput
         && mcpPreviewComplete
         && mcpPreviewGpuProof.satisfied
-        && deterministicVisualProfile.accepted,
+        && declaredDeterministicVisualProfile.accepted
+        && declaredDeterministicVisualMode?.proofAuthority
+          === 'profile_declaration_only_not_runtime_visual_proof'
+        && declaredDeterministicVisualMode?.acceptedForGpuHmr === false
+        && declaredDeterministicVisualMode?.gpuHmrSuccess === false
+        && observedOnlyDeterministicVisualMode?.fixed_resolution === true
+        && observedOnlyDeterministicVisualMode?.frozen_camera === undefined
+        && observedOnlyDeterministicVisualModeEvaluation.accepted === false
+        && observedOnlyDeterministicVisualModeEvaluation.failedGates
+          .some((gate) => gate.code === 'frozen_camera_unproven'),
       id: profile.id,
       project: profile.project.name,
       source: profile.source.file,
@@ -1500,14 +2151,219 @@ async function selfCheck() {
       screenshotHasOutput,
       mcpPreviewComplete,
       mcpPreviewGpuProofGate: mcpPreviewGpuProof,
-      deterministicVisualProfile,
+      declaredDeterministicVisualProfile,
+      declaredDeterministicVisualMode,
+      observedOnlyDeterministicVisualMode,
+      observedOnlyDeterministicVisualModeEvaluation,
     });
   }
+  const profileSelectionEnvNames = [
+    'SYNTHI_GPU_HMR_EXTERNAL_PROJECT_PROFILE_JSON',
+    'SYNTHI_GPU_HMR_EXTERNAL_PROJECT_PROFILE_PATH',
+    'SYNTHI_GPU_HMR_EXTERNAL_PROJECT_DEFAULT_PROFILE_ID',
+  ];
+  const savedProfileSelectionEnv = Object.fromEntries(
+    profileSelectionEnvNames.map((key) => [key, process.env[key]]),
+  );
+  let implicitSelectionRejected = false;
+  let explicitProfileSelection = null;
+  try {
+    for (const key of profileSelectionEnvNames) delete process.env[key];
+    try {
+      await loadProfile({ profilePath: '', profileJson: '' });
+    } catch (error) {
+      implicitSelectionRejected = String(error?.message ?? error)
+        .includes('external project profile selection must be explicit');
+    }
+    if (profilePaths[0]) {
+      explicitProfileSelection = (await loadProfile({
+        profilePath: profilePaths[0],
+        profileJson: '',
+      })).profileSelection;
+    }
+  } finally {
+    for (const [key, value] of Object.entries(savedProfileSelectionEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  checks.push({
+    name: 'external-profile-selection-explicit-evidence-required',
+    ok:
+      implicitSelectionRejected === true
+      && explicitProfileSelection?.accepted === true
+      && explicitProfileSelection?.source === 'cli_profile_path'
+      && typeof explicitProfileSelection?.manifestHash === 'string'
+      && explicitProfileSelection.manifestHash.startsWith('sha256:'),
+    implicitSelectionRejected,
+    explicitProfileSelection,
+  });
+  let legacyRecoveryCheck = {
+    name: 'external-rejection-report-profile-contract-recovery',
+    ok: false,
+    reason: 'no packaged profile with complete external contract fields was discovered',
+  };
+  const legacyRecoveryResults = [];
+  let conflictRecoveryRejected = false;
+  for (const profilePath of profilePaths) {
+    const manifest = await fs.readFile(path.resolve(REPO_ROOT, profilePath), 'utf8');
+    const packagedProfile = normalizeProfile(JSON.parse(manifest));
+    if (!hasExternalContractFields(packagedProfile)) continue;
+    const legacyReport = {
+      status: 'fail',
+      proofMode: packagedProfile.proofMode,
+      profileId: packagedProfile.id,
+      profile: {
+        schemaVersion: packagedProfile.schemaVersion,
+        id: packagedProfile.id,
+        proofMode: packagedProfile.proofMode,
+      },
+      error: { message: 'gpu_hmr_proof_insufficient' },
+      mcp: {
+        visualProofGate: { required: true, satisfied: true },
+      },
+    };
+    const { profile: recoveredProfile, reportForProof: recoveredReport } =
+      await rejectionProofInputsFromReport(legacyReport);
+    const recoveredSelection = recoveredReport.profileSelection;
+    const recoveredContract = externalProjectContractForProfile(
+      recoveredProfile,
+      recoveredSelection,
+      [`external-rejection:${recoveredProfile.id}:fail`],
+    );
+    legacyRecoveryResults.push({
+      packagedProfileId: packagedProfile.id,
+      ok:
+        recoveredProfile.backend === packagedProfile.backend
+        && recoveredProfile.backendFamily === packagedProfile.backendFamily
+        && recoveredProfile.libraryFamily === packagedProfile.libraryFamily
+        && recoveredProfile.runtimeEnvironment === packagedProfile.runtimeEnvironment
+        && recoveredProfile.profileClass === packagedProfile.profileClass
+        && recoveredSelection?.accepted === true
+        && recoveredSelection?.explicit === false
+        && recoveredSelection?.recovered === true
+        && recoveredSelection?.manifestHash === sha256(manifest)
+        && recoveredContract.profileManifestHash === sha256(manifest)
+        && recoveredContract.backend?.evidenceRefs?.includes(
+          `external-profile:${packagedProfile.id}:field:backend`,
+        )
+        && recoveredContract.runtimeEvidence?.evidenceRefs?.includes(
+          `external-rejection:${packagedProfile.id}:fail`,
+        ),
+      recoveredBackend: recoveredProfile.backend,
+      recoveredLibraryFamily: recoveredProfile.libraryFamily,
+      profileManifestHash: recoveredContract.profileManifestHash,
+      recoveredContractEvidenceRefs: recoveredContract.evidenceRefs,
+    });
+    if (!conflictRecoveryRejected) {
+      const conflictingReport = {
+        ...legacyReport,
+        profile: {
+          ...legacyReport.profile,
+          backend: `${packagedProfile.backend}-conflict`,
+        },
+      };
+      const { reportForProof: conflictReportForProof } =
+        await rejectionProofInputsFromReport(conflictingReport);
+      conflictRecoveryRejected =
+        !conflictReportForProof.profileSelection
+        && conflictReportForProof.profileSelectionRecovery?.accepted === false
+        && Array.isArray(conflictReportForProof.profileSelectionRecovery.conflicts)
+        && conflictReportForProof.profileSelectionRecovery.conflicts.some(
+          (conflict) => conflict.field === 'backend',
+        );
+    }
+  }
+  if (legacyRecoveryResults.length > 0) {
+    legacyRecoveryCheck = {
+      name: 'external-rejection-report-profile-contract-recovery',
+      ok:
+        legacyRecoveryResults.every((result) => result.ok)
+        && conflictRecoveryRejected === true,
+      recoveredProfileCount: legacyRecoveryResults.length,
+      conflictRecoveryRejected,
+      legacyRecoveryResults,
+    };
+  }
+  checks.push(legacyRecoveryCheck);
+  await fs.mkdir(ARTIFACT_DIR, { recursive: true });
+  const sourceDeltaDir = await fs.mkdtemp(path.join(ARTIFACT_DIR, 'source-delta-self-check-'));
+  const sourceDeltaPath = path.join(sourceDeltaDir, 'shader.wgsl');
+  await fs.writeFile(sourceDeltaPath, 'let gain = 1.0;\nlet offset = 0.0;\n');
+  const sourceDelta = await writeSourceDelta(
+    {
+      id: 'source-delta-self-check',
+      source: {
+        file: 'shader.wgsl',
+        before: 'let gain = 1.0;',
+        after: 'let gain = 2.0;',
+      },
+    },
+    sourceDeltaDir,
+  );
+  await fs.writeFile(sourceDeltaPath, 'let gain = 1.0;\nlet gain = 1.0;\n');
+  let duplicateSourceDeltaRejected = false;
+  try {
+    await writeSourceDelta(
+      {
+        id: 'source-delta-self-check-duplicate',
+        source: {
+          file: 'shader.wgsl',
+          before: 'let gain = 1.0;',
+          after: 'let gain = 2.0;',
+        },
+      },
+      sourceDeltaDir,
+    );
+  } catch (error) {
+    duplicateSourceDeltaRejected = String(error?.message ?? error).includes('match_count=2');
+  }
+  checks.push({
+    name: 'external-source-delta-unique-match-evidence-required',
+    ok:
+      sourceDelta.sourceDeltaEvidence?.accepted === true
+      && sourceDelta.sourceDeltaEvidence?.matchCount === 1
+      && sourceDelta.sourceDeltaEvidence?.beforeFileHash?.startsWith('sha256:')
+      && sourceDelta.sourceDeltaEvidence?.afterFileHash === sourceDelta.editedHash
+      && duplicateSourceDeltaRejected === true,
+    sourceDeltaEvidence: sourceDelta.sourceDeltaEvidence,
+    duplicateSourceDeltaRejected,
+  });
   const visualProofArtifact = await selfCheckVisualProofArtifact();
   checks.push({
     name: 'external-visual-proof-artifact-hashes-files',
     ok: visualProofArtifact.ok,
     visualProofArtifact,
+  });
+  const modelProvenanceCfg = {
+    splitModel: 'gemini-3.5-flash',
+    deltaModel: 'gemini-3.1-flash-lite',
+  };
+  const configuredOnlyModelProvenance = mcpModelProvenance(
+    modelProvenanceCfg,
+    { compile: { ok: true }, wait: { status: 'applied' } },
+  );
+  const observedModelProvenance = mcpModelProvenance(
+    modelProvenanceCfg,
+    {
+      compile: {
+        modelProvenance: {
+          splitModel: 'gemini-3.5-flash',
+          deltaModel: 'gemini-3.1-flash-lite',
+        },
+      },
+      wait: { status: 'applied' },
+    },
+  );
+  checks.push({
+    name: 'mcp-model-provenance-observed-evidence-required',
+    ok:
+      configuredOnlyModelProvenance.accepted === false
+      && configuredOnlyModelProvenance.failedGates.includes('mcp_observed_model_evidence_missing')
+      && observedModelProvenance.accepted === true
+      && observedModelProvenance.observedModelEvidenceComplete === true,
+    configuredOnlyModelProvenance,
+    observedModelProvenance,
   });
   const rejectionProofArtifact = await writeExternalRejectionProofArtifact(
     {
@@ -1574,14 +2430,36 @@ async function selfCheck() {
   if (failed.length > 0) process.exitCode = 1;
 }
 
-async function runProfile(profile) {
+async function runProfile(profile, profileSelection) {
   await fs.mkdir(LOG_DIR, { recursive: true });
   const dir = projectDir(profile);
   const runStartedMonotonicNs = monotonicNowNs();
+  const declaredDeterministicVisualMode = declaredDeterministicVisualModeEvidence(profile);
   const report = {
     schemaVersion: 'synthi.gpu.hmr.external_project_profile.report.v1',
+    proofAuthority: 'external_project_profile_observation_only_not_gpu_hmr_acceptance',
+    proof_authority: 'external_project_profile_observation_only_not_gpu_hmr_acceptance',
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
     profile,
     proofMode: profile.proofMode,
+    ...profileContractFields(profile),
+    externalProjectContract: externalProjectContractForProfile(
+      profile,
+      profileSelection,
+      [`external-report:${profile.id}:started`],
+    ),
+    external_project_contract: externalProjectContractForProfile(
+      profile,
+      profileSelection,
+      [`external-report:${profile.id}:started`],
+    ),
+    profileSelection,
+    profile_selection: profileSelection,
+    declaredDeterministicVisualMode,
+    declared_deterministic_visual_mode: declaredDeterministicVisualMode,
     startedAt: new Date().toISOString(),
     metric_clock: 'monotonic_ns',
     started_monotonic_ns: runStartedMonotonicNs,
@@ -1619,6 +2497,8 @@ async function runProfile(profile) {
     report.screenshots.push({ label: 'before', ...before });
     const editStart = Date.now();
     delta = await writeSourceDelta(profile, dir);
+    report.sourceDeltaEvidence = delta.sourceDeltaEvidence;
+    report.source_delta_evidence = delta.sourceDeltaEvidence;
     report.timings.sourceWriteMs = Date.now() - editStart;
     const hot = await waitForHotReload(runtime, profile, editStart);
     report.timings.editToRuntimeSignalMs = hot.elapsedMs;
@@ -1629,16 +2509,21 @@ async function runProfile(profile) {
     const diffPath = path.join(ARTIFACT_DIR, `${profile.id}-external-diff-${Date.now()}.png`);
     report.visualDiff = await compareImages(before.path, after.path, { diffPath });
     report.timings.visualDiffMs = Date.now() - visualDiffStart;
-    report.visualOracleArtifacts = {
-      before_image: before.path,
-      after_image: after.path,
-      diff_image: report.visualDiff.diffImagePath,
+    report.visualOracleArtifacts = await visualOracleArtifactsForPaths({
+      beforePath: before.path,
+      afterPath: after.path,
+      diffPath: report.visualDiff.diffImagePath,
+      extra: {
       capture_backend: 'external_runtime_screenshot',
-    };
+      },
+    });
     report.deterministicVisualMode = deterministicVisualModeForExternal(profile, before, after);
+    report.deterministic_visual_mode = report.deterministicVisualMode;
+    report.visual_oracle_artifacts = report.visualOracleArtifacts;
     report.deterministicVisualModeEvaluation = report.deterministicVisualMode
       ? evaluateGpuHmrDeterministicVisualMode(report.deterministicVisualMode)
       : null;
+    report.deterministic_visual_mode_evaluation = report.deterministicVisualModeEvaluation;
     const accepted =
       report.visualDiff.changedPixelRatio >= profile.visualProof.minChangedPixelRatio
       && report.visualDiff.meanAbsDelta8bit >= profile.visualProof.minMeanAbsDelta8bit
@@ -1706,6 +2591,12 @@ async function runProfile(profile) {
         };
       }
     }
+    report.externalProjectContract = externalProjectContractForProfile(
+      profile,
+      profileSelection,
+      runtimeEvidenceRefsForReport(report),
+    );
+    report.external_project_contract = report.externalProjectContract;
     const outPath = path.join(LOG_DIR, `${profile.id}-${Date.now()}-report.json`);
     await fs.writeFile(outPath, `${JSON.stringify(report, null, 2)}\n`);
     console.log(`external_project_report=${outPath}`);
@@ -1745,17 +2636,16 @@ async function runMcpPreviewProfile(profile, dir, report) {
     }
     const editStart = Date.now();
     delta = await writeSourceDelta(profile, dir);
+    report.sourceDeltaEvidence = delta.sourceDeltaEvidence;
+    report.source_delta_evidence = delta.sourceDeltaEvidence;
     report.timings.sourceWriteMs = Date.now() - editStart;
     const afterCompile = await compileViaMcp(mcp.client, profile, dir, 'after');
     report.timings.editToMcpHmrMs = Date.now() - editStart;
     report.timings.afterCompileWallMs = afterCompile.compileWallMs;
     report.mcp.after = afterCompile;
     report.mcp.modelProvenance = mcpModelProvenance(mcp.cfg, beforeCompile, afterCompile);
-    if (!report.mcp.modelProvenance.expectedModelsSeparated) {
-      throw new Error(`MCP model pins are not separated: ${JSON.stringify(report.mcp.modelProvenance)}`);
-    }
-    if (!report.mcp.modelProvenance.observedSplitModelMatched || !report.mcp.modelProvenance.observedDeltaModelMatched) {
-      throw new Error(`MCP observed model provenance did not match configured pins: ${JSON.stringify(report.mcp.modelProvenance)}`);
+    if (report.mcp.modelProvenance.accepted !== true) {
+      throw new Error(`MCP observed model provenance was not accepted: ${JSON.stringify(report.mcp.modelProvenance)}`);
     }
     const after = await captureMcpPreviewScreenshot(mcp.client, profile, 'after', afterCompile.wait);
     report.timings.editToScreenshotMs = Date.now() - editStart;
@@ -1767,20 +2657,25 @@ async function runMcpPreviewProfile(profile, dir, report) {
     const diffPath = path.join(ARTIFACT_DIR, `${profile.id}-mcp-diff-${Date.now()}.png`);
     report.visualDiff = await compareImages(before.path, after.path, { diffPath });
     report.timings.visualDiffMs = Date.now() - visualDiffStart;
-    report.visualOracleArtifacts = {
-      before_image: before.path,
-      after_image: after.path,
-      diff_image: report.visualDiff.diffImagePath,
+    report.visualOracleArtifacts = await visualOracleArtifactsForPaths({
+      beforePath: before.path,
+      afterPath: after.path,
+      diffPath: report.visualDiff.diffImagePath,
+      extra: {
       blank_frame_rejection: report.screenshots.every((row) => row.accepted_as_visual_evidence === true),
       same_frame_rejection: report.visualDiff.changedPixelRatio > 0,
       capture_backend: 'mcp:synthi_screenshot',
       frame_capture_after_epoch_dispatch: mcpFrameGateSatisfiedByScreenshot(afterCompile.wait, after),
       wait_frame_gate: afterCompile.wait?.frame_gate ?? afterCompile.wait?.frameGate ?? null,
       wait_contract: waitContractFromCompileResult(afterCompile),
-    };
+      },
+    });
     report.deterministicVisualMode = deterministicVisualModeForMcp(profile, before, after, afterCompile);
+    report.deterministic_visual_mode = report.deterministicVisualMode;
+    report.visual_oracle_artifacts = report.visualOracleArtifacts;
     report.deterministicVisualModeEvaluation =
       evaluateGpuHmrDeterministicVisualMode(report.deterministicVisualMode);
+    report.deterministic_visual_mode_evaluation = report.deterministicVisualModeEvaluation;
     const accepted =
       report.visualDiff.changedPixelRatio >= profile.visualProof.minChangedPixelRatio
       && report.visualDiff.meanAbsDelta8bit >= profile.visualProof.minMeanAbsDelta8bit
@@ -1814,12 +2709,14 @@ async function main() {
     await selfCheck();
     return;
   }
-  const profile = await loadProfile(args);
+  const { profile, profileSelection } = await loadProfile(args);
   if (args.dryRun) {
     const mcpPreviewGpuProof = mcpPreviewGpuProofGate(profile);
     console.log(JSON.stringify({
       schemaVersion: 'synthi.gpu.hmr.external_project_profile.dry_run.v1',
       profile,
+      profileSelection,
+      profile_selection: profileSelection,
       projectDir: projectDir(profile),
       mcpPreviewGpuProofGate: mcpPreviewGpuProof,
     }, null, 2));
@@ -1833,7 +2730,7 @@ async function main() {
     schemaVersion: 'synthi.gpu.hmr.external_project_profile.preflight.v1',
     adversarialPreflight,
   }, null, 2));
-  await runProfile(profile);
+  await runProfile(profile, profileSelection);
 }
 
 main().catch((error) => {

@@ -254,7 +254,7 @@ export const STATIC_TOOL_DEFINITIONS = [
             "gpu-hmr-host-preservation-proven",
             "gpu-hmr-full-runtime-proven",
           ],
-          description: "Optional minimum GPU HMR proof state. If the latest GPU proof telemetry is missing or below this state, the tool returns gpu_hmr_proof_insufficient instead of treating HMR applied as full correctness. Raw GPU telemetry is returned as gpu_proof_telemetry; gpu_proof is only returned after a requested proof state passes validation.",
+          description: "Optional minimum GPU HMR proof state. If the latest immutable proof snapshot is missing or below this state, the tool returns gpu_hmr_proof_insufficient instead of treating HMR applied as full correctness. gpu_proof_telemetry contains only sanitized ingestion-time decisions and content-addressed or process-local references; gpu_proof is returned only after a requested proof state passes validation. Omit this only for non-blocking dev-loop UX where proof_pending remains acceptedForGpuHmr=false.",
         },
         requireGpuFullRuntimeProof: {
           type: "boolean",
@@ -335,6 +335,50 @@ export const STATIC_TOOL_DEFINITIONS = [
           type: "boolean",
           description: "Alias for bypass_ai_split_cache.",
         },
+        require_ai_provider_call: {
+          type: "boolean",
+          description:
+            "Require a fresh, request-bound AI provider receipt. This is provenance evidence only and cannot authorize GPU HMR success.",
+        },
+        require_provider_call: {
+          type: "boolean",
+          description: "Alias for require_ai_provider_call.",
+        },
+        force_ai_provider_call: {
+          type: "boolean",
+          description: "Alias for require_ai_provider_call.",
+        },
+        ai_provider_call_nonce: {
+          type: "string",
+          pattern: "^provider-call:[a-f0-9]{32}$",
+          description:
+            "Caller-generated nonce binding a required provider call to this compile request.",
+        },
+        provider_call_nonce: {
+          type: "string",
+          pattern: "^provider-call:[a-f0-9]{32}$",
+          description: "Alias for ai_provider_call_nonce.",
+        },
+        ai_provider: {
+          type: "string",
+          minLength: 1,
+          description: "Explicit provider identifier for AI split requests.",
+        },
+        provider: {
+          type: "string",
+          minLength: 1,
+          description: "Alias for ai_provider.",
+        },
+        ai_model: {
+          type: "string",
+          minLength: 1,
+          description: "Explicit model identifier for AI split requests.",
+        },
+        model: {
+          type: "string",
+          minLength: 1,
+          description: "Alias for ai_model.",
+        },
         user_requested_ai: {
           type: "boolean",
           description: "Explicit opt-in to the AI-split (Loop B). Default false.",
@@ -362,8 +406,8 @@ export const STATIC_TOOL_DEFINITIONS = [
         },
         gpu_mode: {
           type: "string",
-          enum: ["auto", "disabled"],
-          description: "GPU mode from the IDE toggle. 'auto' lets the worker detect/use GPU HMR; 'disabled' routes through the host-only path.",
+          minLength: 1,
+          description: "GPU routing hint. 'auto' detects a backend, 'disabled' selects the host-only path, and backend identifiers such as rocm, hip, cuda, opencl, vulkan, or webgpu select a compatible GPU path when available.",
         },
         gpu_arch: {
           type: "string",
@@ -376,6 +420,95 @@ export const STATIC_TOOL_DEFINITIONS = [
         manifest: {
           type: "object",
           description: "Alias for compile_manifest.",
+        },
+        source_first_request_intent: {
+          type: "object",
+          description:
+            "Bounded source-first request metadata forwarded unchanged to the worker. This field is support-only and cannot select compilation/runtime behavior or claim GPU HMR, runtime, or dispatch authority.",
+        },
+        compute_expected_output_contract_hash: {
+          type: "string",
+          pattern: "^sha256:[a-f0-9]{64}$",
+          description:
+            "Optional pre-dispatch canonical compute expected-output contract hash. The worker must bind this exact caller commitment to returned runtime proof before compute GPU HMR can be admitted.",
+        },
+        compute_expected_output_semantics: {
+          type: "object",
+          additionalProperties: false,
+          description:
+            "Caller-owned compute-output semantics committed before compilation. This object is evidence input only until the compiler binds it to produced artifact bytes and runtime proof.",
+          properties: {
+            schemaVersion: {
+              type: "string",
+              const: "synthi.gpu_hmr.compute_expected_output_semantics.v1",
+            },
+            comparisonMode: {
+              type: "string",
+              enum: ["exact_bytes", "numeric_tolerance"],
+            },
+            outputTargetId: { type: "string", minLength: 1, maxLength: 512 },
+            byteOffset: { type: "integer", minimum: 0 },
+            byteLength: { type: "integer", minimum: 1 },
+            dtype: {
+              type: "string",
+              enum: ["u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64", "f32", "f64"],
+            },
+            shape: {
+              type: "array",
+              minItems: 0,
+              maxItems: 32,
+              items: { type: "integer", minimum: 1 },
+            },
+            elementCount: { type: "integer", minimum: 1 },
+            byteOrder: {
+              type: "string",
+              enum: ["little_endian", "big_endian", "not_applicable"],
+            },
+            toleranceDecimal: { type: "string", minLength: 1, maxLength: 128 },
+            expectedValuesDecimal: {
+              anyOf: [
+                { type: "null" },
+                {
+                  type: "array",
+                  minItems: 1,
+                  maxItems: 16384,
+                  items: { type: "string", minLength: 1, maxLength: 128 },
+                },
+              ],
+            },
+            expectedValuesHash: {
+              anyOf: [
+                { type: "null" },
+                { type: "string", pattern: "^sha256:[a-f0-9]{64}$" },
+              ],
+            },
+            expectedRawHash: {
+              anyOf: [
+                { type: "null" },
+                { type: "string", pattern: "^sha256:[a-f0-9]{64}$" },
+              ],
+            },
+            semanticsHash: {
+              type: "string",
+              pattern: "^sha256:[a-f0-9]{64}$",
+            },
+          },
+          required: [
+            "schemaVersion",
+            "comparisonMode",
+            "outputTargetId",
+            "byteOffset",
+            "byteLength",
+            "dtype",
+            "shape",
+            "elementCount",
+            "byteOrder",
+            "toleranceDecimal",
+            "expectedValuesDecimal",
+            "expectedValuesHash",
+            "expectedRawHash",
+            "semanticsHash",
+          ],
         },
         target: {
           type: "string",

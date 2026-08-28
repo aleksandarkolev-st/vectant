@@ -30,10 +30,13 @@ def _count_tokens(text: str) -> int:
 
 
 from llm.prompts import build_prompt, build_fullfile_prompt, build_patch_prompt, build_split_mode_prompt
+from llm.provider_diagnostics import provider_failure_reason
 
 load_dotenv()  # Load once at import
 
 
+def _provider_failure_reason_from_text(value: Any) -> str:
+    return provider_failure_reason(value)
 def _validate_gemini_key(api_key: Optional[str]) -> str:
     key = api_key or os.getenv("GEMINI_API_KEY")
     if not key:
@@ -211,7 +214,7 @@ def _list_live_models(api_key: Optional[str]) -> tuple[Sequence[Any], Optional[s
         genai.configure(api_key=key)
         models = list(genai.list_models())
     except Exception as exc:  # pragma: no cover - SDK/network failures vary by environment
-        return [], f"{type(exc).__name__}: {exc}"
+        return [], provider_failure_reason(exc)
     _MODEL_LIST_CACHE[key] = (now, models)
     return models, None
 
@@ -427,6 +430,63 @@ class GeminiProvider(AiProvider):
         if mode == "delta":
             return _env_float("SYNTHI_GEMINI_DELTA_TIMEOUT_SEC", default_timeout)
         return default_timeout
+
+    async def preflight(
+        self,
+        *,
+        model: Optional[str] = None,
+        api_key: Optional[str] = None,
+        mode: Optional[str] = None,
+        request_mode: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        requested_model = model or self.model_name
+        mode_lower = mode.lower() if isinstance(mode, str) else ""
+        request_mode_value = _request_mode_name(mode_lower, request_mode)
+        base: Dict[str, Any] = {
+            "provider": self.name,
+            "requested_model": requested_model,
+            "mode": mode_lower,
+            "request_mode": request_mode_value,
+            "proof_authority": "provider_preflight_diagnostic_only",
+            "accepted_for_gpu_hmr": False,
+            "gpu_hmr_success": False,
+            "can_satisfy_runtime_proof": False,
+        }
+        if not api_key and not os.getenv("GEMINI_API_KEY"):
+            return {
+                **base,
+                "ok": False,
+                "reasonCode": "ai_provider_auth_denied",
+                "message": "provider preflight failed: ai_provider_auth_denied",
+            }
+
+        provider_status = _provider_model_status(requested_model, api_key=api_key)
+        status_metadata = _provider_status_metadata(provider_status)
+        live_error = provider_status.get("provider_live_model_list_error")
+        if provider_status.get("provider_model_status") == "shutdown":
+            return {
+                **base,
+                **status_metadata,
+                "ok": False,
+                "reasonCode": "ai_provider_unavailable",
+                "message": "provider preflight failed: ai_provider_unavailable",
+            }
+        if live_error:
+            reason = _provider_failure_reason_from_text(live_error)
+            if reason != "ai_provider_error":
+                return {
+                    **base,
+                    **status_metadata,
+                    "ok": False,
+                    "reasonCode": reason,
+                    "message": f"provider preflight failed: {reason}",
+                }
+
+        return {
+            **base,
+            **status_metadata,
+            "ok": True,
+        }
 
     async def ask_llm(
         self,

@@ -25,7 +25,7 @@ export interface HmrEvent extends BaseEventFields {
   kind: "hmr";
   status: HmrTerminalStatus | "intermediate";
   source: string;
-  raw?: Record<string, unknown>;
+  diagnostic: Record<string, unknown>;
 }
 
 export interface InputEvent extends BaseEventFields {

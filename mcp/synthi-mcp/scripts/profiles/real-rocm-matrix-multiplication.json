@@ -8,14 +8,22 @@
     "entryFile": "HIP-Basic/matrix_multiplication/main.hip",
     "deltaFile": "HIP-Basic/matrix_multiplication/main.hip",
     "targetName": "hip_matrix_multiplication",
-    "buildSubdir": "HIP-Basic/matrix_multiplication"
+    "buildSubdir": "HIP-Basic/matrix_multiplication",
+    "nativeLaunchSymbols": [
+      "matrix_multiplication_kernel"
+    ]
   },
   "sourceDelta": {
     "before": "constexpr float b_value = 0.02F;",
     "after": "constexpr float b_value = 0.03F;"
   },
   "outputOracle": {
-    "profile": "none"
+    "profile": "hip.matrix-multiplication.readback-c.v1"
+  },
+  "targetProgression": {
+    "phase": "small-oracle",
+    "finalAcceptanceTarget": "MIOpenDriver",
+    "required": true
   },
   "preview": {
     "renderPreview": false,

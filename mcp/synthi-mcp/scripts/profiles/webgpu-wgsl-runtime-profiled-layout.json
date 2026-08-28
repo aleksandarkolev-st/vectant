@@ -1,0 +1,170 @@
+{
+  "schemaVersion": "synthi.gpu.hmr.webgpu_visual_profile.v1",
+  "id": "webgpu-wgsl-runtime-profiled-layout",
+  "project": {
+    "name": "WebGPU WGSL profiled pipeline visual HMR proof",
+    "kind": "gpu_project"
+  },
+  "canvas": {
+    "width": 640,
+    "height": 360
+  },
+  "shader": {
+    "artifactKind": "wgsl",
+    "beforePath": "webgpu/profiled-before.wgsl",
+    "afterPath": "webgpu/profiled-after.wgsl",
+    "entryPoints": {
+      "vertex": "vs",
+      "fragment": "fs"
+    },
+    "draw": {
+      "vertexCount": 3
+    }
+  },
+  "pipeline": {
+    "layout": "explicit-profiled",
+    "primitiveTopology": "triangle-list",
+    "bindGroupLayouts": [
+      {
+        "label": "profiled-uniform-layout",
+        "entries": [
+          {
+            "binding": 0,
+            "visibility": "vertex|fragment",
+            "buffer": {
+              "type": "uniform",
+              "minBindingSize": 32
+            }
+          }
+        ]
+      }
+    ],
+    "bindGroups": [
+      {
+        "layoutIndex": 0,
+        "entries": [
+          {
+            "binding": 0,
+            "resource": {
+              "kind": "uniform_buffer",
+              "dataType": "float32",
+              "values": [0.22, 0.54, 0.94, 1.0, 0.02, -0.02, 0.0, 0.0]
+            }
+          }
+        ]
+      }
+    ],
+    "vertexBufferLayouts": [
+      {
+        "arrayStride": 16,
+        "stepMode": "vertex",
+        "attributes": [
+          {
+            "shaderLocation": 0,
+            "offset": 0,
+            "format": "float32x2"
+          },
+          {
+            "shaderLocation": 1,
+            "offset": 8,
+            "format": "float32x2"
+          }
+        ]
+      }
+    ],
+    "vertexBuffers": [
+      {
+        "slot": 0,
+        "dataType": "float32",
+        "values": [-0.72, -0.56, 0.10, 0.86, 0.16, 0.70, 0.74, 0.38, 0.76, -0.50, 0.42, 0.08]
+      }
+    ],
+    "colorTargetState": {
+      "format": "preferredCanvasFormat",
+      "alphaMode": "opaque"
+    }
+  },
+  "negativeEdit": {
+    "claim": "Changing the declared uniform binding to storage changes the WebGPU binding ABI and must reject before GPU HMR acceptance.",
+    "pipeline": {
+      "layout": "explicit-profiled",
+      "primitiveTopology": "triangle-list",
+      "bindGroupLayouts": [
+        {
+          "entries": [
+            {
+              "binding": 0,
+              "visibility": "fragment",
+              "buffer": {
+                "type": "storage",
+                "minBindingSize": 32
+              }
+            }
+          ]
+        }
+      ],
+      "bindGroups": [
+        {
+          "layoutIndex": 0,
+          "entries": [
+            {
+              "binding": 0,
+              "resource": {
+                "kind": "uniform_buffer",
+                "dataType": "float32",
+                "values": [0.22, 0.54, 0.94, 1.0, 0.02, -0.02, 0.0, 0.0]
+              }
+            }
+          ]
+        }
+      ],
+      "vertexBufferLayouts": [
+        {
+          "arrayStride": 16,
+          "stepMode": "vertex",
+          "attributes": [
+            {
+              "shaderLocation": 0,
+              "offset": 0,
+              "format": "float32x2"
+            },
+            {
+              "shaderLocation": 1,
+              "offset": 8,
+              "format": "float32x2"
+            }
+          ]
+        }
+      ],
+      "vertexBuffers": [
+        {
+          "slot": 0,
+          "dataType": "float32",
+          "values": [-0.72, -0.56, 0.10, 0.86, 0.16, 0.70, 0.74, 0.38, 0.76, -0.50, 0.42, 0.08]
+        }
+      ],
+      "colorTargetState": {
+        "format": "preferredCanvasFormat",
+        "alphaMode": "opaque"
+      }
+    }
+  },
+  "visualProof": {
+    "claim": "Replacing a WGSL shader module while preserving profile-declared uniform and vertex GPU resources changes the rendered frame.",
+    "minChangedPixelRatio": 0.02,
+    "minMeanAbsDelta8bit": 1.0
+  },
+  "deterministicVisualMode": {
+    "fixedSeed": "webgpu-profiled-no-random-input",
+    "seedPolicyFixed": true,
+    "frozenCamera": true,
+    "temporalAccumulationNotApplicable": true,
+    "taaNotApplicable": true,
+    "denoiserNotApplicable": true,
+    "fixedResolution": true,
+    "fixedSwapchainImageCount": true,
+    "frameCaptureAfterEpochDispatch": true,
+    "presentationFenceOrFrameBoundary": true,
+    "warmupFrames": 0
+  }
+}

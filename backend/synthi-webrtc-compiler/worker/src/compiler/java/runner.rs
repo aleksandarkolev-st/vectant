@@ -583,6 +583,7 @@ pub async fn run_java(
     let stdin = Arc::new(tokio::sync::Mutex::new(child.stdin.take().unwrap()));
 
     let (log_tx, _) = tokio::sync::broadcast::channel::<String>(100);
+    let (protocol_tx, _) = tokio::sync::broadcast::channel::<String>(16);
     let log_tx_stdout = log_tx.clone();
     let log_tx_stderr = log_tx.clone();
 
@@ -630,6 +631,10 @@ pub async fn run_java(
         process: Some(child),
         stdin: Some(stdin.clone()),
         output_tx: log_tx,
+        protocol_tx,
+        native_output_lifecycle: Arc::new(
+            crate::runtime::native_runner_codec::NativeRunnerOutputLifecycle::new(),
+        ),
         session_id: Some(session_id.to_string()),
         is_gui: req.is_gui,
         is_hmr_capable: false, // Java doesn't support in-process HMR
@@ -647,6 +652,13 @@ pub async fn run_java(
         loaded_core_path: None,
         loaded_gui_path: None,
         loaded_device_abi: None,
+        runner_runtime_control_session_id: None,
+        observed_runner_capabilities: HashMap::new(),
+        observed_module_load_boundaries: HashMap::new(),
+        sealed_module_artifacts: HashMap::new(),
+        module_map_attestations: HashMap::new(),
+        gpu_runtime_protocol_process_id: None,
+        gpu_runtime_protocol_session_id: None,
         loaded_widget_paths: HashMap::new(),
         widget_hashes: HashMap::new(),
     });

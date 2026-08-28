@@ -129,6 +129,45 @@ function classifyVulkanPreflight({ libraries, icdFiles, vulkaninfoProbe, vulkani
   };
 }
 
+function preflightBackendEvidence({ libraries, icdFiles, icdLibraries, vulkaninfoPresence, vulkaninfoSummary }) {
+  const evidenceRefs = [
+    'probe:vulkan_loader',
+    'probe:vulkan_icd',
+    'probe:vulkaninfo',
+  ];
+  return {
+    schemaVersion: 'synthi.gpu_hmr.preflight_backend_contract.v1',
+    backend: {
+      value: 'vulkan',
+      evidenceRefs,
+    },
+    backendFamily: {
+      value: 'vulkan',
+      evidenceRefs,
+    },
+    runtimeCapabilityPreflight: {
+      backend: 'vulkan',
+      backendFamily: 'vulkan',
+      probe: 'vulkan_icd_preflight',
+      workerContainer: CFG.workerContainer,
+      loaderLibraryCount: libraries.length,
+      icdFileCount: icdFiles.length,
+      icdLibraryCount: icdLibraries.length,
+      vulkaninfoPresent: vulkaninfoPresence.present,
+      vulkaninfoExitCode: vulkaninfoPresence.exitCode,
+      apiVersion: vulkaninfoSummary.apiVersion,
+      physicalDeviceCount: vulkaninfoSummary.physicalDeviceCount,
+      deviceNames: vulkaninfoSummary.deviceNames,
+      noShimApplied: true,
+      noIcdSynthesized: true,
+      noSynthesizedRuntime: true,
+      noSymlinkApplied: true,
+      evidenceRefs,
+    },
+    evidenceRefs,
+  };
+}
+
 async function buildProof() {
   const startedAt = new Date().toISOString();
   const started = performance.now();
@@ -218,6 +257,13 @@ async function buildProof() {
       },
       summary: vulkaninfoSummary,
     },
+    backendEvidence: preflightBackendEvidence({
+      libraries,
+      icdFiles,
+      icdLibraries,
+      vulkaninfoPresence,
+      vulkaninfoSummary,
+    }),
     classification: {
       vulkanAccepted: classification.vulkanAccepted,
       resultState: classification.resultState,
@@ -243,6 +289,7 @@ async function buildProof() {
       frameOutputOracleRequired: true,
       noShimApplied: true,
       noIcdSynthesized: true,
+      noSynthesizedRuntime: true,
       noSymlinkApplied: true,
     },
   };
@@ -269,6 +316,7 @@ async function writeProof(proof) {
     `unsupported_reasons=${proof.classification.unsupportedReasons.join(',') || 'none'}`,
     `no_shim_applied=${proof.acceptance.noShimApplied}`,
     `no_icd_synthesized=${proof.acceptance.noIcdSynthesized}`,
+    `no_synthesized_runtime=${proof.acceptance.noSynthesizedRuntime}`,
     `no_symlink_applied=${proof.acceptance.noSymlinkApplied}`,
     '',
   ].join('\n'));

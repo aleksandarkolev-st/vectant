@@ -2,8 +2,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as codeSiteClient from '../codesiteClient';
 import {
   CODE_SITE_LIVE_EVENT_TYPES,
+  adoptCodeSiteLearningCatalogEntry,
+  decideCodeSiteFleetNotam,
+  fetchCodeSiteFleetNotams,
+  fetchCodeSiteLearningCatalog,
+  answerCodeSiteProjectQuestion,
+  fetchCodeSiteProjectExperts,
   fetchCodeSiteProjectKnowledge,
+  submitCodeSiteProjectQuestionFeedback,
   subscribeCodeSiteProjectEvents,
+  supersedeCodeSiteFleetNotam,
+  updateCodeSiteProjectControlPlan,
+  withdrawCodeSiteFleetNotam,
 } from '../codesiteClient';
 
 describe('CodeSite live event subscription', () => {
@@ -56,10 +66,14 @@ describe('CodeSite live event subscription', () => {
       'lead_dismissed',
       'shared_skill_published',
       'shared_skill_updated',
+      'workspace_learning_adopted',
       'impact_notice_created',
       'impact_notice_responded',
       'handoff_ready',
       'handoff_acknowledged',
+      'agent_question_asked',
+      'agent_question_answered',
+      'agent_question_feedback_submitted',
     ];
     const onEvent = vi.fn();
 
@@ -73,6 +87,86 @@ describe('CodeSite live event subscription', () => {
     expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ eventType: 'impact_notice_created' }));
     unsubscribe();
     for (const eventType of eventTypes) expect(listeners.has(eventType)).toBe(false);
+  });
+});
+
+describe('CodeSite learning catalogue client', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('lists, adopts, and configures learning through project-scoped routes', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({
+      learning: [{ id: 'lesson/1', scope: 'workspace' }],
+      networkEnabled: true,
+      project: { id: 'project/1' },
+      event: { eventType: 'workspace_learning_adopted' },
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetch);
+
+    await expect(fetchCodeSiteLearningCatalog('team/a', 'project/1')).resolves.toEqual({
+      learning: [{ id: 'lesson/1', scope: 'workspace' }],
+      networkEnabled: true,
+    });
+    await adoptCodeSiteLearningCatalogEntry('team/a', 'project/1', 'lesson/1');
+    await updateCodeSiteProjectControlPlan('team/a', 'project/1', {
+      learningNetwork: { workspace: true, network: true },
+    });
+
+    expect(fetch.mock.calls.map(([path]) => path)).toEqual([
+      '/api/workspace/team%2Fa/codesite/projects/project%2F1/learning-catalog',
+      '/api/workspace/team%2Fa/codesite/projects/project%2F1/learning-catalog/lesson%2F1/adopt',
+      '/api/workspace/team%2Fa/codesite/projects/project%2F1/control-plan',
+    ]);
+    expect(fetch.mock.calls[1][1]).toMatchObject({ method: 'POST', body: '{}' });
+    expect(fetch.mock.calls[2][1]).toMatchObject({
+      method: 'POST',
+      body: JSON.stringify({ learningNetwork: { workspace: true, network: true } }),
+    });
+  });
+});
+
+describe('CodeSite fleet NOTAM client', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('requests the lifecycle board with explicit, safe visibility filters', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({
+      advisories: [{ notamId: 'notam-1' }], suppressed: 2,
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetch);
+
+    await expect(fetchCodeSiteFleetNotams('team/a', 'project/1', {
+      includeOwn: true,
+      includeMuted: true,
+      includeInactive: true,
+      route: ' packages/api/** ',
+      ignored: 'never-forwarded',
+    })).resolves.toEqual({ advisories: [{ notamId: 'notam-1' }], suppressed: 2 });
+
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/workspace/team%2Fa/codesite/projects/project%2F1/fleet-notams?include_own=true&include_muted=true&include_inactive=true&route=packages%2Fapi%2F**',
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+  });
+
+  it('sends local decisions and origin lifecycle actions to explicit routes', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ fleetNotam: { notamId: 'notam/1' } }), { status: 200 }));
+    vi.stubGlobal('fetch', fetch);
+
+    await decideCodeSiteFleetNotam('team', 'project', 'notam/1', { state: 'adopt', reason: 'reproduced locally' });
+    await withdrawCodeSiteFleetNotam('team', 'project', 'notam/1', { reason: 'replaced' });
+    await supersedeCodeSiteFleetNotam('team', 'project', 'notam/1', { policyDeltaId: 'delta-2' });
+
+    expect(fetch.mock.calls.map(([path]) => path)).toEqual([
+      '/api/workspace/team/codesite/projects/project/fleet-notams/notam%2F1/decision',
+      '/api/workspace/team/codesite/projects/project/fleet-notams/notam%2F1/withdraw',
+      '/api/workspace/team/codesite/projects/project/fleet-notams/notam%2F1/supersede',
+    ]);
+    expect(fetch.mock.calls[0][1]).toMatchObject({ method: 'POST', body: JSON.stringify({ state: 'adopt', reason: 'reproduced locally' }) });
+    expect(fetch.mock.calls[1][1]).toMatchObject({ method: 'POST', body: JSON.stringify({ reason: 'replaced' }) });
+    expect(fetch.mock.calls[2][1]).toMatchObject({ method: 'POST', body: JSON.stringify({ policyDeltaId: 'delta-2' }) });
   });
 });
 
@@ -116,6 +210,42 @@ describe('CodeSite project knowledge client', () => {
     expect(fetch.mock.calls[0][1].headers).not.toHaveProperty('authorization');
   });
 
+  it('forwards the project-safe agent question kind filter', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ knowledge: [] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetch);
+
+    await fetchCodeSiteProjectKnowledge('team', 'project-1', {
+      kind: 'agent_question',
+      status: 'open',
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/workspace/team/codesite/projects/project-1/knowledge?kind=agent_question&status=open',
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+  });
+
+  it('forwards a cursor and exposes the next page token without changing the array contract', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({
+      knowledge: [{ id: 'question-2', kind: 'agent_question', status: 'open' }],
+      nextCursor: 'cursor/next',
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetch);
+
+    const knowledge = await fetchCodeSiteProjectKnowledge('team', 'project-1', {
+      kind: 'agent_question',
+      status: 'open',
+      cursor: 'cursor/current',
+    });
+
+    expect(knowledge).toEqual([{ id: 'question-2', kind: 'agent_question', status: 'open' }]);
+    expect(knowledge.nextCursor).toBe('cursor/next');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/workspace/team/codesite/projects/project-1/knowledge?kind=agent_question&status=open&cursor=cursor%2Fcurrent',
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+  });
+
   it('drops invalid knowledge filters instead of forwarding arbitrary values', async () => {
     const fetch = vi.fn(async () => new Response(JSON.stringify({ knowledge: 'invalid' }), { status: 200 }));
     vi.stubGlobal('fetch', fetch);
@@ -141,6 +271,70 @@ describe('CodeSite project knowledge client', () => {
 
     await expect(fetchCodeSiteProjectKnowledge('', 'project-1')).resolves.toEqual([]);
     await expect(fetchCodeSiteProjectKnowledge('team', '')).resolves.toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('requests project experts with repeated, encoded reference parameters', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({
+      projectId: 'project/1',
+      experts: [{ agentSessionId: 'session-1', score: 2 }],
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetch);
+
+    const result = await fetchCodeSiteProjectExperts('team/a', 'project/1', {
+      paths: ['src/a.ts', 'src/a.ts', 'src/b.ts'],
+      symbols: ['build?Plan'],
+      contracts: ['route/v2'],
+    });
+
+    expect(result.experts).toEqual([{ agentSessionId: 'session-1', score: 2 }]);
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/workspace/team%2Fa/codesite/projects/project%2F1/experts?path=src%2Fa.ts&path=src%2Fb.ts&symbol=build%3FPlan&contract=route%2Fv2',
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+  });
+
+  it('uses human project routes for answering and reviewing a question', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal('fetch', fetch);
+
+    await answerCodeSiteProjectQuestion('team', 'project-1', 'question/1', 'Use the shared route.', ['proof:1', 'proof:1']);
+    await submitCodeSiteProjectQuestionFeedback('team', 'project-1', 'question/1', {
+      verdict: 'needs_correction',
+      correction: 'Prefer the versioned contract.',
+      evidenceRefs: ['contract:2'],
+    });
+
+    expect(fetch.mock.calls).toEqual([
+      [
+        '/api/workspace/team/codesite/projects/project-1/questions/question%2F1/answer',
+        {
+          method: 'POST',
+          body: JSON.stringify({ answer: 'Use the shared route.', evidenceRefs: ['proof:1'] }),
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ],
+      [
+        '/api/workspace/team/codesite/projects/project-1/knowledge/question%2F1/feedback',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            verdict: 'needs_correction',
+            correction: 'Prefer the versioned contract.',
+            evidenceRefs: ['contract:2'],
+          }),
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ],
+    ]);
+  });
+
+  it('does not request project experts without both human route identifiers', async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+
+    await expect(fetchCodeSiteProjectExperts('', 'project-1', { paths: ['src/a.ts'] })).resolves.toBeNull();
+    await expect(fetchCodeSiteProjectExperts('team', '', { paths: ['src/a.ts'] })).resolves.toBeNull();
     expect(fetch).not.toHaveBeenCalled();
   });
 

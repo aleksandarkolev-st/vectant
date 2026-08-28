@@ -68,8 +68,8 @@ VendorHint = Optional[Literal["cuda", "rocm", "ambiguous"]]
 
 
 _VENDOR_NEUTRAL_QUALIFIER_RE = re.compile(
-    r"(?<![A-Za-z0-9_])(?:__global__|__device__|__host__|__forceinline__|"
-    r"__shared__|__constant__|__restrict__)(?![A-Za-z0-9_])"
+    r"(?<![A-Za-z0-9_])(?:__global__|__device__|__shared__|__constant__)"
+    r"(?![A-Za-z0-9_])"
 )
 
 # Triple-chevron launch: `kernel<<<grid, block>>>(args)` or
@@ -111,6 +111,54 @@ _HIP_INCLUDE_RE = re.compile(
     re.MULTILINE,
 )
 
+_OPENCL_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:__(?:kernel|global|local|constant|private|generic)\b|"
+    r"get_(?:global|local|group)_id\s*\(|"
+    r"barrier\s*\(\s*CLK_(?:LOCAL|GLOBAL)_MEM_FENCE|"
+    r"#\s*pragma\s+OPENCL\s+EXTENSION\b)",
+    re.MULTILINE | re.IGNORECASE,
+)
+_WGSL_RE = re.compile(
+    r"(?:@(?:compute|vertex|fragment|workgroup_size|group|binding)\b|"
+    r"var\s*<\s*(?:storage|workgroup|uniform)\b)",
+    re.IGNORECASE,
+)
+_GLSL_RE = re.compile(
+    r"(?:^\s*#\s*version\s+\d+\b|"
+    r"\bgl_(?:GlobalInvocationID|LocalInvocationID|WorkGroupID|Position)\b|"
+    r"\blayout\s*\([^)]*(?:local_size|binding|set))",
+    re.MULTILINE,
+)
+_HLSL_RE = re.compile(
+    r"(?:\[\s*numthreads\s*\(|"
+    r"\bSV_(?:DispatchThreadID|GroupID|GroupThreadID|Position)\b)",
+    re.IGNORECASE,
+)
+_SYCL_RE = re.compile(
+    r"(?:^\s*#\s*include\s*[<\"]sycl/(?:sycl\.hpp|[^>\"]+)[>\"]|"
+    r"\bsycl::(?:queue|handler|parallel_for|single_task|nd_range)\b)",
+    re.MULTILINE,
+)
+_VULKAN_API_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:vkCreateShaderModule|vkCreateComputePipelines|"
+    r"vkCreateGraphicsPipelines|vkCmdDispatch|vkCmdBindPipeline)\s*\("
+)
+_WEBGPU_API_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:wgpuDeviceCreateShaderModule|"
+    r"wgpuDeviceCreateComputePipeline|createShaderModule|"
+    r"createComputePipeline|createRenderPipeline|dispatchWorkgroups)\s*\("
+)
+
+_CMAKE_BRACKET_COMMENT_RE = re.compile(
+    r"#\[(?P<equals>=*)\[.*?\](?P=equals)\]",
+    re.DOTALL,
+)
+_CMAKE_BRACKET_ARGUMENT_RE = re.compile(
+    r"\[(?P<equals>=*)\[.*?\](?P=equals)\]",
+    re.DOTALL,
+)
+_CMAKE_LINE_COMMENT_RE = re.compile(r"#[^\n]*")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Source cleaning — strip comments + string/char literals
@@ -133,6 +181,26 @@ def _strip_noise(source: str) -> str:
     return cleaned
 
 
+def _strip_cmake_noise(source: str) -> str:
+    cleaned = _CMAKE_BRACKET_COMMENT_RE.sub(" ", source)
+    cleaned = _CMAKE_LINE_COMMENT_RE.sub("", cleaned)
+    cleaned = _CMAKE_BRACKET_ARGUMENT_RE.sub(" ", cleaned)
+    cleaned = _STRING_LITERAL_RE.sub('""', cleaned)
+    return cleaned
+
+
+def _cmake_language_declaration_hits(source: str, language: str) -> int:
+    cleaned = _strip_cmake_noise(source)
+    token = re.escape(language)
+    patterns = (
+        rf"\benable_language\s*\(\s*{token}\b",
+        rf"\bproject\s*\([^)]{{0,4096}}\bLANGUAGES?\b[^)]{{0,4096}}\b{token}\b",
+        rf"\bset\s*\(\s*CMAKE_{token}_ARCHITECTURES\b",
+        rf"\b(?:set_source_files_properties|set_property)\s*\([^)]{{0,4096}}\bLANGUAGE\s+{token}\b",
+    )
+    return sum(len(re.findall(pattern, cleaned, re.IGNORECASE)) for pattern in patterns)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
@@ -153,6 +221,15 @@ class GpuDetectionEvidence:
     hip_api_hits: int = 0
     cuda_include_hits: int = 0
     hip_include_hits: int = 0
+    opencl_hits: int = 0
+    wgsl_hits: int = 0
+    glsl_hits: int = 0
+    hlsl_hits: int = 0
+    sycl_hits: int = 0
+    vulkan_api_hits: int = 0
+    webgpu_api_hits: int = 0
+    cuda_build_hits: int = 0
+    hip_build_hits: int = 0
 
     @property
     def is_gpu_evidence(self) -> bool:
@@ -163,6 +240,15 @@ class GpuDetectionEvidence:
             + self.hip_api_hits
             + self.cuda_include_hits
             + self.hip_include_hits
+            + self.opencl_hits
+            + self.wgsl_hits
+            + self.glsl_hits
+            + self.hlsl_hits
+            + self.sycl_hits
+            + self.vulkan_api_hits
+            + self.webgpu_api_hits
+            + self.cuda_build_hits
+            + self.hip_build_hits
         ) > 0
 
 
@@ -171,11 +257,13 @@ class GpuDetectionResult:
     is_gpu: bool
     vendor_hint: VendorHint
     per_file: Mapping[str, GpuDetectionEvidence]
+    backend_hints: tuple[str, ...] = ()
 
     def to_dict(self) -> dict:
         return {
             "is_gpu": self.is_gpu,
             "vendor_hint": self.vendor_hint,
+            "backend_hints": list(self.backend_hints),
             "per_file": {
                 path: {
                     "qualifier_hits": ev.qualifier_hits,
@@ -184,6 +272,15 @@ class GpuDetectionResult:
                     "hip_api_hits": ev.hip_api_hits,
                     "cuda_include_hits": ev.cuda_include_hits,
                     "hip_include_hits": ev.hip_include_hits,
+                    "opencl_hits": ev.opencl_hits,
+                    "wgsl_hits": ev.wgsl_hits,
+                    "glsl_hits": ev.glsl_hits,
+                    "hlsl_hits": ev.hlsl_hits,
+                    "sycl_hits": ev.sycl_hits,
+                    "vulkan_api_hits": ev.vulkan_api_hits,
+                    "webgpu_api_hits": ev.webgpu_api_hits,
+                    "cuda_build_hits": ev.cuda_build_hits,
+                    "hip_build_hits": ev.hip_build_hits,
                 }
                 for path, ev in self.per_file.items()
                 if ev.is_gpu_evidence
@@ -207,6 +304,20 @@ def detect_file(source: str) -> GpuDetectionEvidence:
         # `R"(...)"` literals are an edge case we accept).
         cuda_include_hits=len(_CUDA_INCLUDE_RE.findall(cleaned)),
         hip_include_hits=len(_HIP_INCLUDE_RE.findall(cleaned)),
+        opencl_hits=len(_OPENCL_RE.findall(cleaned)),
+        wgsl_hits=len(_WGSL_RE.findall(cleaned)),
+        glsl_hits=len(_GLSL_RE.findall(cleaned)),
+        hlsl_hits=len(_HLSL_RE.findall(cleaned)),
+        sycl_hits=len(_SYCL_RE.findall(cleaned)),
+        vulkan_api_hits=len(_VULKAN_API_RE.findall(cleaned)),
+        webgpu_api_hits=len(_WEBGPU_API_RE.findall(cleaned)),
+    )
+
+
+def detect_cmake_file(source: str) -> GpuDetectionEvidence:
+    return GpuDetectionEvidence(
+        cuda_build_hits=_cmake_language_declaration_hits(source, "CUDA"),
+        hip_build_hits=_cmake_language_declaration_hits(source, "HIP"),
     )
 
 
@@ -225,11 +336,25 @@ def detect_project(files: Mapping[str, str]) -> GpuDetectionResult:
     launch_chevron_total = 0
     cuda_include_total = 0
     hip_include_total = 0
+    cuda_build_total = 0
+    hip_build_total = 0
+    portable_backend_totals = {
+        "opencl": 0,
+        "webgpu_wgsl": 0,
+        "glsl": 0,
+        "hlsl": 0,
+        "sycl": 0,
+        "vulkan": 0,
+        "webgpu": 0,
+    }
 
     for path, content in files.items():
-        if not _looks_like_source(path):
+        if _looks_like_cmake(path):
+            ev = detect_cmake_file(content)
+        elif _looks_like_source(path):
+            ev = detect_file(content)
+        else:
             continue
-        ev = detect_file(content)
         per_file[path] = ev
         cuda_total += ev.cuda_api_hits
         hip_total += ev.hip_api_hits
@@ -237,6 +362,15 @@ def detect_project(files: Mapping[str, str]) -> GpuDetectionResult:
         launch_chevron_total += ev.launch_chevron_hits
         cuda_include_total += ev.cuda_include_hits
         hip_include_total += ev.hip_include_hits
+        cuda_build_total += ev.cuda_build_hits
+        hip_build_total += ev.hip_build_hits
+        portable_backend_totals["opencl"] += ev.opencl_hits
+        portable_backend_totals["webgpu_wgsl"] += ev.wgsl_hits
+        portable_backend_totals["glsl"] += ev.glsl_hits
+        portable_backend_totals["hlsl"] += ev.hlsl_hits
+        portable_backend_totals["sycl"] += ev.sycl_hits
+        portable_backend_totals["vulkan"] += ev.vulkan_api_hits
+        portable_backend_totals["webgpu"] += ev.webgpu_api_hits
 
     has_gpu_markers = (
         qualifier_total
@@ -245,18 +379,40 @@ def detect_project(files: Mapping[str, str]) -> GpuDetectionResult:
         + hip_total
         + cuda_include_total
         + hip_include_total
+        + cuda_build_total
+        + hip_build_total
+        + sum(portable_backend_totals.values())
     ) > 0
 
     if not has_gpu_markers:
-        return GpuDetectionResult(is_gpu=False, vendor_hint=None, per_file=per_file)
+        return GpuDetectionResult(
+            is_gpu=False,
+            vendor_hint=None,
+            per_file=per_file,
+            backend_hints=(),
+        )
 
     vendor_hint = _resolve_vendor_hint(
         cuda_include_total=cuda_include_total,
         hip_include_total=hip_include_total,
-        cuda_api_total=cuda_total,
-        hip_api_total=hip_total,
+        cuda_api_total=cuda_total + cuda_build_total,
+        hip_api_total=hip_total + hip_build_total,
     )
-    return GpuDetectionResult(is_gpu=True, vendor_hint=vendor_hint, per_file=per_file)
+    backend_hints = set(
+        backend for backend, hit_count in portable_backend_totals.items() if hit_count > 0
+    )
+    if cuda_include_total > 0 or cuda_total > 0 or cuda_build_total > 0:
+        backend_hints.add("cuda")
+    if hip_include_total > 0 or hip_total > 0 or hip_build_total > 0:
+        backend_hints.add("hip")
+    if qualifier_total > 0 or launch_chevron_total > 0:
+        backend_hints.add("cuda_or_hip")
+    return GpuDetectionResult(
+        is_gpu=True,
+        vendor_hint=vendor_hint,
+        per_file=per_file,
+        backend_hints=tuple(sorted(backend_hints)),
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -268,7 +424,15 @@ _SOURCE_SUFFIXES = (
     ".cpp", ".cc", ".cxx", ".c", ".C",
     ".h", ".hpp", ".hh", ".hxx", ".H",
     ".cu", ".cuh", ".hip",
+    ".cl", ".opencl", ".wgsl", ".glsl", ".vert", ".frag",
+    ".geom", ".comp", ".tesc", ".tese", ".hlsl", ".metal",
+    ".slang", ".js", ".jsx", ".ts", ".tsx",
 )
+
+
+def _looks_like_cmake(path: str) -> bool:
+    name = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return name == "cmakelists.txt" or name.endswith(".cmake")
 
 
 def _looks_like_source(path: str) -> bool:

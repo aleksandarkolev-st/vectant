@@ -1,0 +1,81 @@
+{
+  "schemaVersion": "synthi.gpu.hmr.hip_module_runtime_profile.v1",
+  "id": "hip-module-runtime-uint32-reordered",
+  "targetId": "hip-module-runtime-uint32-reordered",
+  "project": {
+    "name": "Generic declared HIP module runtime readback",
+    "kind": "gpu_project"
+  },
+  "validationScope": "explicit-hip-module-declared-readback",
+  "compile": {
+    "compiler": "hipcc",
+    "compileTarget": "rocm-hip-module-hsaco",
+    "sourceBeforePath": "hip-module/uint32-reordered-before.hip",
+    "sourceAfterPath": "hip-module/uint32-reordered-after.hip"
+  },
+  "kernel": {
+    "name": "synthi_hmr_uint32_reordered_kernel",
+    "entryPoint": "synthi_hmr_uint32_reordered_kernel",
+    "launchApi": "hipModuleLaunchKernel"
+  },
+  "launch": {
+    "gridDim": { "x": 1, "y": 1, "z": 1 },
+    "blockDim": { "x": 64, "y": 1, "z": 1 },
+    "sharedMemBytes": 0,
+    "stream": "hipStreamCreate"
+  },
+  "abi": {
+    "class": "compatible",
+    "params": [
+      { "name": "input", "type": "const unsigned int*", "size": 8, "offset": 0, "valueKind": "global_buffer", "access": "read", "addressSpace": "global", "source": "profile_runtime_trace_contract" },
+      { "name": "n", "type": "unsigned int", "size": 4, "offset": 8, "valueKind": "by_value", "access": "read", "addressSpace": "private", "source": "profile_runtime_trace_contract" },
+      { "name": "increment", "type": "unsigned int", "size": 4, "offset": 12, "valueKind": "by_value", "access": "read", "addressSpace": "private", "source": "profile_runtime_trace_contract" },
+      { "name": "output", "type": "unsigned int*", "size": 8, "offset": 16, "valueKind": "global_buffer", "access": "write", "addressSpace": "global", "source": "profile_runtime_trace_contract" }
+    ]
+  },
+  "buffers": [
+    {
+      "name": "input",
+      "role": "input",
+      "dataType": "uint32",
+      "values": [1, 3, 8, 13, 21, 34]
+    },
+    {
+      "name": "output",
+      "role": "readback",
+      "dataType": "uint32",
+      "byteLength": 24
+    }
+  ],
+  "constants": {
+    "increment": 5
+  },
+  "outputOracle": {
+    "kind": "buffer_checksum",
+    "readbackBuffer": "output",
+    "expectedBeforeValues": [6, 8, 13, 18, 26, 39],
+    "expectedAfterValues": [6, 10, 17, 24, 34, 49],
+    "expectedOutputRequired": true,
+    "expectedOutputChange": true,
+    "tolerance": 0,
+    "deterministicSlice": {
+      "offset": 0,
+      "length": 24
+    }
+  },
+  "runMode": {
+    "metricScope": "hot_delta_1",
+    "cacheState": "compiler_cache_warm",
+    "differentEdit": false
+  },
+  "negativeEdit": {
+    "editId": "hip-module-runtime-uint32-reordered-abi-layout-change",
+    "sourceAfterPath": "hip-module/uint32-reordered-after-abi-layout-changed.hip",
+    "claim": "Kernel argument layout changed and must be rejected before GPU HMR acceptance.",
+    "reasons": [
+      "hip_kernel_argument_layout_changed",
+      "gpu_hmr_rejected_before_load"
+    ],
+    "abiCompatibilityClass": "layout_changed"
+  }
+}

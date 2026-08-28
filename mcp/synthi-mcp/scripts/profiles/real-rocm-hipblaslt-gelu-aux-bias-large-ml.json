@@ -1,0 +1,92 @@
+{
+  "schemaVersion": "synthi.gpu.hmr.real_rocm_profile.v1",
+  "id": "real-rocm-hipblaslt-gelu-aux-bias-large-ml",
+  "repo": {
+    "url": "https://github.com/ROCm/hipBLASLt.git",
+    "name": "hipBLASLt",
+    "commit": "3a609b06926c8227e753b62087555e1f435bf2d4",
+    "initSubmodules": false
+  },
+  "target": {
+    "entryFile": "clients/samples/08_gemm_gelu_aux_bias/sample_hipblaslt_gemm_gelu_aux_bias.cpp",
+    "deltaFile": "clients/samples/08_gemm_gelu_aux_bias/sample_hipblaslt_gemm_gelu_aux_bias.cpp",
+    "targetName": "sample_hipblaslt_gemm_gelu_aux_bias",
+    "buildSubdir": ".",
+    "cmakeArgs": [
+      "-DROCM_PATH=${ROCM_PREFIX}",
+      "-DCMAKE_C_COMPILER=${ROCM_LLVM_BIN}/amdclang",
+      "-DCMAKE_CXX_COMPILER=${ROCM_LLVM_BIN}/amdclang++",
+      "-DBUILD_DOCS=OFF",
+      "-DBUILD_CLIENTS_SAMPLES=ON",
+      "-DBUILD_CLIENTS_TESTS=OFF",
+      "-DBUILD_CLIENTS_BENCHMARKS=OFF",
+      "-DHIPBLASLT_ENABLE_MARKER=OFF",
+      "-DHIPBLASLT_USE_ROCROLLER=OFF",
+      "-DTensile_CPU_THREADS=2"
+    ],
+    "upstreamRunCommand": "HIPBLASLT_TENSILE_LIBPATH=./build/Tensile/library LD_LIBRARY_PATH=./build/library/src:./build/clients/staging:${LD_LIBRARY_PATH} ./build/clients/staging/sample_hipblaslt_gemm_gelu_aux_bias",
+    "nativeLaunchSymbols": [
+      "hipblasLtMatmul",
+      "hipblasLtMatmulAlgoGetHeuristic",
+      "hipblasLtMatmulDescSetAttribute",
+      "rocblaslt_matmul"
+    ]
+  },
+  "sourceDelta": {
+    "before": "    const int                        request_solutions = 1;",
+    "after": "    const int                        request_solutions = 2;",
+    "second": {
+      "file": "clients/samples/08_gemm_gelu_aux_bias/sample_hipblaslt_gemm_gelu_aux_bias.cpp",
+      "before": "    const int                        request_solutions = 2;",
+      "after": "    const int                        request_solutions = 3;"
+    },
+    "extraDeltas": [
+      {
+        "label": "negative-edit",
+        "kind": "negative_edit",
+        "expectedRefusal": true,
+        "file": "clients/samples/08_gemm_gelu_aux_bias/sample_hipblaslt_gemm_gelu_aux_bias.cpp",
+        "before": "    const int                        request_solutions = 3;",
+        "after": "    const std::array<int, 2>          request_solutions = {3, 4};"
+      }
+    ]
+  },
+  "outputOracle": {
+    "profile": "none"
+  },
+  "runtimeAdapter": {
+    "enabled": true,
+    "template": "runtime_boundary_log_harvest_v1",
+    "workingDirectory": ".",
+    "resultPath": ".gpu-hmr-test-logs/real-rocm-runtime-adapter-results/real-rocm-hipblaslt-gelu-aux-bias-large-ml-runtime-adapter.json",
+    "eventManifestPath": ".gpu-hmr-test-logs/real-rocm-runtime-adapter-events/real-rocm-hipblaslt-gelu-aux-bias-large-ml-runtime-boundary-events.json",
+    "runWhen": "after_lifecycle_attempt",
+    "requiresSuccessfulBuild": false,
+    "requiresSuccessfulRun": false,
+    "timeoutMs": 120000,
+    "evidenceRefs": [
+      "real-rocm-runtime-adapter-template:runtime_boundary_log_harvest_v1",
+      "real-rocm-hipblaslt-gelu-aux-bias-large-ml:runtime-boundary-log-harvest"
+    ]
+  },
+  "proofObligations": {
+    "acceptanceMode": "refusal_only",
+    "targetClass": "large_rocm_ml_infrastructure",
+    "requiresFullRuntimeProof": true,
+    "requiresOutputOracle": true,
+    "requiresAppHookContract": true,
+    "requiresRunModes": true,
+    "requiresNegativeEdit": true
+  },
+  "targetProgression": {
+    "phase": "final-acceptance",
+    "finalAcceptanceTarget": "sample_hipblaslt_gemm_gelu_aux_bias",
+    "required": true
+  },
+  "preview": {
+    "renderPreview": false,
+    "expectScreenshot": false,
+    "width": 800,
+    "height": 600
+  }
+}

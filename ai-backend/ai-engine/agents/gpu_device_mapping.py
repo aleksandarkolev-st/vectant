@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Set
 
 from agents.abi_stamper import constant_layout_hash, mask_comments_for_parsing, stamp_device_source
-from agents.gpu_device_markers import DEVICE_ANNOTATION_MACRO_RE as _DEVICE_ANNOTATION_MACRO_RE
+from agents.gpu_device_markers import has_gpu_device_marker
+from generated_path_policy import GeneratedPathViolation, normalize_generated_relative_path
 
 
 _GLOBAL_KERNEL_RE = re.compile(
@@ -48,7 +49,7 @@ def build_device_mapping_report(
     reject `device_only` instead of guessing.
     """
 
-    generated_path = _manifest_device_path(manifest) or _first_device_path(generated_files)
+    generated_path = _manifest_device_path(manifest)
     generated_source = generated_files.get(generated_path or "", "") if generated_path else ""
     generated_region_records = extract_kernel_region_records(generated_source)
     generated_regions, generated_duplicate_symbols = _unique_kernel_regions_by_symbol(
@@ -325,47 +326,19 @@ def _manifest_device_path(manifest: Mapping[str, Any]) -> Optional[str]:
     if isinstance(module_files, Mapping):
         device = module_files.get("device")
         if isinstance(device, str) and device.strip():
-            return _normalize_path(device)
-    files = manifest.get("files")
-    if isinstance(files, list):
-        for path in files:
-            if isinstance(path, str) and _is_device_source_path(path):
-                return _normalize_path(path)
+            try:
+                return normalize_generated_relative_path(device)
+            except GeneratedPathViolation:
+                return None
     return None
 
 
-def _first_device_path(files: Mapping[str, str]) -> Optional[str]:
-    for path in sorted(files):
-        if _is_device_source_path(path):
-            return _normalize_path(path)
-    return None
-
-
-def _is_device_source_path(path: str) -> bool:
-    return _normalize_path(path).lower().endswith((".cu", ".hip"))
-
-
-def _is_device_header_path(path: str) -> bool:
-    return _normalize_path(path).lower().endswith((".cuh", ".hpp", ".hh", ".h"))
-
-
-def _is_device_compilation_source(path: str, source: str) -> bool:
-    normalized = _normalize_path(path).lower()
-    masked = mask_comments_for_parsing(source)
-    if normalized.endswith((".cu", ".hip")):
-        return _contains_device_compilation_marker(masked)
-    if not _is_device_header_path(path):
-        return False
-    return _contains_device_compilation_marker(masked)
+def _is_device_compilation_source(_path: str, source: str) -> bool:
+    return _contains_device_compilation_marker(mask_comments_for_parsing(source))
 
 
 def _contains_device_compilation_marker(masked_source: str) -> bool:
-    return bool(
-        "__global__" in masked_source
-        or "__device__" in masked_source
-        or "GLOBAL_KERNEL_SIGNATURE" in masked_source
-        or _DEVICE_ANNOTATION_MACRO_RE.search(masked_source)
-    )
+    return has_gpu_device_marker(masked_source)
 
 
 def _normalize_path(path: str) -> str:
@@ -417,8 +390,7 @@ def _generated_direct_source_includes(
                 continue
             visited.add(resolved)
             resolved_source = source_files[resolved]
-            if _is_device_compilation_source(resolved, resolved_source):
-                included[resolved] = resolved_source
+            included[resolved] = resolved_source
             stack.append((resolved, resolved_source))
     return included
 
@@ -448,7 +420,7 @@ def _collect_device_reachable_headers(
                 missing.append({"source": current, "include": _normalize_path(raw_include)})
                 continue
             includes.append(resolved)
-            if _is_device_header_path(resolved) and resolved not in reachable:
+            if resolved not in reachable:
                 reachable.add(resolved)
                 stack.append(resolved)
         include_graph[current] = sorted(set(includes))

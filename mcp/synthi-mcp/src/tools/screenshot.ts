@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import sharp from "sharp";
-import { session } from "../session.js";
+import { session, type FrameGateEvidenceBinding } from "../session.js";
 import { eventLog } from "../events/index.js";
 import { brokerSloRecorder, recordBrokerFrameObservation, type BrokerFrameEvent } from "../broker/index.js";
 import {
@@ -43,6 +43,8 @@ interface FrameGateSatisfiedMeta {
   gate_token_verified: true;
   gate_token_issued_at_ms?: number;
   gate_token_expires_at_ms?: number;
+  evidence_binding?: FrameGateEvidenceBinding;
+  evidence_binding_hash?: string;
   session_id: string;
   captured_frame_seq: number;
   captured_ts_ms: number;
@@ -139,7 +141,12 @@ function frameGateMeta(
   gate: FrameGateRequirement,
   timeoutMs: number,
   sessionId: string,
-  token: { issued_at_ms?: number; expires_at_ms?: number } | null
+  token: {
+    issued_at_ms?: number;
+    expires_at_ms?: number;
+    evidence_binding?: FrameGateEvidenceBinding;
+    evidence_binding_hash?: string;
+  } | null
 ): FrameGateSatisfiedMeta {
   return {
     status: "satisfied",
@@ -149,6 +156,10 @@ function frameGateMeta(
     gate_token_verified: true,
     ...(token?.issued_at_ms !== undefined ? { gate_token_issued_at_ms: token.issued_at_ms } : {}),
     ...(token?.expires_at_ms !== undefined ? { gate_token_expires_at_ms: token.expires_at_ms } : {}),
+    ...(token?.evidence_binding !== undefined ? { evidence_binding: token.evidence_binding } : {}),
+    ...(token?.evidence_binding_hash !== undefined
+      ? { evidence_binding_hash: token.evidence_binding_hash }
+      : {}),
     session_id: sessionId,
     captured_frame_seq: frame.seq,
     captured_ts_ms: frame.ts,
@@ -290,34 +301,6 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
         requested_session_id: afterFrameGate.sessionId,
       });
     }
-    const gateTokenValidation = afterFrameGate
-      ? session.consumeFrameGateToken({
-          token: afterFrameGate.gateToken,
-          session_id: attached.sessionId,
-          frame_seq: afterFrameGate.frameSeq,
-          ts_ms: afterFrameGate.tsMs,
-        })
-      : null;
-    if (afterFrameGate && gateTokenValidation?.accepted !== true) {
-      return errorResponse("frame_gate_unverified", {
-        status: "unverified",
-        reason: gateTokenValidation?.reason ?? "frame_gate_token_rejected",
-        session_id: attached.sessionId,
-        requested_session_id: afterFrameGate.sessionId ?? null,
-        requested_frame_seq: afterFrameGate.frameSeq ?? null,
-        requested_ts_ms: afterFrameGate.tsMs ?? null,
-      });
-    }
-    const frameGate = afterFrameGate
-      ? frameGateMeta(
-          frame,
-          afterFrameGate,
-          frameGateTimeoutMs,
-          attached.sessionId,
-          gateTokenValidation?.token ?? null,
-        )
-      : undefined;
-
     if (freshnessMaxMs !== undefined) {
       const now = Date.now();
       const staleMs = now - frame.ts;
@@ -391,6 +374,33 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
       if (!allowUnbrokeredFrame) throw err;
       brokerFrameError = err instanceof Error ? err.message : String(err);
     }
+    const gateTokenValidation = afterFrameGate
+      ? session.consumeFrameGateToken({
+          token: afterFrameGate.gateToken,
+          session_id: attached.sessionId,
+          frame_seq: afterFrameGate.frameSeq,
+          ts_ms: afterFrameGate.tsMs,
+        })
+      : null;
+    if (afterFrameGate && gateTokenValidation?.accepted !== true) {
+      return errorResponse("frame_gate_unverified", {
+        status: "unverified",
+        reason: gateTokenValidation?.reason ?? "frame_gate_token_rejected",
+        session_id: attached.sessionId,
+        requested_session_id: afterFrameGate.sessionId ?? null,
+        requested_frame_seq: afterFrameGate.frameSeq ?? null,
+        requested_ts_ms: afterFrameGate.tsMs ?? null,
+      });
+    }
+    const frameGate = afterFrameGate
+      ? frameGateMeta(
+          frame,
+          afterFrameGate,
+          frameGateTimeoutMs,
+          attached.sessionId,
+          gateTokenValidation?.token ?? null,
+        )
+      : undefined;
     const responseTs = Date.now();
     const captureManifest = brokerFrame ? {
       schema_version: CAPTURE_MANIFEST_SCHEMA_VERSION,
@@ -417,6 +427,12 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
             gate_token_verified: true,
             required_frame_seq: frameGate.required_frame_seq ?? null,
             required_ts_ms: frameGate.required_ts_ms ?? null,
+            ...(frameGate.evidence_binding !== undefined
+              ? { evidence_binding: frameGate.evidence_binding }
+              : {}),
+            ...(frameGate.evidence_binding_hash !== undefined
+              ? { evidence_binding_hash: frameGate.evidence_binding_hash }
+              : {}),
           }
         : {
             gate_token_verified: false,

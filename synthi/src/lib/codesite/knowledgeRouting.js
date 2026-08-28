@@ -1,8 +1,7 @@
 import { createHash } from 'crypto';
 import { asArray, parseJson, stableJson } from './json';
+import { EXPERTISE_POLICY, resolveExpertisePolicy } from './expertisePolicy';
 import { matchPathPattern, normalizePath } from './policy';
-
-const RELEVANT_SESSION_STATUSES = new Set(['attached', 'detached']);
 
 function unique(values) {
   return [...new Set(values.filter(Boolean))];
@@ -118,10 +117,10 @@ function subscriptionReasons(session, item, refs) {
   return reasons;
 }
 
-function sessionIsEligible(session) {
+function sessionIsEligible(session, eligibleSessionStatuses) {
   return session
     && !session.endedAt
-    && RELEVANT_SESSION_STATUSES.has(String(session.status || '').toLowerCase());
+    && eligibleSessionStatuses.has(String(session.status || '').toLowerCase());
 }
 
 function impactDedupeKey(sourceKnowledgeId, agentSessionId, transactionId, reasons) {
@@ -139,11 +138,17 @@ export function buildKnowledgeDeliveryPlan({
   sessions = [],
   executionPlans = [],
   transactions = [],
+  policy = EXPERTISE_POLICY,
 } = {}) {
   if (!item?.id || !item?.kind) throw new Error('knowledge_delivery_item_required');
+  const config = resolveExpertisePolicy(policy);
+  const eligibleSessionStatuses = new Set(config.statuses.eligibleSession.map((status) => String(status).toLowerCase()));
+  const activePlanStatuses = new Set(config.statuses.activePlan.map((status) => String(status).toLowerCase()));
+  const activeTransactionStatuses = new Set(config.statuses.activeTransaction.map((status) => String(status).toLowerCase()));
   const refs = referencesFor(item);
   const plansBySession = new Map();
   for (const plan of executionPlans) {
+    if (plan?.status != null && !activePlanStatuses.has(String(plan.status).toLowerCase())) continue;
     const values = plansBySession.get(plan.agentSessionId) || [];
     values.push(plan);
     plansBySession.set(plan.agentSessionId, values);
@@ -165,7 +170,7 @@ export function buildKnowledgeDeliveryPlan({
   const targets = [];
 
   for (const session of sessions) {
-    if (!sessionIsEligible(session)) continue;
+    if (!sessionIsEligible(session, eligibleSessionStatuses)) continue;
     const reasons = [];
     const impactedTransactions = [];
     if (explicitRecipients.has(session.id)) reasons.push('explicit_agent_reference');
@@ -177,7 +182,7 @@ export function buildKnowledgeDeliveryPlan({
     }
 
     for (const transaction of transactionsBySession.get(session.id) || []) {
-      if (!['open', 'prepared', 'blocked', 'validated'].includes(String(transaction.status || ''))) continue;
+      if (transaction?.status != null && !activeTransactionStatuses.has(String(transaction.status).toLowerCase())) continue;
       const semantic = transactionSemanticRefs(transaction);
       const pathImpact = refs.paths.length && anyPathOverlap(refs.paths, transactionPaths(transaction));
       const symbolImpact = refs.symbols.length && anyExactOverlap(refs.symbols, semantic.symbols);
@@ -211,4 +216,3 @@ export function buildKnowledgeDeliveryPlan({
 
   return targets.sort((left, right) => left.agentSessionId.localeCompare(right.agentSessionId));
 }
-

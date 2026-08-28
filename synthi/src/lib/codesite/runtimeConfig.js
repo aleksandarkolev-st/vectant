@@ -18,6 +18,7 @@ const DEFAULTS = Object.freeze({
   snapshotMaxScanEntries: 15_000,
   artifactPathHistoryMaxBytes: 4 * 1024 * 1024,
   maxActiveChannels: 3,
+  maxActiveFleetNotamsPerRoute: 25,
 });
 
 function firstValue(env, keys) {
@@ -78,6 +79,10 @@ export function getCodeSiteRuntimeConfig(env = process.env) {
       timeoutMs: firstValue(env, ['SYNTHI_CODESITE_WARRANT_AUDIT_SIGNER_TIMEOUT_MS']),
       trustedKeys: firstValue(env, ['SYNTHI_CODESITE_WARRANT_AUDIT_TRUSTED_KEYS_JSON']),
     }),
+    maxActiveFleetNotamsPerRoute: positiveInt(
+      env.SYNTHI_CODESITE_MAX_FLEET_NOTAMS_PER_ROUTE,
+      DEFAULTS.maxActiveFleetNotamsPerRoute,
+    ),
   });
 }
 

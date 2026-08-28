@@ -14,6 +14,10 @@ use libloading::{Library, Symbol};
 use std::ffi::c_void;
 use std::path::Path;
 
+use crate::runtime::runner::validator::{
+    classify_resolved_module_contract, LifecycleAbi, LifecycleExportPresence,
+};
+
 /// HMR capability level detected from exports
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HmrCapability {
@@ -359,62 +363,85 @@ fn probe_exports(lib: &Library) -> ExportSet {
 
 /// Try to get ABI version from the library
 fn probe_abi_version(lib: &Library, exports: &ExportSet) -> Option<u32> {
+    let contract = classify_resolved_module_contract(lifecycle_export_presence(exports)).ok()?;
     unsafe {
-        if exports.core_get_abi_version {
-            if let Ok(f) = lib.get::<Symbol<unsafe extern "C" fn() -> u32>>(b"core_get_abi_version")
-            {
-                return Some(f());
+        let symbol = match contract.lifecycle_abi {
+            LifecycleAbi::CorePrefixed if exports.core_get_abi_version => {
+                b"core_get_abi_version".as_slice()
             }
-        }
-        if exports.gui_get_abi_version {
-            if let Ok(f) = lib.get::<Symbol<unsafe extern "C" fn() -> u32>>(b"gui_get_abi_version")
-            {
-                return Some(f());
+            LifecycleAbi::GuiPrefixed if exports.gui_get_abi_version => {
+                b"gui_get_abi_version".as_slice()
             }
+            LifecycleAbi::CorePrefixed
+            | LifecycleAbi::GuiPrefixed
+            | LifecycleAbi::GuiLegacy
+            | LifecycleAbi::Legacy => return None,
+        };
+        if let Ok(f) = lib.get::<Symbol<unsafe extern "C" fn() -> u32>>(symbol) {
+            return Some(f());
         }
     }
     None
 }
 
+fn lifecycle_export_presence(exports: &ExportSet) -> LifecycleExportPresence {
+    LifecycleExportPresence {
+        core_on_load: exports.core_on_load,
+        core_on_update: exports.core_on_update,
+        core_get_api: exports.core_get_api,
+        gui_on_load: exports.gui_on_load,
+        gui_on_render: exports.gui_on_render,
+        on_load: exports.on_load,
+        entrypoint: exports.entrypoint,
+        on_update: exports.on_update,
+        gui_render: exports.gui_render,
+        on_render: exports.on_render,
+    }
+}
+
 /// Classify module type and HMR capability based on exports
 fn classify_module(exports: &ExportSet) -> (ModuleType, HmrCapability) {
-    // New-style core module
-    if exports.is_core_module() {
-        let capability = if exports.core_on_save_state && exports.core_on_load_from_json {
-            HmrCapability::Full
-        } else {
-            HmrCapability::Partial
+    if let Ok(contract) = classify_resolved_module_contract(lifecycle_export_presence(exports)) {
+        let (module_type, capability) = match contract.lifecycle_abi {
+            LifecycleAbi::CorePrefixed => {
+                let capability = if exports.core_on_save_state && exports.core_on_load_from_json {
+                    HmrCapability::Full
+                } else {
+                    HmrCapability::Partial
+                };
+                (ModuleType::Core, capability)
+            }
+            LifecycleAbi::GuiPrefixed => {
+                let capability = if exports.gui_on_save_state && exports.gui_on_load_from_json {
+                    HmrCapability::Full
+                } else {
+                    HmrCapability::Partial
+                };
+                (ModuleType::Gui, capability)
+            }
+            LifecycleAbi::GuiLegacy => (ModuleType::Main, HmrCapability::RenderOnly),
+            LifecycleAbi::Legacy => {
+                let capability = if exports.on_save_state && exports.on_load_from_json {
+                    HmrCapability::Full
+                } else {
+                    HmrCapability::Partial
+                };
+                (ModuleType::Main, capability)
+            }
         };
-        return (ModuleType::Core, capability);
+        return (module_type, capability);
     }
 
-    // New-style GUI module
-    if exports.is_gui_module() {
-        let capability = if exports.gui_on_save_state && exports.gui_on_load_from_json {
-            HmrCapability::Full
-        } else {
-            HmrCapability::Partial
-        };
-        return (ModuleType::Gui, capability);
-    }
-
-    // Legacy main module with on_update (HMR-capable)
-    if (exports.on_load || exports.entrypoint) && exports.on_update {
-        let capability = if exports.on_save_state && exports.on_load_from_json {
-            HmrCapability::Full
-        } else {
-            HmrCapability::Partial
-        };
-        return (ModuleType::Main, capability);
-    }
-
-    // Legacy main module with render but no update (render-only)
-    if (exports.on_load || exports.entrypoint) && (exports.gui_render || exports.on_render) {
-        return (ModuleType::Main, HmrCapability::RenderOnly);
-    }
-
-    // Blocking app (has entry but no update)
-    if exports.entrypoint || exports.main {
+    let has_conflicting_lifecycle_export = exports.core_on_load
+        || exports.core_on_update
+        || exports.core_get_api
+        || exports.gui_on_load
+        || exports.gui_on_render
+        || exports.on_load
+        || exports.on_update
+        || exports.gui_render
+        || exports.on_render;
+    if (exports.main || exports.entrypoint) && !has_conflicting_lifecycle_export {
         return (ModuleType::Main, HmrCapability::Blocking);
     }
 
@@ -1098,6 +1125,96 @@ mod tests {
         exports.on_update = false;
         exports.main = true;
         assert!(exports.is_blocking());
+    }
+
+    #[test]
+    fn capability_classification_uses_the_fail_closed_lifecycle_classifier() {
+        let core = ExportSet {
+            core_on_load: true,
+            core_on_update: true,
+            core_get_api: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_module(&core),
+            (ModuleType::Core, HmrCapability::Partial)
+        );
+
+        let gui = ExportSet {
+            gui_on_load: true,
+            gui_on_render: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_module(&gui),
+            (ModuleType::Gui, HmrCapability::Partial)
+        );
+
+        let legacy_gui = ExportSet {
+            on_load: true,
+            on_render: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_module(&legacy_gui),
+            (ModuleType::Main, HmrCapability::RenderOnly)
+        );
+
+        let legacy_gui_entrypoint = ExportSet {
+            entrypoint: true,
+            on_render: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_module(&legacy_gui_entrypoint),
+            (ModuleType::Main, HmrCapability::RenderOnly)
+        );
+
+        let legacy = ExportSet {
+            entrypoint: true,
+            on_update: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_module(&legacy),
+            (ModuleType::Main, HmrCapability::Partial)
+        );
+    }
+
+    #[test]
+    fn mixed_or_incomplete_lifecycle_exports_never_use_first_match_precedence() {
+        let mixed = ExportSet {
+            core_on_load: true,
+            core_on_update: true,
+            core_get_api: true,
+            gui_on_load: true,
+            gui_on_render: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_module(&mixed),
+            (ModuleType::Unknown, HmrCapability::Invalid)
+        );
+
+        let incomplete_with_main = ExportSet {
+            core_on_load: true,
+            core_on_update: true,
+            main: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_module(&incomplete_with_main),
+            (ModuleType::Unknown, HmrCapability::Invalid)
+        );
+
+        let blocking = ExportSet {
+            entrypoint: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_module(&blocking),
+            (ModuleType::Main, HmrCapability::Blocking)
+        );
     }
 
     #[test]

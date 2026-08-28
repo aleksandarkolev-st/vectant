@@ -18,6 +18,7 @@ const AGENT_BOUND_KNOWLEDGE_TOOLS = [
   "synthi_codesite_file_handoff",
   "synthi_codesite_get_shared_knowledge",
   "synthi_codesite_respond_impact_notice",
+  "synthi_codesite_submit_question_feedback",
 ] as const;
 
 const REFERENCES = {
@@ -67,6 +68,9 @@ function validAgentBoundArgs(toolName: (typeof AGENT_BOUND_KNOWLEDGE_TOOLS)[numb
   if (toolName === "synthi_codesite_respond_impact_notice") {
     return { notice_id: "notice-1", action: "acknowledge" };
   }
+  if (toolName === "synthi_codesite_submit_question_feedback") {
+    return { knowledge_item_id: "question-1", verdict: "useful" };
+  }
   return {};
 }
 
@@ -115,11 +119,61 @@ describe("CodeSite MCP tool surface", () => {
       "rebase_requested",
       "abort",
       "dismiss",
+      "answer",
+      "claim",
+      "defer",
+    ]);
+    const feedback = CODESITE_TOOLS.find((tool) => tool.name === "synthi_codesite_submit_question_feedback");
+    expect((feedback?.inputSchema.properties as Record<string, any>).verdict.enum).toEqual([
+      "useful",
+      "needs_correction",
+      "not_useful",
     ]);
   });
 
   it("returns null for non-CodeSite tool dispatch", async () => {
     expect(await dispatchCodeSiteTool("synthi_health", {})).toBeNull();
+  });
+
+  it("maps fleet advisory lifecycle tools to scoped API routes", async () => {
+    const common = { workspace_slug: "acme", project_id: "project-1", base_url: "http://localhost:3100/" };
+
+    await dispatchCodeSiteTool("synthi_codesite_list_fleet_notams", {
+      ...common, include_own: true, include_muted: true, include_inactive: true, route: "packages/api/**",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_publish_fleet_notam", {
+      ...common, policy_delta_id: "delta-1",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_decide_fleet_notam", {
+      ...common, notam_id: "notam-1", state: "adopt",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_withdraw_fleet_notam", {
+      ...common, notam_id: "notam-1", reason: "replacement published",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_supersede_fleet_notam", {
+      ...common, notam_id: "notam-1", policy_delta_id: "delta-2", reason: "narrower condition",
+    });
+
+    expect(fetch).toHaveBeenNthCalledWith(1,
+      new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/fleet-notams?includeOwn=true&include_muted=true&include_inactive=true&route=packages%2Fapi%2F**"),
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(2,
+      new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/fleet-notams/publish"),
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ policy_delta_id: "delta-1" }) }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(3,
+      new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/fleet-notams/notam-1/decision"),
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ state: "adopt" }) }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(4,
+      new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/fleet-notams/notam-1/withdraw"),
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ reason: "replacement published" }) }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(5,
+      new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/fleet-notams/notam-1/supersede"),
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ policy_delta_id: "delta-2", reason: "narrower condition" }) }),
+    );
   });
 
   it("reads relevant context only from the environment-bound agent identity", async () => {
@@ -300,6 +354,251 @@ describe("CodeSite MCP tool surface", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("dispatches expert discovery with bounded path and limit filters", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-1";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({ experts: [] }));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_find_experts", {
+      paths: ["src/a.ts"],
+      limit: 5,
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    expect(String(url)).toBe(
+      "http://codesite.test/api/workspace/workspace-env/codesite/agent-sessions/agent-1/experts?paths=src%2Fa.ts&limit=5",
+    );
+    expect(init?.method).toBe("GET");
+    expect(init?.headers).toMatchObject({ authorization: "Bearer csa_agent-secret-token" });
+  });
+
+  it("rejects an empty expert query before fetch", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-1";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_find_experts", {
+      paths: [],
+      symbols: [],
+      contracts: [],
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "codesite_tool_failed",
+      message: "codesite_agent_knowledge_references_required",
+    }));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("omits unspecified expert filters and preserves repeated references", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-1";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({ experts: [] }));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_find_experts", {
+      paths: ["src/a.ts", "src/b.ts"],
+      limit: 5,
+    });
+
+    expect(response?.isError).toBeUndefined();
+    const [url] = vi.mocked(fetch).mock.calls[0];
+    expect(String(url)).toBe(
+      "http://codesite.test/api/workspace/workspace-env/codesite/agent-sessions/agent-1/experts?paths=src%2Fa.ts&paths=src%2Fb.ts&limit=5",
+    );
+  });
+
+  it("rejects invalid expert discovery arguments before fetch", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-1";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+
+    const invalidPaths = await dispatchCodeSiteTool("synthi_codesite_find_experts", {
+      paths: "src/a.ts",
+      limit: 5,
+    });
+    const invalidLimit = await dispatchCodeSiteTool("synthi_codesite_find_experts", {
+      paths: ["src/a.ts"],
+      limit: 11,
+    });
+
+    for (const response of [invalidPaths, invalidLimit]) {
+      expect(response?.isError).toBe(true);
+      expect(response?.structuredContent).toEqual(expect.objectContaining({
+        error: "codesite_tool_failed",
+        message: "codesite_agent_knowledge_arguments_invalid",
+      }));
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("asks an expert question without caller-selected authority fields", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-1";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({ question: { id: "question-1" } }));
+    const args = {
+      title: "Who owns turn clamping?",
+      summary: "Need the current owner before changing maxTurnRate.",
+      references: REFERENCES,
+    };
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_ask_expert_question", args);
+
+    expect(response?.isError).toBeUndefined();
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    expect(String(url)).toBe(
+      "http://codesite.test/api/workspace/workspace-env/codesite/agent-sessions/agent-1/questions",
+    );
+    expect(JSON.parse(String(init?.body))).toEqual(args);
+  });
+
+  it("rejects an empty expert question reference set before fetch", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-1";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_ask_expert_question", {
+      title: "Which route contract applies?",
+      summary: "Need the current route contract.",
+      references: {},
+      allow_unrouted: true,
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "codesite_tool_failed",
+      message: "codesite_agent_knowledge_references_required",
+    }));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("submits question feedback through the attached agent route", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent/alice";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({ feedback: { verdict: "useful" } }, 201));
+    const args = {
+      knowledge_item_id: "question/1",
+      verdict: "useful",
+      evidence_refs: ["answer-proof:1"],
+    };
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_submit_question_feedback", args);
+
+    expect(response?.isError).toBeUndefined();
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    expect(url).toEqual(new URL(
+      "http://codesite.test/api/workspace/workspace-env/codesite/agent-sessions/agent%2Falice/knowledge/question%2F1/feedback",
+    ));
+    expect(init).toMatchObject({
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        authorization: "Bearer csa_agent-secret-token",
+        "content-type": "application/json",
+      },
+    });
+    expect(JSON.parse(String(init?.body))).toEqual(args);
+    expect(JSON.stringify(response)).not.toContain("csa_agent-secret-token");
+  });
+
+  it("rejects invalid question feedback before fetch", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-alice";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+
+    const invalidVerdict = await dispatchCodeSiteTool("synthi_codesite_submit_question_feedback", {
+      knowledge_item_id: "question-1",
+      verdict: "maybe",
+    });
+    const invalidEvidence = await dispatchCodeSiteTool("synthi_codesite_submit_question_feedback", {
+      knowledge_item_id: "question-1",
+      verdict: "useful",
+      evidence_refs: "not-an-array",
+    });
+    const missingCorrection = await dispatchCodeSiteTool("synthi_codesite_submit_question_feedback", {
+      knowledge_item_id: "question-1",
+      verdict: "needs_correction",
+    });
+    const oversizedEvidenceRef = await dispatchCodeSiteTool("synthi_codesite_submit_question_feedback", {
+      knowledge_item_id: "question-1",
+      verdict: "useful",
+      evidence_refs: ["x".repeat(513)],
+    });
+    const missingQuestion = await dispatchCodeSiteTool("synthi_codesite_submit_question_feedback", {
+      verdict: "useful",
+    });
+
+    for (const response of [invalidVerdict, invalidEvidence, missingCorrection, oversizedEvidenceRef, missingQuestion]) {
+      expect(response?.isError).toBe(true);
+      expect(response?.structuredContent).toEqual(expect.objectContaining({
+        error: "codesite_tool_failed",
+      }));
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("requires a question summary before fetch", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-1";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_ask_expert_question", {
+      title: "Who owns turn clamping?",
+      references: REFERENCES,
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "codesite_tool_failed",
+      message: "codesite_agent_knowledge_arguments_required",
+    }));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("requires answer text when answering an agent question", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-1";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({ inboxItem: { id: "inbox-1" } }));
+
+    const answered = await dispatchCodeSiteTool("synthi_codesite_respond_impact_notice", {
+      notice_id: "inbox-1",
+      action: "answer",
+      answer: "Yes, velocity is clamped at maxTurnRate.",
+    });
+    const missingAnswer = await dispatchCodeSiteTool("synthi_codesite_respond_impact_notice", {
+      notice_id: "inbox-1",
+      action: "answer",
+      answer: "",
+    });
+
+    expect(answered?.isError).toBeUndefined();
+    const [, init] = vi.mocked(fetch).mock.calls[0];
+    expect(JSON.parse(String(init?.body))).toEqual(expect.objectContaining({
+      action: "answer",
+      answer: "Yes, velocity is clamped at maxTurnRate.",
+    }));
+    expect(missingAnswer?.isError).toBe(true);
+    expect(missingAnswer?.structuredContent).toEqual(expect.objectContaining({
+      error: "codesite_tool_failed",
+      message: "codesite_question_answer_required",
+    }));
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes agent_question through shared-knowledge filtering", async () => {
+    process.env.SYNTHI_CODESITE_AGENT_SESSION_ID = "agent-1";
+    process.env.SYNTHI_CODESITE_AGENT_TOKEN = "csa_agent-secret-token";
+    vi.mocked(fetch).mockResolvedValueOnce(mockJsonResponse({ knowledge: [] }));
+
+    const response = await dispatchCodeSiteTool("synthi_codesite_get_shared_knowledge", {
+      kind: "agent_question",
+      status: "answered",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    const [url] = vi.mocked(fetch).mock.calls[0];
+    expect(url).toEqual(new URL(
+      "http://codesite.test/api/workspace/workspace-env/codesite/agent-sessions/agent-1/knowledge?kind=agent_question&status=answered",
+    ));
+  });
+
   it.each([
     ["auth_token", "forged-token"],
     ["cookie", "session=forged"],
@@ -341,8 +640,13 @@ describe("CodeSite MCP tool surface", () => {
       action: "abort",
       reason: "Cannot safely continue.",
     });
+    const missingDismissEvidence = await dispatchCodeSiteTool("synthi_codesite_respond_impact_notice", {
+      notice_id: "notice-1",
+      action: "dismiss",
+      reason: "The notice is no longer actionable.",
+    });
 
-    for (const response of [unknownFilter, callerKind, invalidAction, missingEvidence]) {
+    for (const response of [unknownFilter, callerKind, invalidAction, missingEvidence, missingDismissEvidence]) {
       expect(response?.isError).toBe(true);
     }
     expect(fetch).not.toHaveBeenCalled();
@@ -525,6 +829,48 @@ describe("CodeSite MCP tool surface", () => {
     }));
     expect(fetch).toHaveBeenNthCalledWith(9, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/agent-manifest"), expect.objectContaining({ method: "GET" }));
     expect(fetch).toHaveBeenNthCalledWith(10, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/schemas"), expect.objectContaining({ method: "GET" }));
+  });
+
+  it("advertises and routes portable learning catalogue operations", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockJsonResponse({ learning: [{ id: "lesson-1", scope: "workspace" }] }))
+      .mockResolvedValueOnce(mockJsonResponse({ event: { eventType: "workspace_learning_adopted" } }))
+      .mockResolvedValueOnce(mockJsonResponse({ project: { id: "project-1", controlPlan: { learningNetwork: { workspace: true, network: true } } } }));
+
+    const catalogTool = CODESITE_TOOLS.find((tool) => tool.name === "synthi_codesite_list_learning_catalog");
+    const adoptTool = CODESITE_TOOLS.find((tool) => tool.name === "synthi_codesite_adopt_learning_catalog_entry");
+    const controlPlanTool = CODESITE_TOOLS.find((tool) => tool.name === "synthi_codesite_update_control_plan");
+    expect(catalogTool).toBeTruthy();
+    expect(adoptTool).toBeTruthy();
+    expect(controlPlanTool?.inputSchema.properties).toHaveProperty("learningNetwork");
+
+    await dispatchCodeSiteTool("synthi_codesite_list_learning_catalog", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      project_id: "project-1",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_adopt_learning_catalog_entry", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      project_id: "project-1",
+      learning_id: "lesson-1",
+    });
+    await dispatchCodeSiteTool("synthi_codesite_update_control_plan", {
+      workspace_slug: "acme",
+      base_url: "http://localhost:3100/",
+      project_id: "project-1",
+      learningNetwork: { workspace: true, network: true },
+    });
+
+    expect(fetch).toHaveBeenNthCalledWith(1, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/learning-catalog"), expect.objectContaining({ method: "GET" }));
+    expect(fetch).toHaveBeenNthCalledWith(2, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/learning-catalog/lesson-1/adopt"), expect.objectContaining({
+      method: "POST",
+      body: "{}",
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(3, new URL("http://localhost:3100/api/workspace/acme/codesite/projects/project-1/control-plan"), expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ learningNetwork: { workspace: true, network: true } }),
+    }));
   });
 
   it("maps CodeSite governance permits, document reviews, and route revision workflows", async () => {

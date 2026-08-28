@@ -4,6 +4,7 @@ const ACTIONS = Object.freeze({
   shared_skill: Object.freeze(['adopt', 'dismiss']),
   handoff: Object.freeze(['accept', 'acknowledge', 'request_changes']),
   impact_notice: Object.freeze(['acknowledge', 'refresh', 'rebase_requested', 'abort', 'dismiss']),
+  agent_question: Object.freeze(['answer', 'claim', 'defer', 'dismiss']),
 });
 
 const STATUS_BY_ACTION = Object.freeze({
@@ -14,6 +15,12 @@ const STATUS_BY_ACTION = Object.freeze({
     rebase_requested: 'rebasing',
     abort: 'aborted',
     dismiss: 'irrelevant',
+  }),
+  agent_question: Object.freeze({
+    answer: 'answered',
+    claim: 'open',
+    defer: 'open',
+    dismiss: 'stale',
   }),
 });
 
@@ -26,6 +33,7 @@ const REASON_REQUIRED = new Set([
   'impact_notice:rebase_requested',
   'impact_notice:abort',
   'impact_notice:dismiss',
+  'agent_question:defer',
 ]);
 
 const EVIDENCE_REQUIRED = new Set([
@@ -94,7 +102,10 @@ export function validateKnowledgeResponse(kindInput, body = {}) {
   if (EVIDENCE_REQUIRED.has(key) && !evidenceRefs.length) {
     throw responseError('knowledge_response_evidence_required');
   }
-  const answer = boundedText(body.answer, 'answer', 4096);
+  // An agent_question answer carries its content in `answer`; every other
+  // kind keeps the original optional semantics.
+  const answerRequired = key === 'agent_question:answer';
+  const answer = boundedText(body.answer, 'answer', 4096, answerRequired);
   const metadata = assertSafeMetadata(body.metadata || {});
   return {
     action,
@@ -105,4 +116,3 @@ export function validateKnowledgeResponse(kindInput, body = {}) {
     targetStatus: STATUS_BY_ACTION[kind]?.[action] || null,
   };
 }
-

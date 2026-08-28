@@ -11,8 +11,10 @@ function isAuthUnavailable(error) {
 function isWorkspaceApiUnavailable(error) {
   const message = error?.message ? String(error.message) : String(error ?? '');
   const cause = error?.cause?.message ? String(error.cause.message) : '';
-  return /fetch failed|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|terminated/i.test(
-    `${message} ${cause}`,
+  const causeCode = error?.cause?.code ? String(error.cause.code) : '';
+  const causeName = error?.cause?.name ? String(error.cause.name) : '';
+  return /fetch failed|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|terminated|AbortError|HeadersTimeoutError|UND_ERR_HEADERS_TIMEOUT|timeout_ms=/i.test(
+    `${message} ${cause} ${causeCode} ${causeName}`,
   );
 }
 

@@ -17,7 +17,6 @@ from agents.launch_graph_extractor import LaunchSite, extract_launch_graph
 from agents.abi_stamper import mask_comments_for_parsing
 from agents.gpu_device_markers import (
     DEVICE_ANNOTATION_MACRO_PATTERN,
-    has_gpu_device_marker,
 )
 from verifier_gpu import (
     _CPP_DECL_KEYWORDS,
@@ -51,8 +50,6 @@ from verifier_gpu import (
 
 REPAIR_SCHEMA_VERSION = "synthi.gpu.split_repair.v1"
 
-_DEVICE_SOURCE_EXTENSIONS = (".cu", ".hip")
-_DEVICE_HEADER_EXTENSIONS = (".h", ".hpp", ".hh", ".hxx", ".cuh")
 _QUOTE_INCLUDE_RE = re.compile(r"#\s*include\s+\"(?P<path>[^\"]+)\"")
 _ANY_INCLUDE_RE = re.compile(r"#\s*include\s+[<\"](?P<path>[^>\"]+)[>\"]")
 _INCLUDE_LINE_RE = re.compile(
@@ -188,6 +185,7 @@ def repair_split_artifacts(
     manifest: Optional[Mapping[str, Any]],
     source_files: Mapping[str, str],
     verification: Optional[SplitVerificationResult],
+    protected_generated_kernels: Optional[Iterable[str]] = None,
 ) -> tuple[Dict[str, str], dict]:
     """Return generated files after narrow deterministic repairs.
 
@@ -205,7 +203,19 @@ def repair_split_artifacts(
         else []
     )
 
-    role_paths = _resolve_split_role_paths(repaired, manifest)
+    role_paths = _resolve_split_role_paths(manifest)
+    if not role_paths or any(
+        not path or path not in repaired for path in role_paths.values()
+    ):
+        return repaired, {
+            "schemaVersion": REPAIR_SCHEMA_VERSION,
+            "repaired": False,
+            "inputReasonCodes": input_reason_codes,
+            "repairRules": [],
+            "changedFiles": [],
+            "scope": "generated_artifacts_only",
+            "blockingReasonCodes": ["split_role_declarations_incomplete"],
+        }
     device_path = role_paths.get("device")
     core_path = role_paths.get("core")
     shared_path = role_paths.get("shared")
@@ -243,10 +253,12 @@ def repair_split_artifacts(
             repaired[device_path],
             source_files,
             input_reason_codes,
+            protected_generated_kernels=protected_generated_kernels,
         ):
             device_after, changed = _repair_source_device_semantics(
                 repaired[device_path],
                 source_files,
+                protected_generated_kernels=protected_generated_kernels,
             )
             if changed:
                 repaired[device_path] = device_after
@@ -525,7 +537,13 @@ def canonicalize_source_backed_device_roles(
     """
 
     repaired = {str(path): str(content) for path, content in files.items()}
-    role_paths = _resolve_split_role_paths(repaired, manifest)
+    role_paths = _resolve_split_role_paths(manifest)
+    if not role_paths or any(
+        not path or path not in repaired for path in role_paths.values()
+    ):
+        report = _empty_repair_report()
+        report["blockingReasonCodes"] = ["split_role_declarations_incomplete"]
+        return repaired, report
     device_path = role_paths.get("device")
     if not device_path or device_path not in repaired:
         return repaired, _empty_repair_report()
@@ -573,6 +591,8 @@ def _needs_source_device_semantics_repair(
     device_source: str,
     source_files: Mapping[str, str],
     input_reason_codes: Sequence[str],
+    *,
+    protected_generated_kernels: Optional[Iterable[str]] = None,
 ) -> bool:
     if any(
         rule.startswith(
@@ -588,21 +608,17 @@ def _needs_source_device_semantics_repair(
     reachable = _source_device_reachable_files(source_files)
     if not reachable:
         return False
-    bridge = _source_device_include_bridge(reachable, source_files)
+    bridge = _source_device_bridge_with_protected_kernels(
+        reachable,
+        source_files,
+        device_source=device_source,
+        protected_generated_kernel_names=set(protected_generated_kernels or ()),
+    )
     return bool(bridge and bridge != device_source)
 
 
 def _source_device_files(source_files: Mapping[str, str]) -> Dict[str, str]:
-    files: Dict[str, str] = {}
-    for path, source in source_files.items():
-        normalized = path.replace("\\", "/")
-        lower = normalized.lower()
-        if not lower.endswith(_DEVICE_SOURCE_EXTENSIONS + _DEVICE_HEADER_EXTENSIONS):
-            continue
-        masked = mask_comments_for_parsing(source)
-        if has_gpu_device_marker(masked):
-            files[normalized] = source
-    return files
+    return dict(_verifier_source_device_files(source_files))
 
 
 def _device_lookup_source_with_source_includes(
@@ -712,9 +728,7 @@ def _source_device_reachable_files(source_files: Mapping[str, str]) -> Dict[str,
                 source_files=normalized,
             )
             if resolved and resolved not in reachable:
-                lower = resolved.lower()
-                if lower.endswith(_DEVICE_SOURCE_EXTENSIONS + _DEVICE_HEADER_EXTENSIONS):
-                    queue.append(resolved)
+                queue.append(resolved)
     return {path: reachable[path] for path in sorted(reachable)}
 
 
@@ -1140,10 +1154,9 @@ def _source_device_support_preamble(reachable: Mapping[str, str]) -> str:
     seen: Set[str] = set()
     for path, source in sorted(reachable.items()):
         inline_source = _inlineable_device_source(source)
-        if path.lower().endswith(_DEVICE_SOURCE_EXTENSIONS):
-            first_kernel = _ANY_GLOBAL_KERNEL_RE.search(mask_comments_for_parsing(inline_source))
-            if first_kernel:
-                inline_source = inline_source[: first_kernel.start()]
+        first_kernel = _ANY_GLOBAL_KERNEL_RE.search(mask_comments_for_parsing(inline_source))
+        if first_kernel:
+            inline_source = inline_source[: first_kernel.start()]
         inline_source = inline_source.strip()
         if not inline_source or inline_source in seen:
             continue
@@ -1388,7 +1401,7 @@ def _source_device_prelude_definition_headers(
     kernel_header_set = set(kernel_headers)
     headers: List[str] = []
     for path, source in sorted(reachable.items()):
-        if path in kernel_header_set or not path.lower().endswith(_DEVICE_HEADER_EXTENSIONS):
+        if path in kernel_header_set:
             continue
         definitions = _source_device_function_names(source, terminator="{")
         if definitions & prelude_declarations:
@@ -1469,12 +1482,10 @@ def _source_device_include_bridge(
     kernel_headers = [
         path
         for path, source in sorted(reachable.items())
-        if path.lower().endswith(_DEVICE_HEADER_EXTENSIONS)
-        and _ANY_GLOBAL_KERNEL_RE.search(mask_comments_for_parsing(source))
+        if _ANY_GLOBAL_KERNEL_RE.search(mask_comments_for_parsing(source))
     ]
     if not kernel_headers:
         return None
-
     prelude_include_lines = _source_device_compiler_prelude_includes(reachable, source_files)
     prelude_include_paths = [
         match.group("path")
@@ -1526,6 +1537,33 @@ def _source_device_include_bridge(
     )
 
 
+def _source_device_bridge_with_protected_kernels(
+    reachable: Mapping[str, str],
+    source_files: Mapping[str, str],
+    *,
+    device_source: str,
+    protected_generated_kernel_names: Set[str],
+) -> Optional[str]:
+    bridge = _source_device_include_bridge(reachable, source_files)
+    if bridge is None:
+        return None
+
+    source_kernel_names = {
+        match.group("name")
+        for source in reachable.values()
+        for match in _ANY_GLOBAL_KERNEL_RE.finditer(mask_comments_for_parsing(source))
+    }
+    protected_definitions: List[str] = []
+    for kernel in sorted(protected_generated_kernel_names - source_kernel_names):
+        span = _kernel_function_span(device_source, kernel)
+        if span is None:
+            continue
+        protected_definitions.append(device_source[span[0] : span[1]].strip())
+    if not protected_definitions:
+        return bridge
+    return bridge.rstrip() + "\n\n" + "\n\n".join(protected_definitions) + "\n"
+
+
 def _device_role_source_kernel_includes(
     device_source: str,
     reachable: Mapping[str, str],
@@ -1534,8 +1572,7 @@ def _device_role_source_kernel_includes(
     kernel_headers = {
         path.replace("\\", "/")
         for path, source in reachable.items()
-        if path.lower().endswith(_DEVICE_HEADER_EXTENSIONS)
-        and _ANY_GLOBAL_KERNEL_RE.search(mask_comments_for_parsing(source))
+        if _ANY_GLOBAL_KERNEL_RE.search(mask_comments_for_parsing(source))
     }
     if not kernel_headers:
         return []
@@ -1551,12 +1588,19 @@ def _device_role_source_kernel_includes(
 def _repair_source_device_semantics(
     device_source: str,
     source_files: Mapping[str, str],
+    *,
+    protected_generated_kernels: Optional[Iterable[str]] = None,
 ) -> tuple[str, bool]:
     reachable = _source_device_reachable_files(source_files)
     if not reachable:
         return device_source, False
 
-    bridge = _source_device_include_bridge(reachable, source_files)
+    bridge = _source_device_bridge_with_protected_kernels(
+        reachable,
+        source_files,
+        device_source=device_source,
+        protected_generated_kernel_names=set(protected_generated_kernels or ()),
+    )
     if bridge is not None:
         return bridge, bridge != device_source
 
@@ -1569,7 +1613,7 @@ def _repair_source_device_semantics(
         out = out[:insert_at] + f"\n\n{marker}\n{preamble}\n" + out[insert_at:]
 
     for path, source in sorted(reachable.items()):
-        if not path.lower().endswith(_DEVICE_SOURCE_EXTENSIONS):
+        if not _GLOBAL_KERNEL_SIGNATURE_RE.search(mask_comments_for_parsing(source)):
             continue
         inline_source = _inlineable_device_source(source)
         for match in list(_GLOBAL_KERNEL_SIGNATURE_RE.finditer(inline_source)):
