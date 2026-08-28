@@ -1416,19 +1416,28 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
         isError: true,
       };
     }
+    let resourceSettled = false;
     try {
       const contents = await readResource(uri);
+      
       if (!contents) {
         await settleResourceWarrant(req.params, "failed");
+        resourceSettled = true;
         throw new Error(`unknown_resource: ${uri}`);
       }
+      
       const out: Record<string, unknown> = { uri: contents.uri, mimeType: contents.mimeType };
       if (contents.text !== undefined) out["text"] = contents.text;
       if (contents.blob !== undefined) out["blob"] = contents.blob;
+      
       await settleResourceWarrant(req.params, "succeeded");
+      resourceSettled = true;
       return { contents: [out] };
+      
     } catch (error) {
-      await settleResourceWarrant(req.params, "unknown");
+      if (!resourceSettled) {
+        await settleResourceWarrant(req.params, "unknown");
+      }
       throw error;
     }
   });
