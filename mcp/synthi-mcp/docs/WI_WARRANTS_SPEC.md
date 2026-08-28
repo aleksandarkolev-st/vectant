@@ -520,3 +520,11 @@ The Prometheus registry exports `synthi_warrant_decisions_total`,
 `synthi_warrant_replays_total`; deployment alerts should page on
 authority-unavailable denials, stale-identity rejection growth, replay growth,
 or aged `reserved` receipts observed from the authority store.
+
+The opt-in live chaos runner has a warrant two-replica failure-injection
+scenario. It receives an operator-provided argv array rather than a fixed
+deployment address or orchestration command, and accepts only a redacted,
+digest-backed artifact proving distinct replicas, cross-replica authority and
+replay behavior, concurrent reservation, lifecycle and service-transport
+denial, managed-key rotation/outage handling, audit integrity, and every
+required metric. An exit code alone is not acceptance evidence.
