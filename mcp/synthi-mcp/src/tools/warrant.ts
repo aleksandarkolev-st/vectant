@@ -523,7 +523,18 @@ export async function enforceWarrantGate(toolName: string, params: unknown): Pro
     const adminKey = resolveWarrantAdminKey();
     // Unconfigured (local/dev) posture keeps the historical open management plane.
     if (adminKey === null) return null;
-    if (adminKeyMatches(adminKeyPresented(params), adminKey)) return null;
+    if (adminKeyMatches(adminKeyPresented(params), adminKey)) {
+      if (toolName !== "synthi_warrant_attenuate" || parentExplicitlyPermitsDelegation(params)) return null;
+      eventLog.push({
+        kind: "security",
+        code: "rate_limit_warning",
+        detail: { code: "delegation_not_permitted", mode, tool: toolName },
+      });
+      if (mode === "warn") return null;
+      return buildError("delegation_not_permitted", {
+        human_reason: "This parent warrant was not issued with an explicit delegation policy.",
+      });
+    }
     // Sealed holders can renew their own credential and, only when the root
     // explicitly opted into it, attenuate it into a narrower child. All other
     // lifecycle and policy operations remain on the admin-gated plane.
@@ -674,7 +685,16 @@ async function enforceAuthorityWarrantGate(toolName: string, params: unknown): P
   if ((WARRANT_TOOL_NAMES as readonly string[]).includes(toolName)) {
     if (mode === "off") return null;
     const adminKey = resolveWarrantAdminKey();
-    if (adminKey === null || adminKeyMatches(adminKeyPresented(params), adminKey)) return null;
+    if (adminKey === null) return null;
+    if (adminKeyMatches(adminKeyPresented(params), adminKey)) {
+      if (toolName !== "synthi_warrant_attenuate" || await authorityParentExplicitlyPermitsDelegation(params, authority)) {
+        return null;
+      }
+      if (mode === "warn") return null;
+      return buildError("delegation_not_permitted", {
+        human_reason: "This parent warrant was not issued with an explicit delegation policy.",
+      });
+    }
     if ((toolName === "synthi_warrant_renew" || toolName === "synthi_warrant_attenuate") && await hasAuthorityHolderBearer(toolName, params, authority)) {
       return null;
     }
@@ -768,8 +788,28 @@ async function hasAuthorityHolderBearer(
   const bearer = args?.["bearer"];
   if (typeof warrantId !== "string" || typeof bearer !== "string") return false;
   try {
+    if (toolName === "synthi_warrant_attenuate") {
+      const parent = (await authority.list()).find((warrant) => warrant.warrant_id === warrantId);
+      if (parent?.delegation === undefined) return false;
+    }
     const decision = await authority.check({ warrant_id: warrantId, tool: "__warrant_holder_probe__", bearer });
     return decision.allowed || decision.reason_code === "tool_not_covered";
+  } catch {
+    return false;
+  }
+}
+
+async function authorityParentExplicitlyPermitsDelegation(
+  params: unknown,
+  authority: NonNullable<ReturnType<typeof currentWarrantAuthority>>,
+): Promise<boolean> {
+  // This is an early management-plane denial only. The shared authority is
+  // responsible for enforcing the immutable policy atomically with creation.
+  const args = recordOpt((params as { arguments?: unknown } | undefined)?.arguments);
+  const warrantId = args?.["parent_warrant_id"];
+  if (typeof warrantId !== "string") return false;
+  try {
+    return (await authority.list()).some((warrant) => warrant.warrant_id === warrantId && warrant.delegation !== undefined);
   } catch {
     return false;
   }
@@ -875,6 +915,14 @@ function hasSealedDelegationBearer(params: unknown): boolean {
     principal: currentWarrantPrincipal(),
     now: Date.now(),
   }).allowed;
+}
+
+/** Administration may perform attenuation, but never invent delegation permission. */
+function parentExplicitlyPermitsDelegation(params: unknown): boolean {
+  const args = recordOpt((params as { arguments?: unknown } | undefined)?.arguments);
+  const warrantId = args?.["parent_warrant_id"];
+  if (typeof warrantId !== "string") return false;
+  return warrantRegistry.get(warrantId)?.delegation !== undefined;
 }
 
 /**
@@ -1056,10 +1104,15 @@ function delegationPolicy(value: unknown): DelegationPolicy | undefined {
   const maxDepth = requiredNumber(policy, "max_depth");
   const maxChildTtl = numberOpt(policy["max_child_ttl_ms"]);
   const maxChildInvocations = numberOpt(policy["max_child_invocations"]);
+  const requireRecipientIdentity = policy["require_recipient_identity"];
+  if (requireRecipientIdentity !== undefined && typeof requireRecipientIdentity !== "boolean") {
+    throw new Error("Delegation 'require_recipient_identity' must be true or false.");
+  }
   return {
     max_depth: maxDepth,
     ...(maxChildTtl === undefined ? {} : { max_child_ttl_ms: maxChildTtl }),
     ...(maxChildInvocations === undefined ? {} : { max_child_invocations: maxChildInvocations }),
+    ...(requireRecipientIdentity === undefined ? {} : { require_recipient_identity: requireRecipientIdentity }),
   };
 }
 
@@ -1119,6 +1172,7 @@ const DELEGATION_POLICY_SCHEMA = {
     max_depth: { type: "integer", minimum: 1, description: "Maximum child hops below this warrant." },
     max_child_ttl_ms: { type: "number", minimum: 1, description: "Optional maximum TTL for each child." },
     max_child_invocations: { type: "integer", minimum: 1, description: "Optional maximum invocation budget required on each child grant." },
+    require_recipient_identity: { type: "boolean", description: "Require each child to carry a verified recipient audience." },
   },
   required: ["max_depth"],
   additionalProperties: false,
@@ -1132,7 +1186,7 @@ export const WARRANT_TOOLS = [
   },
   {
     name: "synthi_warrant_attenuate",
-    description: "Create a strictly narrower child warrant. An administrator may attenuate any active parent; a sealed holder may do so only when its parent explicitly carries a delegation policy and it presents bearer. Audience is propagated unless the verified recipient changes.",
+    description: "Create a strictly narrower child warrant. The parent must explicitly carry a delegation policy; an administrator or its sealed holder may attenuate it, with the holder presenting its bearer. Audience is propagated unless the verified recipient changes.",
     inputSchema: {"type":"object","properties":{"parent_warrant_id":{"type":"string"},"subject":{"type":"string"},"audience":{"type":"object","description":"Optional authenticated recipient principal; a trusted host context verifies it at issuance.","properties":{"issuer":{"type":"string"},"subject":{"type":"string"},"workspace":{"type":"string"},"project":{"type":"string"}},"required":["issuer","subject","workspace"],"additionalProperties":false},"grants":{"type":"array","items":{"type":"object","properties":{"tool":{"type":"string"},"arg_constraints":{"type":"object","additionalProperties":{"type":"string"}},"max_invocations":{"type":"number"}},"required":["tool"]}},"ttl_ms":{"type":"number"},"seal":{"type":"boolean","description":"Seal the warrant: every use must present the one-time bearer secret in _meta.warrant_bearer."},"bearer":{"type":"string","description":"Required for holder-driven delegation; proves possession of a sealed parent warrant that permits delegation."}},"required":["parent_warrant_id","subject","grants"]},
   },
   {

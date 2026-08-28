@@ -48,6 +48,8 @@ export interface DelegationPolicy {
   max_child_ttl_ms?: number;
   /** Optional requirement that every child grant declares a bounded budget. */
   max_child_invocations?: number;
+  /** Require every delegated child to name a verified recipient audience. */
+  require_recipient_identity?: boolean;
 }
 
 export interface Warrant {
@@ -224,6 +226,12 @@ function validateDelegationPolicy(
     && (!Number.isSafeInteger(policy.max_child_invocations) || policy.max_child_invocations < 1)
   ) {
     throw new Error("Delegation max_child_invocations must be a positive integer.");
+  }
+  if (
+    policy.require_recipient_identity !== undefined
+    && typeof policy.require_recipient_identity !== "boolean"
+  ) {
+    throw new Error("Delegation require_recipient_identity must be true or false.");
   }
   return cloneDelegation(policy);
 }
@@ -419,6 +427,11 @@ export class WarrantRegistry {
     }
 
     const delegation = parent.warrant.delegation;
+    if (delegation?.require_recipient_identity === true && input.audience === undefined) {
+      throw new Error(
+        "Cannot attenuate: this delegation policy requires a verified recipient audience for every child.",
+      );
+    }
     const audience = input.audience === undefined
       ? (parent.warrant.audience === undefined ? undefined : cloneWarrantPrincipal(parent.warrant.audience))
       : normalizeWarrantPrincipal(input.audience);

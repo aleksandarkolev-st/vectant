@@ -384,18 +384,22 @@ that child. A holder could renew its lease but could not safely delegate part
 of it to another generic worker.
 
 L1 EXPLICIT POLICY: root issuance optionally accepts
-`delegation { max_depth, max_child_ttl_ms?, max_child_invocations? }`. A
+`delegation { max_depth, max_child_ttl_ms?, max_child_invocations?,
+require_recipient_identity? }`. A
 delegation policy requires `seal:true`; possession of a sealed bearer is the
 authority to delegate. `max_depth` counts child hops below the policy root.
 The policy is copied unchanged to children with a monotonically increasing
 `delegation_depth`, so no descendant can widen its delegation envelope.
 Child TTL is clamped to `max_child_ttl_ms` when supplied and
 `max_child_invocations` requires each child grant to declare a bounded budget
-at or below that ceiling.
+at or below that ceiling. `require_recipient_identity` requires every child to
+carry a freshly supplied, host-verified audience rather than merely inheriting
+the parent's audience.
 
 L2 HOLDER PATH: `synthi_warrant_attenuate` accepts `bearer`. In warn/enforce
-mode the existing admin key still admits administrator attenuation; otherwise
-the handler admits the call only when `canDelegate(parent_warrant_id, bearer)`
+mode the existing admin key admits administrator attenuation only when the
+parent explicitly opted into delegation; otherwise the handler admits the call
+only when `canDelegate(parent_warrant_id, bearer)`
 proves an active, sealed parent, matching bearer, policy opt-in, and remaining
 delegation depth. The core repeats that holder check before mutation. Existing
 strict tool/argument/budget/expiry narrowing, fresh child bearers, and cascade

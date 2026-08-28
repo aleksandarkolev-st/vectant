@@ -29,6 +29,12 @@ export interface WarrantAuthority {
     seal?: boolean;
     delegation?: DelegationPolicy;
   }): Promise<IssuedWarrant>;
+  /**
+   * Must atomically enforce the parent's immutable delegation policy: opt-in,
+   * sealed-holder possession when bearer-authorized, depth, child TTL/budget
+   * ceilings, and require_recipient_identity. Host-side preflight checks are
+   * defense in depth, never a replacement for this transaction.
+   */
   attenuate(input: {
     parent_warrant_id: string;
     subject: string;
