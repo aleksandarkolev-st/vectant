@@ -110,12 +110,15 @@ async function attenuate(db, scope, policy, body) {
   const subject = requiredString(input.subject, 'warrant_subject_required');
   const bearer = optionalString(input.bearer);
   const delegation = delegationOfJson(parent.delegationJson);
+  if (!delegation) throw new WarrantAuthorityError('delegation_not_permitted');
+  if (delegation.require_recipient_identity === true && input.audience === undefined) {
+    throw new WarrantAuthorityError('warrant_delegation_recipient_required', 400);
+  }
   if (bearer !== undefined) {
     ensurePrincipal(parentAudience, scope.principal);
     if (!parent.sealed || !parent.bearerHash || !hashesMatch(bearer, parent.bearerHash)) {
       throw new WarrantAuthorityError('bearer_mismatch');
     }
-    if (!delegation) throw new WarrantAuthorityError('delegation_not_permitted');
   }
   const lineage = await lineageFor(db, scope, parent.id);
   if (lineage.length >= MAX_CHAIN_DEPTH) throw new WarrantAuthorityError('delegation_chain_depth_exhausted', 409);
@@ -538,7 +541,7 @@ function grantsOf(value) {
 function grantsOfJson(value) { return grantsOf(parseJson(value, [])); }
 function constraintMap(value) { const raw = object(value); const output = {}; for (const [key, pattern] of Object.entries(raw)) { if (typeof pattern !== 'string' || !pattern) throw new WarrantAuthorityError('warrant_constraints_invalid', 400); output[key] = pattern; } return output; }
 function budgetsFor(grants) { const remaining = new Map(); for (const grant of grants) if (grant.max_invocations !== undefined) remaining.set(grant.tool, Math.min(remaining.get(grant.tool) ?? grant.max_invocations, grant.max_invocations)); return [...remaining].map(([tool, maximumInvocations]) => ({ tool, maximumInvocations, remainingInvocations: maximumInvocations })); }
-function delegationOf(value, sealed) { if (value === undefined) return undefined; if (!sealed) throw new WarrantAuthorityError('warrant_delegation_requires_seal', 400); const raw = object(value); const policy = { max_depth: positiveInt(raw.max_depth, 'warrant_delegation_invalid') }; if (policy.max_depth >= MAX_CHAIN_DEPTH) throw new WarrantAuthorityError('warrant_delegation_invalid', 400); if (raw.max_child_ttl_ms !== undefined) policy.max_child_ttl_ms = positiveInt(raw.max_child_ttl_ms, 'warrant_delegation_invalid'); if (raw.max_child_invocations !== undefined) policy.max_child_invocations = positiveInt(raw.max_child_invocations, 'warrant_delegation_invalid'); return policy; }
+function delegationOf(value, sealed) { if (value === undefined) return undefined; if (!sealed) throw new WarrantAuthorityError('warrant_delegation_requires_seal', 400); const raw = object(value); const policy = { max_depth: positiveInt(raw.max_depth, 'warrant_delegation_invalid') }; if (policy.max_depth >= MAX_CHAIN_DEPTH) throw new WarrantAuthorityError('warrant_delegation_invalid', 400); if (raw.max_child_ttl_ms !== undefined) policy.max_child_ttl_ms = positiveInt(raw.max_child_ttl_ms, 'warrant_delegation_invalid'); if (raw.max_child_invocations !== undefined) policy.max_child_invocations = positiveInt(raw.max_child_invocations, 'warrant_delegation_invalid'); if (raw.require_recipient_identity !== undefined) { if (typeof raw.require_recipient_identity !== 'boolean') throw new WarrantAuthorityError('warrant_delegation_invalid', 400); policy.require_recipient_identity = raw.require_recipient_identity; } return policy; }
 function delegationOfJson(value) { return value ? delegationOf(parseJson(value, null), true) : undefined; }
 function validateAttenuatedGrant(child, parentGrants, parentBudgets, delegation) {
   const parent = parentGrants.find((grant) => grant.tool === child.tool); if (!parent) throw new WarrantAuthorityError('warrant_attenuation_tool_not_covered', 400);

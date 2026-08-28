@@ -2085,8 +2085,24 @@ export async function getAgentWarrantRecipientPrincipal(
   issuerAccessToken,
   recipientSessionId,
 ) {
+  return resolveAgentWarrantRecipientPrincipal(
+    workspaceSlug,
+    issuerSessionId,
+    issuerAccessToken,
+    recipientSessionId,
+    configuredWarrantCapability('ISSUE'),
+  );
+}
+
+async function resolveAgentWarrantRecipientPrincipal(
+  workspaceSlug,
+  issuerSessionId,
+  issuerAccessToken,
+  recipientSessionId,
+  requiredIssuerCapability,
+) {
   const issuer = await requireAgentTokenAuthority(workspaceSlug, issuerSessionId, issuerAccessToken, {
-    requiredCapability: configuredWarrantCapability('ISSUE'),
+    requiredCapability: requiredIssuerCapability,
   });
   const targetId = String(recipientSessionId || '').trim();
   if (!targetId) throw forbidden('agent_warrant_recipient_invalid');
@@ -2133,6 +2149,7 @@ export async function executeAgentWarrantAuthority(
     normalizedOperation,
     body,
     principal,
+    configuredWarrantCapability(issuerOperation ? 'ISSUE' : 'USE'),
   );
   return executeWarrantAuthority(prisma, {
     projectId: authority.session.projectId,
@@ -2151,6 +2168,7 @@ async function canonicalizeWarrantAuthorityAudience(
   operation,
   body,
   currentPrincipal,
+  requiredIssuerCapability,
 ) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw badRequest('warrant_payload_invalid');
   const requested = body.audience;
@@ -2160,11 +2178,12 @@ async function canonicalizeWarrantAuthorityAudience(
   }
   const candidate = normalizedWarrantPrincipal(requested);
   if (sameWarrantPrincipal(candidate, currentPrincipal)) return { ...body, audience: currentPrincipal };
-  const resolved = await getAgentWarrantRecipientPrincipal(
+  const resolved = await resolveAgentWarrantRecipientPrincipal(
     workspaceSlug,
     issuerSessionId,
     issuerAccessToken,
     candidate.subject,
+    requiredIssuerCapability,
   );
   if (!sameWarrantPrincipal(candidate, resolved)) throw forbidden('agent_warrant_recipient_claim_mismatch');
   return { ...body, audience: resolved };
