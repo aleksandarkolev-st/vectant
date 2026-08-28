@@ -35,6 +35,13 @@ import {
 import { applyDojoPostgresMigrations } from "./dojo/store/postgres_proof_store.js";
 import { PostgresTherapeuticProductionRuntimeStateStore } from "./dojo/tomography/production_runtime_state_store.js";
 import type { TherapeuticDurableRuntimeState, TherapeuticTenantScope } from "./dojo/tomography/index.js";
+import {
+  runWithWarrantRequestContext,
+  type WarrantRequestContext,
+  WarrantRequestContextError,
+} from "./security/warrant_request_context.js";
+import { normalizeWarrantPrincipal } from "./security/warrant_principal.js";
+import { recordWarrantIdentityFailure } from "./observability/metrics.js";
 
 type HttpMcpConfig = {
   host: string;
@@ -48,6 +55,50 @@ type HttpMcpConfig = {
   defaultSignalingUrl: string;
   therapeuticProduction: TherapeuticProductionHttpConfig;
 };
+
+/**
+ * A deployment integration authenticates an HTTP request and injects generic
+ * warrant context. The HTTP host deliberately knows nothing about endpoint
+ * URLs, credential headers, certificate locations, tenant names, or resource
+ * capability labels.
+ */
+export type WarrantHttpRequestContextProvider = (
+  request: IncomingMessage,
+) => Promise<WarrantRequestContext> | WarrantRequestContext;
+
+export interface HttpMcpRuntimeOptions {
+  warrantRequestContext?: WarrantHttpRequestContextProvider;
+}
+
+function productionWarrantEnforcementEnabled(): boolean {
+  return process.env["NODE_ENV"]?.trim().toLowerCase() === "production"
+    && process.env["SYNTHI_WARRANT_MODE"]?.trim().toLowerCase() === "enforce";
+}
+
+function requireProductionWarrantContext(context: WarrantRequestContext | undefined): void {
+  if (!productionWarrantEnforcementEnabled()) return;
+  if (
+    !context?.principal
+    || context.audienceRequired !== true
+    || typeof context.verifyAudience !== "function"
+    || !context.authority
+    || !context.resolveResourceGrant
+  ) {
+    throw new WarrantRequestContextError("warrant_request_context_required", 503);
+  }
+}
+
+function validatedWarrantRequestContext(context: WarrantRequestContext): WarrantRequestContext {
+  if (!context || typeof context !== "object") {
+    throw new WarrantRequestContextError("warrant_request_context_invalid", 503);
+  }
+  if (context.principal === undefined) return context;
+  try {
+    return { ...context, principal: normalizeWarrantPrincipal(context.principal) };
+  } catch {
+    throw new WarrantRequestContextError("warrant_request_context_principal_invalid", 503);
+  }
+}
 
 type TherapeuticProductionHttpConfig = {
   enabled: boolean;
@@ -452,7 +503,7 @@ function stringField(record: Record<string, unknown>, key: string, required: boo
   return value.trim();
 }
 
-async function main(): Promise<void> {
+export async function serveHttp(options: HttpMcpRuntimeOptions = {}): Promise<void> {
   if (__envLoad.path) {
     process.stderr.write(
       `synthi-mcp env: loaded ${__envLoad.loaded} var(s) from ${__envLoad.path} (${__envLoad.skipped_existing} already set)\n`
@@ -534,6 +585,7 @@ async function main(): Promise<void> {
           path: config.path,
           auth_required: Boolean(config.bearerToken),
           auth_header: config.bearerToken ? config.bearerHeader : null,
+          warrant_request_context_provider: options.warrantRequestContext ? "configured" : null,
           therapeutic_production_endpoints_enabled: config.therapeuticProduction.enabled,
         });
         return;
@@ -662,30 +714,52 @@ async function main(): Promise<void> {
         return;
       }
 
-      const parsedBody = req.method === "POST"
-        ? await readJsonBody(req, config.maxBodyBytes)
-        : undefined;
-      const sessionId = getSessionId(req);
-      const existingSession = sessionId ? sessions.get(sessionId) : undefined;
-      if (existingSession) {
-        await existingSession.transport.handleRequest(req, res, parsedBody);
-        return;
-      }
+      const handleMcpRequest = async (): Promise<void> => {
+        const parsedBody = req.method === "POST"
+          ? await readJsonBody(req, config.maxBodyBytes)
+          : undefined;
+        const sessionId = getSessionId(req);
+        const existingSession = sessionId ? sessions.get(sessionId) : undefined;
+        if (existingSession) {
+          await existingSession.transport.handleRequest(req, res, parsedBody);
+          return;
+        }
 
-      if (req.method === "POST" && isInitializeRequest(parsedBody)) {
-        const newTransport = await createSession();
-        await newTransport.handleRequest(req, res, parsedBody);
-        return;
-      }
+        if (req.method === "POST" && isInitializeRequest(parsedBody)) {
+          const newTransport = await createSession();
+          await newTransport.handleRequest(req, res, parsedBody);
+          return;
+        }
 
-      sendJson(res, 400, {
-        jsonrpc: "2.0",
-        error: { code: -32000, message: "mcp_http_valid_session_required" },
-        id: null,
-      });
+        sendJson(res, 400, {
+          jsonrpc: "2.0",
+          error: { code: -32000, message: "mcp_http_valid_session_required" },
+          id: null,
+        });
+      };
+      if (options.warrantRequestContext) {
+        let context: WarrantRequestContext;
+        try {
+          context = await options.warrantRequestContext(req);
+        } catch (error) {
+          if (error instanceof WarrantRequestContextError) throw error;
+          throw new WarrantRequestContextError("warrant_request_context_unavailable", 503);
+        }
+        const validatedContext = validatedWarrantRequestContext(context);
+        requireProductionWarrantContext(validatedContext);
+        await runWithWarrantRequestContext(validatedContext, handleMcpRequest);
+      } else {
+        requireProductionWarrantContext(undefined);
+        await handleMcpRequest();
+      }
       return;
     } catch (error) {
-      const statusCode = error instanceof HttpError ? error.statusCode : 500;
+      if (error instanceof WarrantRequestContextError) {
+        recordWarrantIdentityFailure(error.code);
+      }
+      const statusCode = error instanceof HttpError || error instanceof WarrantRequestContextError
+        ? error.statusCode
+        : 500;
       sendJson(res, statusCode, {
         jsonrpc: "2.0",
         error: {
@@ -729,7 +803,7 @@ async function main(): Promise<void> {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((err) => {
+  serveHttp().catch((err) => {
     process.stderr.write(`synthi-mcp-http fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
     process.exit(1);
   });

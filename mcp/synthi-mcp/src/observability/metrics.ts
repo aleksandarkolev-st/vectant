@@ -191,6 +191,42 @@ export const EGRESS_BYTES = metrics.counter(
   ["kind"]
 );
 
+export const WARRANT_DECISIONS = metrics.counter(
+  "synthi_warrant_decisions_total",
+  "Warrant authorization decisions, labelled by outcome and stable reason code.",
+  ["outcome", "reason"],
+);
+
+export const WARRANT_RECEIPTS = metrics.counter(
+  "synthi_warrant_receipts_total",
+  "Terminal warrant receipt outcomes.",
+  ["outcome"],
+);
+
+export const WARRANT_RESERVATION_SETTLEMENT_AGE_MS = metrics.counter(
+  "synthi_warrant_reservation_settlement_age_ms_total",
+  "Total elapsed milliseconds from durable reservation to settlement, labelled by outcome.",
+  ["outcome"],
+);
+
+export const WARRANT_RESERVATION_SETTLEMENTS = metrics.counter(
+  "synthi_warrant_reservation_settlements_total",
+  "Settled durable reservations with a trustworthy reservation timestamp, labelled by outcome.",
+  ["outcome"],
+);
+
+export const WARRANT_REPLAYS = metrics.counter(
+  "synthi_warrant_replays_total",
+  "Replay observations reported by a shared warrant authority, labelled by stable reason.",
+  ["reason"],
+);
+
+export const WARRANT_IDENTITY_FAILURES = metrics.counter(
+  "synthi_warrant_identity_failures_total",
+  "Authenticated warrant request-context failures by stable reason code.",
+  ["reason"],
+);
+
 /**
  * Record a completed tool call. Called from the top-level dispatcher in
  * `server.ts`. Treats `response.isError` as the error outcome (most tools
@@ -198,6 +234,38 @@ export const EGRESS_BYTES = metrics.counter(
  */
 export function recordToolCall(tool: string, outcome: "ok" | "error"): void {
   TOOL_CALLS.inc({ tool, outcome });
+}
+
+export function recordWarrantDecision(outcome: "allowed" | "denied", reason: string): void {
+  WARRANT_DECISIONS.inc({ outcome, reason: metricReason(reason) });
+}
+
+export function recordWarrantReceipt(outcome: "succeeded" | "failed" | "unknown"): void {
+  WARRANT_RECEIPTS.inc({ outcome });
+}
+
+export function recordWarrantReservationSettlementAge(
+  outcome: "succeeded" | "failed" | "unknown",
+  reservedAtMs: number | undefined,
+  settledAtMs = Date.now(),
+): void {
+  if (typeof reservedAtMs !== "number" || !Number.isSafeInteger(reservedAtMs) || reservedAtMs < 0 || reservedAtMs > settledAtMs) return;
+  const reservationStartMs = reservedAtMs;
+  WARRANT_RESERVATION_SETTLEMENT_AGE_MS.inc({ outcome }, settledAtMs - reservationStartMs);
+  WARRANT_RESERVATION_SETTLEMENTS.inc({ outcome });
+}
+
+export function recordWarrantReplay(reason: string): void {
+  WARRANT_REPLAYS.inc({ reason: metricReason(reason) });
+}
+
+export function recordWarrantIdentityFailure(reason: string): void {
+  WARRANT_IDENTITY_FAILURES.inc({ reason: metricReason(reason) });
+}
+
+function metricReason(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  return /^[a-z0-9:_-]{1,96}$/.test(normalized) ? normalized : "other";
 }
 
 /**

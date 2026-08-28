@@ -135,7 +135,7 @@ const CONTROL_ARG_KEYS = new Set([
 const COMMON_PROPERTIES = {
   base_url: {
     type: "string",
-    description: "Synthi app origin. Defaults to SYNTHI_CODESITE_BASE_URL, SYNTHI_APP_URL, or http://127.0.0.1:3000.",
+    description: "Synthi app origin. Required unless SYNTHI_CODESITE_BASE_URL or SYNTHI_APP_URL is configured.",
   },
   codesite_api_base_url: {
     type: "string",
@@ -159,7 +159,7 @@ const COMMON_PROPERTIES = {
   },
   collab_base_url: {
     type: "string",
-    description: "Optional collab-server origin for CodeSiteFS replay/apply. Defaults to SYNTHI_COLLAB_BASE_URL, COLLAB_SERVER_URL, or http://127.0.0.1:1234.",
+    description: "Collab-server origin for CodeSiteFS replay/apply. Required unless SYNTHI_COLLAB_BASE_URL, COLLAB_SERVER_URL, or SYNTHI_COLLAB_SERVER_URL is configured.",
   },
   body: {
     type: "object",
@@ -1399,23 +1399,23 @@ function resolveApiBase(args: JsonObject): string {
   if (explicit) {
     return trimTrailingSlash(explicit.replace("{workspace_slug}", workspaceSlug));
   }
-  const origin = trimTrailingSlash(
+  const configuredOrigin =
     optionalString(args["base_url"]) ??
       envString("SYNTHI_CODESITE_BASE_URL") ??
-      envString("SYNTHI_APP_URL") ??
-      "http://127.0.0.1:3000"
-  );
+      envString("SYNTHI_APP_URL");
+  if (!configuredOrigin) throw new Error("codesite_api_base_required");
+  const origin = trimTrailingSlash(configuredOrigin);
   return `${origin}/api/workspace/${workspaceSlug}/codesite`;
 }
 
 function resolveCollabBase(args: JsonObject): string {
-  return trimTrailingSlash(
+  const configuredOrigin =
     optionalString(args["collab_base_url"]) ??
       envString("SYNTHI_COLLAB_BASE_URL") ??
       envString("COLLAB_SERVER_URL") ??
-      envString("SYNTHI_COLLAB_SERVER_URL") ??
-      "http://127.0.0.1:1234"
-  );
+      envString("SYNTHI_COLLAB_SERVER_URL");
+  if (!configuredOrigin) throw new Error("codesite_collab_base_required");
+  return trimTrailingSlash(configuredOrigin);
 }
 
 function requiredWorkspaceSlug(args: JsonObject): string {

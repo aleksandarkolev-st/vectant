@@ -70,6 +70,7 @@ import {
 import { createProjectCoordinationBus, ProjectCoordinationBusError } from './projectCoordinationBus';
 import { canonicalKnowledgeEventType } from './knowledgeEvents';
 import { getCodeSiteRuntimeConfig } from './runtimeConfig';
+import { executeWarrantAuthority } from './warrantAuthority';
 import {
   buildObservationCoordinationInput,
   normalizeProjectObservation,
@@ -2059,6 +2060,204 @@ export async function requireAgentTokenAuthority(
     capabilities,
     authorizedAt,
   };
+}
+
+/**
+ * Canonical provider-neutral principal for warrant enforcement. The csa token
+ * is validated here, not trusted because a caller supplied a session id.
+ */
+export async function getAgentWarrantPrincipal(workspaceSlug, sessionId, agentAccessToken) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: configuredWarrantCapability('USE'),
+  });
+  return warrantPrincipalFromAgentSession(authority.session);
+}
+
+/**
+ * Resolve a potential warrant recipient using the issuing agent's verified
+ * csa credential. The returned claim is canonical only if both agents remain
+ * attached, live, capable, and scoped to the same workspace and project.
+ */
+export async function getAgentWarrantRecipientPrincipal(
+  workspaceSlug,
+  issuerSessionId,
+  issuerAccessToken,
+  recipientSessionId,
+) {
+  const issuer = await requireAgentTokenAuthority(workspaceSlug, issuerSessionId, issuerAccessToken, {
+    requiredCapability: configuredWarrantCapability('ISSUE'),
+  });
+  const targetId = String(recipientSessionId || '').trim();
+  if (!targetId) throw forbidden('agent_warrant_recipient_invalid');
+  const recipient = await prisma.codeSiteAgentSession.findFirst({
+    where: {
+      id: targetId,
+      workspaceSlug: String(workspaceSlug || '').trim(),
+      projectId: issuer.session.projectId,
+      endedAt: null,
+    },
+    include: { project: { include: { members: true } } },
+  });
+  assertAgentWarrantRecipientAuthority(recipient, issuer.authorizedAt, configuredWarrantCapability('USE'));
+  return warrantPrincipalFromAgentSession(recipient);
+}
+
+/**
+ * Authenticated CodeSite adapter for the generic transactional warrant port.
+ * The operation is selected by a fixed protocol vocabulary; every policy
+ * value, identity issuer, and capability is supplied by deployment config.
+ */
+export async function executeAgentWarrantAuthority(
+  workspaceSlug,
+  sessionId,
+  agentAccessToken,
+  operation,
+  body = {},
+) {
+  const normalizedOperation = String(operation || '').trim().toLowerCase();
+  if (!['issue', 'attenuate', 'check', 'list', 'revoke', 'renew', 'reserve', 'settle'].includes(normalizedOperation)) {
+    throw badRequest('warrant_authority_operation_invalid');
+  }
+  const requestedBearer = typeof body?.bearer === 'string' && body.bearer.trim() ? body.bearer : null;
+  const issuerOperation = ['issue', 'list', 'revoke'].includes(normalizedOperation)
+    || (['attenuate', 'renew'].includes(normalizedOperation) && requestedBearer === null);
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: configuredWarrantCapability(issuerOperation ? 'ISSUE' : 'USE'),
+  });
+  const principal = warrantPrincipalFromAgentSession(authority.session);
+  const canonicalBody = await canonicalizeWarrantAuthorityAudience(
+    workspaceSlug,
+    sessionId,
+    agentAccessToken,
+    normalizedOperation,
+    body,
+    principal,
+  );
+  return executeWarrantAuthority(prisma, {
+    projectId: authority.session.projectId,
+    workspace: String(workspaceSlug || '').trim(),
+    principal,
+    policy: configuredWarrantAuthorityPolicy(),
+  }, normalizedOperation, canonicalBody);
+}
+
+async function canonicalizeWarrantAuthorityAudience(
+  workspaceSlug,
+  issuerSessionId,
+  issuerAccessToken,
+  operation,
+  body,
+  currentPrincipal,
+) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw badRequest('warrant_payload_invalid');
+  const requested = body.audience;
+  if (requested === undefined) {
+    if (operation === 'issue') throw badRequest('warrant_audience_required');
+    return body;
+  }
+  const candidate = normalizedWarrantPrincipal(requested);
+  if (sameWarrantPrincipal(candidate, currentPrincipal)) return { ...body, audience: currentPrincipal };
+  const resolved = await getAgentWarrantRecipientPrincipal(
+    workspaceSlug,
+    issuerSessionId,
+    issuerAccessToken,
+    candidate.subject,
+  );
+  if (!sameWarrantPrincipal(candidate, resolved)) throw forbidden('agent_warrant_recipient_claim_mismatch');
+  return { ...body, audience: resolved };
+}
+
+function configuredWarrantAuthorityPolicy() {
+  return {
+    maxActive: configuredWarrantPositiveInteger('SYNTHI_CODESITE_WARRANT_MAX_ACTIVE'),
+    maxTtlMs: configuredWarrantPositiveInteger('SYNTHI_CODESITE_WARRANT_MAX_TTL_MS'),
+    maxInvocations: configuredWarrantPositiveInteger('SYNTHI_CODESITE_WARRANT_MAX_INVOCATIONS'),
+  };
+}
+
+function configuredWarrantPositiveInteger(key) {
+  const value = Number(process.env[key]);
+  if (!Number.isSafeInteger(value) || value <= 0) throw forbidden('codesite_warrant_policy_unconfigured');
+  return value;
+}
+
+function normalizedWarrantPrincipal(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw badRequest('agent_warrant_recipient_invalid');
+  const field = (name) => {
+    const item = String(value[name] || '').trim();
+    if (!item || item.length > 512 || /[\r\n]/.test(item)) throw badRequest('agent_warrant_recipient_invalid');
+    return item;
+  };
+  const project = value.project === undefined ? undefined : field('project');
+  return { issuer: field('issuer'), subject: field('subject'), workspace: field('workspace'), ...(project === undefined ? {} : { project }) };
+}
+
+function sameWarrantPrincipal(left, right) {
+  return left.issuer === right.issuer
+    && left.subject === right.subject
+    && left.workspace === right.workspace
+    && left.project === right.project;
+}
+
+function warrantPrincipalFromAgentSession(session) {
+  return {
+    issuer: configuredWarrantIssuer(),
+    subject: String(session.id),
+    workspace: String(session.workspaceSlug),
+    project: String(session.projectId),
+  };
+}
+
+function assertAgentWarrantRecipientAuthority(session, now, useCapability) {
+  if (!session) throw forbidden('agent_warrant_recipient_not_available');
+  const authorizedAt = now instanceof Date ? now : new Date(now);
+  const authorizedAtMs = authorizedAt.getTime();
+  const expiresAtMs = session.agentAccessTokenExpiresAt
+    ? new Date(session.agentAccessTokenExpiresAt).getTime()
+    : Number.NaN;
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= authorizedAtMs) {
+    throw forbidden('agent_warrant_recipient_access_expired');
+  }
+  if (session.status !== 'attached') throw forbidden('agent_warrant_recipient_not_attached');
+  const heartbeatAtMs = session.lastHeartbeatAt
+    ? new Date(session.lastHeartbeatAt).getTime()
+    : Number.NaN;
+  const heartbeatAgeMs = authorizedAtMs - heartbeatAtMs;
+  if (!Number.isFinite(heartbeatAtMs)
+    || heartbeatAgeMs < 0
+    || heartbeatAgeMs > AGENT_CONTEXT_HEARTBEAT_MAX_AGE_MS) {
+    throw forbidden('agent_warrant_recipient_heartbeat_stale');
+  }
+  if (!session.project || session.project.status !== 'active') throw forbidden('codesite_project_inactive');
+  const member = projectAgentMember(session.project, session.ownerUserId);
+  if (!member || !projectPermissionAllows(member, 'read')) throw forbidden('agent_project_membership_revoked');
+  const capabilities = unique(asArray(parseJson(session.capabilitiesJson, []))
+    .map((capability) => String(capability || '').trim())
+    .filter(Boolean));
+  if (!capabilities.includes(useCapability)) {
+    throw forbidden('agent_warrant_recipient_capability_required', {
+      requiredCapabilities: [useCapability],
+    });
+  }
+}
+
+function configuredWarrantIssuer() {
+  return configuredWarrantIdentityValue('SYNTHI_CODESITE_WARRANT_ISSUER', 'codesite_warrant_issuer_unconfigured');
+}
+
+function configuredWarrantCapability(kind) {
+  return configuredWarrantIdentityValue(
+    `SYNTHI_CODESITE_WARRANT_${kind}_CAPABILITY`,
+    `codesite_warrant_${String(kind).toLowerCase()}_capability_unconfigured`,
+  );
+}
+
+function configuredWarrantIdentityValue(key, code) {
+  const value = String(process.env[key] || '').trim();
+  if (!value || value.length > 128 || !/^[a-z0-9][a-z0-9.*:_-]*$/i.test(value)) {
+    throw forbidden(code);
+  }
+  return value;
 }
 
 export function agentChannelRateLimitKey(session) {

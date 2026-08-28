@@ -20,10 +20,13 @@
   applyRouteRevision,
   dryRunTransactionWrites,
   detachAgentSession,
+  executeAgentWarrantAuthority,
   eventCursor,
   exportArtifacts,
   getAgentInbox,
   getAgentInboxForAgent,
+  getAgentWarrantPrincipal,
+  getAgentWarrantRecipientPrincipal,
   getAgentManifest,
   getAgentSharedKnowledge,
   getControlState,
@@ -106,6 +109,25 @@ export const dynamic = 'force-dynamic';
 export async function GET(request, { params }) {
   const { slug, path } = await params;
   const route = parsePath(path);
+  if (route[0] === 'agent-sessions' && route[2] === 'warrant-principal' && route.length === 3) {
+    try {
+      return okJson({ principal: await getAgentWarrantPrincipal(slug, route[1], bearerToken(request)) });
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
+  if (route[0] === 'agent-sessions'
+    && route[2] === 'warrant-recipients'
+    && route[4] === 'principal'
+    && route.length === 5) {
+    try {
+      return okJson({
+        principal: await getAgentWarrantRecipientPrincipal(slug, route[1], bearerToken(request), route[3]),
+      });
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
   if (route[0] === 'agent-sessions' && route[2] === 'relevant-context' && route.length === 3) {
     try {
       return okJson(await getRelevantAgentContext(slug, route[1], bearerToken(request)));
@@ -334,6 +356,22 @@ function requestQuery(request) {
 export async function POST(request, { params }) {
   const { slug, path } = await params;
   const route = parsePath(path);
+  if (route[0] === 'agent-sessions'
+    && route[2] === 'warrant-authority'
+    && route[3]
+    && route.length === 4) {
+    try {
+      return okJson(await executeAgentWarrantAuthority(
+        slug,
+        route[1],
+        bearerToken(request),
+        route[3],
+        await readJson(request),
+      ));
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
   if (route[0] === 'agent-sessions'
     && route[2] === 'inbox'
     && route[4] === 'respond'

@@ -11,7 +11,15 @@ import {
 import { eventLog } from "./events/index.js";
 import { recordToolCall } from "./observability/metrics.js";
 import { enforceQuota } from "./observability/quota.js";
-import { dispatchWarrantTool, enforceWarrantGate, authorizeResourceRead, settleWarrant, metaWarrantIdFromParams, WARRANT_TOOLS } from "./tools/warrant.js";
+import {
+  dispatchWarrantTool,
+  enforceWarrantGate,
+  authorizeResourceRead,
+  settleResourceWarrant,
+  settleWarrant,
+  metaWarrantIdFromParams,
+  WARRANT_TOOLS,
+} from "./tools/warrant.js";
 import {
   RESOURCES,
   RESOURCE_URIS,
@@ -1266,21 +1274,30 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
 
   server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
     const uri = req.params.uri;
-    // Patch J3: security-event telemetry is warrant/admin-key gated in
-    // warn/enforce modes; off mode (and non-event resources) pass through.
-    const resourceError = authorizeResourceRead(uri, req.params);
+    // Patch J3: warn/enforce modes authorize every resource through the
+    // request host's resource-grant resolver; off mode passes through.
+    const resourceError = await authorizeResourceRead(uri, req.params);
     if (resourceError) {
       return {
         contents: [{ type: "text" as const, text: JSON.stringify(resourceError) }],
         isError: true,
       };
     }
-    const contents = await readResource(uri);
-    if (!contents) throw new Error(`unknown_resource: ${uri}`);
-    const out: Record<string, unknown> = { uri: contents.uri, mimeType: contents.mimeType };
-    if (contents.text !== undefined) out["text"] = contents.text;
-    if (contents.blob !== undefined) out["blob"] = contents.blob;
-    return { contents: [out] };
+    try {
+      const contents = await readResource(uri);
+      if (!contents) {
+        await settleResourceWarrant(req.params, "failed");
+        throw new Error(`unknown_resource: ${uri}`);
+      }
+      const out: Record<string, unknown> = { uri: contents.uri, mimeType: contents.mimeType };
+      if (contents.text !== undefined) out["text"] = contents.text;
+      if (contents.blob !== undefined) out["blob"] = contents.blob;
+      await settleResourceWarrant(req.params, "succeeded");
+      return { contents: [out] };
+    } catch (error) {
+      await settleResourceWarrant(req.params, "unknown");
+      throw error;
+    }
   });
 
   server.setRequestHandler(SubscribeRequestSchema, async (req) => {
@@ -1454,7 +1471,7 @@ async function dispatchTool(
     }
     // Agent-warrant gate (WI_WARRANTS_SPEC Patch B). off=default|warn|enforce;
     // combined check+charge pre-dispatch, mirroring the quota gate above.
-    const warrantError = enforceWarrantGate(toolName, request.params);
+    const warrantError = await enforceWarrantGate(toolName, request.params);
     if (warrantError) {
       recordToolCall(toolName, "error");
       return {
@@ -1476,10 +1493,10 @@ async function dispatchTool(
         // Patch J1 settle: a dispatch that THREW never produced a response,
         // so its reservation is refunded. Structured isError responses are
         // settled below with the same rollback semantics.
-        settleWarrant(toolName, metaWarrantIdFromParams(request.params), false);
+        await settleWarrant(toolName, request.params, "unknown");
         throw err;
       }
-      settleWarrant(toolName, metaWarrantIdFromParams(request.params), !result.isError);
+      await settleWarrant(toolName, request.params, result.isError ? "failed" : "succeeded");
       recordToolCall(toolName, result.isError ? "error" : "ok");
       return result;
     }
@@ -1488,10 +1505,10 @@ async function dispatchTool(
       response = await dispatchTool(toolName, args, signal);
     } catch (err) {
       // Patch J1 settle: same refund-on-failed-dispatch semantics as above.
-      settleWarrant(toolName, metaWarrantIdFromParams(request.params), false);
+      await settleWarrant(toolName, request.params, "unknown");
       throw err;
     }
-    settleWarrant(toolName, metaWarrantIdFromParams(request.params), !response.isError);
+    await settleWarrant(toolName, request.params, response.isError ? "failed" : "succeeded");
     // Record the outcome for Prometheus. Most tools return structured error
     // payloads via `isError: true` rather than throwing — respect that.
     recordToolCall(toolName, response.isError ? "error" : "ok");

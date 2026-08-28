@@ -328,21 +328,23 @@ concurrent calls interleave between check and charge => budget double-spend
 (round-2 audit finding F4). Fix: WarrantRegistry gains
 tryReserve(warrant_id, tool): { reserved: boolean } - atomically decrement ALL
 chain remaining counters for the tool when every node has remaining undefined
-or > 0; settleReserved(warrant_id, tool, commit: boolean) restores counters
-when the dispatch failed. Gate: on an allowed decision call tryReserve BEFORE
-dispatch; false => deny invocations_exhausted. server.ts CallTool handler
-calls settleWarrant(toolName, warrantId, !response.isError) after dispatchTool
-(no-op without a warrant id). External-tool proxy path settles too.
+or > 0. Settlement is an explicit outcome, never a caller-supplied
+`commit` flag: `succeeded` retains the debit, `failed` restores it, and
+`unknown` retains it after an ambiguous crash or side-effecting failure. Gate:
+on an allowed decision call tryReserve BEFORE dispatch; false => deny
+invocations_exhausted. server.ts settles the durable receipt after dispatch;
+the external-tool proxy path settles too.
 J2 O(1) LOOKUPS: registry exposes get(warrant_id): Warrant | undefined
 (cloned snapshot); tools/warrant.ts replaces every listWarrants().find(...)
 with registry.get(...).
-J3 RESOURCES GATING: server.ts ReadResourceRequestSchema handler consults new
-exported authorizeResourceRead(uri, params): in warn/enforce modes URIs whose
-path contains "events" require _meta.warrant_id referencing an ACTIVE warrant
-(and, when that warrant is sealed, its matching _meta.warrant_bearer) OR a
-matching _meta.warrant_admin_key; otherwise isError
-"resource_access_denied". off mode unchanged. Round-3 finding: security events
-(warrant ids) leaked via resources/read ungated.
+J3 RESOURCES GATING: server.ts ReadResourceRequestSchema handler consults
+`authorizeResourceRead(uri, params)`. In warn/enforce modes, every requested
+URI is resolved by the authenticated host into an ordinary warrant grant and
+is denied unless that exact grant can be atomically reserved for the request.
+Its receipt is settled after the resource handler succeeds, fails, or becomes
+unknown. The MCP package does not
+classify URI schemes, paths, hosts, or “sensitive” resource categories, and
+does not contain an administrative bypass. Off mode is unchanged.
 J4 REDACTION COMPLETION: grep src for raw warrant ids in eventLog pushes
 outside tools/warrant.ts rid() helper; route any stragglers through it.
 Tests: parallel 10x calls vs max_invocations=2 => exactly 2 reserved-admitted;
@@ -407,3 +409,104 @@ that key, uses the fresh child bearer, restarts, and repeats holder delegation.
 An audience/task binding is deferred until the host has an authenticated,
 generic workload identity to bind; an unverified caller-supplied label would
 not be a security control.
+
+## Patch M - authenticated principal audiences
+
+Bearer possession is necessary for sealed warrants, but it is not sufficient
+for a production multi-agent deployment. A child can carry an optional generic
+`audience` claim:
+
+```json
+{ "issuer": "identity-authority", "subject": "agent-session", "workspace": "workspace", "project": "project" }
+```
+
+M1 CORE: `src/security/warrant_principal.ts` owns the provider-neutral claim
+shape and exact comparison. `Warrant.audience` is immutable state, included in
+encrypted snapshots. `check`, holder attenuation, renewal, and resource reads
+deny `principal_required` or `principal_mismatch` before bearer
+or capability coverage when an audience exists. A child inherits its parent's
+audience unless a verified recipient replaces it. The core contains no agent
+provider, runtime, local hostname, session-token syntax, or provider-specific
+capability.
+
+M2 HOST CONTEXT: `src/security/warrant_request_context.ts` carries an
+already-authenticated principal, recipient canonicalizer, shared authority,
+and resource-grant resolver through request-local async context. User MCP
+parameters are never treated as identity proof or as resource-grant policy.
+
+M3 HOST INTEGRATION: `serveHttp({ warrantRequestContext })` accepts an
+injected request-context provider. The MCP package intentionally has no
+identity URL, route template, credential-header name, certificate location,
+token syntax, agent/runtime identifier, or resource-capability name. A
+deployment integration owns all transport and trust establishment, then passes
+only canonical provider-neutral values into the MCP core.
+`createCodeSiteWarrantContextProvider` is the CodeSite adapter: it requires a
+deployment-owned service to authenticate the request and csa credential before
+returning a principal, authority, resource resolver, and recipient lookup. It
+rejects recipient claims that are not an exact canonical match in the issuer's
+workspace/project. The adapter contains no endpoint, header, certificate, or
+capability configuration.
+
+M4 CODESITE LIFECYCLE: CodeSite is one possible deployment integration. Its
+authenticated control-plane boundary resolves canonical principals and
+recipients from agent-session state. The use, issue, and issuer labels are
+deployment configuration:
+
+- `SYNTHI_CODESITE_WARRANT_ISSUER`
+- `SYNTHI_CODESITE_WARRANT_USE_CAPABILITY`
+- `SYNTHI_CODESITE_WARRANT_ISSUE_CAPABILITY`
+
+No default identity or capability label is accepted. Each projection checks
+attached state, csa expiry, heartbeat freshness, active project,
+non-revoked project membership, required capability, and workspace/project
+scope. Missing configuration or unavailable identity fails closed.
+
+M5 TRANSPORT: the deployment integration must use its own authenticated,
+encrypted service-to-service transport and fail closed when it cannot establish
+or validate identity. This policy deliberately does not prescribe an endpoint
+layout, headers, secret mounts, cloud vendor, TLS implementation, or capability
+taxonomy.
+
+M6 PROOF: the compiled runtime proof demonstrates bearer-only denial,
+wrong-principal denial, exact-recipient admission, holder delegation into a
+new recipient, host-injected authority use, request-id receipts, and a
+host-resolved resource grant. The transactional authority proof covers
+receipts, audit chaining, and fail-closed corruption behavior. A generated
+deployment migration plus real two-replica/failure-injection acceptance remain
+release gates.
+
+M7 PERSISTENCE MODEL: CodeSite's Prisma schema now models the production
+authority boundary: warrants, per-tool remaining budgets, transitive lineage,
+idempotency-keyed receipts (`reserved`, `succeeded`, `failed`, `unknown`), and
+a per-project hash-chain audit outbox. This is schema-first work: the database
+migration must be generated and reviewed through Prisma against the deployment
+database. No hand-authored SQL migration or MCP-local JSONL store is a
+production authority substitute.
+
+M8 TRANSACTION AUTHORITY: `warrant_authority.ts` defines the provider-neutral
+MCP port. A deployment authority implementation owns its transport and performs
+every mutation through a Serializable transaction boundary, locks its tenant
+scope, conditionally decrements every ancestor budget, then creates the receipt
+and audit-outbox record before returning admission. A structured tool failure
+settles `failed` and refunds; a thrown/ambiguous call settles `unknown` and
+deliberately retains the debit. Before each new audit write, the authority
+verifies the complete tenant/project hash chain and fails closed if it is
+missing or corrupted.
+
+M9 OPERATIONS: production mode rejects the historical JSONL store, and that
+store itself rejects an implicit temporary key when `NODE_ENV=production`.
+`NODE_ENV=production` with `SYNTHI_WARRANT_MODE=enforce` rejects MCP requests
+unless the host injects a trusted principal, recipient canonicalizer, audience
+enforcement, shared authority, and resource resolver; embedded and stdio hosts
+make the same check at the tool boundary, so they cannot silently use bearer-only process-local
+enforcement. In warn/enforce modes,
+every resource read needs a trusted host resolver that returns the exact
+ordinary grant to reserve and settle. There is no default resource capability, URI
+classifier, or production admin-key bypass.
+The Prometheus registry exports `synthi_warrant_decisions_total`,
+`synthi_warrant_receipts_total`, and
+`synthi_warrant_identity_failures_total`,
+`synthi_warrant_reservation_settlement_age_ms_total`, and
+`synthi_warrant_replays_total`; deployment alerts should page on
+authority-unavailable denials, stale-identity rejection growth, replay growth,
+or aged `reserved` receipts observed from the authority store.

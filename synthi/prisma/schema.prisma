@@ -379,6 +379,11 @@ model CodeSiteProject {
   knowledgeItems     CodeSiteKnowledgeItem[]
   knowledgeReferences CodeSiteKnowledgeReference[]
   agentChannels      CodeSiteAgentChannel[]
+  warrants           CodeSiteWarrant[]
+  warrantLineage     CodeSiteWarrantLineage[]
+  warrantReceipts    CodeSiteWarrantReceipt[]
+  warrantAuditHead   CodeSiteWarrantAuditHead?
+  warrantAuditOutbox CodeSiteWarrantAuditOutbox[]
 
   @@index([workspaceSlug])
   @@index([collaborationSessionId])
@@ -488,6 +493,142 @@ model CodeSiteAgentSession {
   @@index([agentAccessTokenExpiresAt])
   @@index([displayCallsign])
   @@index([status])
+}
+
+// Durable authority state for the CodeSite warrant adapter. The core warrant
+// vocabulary remains provider-neutral; this model is only the authenticated
+// CodeSite persistence boundary. Every query is project- and workspace-scoped
+// so replicas never infer tenant ownership from an opaque warrant id alone.
+model CodeSiteWarrant {
+  id                String    @id
+  projectId         String
+  workspaceSlug     String
+  subject           String
+  // CodeSite is the production authority: every persisted warrant is bound to
+  // a canonical authenticated principal, never only a bearer handle.
+  audienceJson      String
+  grantsJson        String
+  issuedAt          DateTime
+  expiresAt         DateTime
+  status            String    @default("active")
+  sealed            Boolean   @default(false)
+  bearerHash        String?
+  parentWarrantId   String?
+  rootWarrantId     String
+  delegationJson    String?
+  delegationDepth   Int?
+  revokedAt         DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  project               CodeSiteProject          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  budgets               CodeSiteWarrantBudget[]
+  receipts              CodeSiteWarrantReceipt[]
+  lineageAsDescendant   CodeSiteWarrantLineage[] @relation("CodeSiteWarrantLineageDescendant")
+  lineageAsAncestor     CodeSiteWarrantLineage[] @relation("CodeSiteWarrantLineageAncestor")
+
+  @@index([projectId, status, expiresAt])
+  @@index([workspaceSlug, status, expiresAt])
+  @@index([parentWarrantId])
+  @@index([rootWarrantId])
+}
+
+// One effective remaining budget per warrant/tool. A transactional reservation
+// decrements every lineage row's matching budget in the same serializable
+// commit that creates the receipt and audit-outbox event.
+model CodeSiteWarrantBudget {
+  id                   String   @id @default(cuid())
+  warrantId            String
+  tool                 String
+  remainingInvocations Int
+  maximumInvocations   Int
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  warrant CodeSiteWarrant @relation(fields: [warrantId], references: [id], onDelete: Cascade)
+
+  @@unique([warrantId, tool])
+  @@index([tool, remainingInvocations])
+}
+
+// Transitive closure for O(ancestor-count) revocation and atomic chain budget
+// reservation. A warrant owns a depth-zero row for itself.
+model CodeSiteWarrantLineage {
+  id                 String   @id @default(cuid())
+  projectId          String
+  descendantWarrantId String
+  ancestorWarrantId  String
+  depth              Int
+  createdAt          DateTime @default(now())
+
+  project          CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  descendantWarrant CodeSiteWarrant @relation("CodeSiteWarrantLineageDescendant", fields: [descendantWarrantId], references: [id], onDelete: Cascade)
+  ancestorWarrant   CodeSiteWarrant @relation("CodeSiteWarrantLineageAncestor", fields: [ancestorWarrantId], references: [id], onDelete: Cascade)
+
+  @@unique([descendantWarrantId, ancestorWarrantId])
+  @@index([projectId, ancestorWarrantId])
+  @@index([projectId, descendantWarrantId])
+}
+
+// A request is charged through an idempotent receipt state machine. Unknown
+// receipts deliberately retain their debit until an operator/reconciler makes
+// a terminal decision; a replica cannot double-spend a budget after restart.
+model CodeSiteWarrantReceipt {
+  id             String   @id @default(cuid())
+  projectId      String
+  workspaceSlug  String
+  idempotencyKey String
+  warrantId      String
+  tool           String
+  principalJson  String
+  requestDigest  String
+  status         String   @default("reserved")
+  reservedAt     DateTime @default(now())
+  settledAt      DateTime?
+  failureCode    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  warrant CodeSiteWarrant @relation(fields: [warrantId], references: [id], onDelete: Restrict)
+
+  @@unique([projectId, idempotencyKey])
+  @@index([workspaceSlug, status, reservedAt])
+  @@index([warrantId, status])
+}
+
+// Per-project hash-chain head. The corresponding outbox record is written in
+// the same transaction as every authority decision; downstream delivery never
+// decides whether a warrant operation was accepted.
+model CodeSiteWarrantAuditHead {
+  projectId  String   @id
+  sequence   Int      @default(0)
+  headHash   String
+  updatedAt  DateTime @updatedAt
+
+  project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+model CodeSiteWarrantAuditOutbox {
+  id           String   @id @default(cuid())
+  projectId    String
+  workspaceSlug String
+  sequence     Int
+  eventType    String
+  eventJson    String
+  previousHash String
+  eventHash    String
+  status       String   @default("pending")
+  attempts     Int      @default(0)
+  deliveredAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  project CodeSiteProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, sequence])
+  @@unique([eventHash])
+  @@index([workspaceSlug, status, createdAt])
 }
 
 model CodeSiteExecutionPlan {
@@ -1368,4 +1509,3 @@ model CodeSiteAgentChannel {
   @@index([fromSessionId])
   @@index([toSessionId])
 }
-
