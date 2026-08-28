@@ -24,10 +24,13 @@
   askAgentQuestion,
   dryRunTransactionWrites,
   detachAgentSession,
+  executeAgentWarrantAuthority,
   eventCursor,
   exportArtifacts,
   getAgentInbox,
   getAgentInboxForAgent,
+  getAgentWarrantPrincipal,
+  getAgentWarrantRecipientPrincipal,
   getAgentManifest,
   findAgentExperts,
   findProjectExperts,
@@ -124,6 +127,21 @@ export const dynamic = 'force-dynamic';
 export async function GET(request, { params }) {
   const { slug, path } = await params;
   const route = parsePath(path);
+  if (route[0] === 'agent-sessions' && route[2] === 'warrant-principal' && route.length === 3) {
+    try {
+      return okJson({ principal: await getAgentWarrantPrincipal(slug, route[1], bearerToken(request)) });
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
+  if (route[0] === 'agent-sessions'
+    && route[2] === 'warrant-recipients'
+    && route[4] === 'principal'
+    && route.length === 5) {
+    try {
+      return okJson({
+        principal: await getAgentWarrantRecipientPrincipal(slug, route[1], bearerToken(request), route[3]),
+      });
   if (route[0] === 'agent-sessions' && route[2] === 'experts' && route.length === 3) {
     try {
       return okJson(await findAgentExperts(slug, route[1], bearerToken(request), requestQuery(request)));
@@ -406,6 +424,22 @@ export async function POST(request, { params }) {
         await askAgentQuestion(slug, route[1], bearerToken(request), await readJson(request)),
         { status: 201 },
       );
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
+  if (route[0] === 'agent-sessions'
+    && route[2] === 'warrant-authority'
+    && route[3]
+    && route.length === 4) {
+    try {
+      return okJson(await executeAgentWarrantAuthority(
+        slug,
+        route[1],
+        bearerToken(request),
+        route[3],
+        await readJson(request),
+      ));
     } catch (error) {
       return handleCodesiteError(error);
     }

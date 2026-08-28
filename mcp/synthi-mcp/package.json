@@ -19,6 +19,10 @@
       "types": "./dist/browser/source_identity.d.ts",
       "import": "./dist/browser/source_identity.js"
     },
+    "./warrant/codesite-session-adapter": {
+      "types": "./dist/security/codesite_session_warrant_adapter.d.ts",
+      "import": "./dist/security/codesite_session_warrant_adapter.js"
+    },
     "./dojo/proof/public-verifier": {
       "types": "./dist/dojo/proof/public_verifier.d.ts",
       "import": "./dist/dojo/proof/public_verifier.js"

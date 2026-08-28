@@ -83,6 +83,15 @@ Examples of command env vars:
 - `SYNTHI_CHAOS_BROWSER_CRASH_COMMAND_JSON`
 - `SYNTHI_CHAOS_EVIDENCE_STORE_UNAVAILABLE_COMMAND_JSON`
 - `SYNTHI_CHAOS_PROOF_SIGNING_OUTAGE_COMMAND_JSON`
+- `SYNTHI_CHAOS_WARRANT_TWO_REPLICA_COMMAND_JSON`
 
 This keeps destructive Docker/network/service operations external to the repo
 and makes live execution an explicit release-operator decision.
+
+The warrant two-replica command must write exactly one redacted JSON evidence
+object to stdout. The scenario requires two distinct replica identities plus
+passing, digest-backed probes for shared authority, cross-replica replay,
+concurrent budget reservation, authority and signer outages, managed-key
+rotation, lifecycle denial, audit integrity, service transport, and every
+required operational metric. The runner records stdout/stderr digests and
+rejects an exit-zero command that does not satisfy this contract.

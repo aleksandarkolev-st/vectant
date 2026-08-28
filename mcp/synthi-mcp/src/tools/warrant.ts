@@ -41,11 +41,29 @@ import {
   type WarrantJournalEvent,
   type WarrantRecordSnapshot,
 } from "../security/warrant.js";
+import { normalizeWarrantPrincipal, type WarrantPrincipal } from "../security/warrant_principal.js";
 import { TrustLedger, type TrustJournalEvent } from "../security/trust.js";
 import { WarrantStore } from "../security/warrant_store.js";
+import {
+  currentWarrantPrincipal,
+  currentWarrantAuthority,
+  hasWarrantAudienceVerifier,
+  hasWarrantResourceGrantResolver,
+  hasWarrantServiceAuthentication,
+  resolveWarrantResourceGrant,
+  verifyWarrantAudience,
+  warrantAudienceRequired,
+} from "../security/warrant_request_context.js";
+import type { WarrantAuthorityReservation } from "../security/warrant_authority.js";
 import { errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
 import { buildError, type ErrorPayload } from "../correctness/errors.js";
 import { eventLog } from "../events/index.js";
+import {
+  recordWarrantDecision,
+  recordWarrantReceipt,
+  recordWarrantReplay,
+  recordWarrantReservationSettlementAge,
+} from "../observability/metrics.js";
 
 /** The warrant management tools this module owns (mirrored in tool_registry.ts). */
 export const WARRANT_TOOL_NAMES = [
@@ -86,6 +104,9 @@ function adminKeyPresented(params: unknown): unknown {
 
 /** Process-wide registry behind the MCP surface. Singleton by design. */
 const warrantRegistry = new WarrantRegistry();
+const authorityReservations = new WeakMap<object, WarrantAuthorityReservation>();
+const localResourceReservations = new WeakMap<object, { warrant_id: string; capability: string }>();
+const authorityResourceReservations = new WeakMap<object, WarrantAuthorityReservation>();
 /** Process-wide progression ledger behind the separated trust surface. */
 const trustLedger = new TrustLedger();
 
@@ -106,6 +127,9 @@ type DurableWarrantJournalEvent =
 const journalPath = process.env["SYNTHI_WARRANT_STORE"];
 let warrantStore: WarrantStore | undefined;
 if (journalPath !== undefined && journalPath.trim().length > 0) {
+  if (process.env["NODE_ENV"]?.trim().toLowerCase() === "production") {
+    throw new Error("warrant_store_forbidden_in_production");
+  }
   warrantStore = new WarrantStore({ file: journalPath.trim(), key: process.env["SYNTHI_WARRANT_STORE_KEY"] });
   // Replay first: restore must not re-emit (restore paths never emit).
   const journal = warrantStore.replay<DurableWarrantJournalEvent>();
@@ -178,23 +202,30 @@ export async function dispatchWarrantTool(
   toolName: string,
   args: unknown
 ): Promise<ToolResponse> {
+  if (productionAuthorityRequired()) {
+    return errorResponse("warrant_identity_authority_required", {
+      human_reason: "Production warrant operations require an authenticated host context and shared warrant authority.",
+    });
+  }
   try {
     switch (toolName) {
       case "synthi_warrant_issue":
-        return issueTool(args);
+        return await issueTool(args);
       case "synthi_warrant_attenuate":
-        return attenuateTool(args);
+        return await attenuateTool(args);
       case "synthi_warrant_check":
-        return checkTool(args);
+        return await checkTool(args);
       case "synthi_warrant_revoke":
-        return revokeTool(args);
+        return await revokeTool(args);
       case "synthi_warrant_list":
-        return jsonResponse({ ok: true, warrants: warrantRegistry.listWarrants() });
+        return jsonResponse({ ok: true, warrants: await listWarrants() });
       case "synthi_warrant_trust": {
+        if (currentWarrantAuthority()) return productionTrustUnavailable();
         const view = trustLedger.view(requiredString(obj(args), "warrant_id"), Date.now());
         return jsonResponse({ ok: true, bound: view !== null, trust: view });
       }
       case "synthi_warrant_bind_trust": {
+        if (currentWarrantAuthority()) return productionTrustUnavailable();
         const a = obj(args);
         const warrantId = requiredString(a, "warrant_id");
         // Patch G2: progression requires proof-of-possession. Binding is only
@@ -216,6 +247,7 @@ export async function dispatchWarrantTool(
         return jsonResponse({ ok: true });
       }
       case "synthi_warrant_policy_register": {
+        if (currentWarrantAuthority()) return productionTrustUnavailable();
         const a = obj(args);
         const rawSteps = a["steps"];
         if (!Array.isArray(rawSteps)) throw new Error("A policy needs an array of steps.");
@@ -232,6 +264,7 @@ export async function dispatchWarrantTool(
         return jsonResponse({ ok: true, policy_id: policyId });
       }
       case "synthi_warrant_unbind": {
+        if (currentWarrantAuthority()) return productionTrustUnavailable();
         // Patch G3: escape valve — unbinding is allowed even mid-cooldown,
         // but stays holder-only by possession of the sealed bearer secret.
         const a = obj(args);
@@ -258,7 +291,7 @@ export async function dispatchWarrantTool(
         return jsonResponse({ ok: true });
       }
       case "synthi_warrant_renew":
-        return renewTool(args);
+        return await renewTool(args);
       default:
         throw new Error(`Unknown warrant tool '${toolName}'.`);
     }
@@ -267,10 +300,28 @@ export async function dispatchWarrantTool(
   }
 }
 
-function issueTool(args: unknown): ToolResponse {
+async function issueTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
+  const authority = currentWarrantAuthority();
   const now = Date.now();
   const ceilings = resolveOrgCeilings();
+  const audience = await requestedAudience(a["audience"]);
+  if ((warrantAudienceRequired() || authority !== undefined) && audience === undefined) {
+    return errorResponse("warrant_audience_required", {
+      human_reason: "This MCP host requires every production warrant to bind an authenticated recipient audience.",
+    });
+  }
+  if (authority) {
+    const warrant = await authority.issue({
+      subject: requiredString(a, "subject"),
+      audience: audience!,
+      grants: toolGrants(a["grants"]),
+      seal: a["seal"] === true,
+      delegation: delegationPolicy(a["delegation"]),
+      ttl_ms: requiredNumber(a, "ttl_ms"),
+    });
+    return jsonResponse({ ok: true, warrant });
+  }
   const activeCount = warrantRegistry
     .listWarrants()
     .filter((w) => w.status === "active" && w.expires_at_ms > now).length;
@@ -281,6 +332,7 @@ function issueTool(args: unknown): ToolResponse {
   }
   const warrant = warrantRegistry.issue({
     subject: requiredString(a, "subject"),
+    audience,
     grants: toolGrants(a["grants"]),
     seal: a["seal"] === true,
     delegation: delegationPolicy(a["delegation"]),
@@ -293,46 +345,104 @@ function issueTool(args: unknown): ToolResponse {
   return jsonResponse({ ok: true, warrant });
 }
 
-function attenuateTool(args: unknown): ToolResponse {
+async function attenuateTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
+  const authority = currentWarrantAuthority();
   const ceilings = resolveOrgCeilings();
+  const audience = await requestedAudience(a["audience"]);
+  if (authority) {
+    const warrant = await authority.attenuate({
+      parent_warrant_id: requiredString(a, "parent_warrant_id"),
+      subject: requiredString(a, "subject"),
+      ...(audience === undefined ? {} : { audience }),
+      grants: toolGrants(a["grants"]),
+      seal: a["seal"] === true,
+      bearer: typeof a["bearer"] === "string" ? a["bearer"] : undefined,
+      ...(numberOpt(a["ttl_ms"]) === undefined ? {} : { ttl_ms: numberOpt(a["ttl_ms"]) }),
+    });
+    return jsonResponse({ ok: true, warrant });
+  }
+  const parent = warrantRegistry.get(requiredString(a, "parent_warrant_id"));
+  if (warrantAudienceRequired() && audience === undefined && parent?.audience === undefined) {
+    return errorResponse("warrant_audience_required", {
+      human_reason: "This MCP host requires an authenticated recipient audience on every production child warrant.",
+    });
+  }
   const warrant = warrantRegistry.attenuate({
     parent_warrant_id: requiredString(a, "parent_warrant_id"),
     subject: requiredString(a, "subject"),
+    audience,
     grants: toolGrants(a["grants"]),
     seal: a["seal"] === true,
     bearer: typeof a["bearer"] === "string" ? a["bearer"] : undefined,
+    principal: currentWarrantPrincipal(),
     now: Date.now(),
     ttl_ms: Math.min(numberOpt(a["ttl_ms"]) ?? Number.MAX_SAFE_INTEGER, ceilings.max_ttl_ms),
   });
   return jsonResponse({ ok: true, warrant });
 }
 
-function checkTool(args: unknown): ToolResponse {
+async function checkTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
+  const warrantId = requiredString(a, "warrant_id");
+  const authority = currentWarrantAuthority();
+  if (authority) {
+    const decision = await authority.check({
+      warrant_id: warrantId,
+      tool: requiredString(a, "tool"),
+      args: recordOpt(a["args"]),
+      bearer: typeof a["bearer"] === "string" ? a["bearer"] : undefined,
+    });
+    return jsonResponse({ ok: decision.allowed, ...decision });
+  }
+  if (warrantAudienceRequired() && warrantRegistry.get(warrantId)?.audience === undefined) {
+    return errorResponse("warrant_audience_required", {
+      human_reason: "This MCP host rejects warrants without an authenticated recipient audience.",
+    });
+  }
   // Patch G6: the caller never supplies time — expiry is judged by the
   // server clock alone, so stale timestamps cannot revive a dead lease.
   const decision = warrantRegistry.check({
-    warrant_id: requiredString(a, "warrant_id"),
+    warrant_id: warrantId,
     tool: requiredString(a, "tool"),
     args: recordOpt(a["args"]),
     bearer: typeof a["bearer"] === "string" ? a["bearer"] : undefined,
+    principal: currentWarrantPrincipal(),
     now: Date.now(),
   });
   return jsonResponse({ ok: decision.allowed, ...decision });
 }
 
-function revokeTool(args: unknown): ToolResponse {
-  const revokedCount = warrantRegistry.revoke(requiredString(obj(args), "warrant_id"));
+async function revokeTool(args: unknown): Promise<ToolResponse> {
+  const authority = currentWarrantAuthority();
+  const warrantId = requiredString(obj(args), "warrant_id");
+  const revokedCount = authority ? await authority.revoke(warrantId) : warrantRegistry.revoke(warrantId);
   return jsonResponse({ ok: true, revoked_count: revokedCount });
 }
 
-function renewTool(args: unknown): ToolResponse {
+async function renewTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
+  const authority = currentWarrantAuthority();
   const ceilings = resolveOrgCeilings();
+  const warrantId = requiredString(a, "warrant_id");
+  if (authority) {
+    const warrant = await authority.renew({
+      warrant_id: warrantId,
+      bearer: typeof a["bearer"] === "string" ? a["bearer"] : undefined,
+      ttl_ms: requiredNumber(a, "ttl_ms"),
+      add_invocations: invocationTopUps(a["add_invocations"]),
+    });
+    return jsonResponse({ ok: true, warrant });
+  }
+  if (warrantAudienceRequired() && warrantRegistry.get(warrantId)?.audience === undefined) {
+    return errorResponse("warrant_audience_required", {
+      human_reason: "This MCP host rejects renewal of warrants without an authenticated recipient audience.",
+    });
+  }
   const warrant = warrantRegistry.renewTo({
-    warrant_id: requiredString(a, "warrant_id"),
+    warrant_id: warrantId,
     bearer: typeof a["bearer"] === "string" ? a["bearer"] : undefined,
+    principal: currentWarrantPrincipal(),
     ttl_ms: requiredNumber(a, "ttl_ms"),
     now: Date.now(),
     max_ttl_ms: ceilings.max_ttl_ms,
@@ -342,6 +452,16 @@ function renewTool(args: unknown): ToolResponse {
   return jsonResponse({ ok: true, warrant });
 }
 
+async function listWarrants(): Promise<readonly import("../security/warrant.js").Warrant[]> {
+  return currentWarrantAuthority()?.list() ?? warrantRegistry.listWarrants();
+}
+
+function productionTrustUnavailable(): ToolResponse {
+  return errorResponse("warrant_trust_authority_unavailable", {
+    human_reason: "Trust progression is disabled until its durable authority model is configured; production warrants never fall back to process-local trust state.",
+  });
+}
+
 export type WarrantMode = "off" | "warn" | "enforce";
 
 export function resolveWarrantMode(): WarrantMode {
@@ -349,6 +469,24 @@ export function resolveWarrantMode(): WarrantMode {
   if (raw === "warn") return "warn";
   if (raw === "enforce") return "enforce";
   return "off";
+}
+
+/**
+ * HTTP startup rejects this configuration before serving. The same guard here
+ * covers embedded and stdio hosts, which otherwise could fall back to the
+ * process-local bearer registry in a production process.
+ */
+function productionAuthorityRequired(): boolean {
+  return process.env["NODE_ENV"]?.trim().toLowerCase() === "production"
+    && resolveWarrantMode() === "enforce"
+    && (
+      currentWarrantAuthority() === undefined
+      || currentWarrantPrincipal() === undefined
+      || !warrantAudienceRequired()
+      || !hasWarrantAudienceVerifier()
+      || !hasWarrantResourceGrantResolver()
+      || !hasWarrantServiceAuthentication()
+    );
 }
 
 function adminKeyMatches(presented: unknown, expected: string): boolean {
@@ -369,7 +507,13 @@ function adminKeyMatches(presented: unknown, expected: string): boolean {
  * continues, enforce rejects). With one present, the warrant is checked and,
  * on success, charged for the invocation in both active modes.
  */
-export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayload | null {
+export async function enforceWarrantGate(toolName: string, params: unknown): Promise<ErrorPayload | null> {
+  if (productionAuthorityRequired()) {
+    return buildError("warrant_identity_authority_required", {
+      human_reason: "Production warrant enforcement requires an authenticated host context and shared warrant authority.",
+    });
+  }
+  if (currentWarrantAuthority()) return enforceAuthorityWarrantGate(toolName, params);
   const mode = resolveWarrantMode();
   // Management-plane exemption: the warrant tools themselves must stay
   // callable in enforce mode or no first warrant could ever be issued
@@ -379,7 +523,18 @@ export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayl
     const adminKey = resolveWarrantAdminKey();
     // Unconfigured (local/dev) posture keeps the historical open management plane.
     if (adminKey === null) return null;
-    if (adminKeyMatches(adminKeyPresented(params), adminKey)) return null;
+    if (adminKeyMatches(adminKeyPresented(params), adminKey)) {
+      if (toolName !== "synthi_warrant_attenuate" || parentExplicitlyPermitsDelegation(params)) return null;
+      eventLog.push({
+        kind: "security",
+        code: "rate_limit_warning",
+        detail: { code: "delegation_not_permitted", mode, tool: toolName },
+      });
+      if (mode === "warn") return null;
+      return buildError("delegation_not_permitted", {
+        human_reason: "This parent warrant was not issued with an explicit delegation policy.",
+      });
+    }
     // Sealed holders can renew their own credential and, only when the root
     // explicitly opted into it, attenuate it into a narrower child. All other
     // lifecycle and policy operations remain on the admin-gated plane.
@@ -404,10 +559,28 @@ export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayl
     const nowMs = Date.now();
     const argsRecord = recordOpt(args);
     const bearer = typeof metaValue(params, "warrant_bearer") === "string" ? metaValue(params, "warrant_bearer") as string : undefined;
+    const principal = currentWarrantPrincipal();
     // Patch H1: resolve the acting subject ONCE so every evidence write below
     // tags the demotion-taint map with whoever holds this warrant.
     const wSnap = warrantRegistry.get(warrantId);
     const subject = wSnap?.subject;
+    if (warrantAudienceRequired() && wSnap?.audience === undefined) {
+      const decision: WarrantDecision = {
+        allowed: false,
+        reason_code: "audience_required",
+        human_reason: "This MCP host rejects warrants without an authenticated recipient audience.",
+      };
+      eventLog.push({
+        kind: "security",
+        code: "rate_limit_warning",
+        detail: { code: "warrant_denied", mode, tool: toolName, warrant_id: rid(warrantId), reason_code: decision.reason_code },
+      });
+      if (mode === "warn") return null;
+      return buildError("warrant_required", {
+        reason_code: decision.reason_code,
+        human_reason: decision.human_reason,
+      });
+    }
     // Patch G1 golden rule: registry.check runs UNCONDITIONALLY first —
     // lifecycle (revoked/expired/unknown), bearer possession, base coverage,
     // argument scope, and chain budgets all outrank trust. Any denial is used
@@ -418,6 +591,7 @@ export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayl
       tool: toolName,
       args: argsRecord,
       bearer,
+      principal,
       now: nowMs,
     });
     if (!decision.allowed) {
@@ -505,6 +679,142 @@ export function enforceWarrantGate(toolName: string, params: unknown): ErrorPayl
   });
 }
 
+async function enforceAuthorityWarrantGate(toolName: string, params: unknown): Promise<ErrorPayload | null> {
+  const authority = currentWarrantAuthority()!;
+  const mode = resolveWarrantMode();
+  if ((WARRANT_TOOL_NAMES as readonly string[]).includes(toolName)) {
+    if (mode === "off") return null;
+    const adminKey = resolveWarrantAdminKey();
+    if (adminKey === null) return null;
+    if (adminKeyMatches(adminKeyPresented(params), adminKey)) {
+      if (toolName !== "synthi_warrant_attenuate" || await authorityParentExplicitlyPermitsDelegation(params, authority)) {
+        return null;
+      }
+      if (mode === "warn") return null;
+      return buildError("delegation_not_permitted", {
+        human_reason: "This parent warrant was not issued with an explicit delegation policy.",
+      });
+    }
+    if ((toolName === "synthi_warrant_renew" || toolName === "synthi_warrant_attenuate") && await hasAuthorityHolderBearer(toolName, params, authority)) {
+      return null;
+    }
+    if (mode === "warn") return null;
+    return buildError("warrant_admin_required", {
+      human_reason: "Warrant administration requires the organization's admin key or a valid sealed holder operation.",
+    });
+  }
+  if (mode === "off") return null;
+  const warrantId = metaWarrantId(params);
+  if (warrantId === undefined) return authorityRequiredError(mode, toolName);
+  const requestId = metaValue(params, "warrant_request_id");
+  if (typeof requestId !== "string") {
+    const payload = buildError("warrant_request_id_required", {
+      human_reason: "Production warrant enforcement requires a stable _meta.warrant_request_id so retries cannot double-spend a capability budget.",
+    });
+    return mode === "warn" ? null : payload;
+  }
+  const args = recordOpt((params as { arguments?: unknown } | undefined)?.arguments);
+  const bearer = metaValue(params, "warrant_bearer");
+  let result: Awaited<ReturnType<typeof authority.reserve>>;
+  try {
+    result = await authority.reserve({
+      warrant_id: warrantId,
+      tool: toolName,
+      args,
+      bearer: typeof bearer === "string" ? bearer : undefined,
+      idempotency_key: requestId,
+    });
+  } catch (error) {
+    const reason = authorityFailureReason(error);
+    recordWarrantDecision("denied", reason);
+    if (isWarrantReplayReason(reason)) recordWarrantReplay(reason);
+    return mode === "warn" ? null : buildError("warrant_authority_unavailable", {
+      human_reason: "The shared warrant authority could not confirm this call. Production enforcement fails closed.",
+    });
+  }
+  if (result.decision.allowed && result.reservation) {
+    if (params && typeof params === "object") authorityReservations.set(params as object, result.reservation);
+    recordWarrantDecision("allowed", "reserved");
+    return null;
+  }
+  if (result.decision.allowed) {
+    recordWarrantDecision("denied", "authority_receipt_missing");
+    return mode === "warn" ? null : buildError("warrant_authority_unavailable", {
+      human_reason: "The shared warrant authority admitted this call without a durable receipt. Production enforcement fails closed.",
+    });
+  }
+  const denial = result.decision;
+  if (isWarrantReplayReason(denial.reason_code)) recordWarrantReplay(denial.reason_code);
+  eventLog.push({
+    kind: "security",
+    code: "rate_limit_warning",
+    detail: { code: "warrant_denied", mode, tool: toolName, warrant_id: rid(warrantId), reason_code: denial.reason_code },
+  });
+  recordWarrantDecision("denied", denial.reason_code);
+  if (mode === "warn") return null;
+  return buildError("warrant_required", {
+    reason_code: denial.reason_code,
+    human_reason: denial.human_reason,
+  });
+}
+
+function authorityRequiredError(mode: WarrantMode, toolName: string): ErrorPayload | null {
+  eventLog.push({ kind: "security", code: "rate_limit_warning", detail: { code: "warrant_required", mode, tool: toolName } });
+  if (mode === "warn") return null;
+  return buildError("warrant_required", {
+    human_reason: "This server requires a capability warrant for tool calls right now. Present a warrant identifier in the call's _meta.warrant_id field.",
+  });
+}
+
+function authorityFailureReason(error: unknown): string {
+  if (
+    typeof error === "object"
+    && error !== null
+    && "code" in error
+    && typeof (error as { code?: unknown }).code === "string"
+  ) {
+    return (error as { code: string }).code;
+  }
+  return "warrant_authority_unavailable";
+}
+
+async function hasAuthorityHolderBearer(
+  toolName: string,
+  params: unknown,
+  authority: NonNullable<ReturnType<typeof currentWarrantAuthority>>,
+): Promise<boolean> {
+  const args = recordOpt((params as { arguments?: unknown } | undefined)?.arguments);
+  const warrantId = args?.[toolName === "synthi_warrant_attenuate" ? "parent_warrant_id" : "warrant_id"];
+  const bearer = args?.["bearer"];
+  if (typeof warrantId !== "string" || typeof bearer !== "string") return false;
+  try {
+    if (toolName === "synthi_warrant_attenuate") {
+      const parent = (await authority.list()).find((warrant) => warrant.warrant_id === warrantId);
+      if (parent?.delegation === undefined) return false;
+    }
+    const decision = await authority.check({ warrant_id: warrantId, tool: "__warrant_holder_probe__", bearer });
+    return decision.allowed || decision.reason_code === "tool_not_covered";
+  } catch {
+    return false;
+  }
+}
+
+async function authorityParentExplicitlyPermitsDelegation(
+  params: unknown,
+  authority: NonNullable<ReturnType<typeof currentWarrantAuthority>>,
+): Promise<boolean> {
+  // This is an early management-plane denial only. The shared authority is
+  // responsible for enforcing the immutable policy atomically with creation.
+  const args = recordOpt((params as { arguments?: unknown } | undefined)?.arguments);
+  const warrantId = args?.["parent_warrant_id"];
+  if (typeof warrantId !== "string") return false;
+  try {
+    return (await authority.list()).some((warrant) => warrant.warrant_id === warrantId && warrant.delegation !== undefined);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Patch J1: settle a reservation after dispatch. A failed (isError) dispatch
  * refunds the invocation across the chain; success keeps it as the charge.
@@ -514,9 +824,67 @@ export function metaWarrantIdFromParams(params: unknown): string | undefined {
   return metaWarrantId(params);
 }
 
-export function settleWarrant(_toolName: string, warrantId: string | undefined, keepCharge: boolean): void {
+export async function settleWarrant(
+  toolName: string,
+  params: unknown,
+  outcome: "succeeded" | "failed" | "unknown",
+): Promise<void> {
+  const authority = currentWarrantAuthority();
+  if (authority) {
+    const reservation = params && typeof params === "object" ? authorityReservations.get(params as object) : undefined;
+    if (!reservation) return;
+    try {
+      await authority.settle({
+        receipt_id: reservation.receipt_id,
+        outcome,
+        ...(outcome === "succeeded" ? {} : { failure_code: outcome }),
+      });
+      recordWarrantReceipt(outcome);
+      recordWarrantReservationSettlementAge(outcome, reservation.reserved_at_ms);
+    } finally {
+      if (params && typeof params === "object") authorityReservations.delete(params as object);
+    }
+    return;
+  }
+  const warrantId = metaWarrantId(params);
   if (!warrantId) return;
-  warrantRegistry.settleReserved(warrantId, _toolName, keepCharge);
+  warrantRegistry.settleReserved(warrantId, toolName, outcome === "succeeded");
+}
+
+/**
+ * Settles a reservation made for a resource read. Resource grants use the
+ * same durable receipt semantics as tool grants, while their capability and
+ * argument mapping remain entirely host supplied.
+ */
+export async function settleResourceWarrant(
+  params: unknown,
+  outcome: "succeeded" | "failed" | "unknown",
+): Promise<void> {
+  if (!params || typeof params !== "object") return;
+  const authority = currentWarrantAuthority();
+  if (authority) {
+    const reservation = authorityResourceReservations.get(params);
+    if (!reservation) return;
+    try {
+      await authority.settle({
+        receipt_id: reservation.receipt_id,
+        outcome,
+        ...(outcome === "succeeded" ? {} : { failure_code: outcome }),
+      });
+      recordWarrantReceipt(outcome);
+      recordWarrantReservationSettlementAge(outcome, reservation.reserved_at_ms);
+    } finally {
+      authorityResourceReservations.delete(params);
+    }
+    return;
+  }
+  const reservation = localResourceReservations.get(params);
+  if (!reservation) return;
+  try {
+    warrantRegistry.settleReserved(reservation.warrant_id, reservation.capability, outcome === "succeeded");
+  } finally {
+    localResourceReservations.delete(params);
+  }
 }
 
 function hasSealedRenewalBearer(params: unknown): boolean {
@@ -526,7 +894,13 @@ function hasSealedRenewalBearer(params: unknown): boolean {
   if (typeof warrantId !== "string" || typeof bearer !== "string") return false;
   const snapshot = warrantRegistry.get(warrantId);
   if (snapshot?.sealed !== true) return false;
-  const probe = warrantRegistry.check({ warrant_id: warrantId, tool: "__renew_probe__", bearer, now: Date.now() });
+  const probe = warrantRegistry.check({
+    warrant_id: warrantId,
+    tool: "__renew_probe__",
+    bearer,
+    principal: currentWarrantPrincipal(),
+    now: Date.now(),
+  });
   return probe.allowed || probe.reason_code === "tool_not_covered";
 }
 
@@ -535,60 +909,136 @@ function hasSealedDelegationBearer(params: unknown): boolean {
   const warrantId = args?.["parent_warrant_id"];
   const bearer = args?.["bearer"];
   if (typeof warrantId !== "string" || typeof bearer !== "string") return false;
-  return warrantRegistry.canDelegate({ warrant_id: warrantId, bearer, now: Date.now() }).allowed;
+  return warrantRegistry.canDelegate({
+    warrant_id: warrantId,
+    bearer,
+    principal: currentWarrantPrincipal(),
+    now: Date.now(),
+  }).allowed;
+}
+
+/** Administration may perform attenuation, but never invent delegation permission. */
+function parentExplicitlyPermitsDelegation(params: unknown): boolean {
+  const args = recordOpt((params as { arguments?: unknown } | undefined)?.arguments);
+  const warrantId = args?.["parent_warrant_id"];
+  if (typeof warrantId !== "string") return false;
+  return warrantRegistry.get(warrantId)?.delegation !== undefined;
 }
 
 /**
- * Patch J3: gate resource reads. Security-event resources carry sensitive
- * telemetry (warrant ids, reason codes), so in warn/enforce modes they
- * require either an active warrant or the organization admin key. Returns
- * an error payload to reject, or null to allow.
+ * Gates every resource read when warrant enforcement is active.  Resource
+ * classification and the capability vocabulary stay outside this package: an
+ * authenticated host resolves the actual URI into its own ordinary grant.
  */
-export function authorizeResourceRead(uri: string, params: unknown): ErrorPayload | null {
+export async function authorizeResourceRead(uri: string, params: unknown): Promise<ErrorPayload | null> {
   const mode = resolveWarrantMode();
   if (mode === "off") return null;
-  let path = "";
-  try {
-    path = new URL(uri).pathname.toLowerCase();
-  } catch {
-    path = uri.toLowerCase();
-  }
-  if (!path.includes("events")) return null;
-  const adminKey = resolveWarrantAdminKey();
-  if (adminKey !== null && adminKeyMatches(adminKeyPresented(params), adminKey)) return null;
   const warrantId = metaValue(params, "warrant_id");
-  if (typeof warrantId === "string" && warrantId.length > 0) {
-    const now = Date.now();
-    const snapshot = warrantRegistry.get(warrantId);
-    if (snapshot !== undefined && snapshot.status === "active" && snapshot.expires_at_ms > now) {
-      // A sealed warrant is a bearer capability. Resource reads are just as
-      // sensitive as tool calls, so an id by itself must not reveal telemetry.
-      // Use a probe tool that cannot be granted: `tool_not_covered` means the
-      // lifecycle and bearer checks passed, while every other denial is unsafe.
-      if (!snapshot.sealed) return null;
-      const bearer = metaValue(params, "warrant_bearer");
-      const probe = warrantRegistry.check({
+  const denial = async (reasonCode: string, humanReason: string): Promise<ErrorPayload | null> => {
+    recordWarrantDecision("denied", reasonCode);
+    if (isWarrantReplayReason(reasonCode)) recordWarrantReplay(reasonCode);
+    eventLog.push({
+      kind: "security",
+      code: "rate_limit_warning",
+      detail: {
+        code: "resource_access_denied",
+        mode,
+        resource_uri: rid(String(uri)),
+        warrant_id: typeof warrantId === "string" ? rid(warrantId) : undefined,
+        reason_code: reasonCode,
+      },
+    });
+    if (mode === "warn") return null;
+    return buildError("resource_access_denied", { reason_code: reasonCode, human_reason: humanReason });
+  };
+
+  let grant: Awaited<ReturnType<typeof resolveWarrantResourceGrant>>;
+  try {
+    grant = await resolveWarrantResourceGrant(uri);
+  } catch {
+    return denial("resource_grant_resolution_failed", "The host could not resolve an authorization grant for this resource.");
+  }
+  if (!isResourceGrant(grant)) {
+    return denial("resource_grant_unavailable", "This resource has no trusted authorization-grant mapping.");
+  }
+  if (typeof warrantId !== "string") {
+    return denial("warrant_required", "Reading this resource requires a warrant granted for its exact scope.");
+  }
+
+  const bearer = metaValue(params, "warrant_bearer");
+  const authority = currentWarrantAuthority();
+  if (authority) {
+    const requestId = metaValue(params, "warrant_request_id");
+    if (typeof requestId !== "string") {
+      return denial(
+        "warrant_request_id_required",
+        "Resource reads require a stable warrant request identifier so retries cannot double-spend a capability budget.",
+      );
+    }
+    try {
+      const result = await authority.reserve({
         warrant_id: warrantId,
-        tool: "__resource_events_read__",
+        tool: grant.capability,
+        args: grant.args,
         bearer: typeof bearer === "string" ? bearer : undefined,
-        now,
+        idempotency_key: requestId,
       });
-      if (probe.allowed || probe.reason_code === "tool_not_covered") return null;
+      if (result.decision.allowed && result.reservation) {
+        if (params && typeof params === "object") authorityResourceReservations.set(params, result.reservation);
+        recordWarrantDecision("allowed", "resource_reserved");
+        return null;
+      }
+      if (result.decision.allowed) {
+        return denial(
+          "authority_receipt_missing",
+          "The warrant authority admitted this resource read without a durable receipt. Enforcement fails closed.",
+        );
+      }
+      return denial(result.decision.reason_code, result.decision.human_reason);
+    } catch (error) {
+      return denial(
+        authorityFailureReason(error),
+        "The warrant authority could not reserve this resource grant. Enforcement fails closed.",
+      );
     }
   }
-  eventLog.push({
-    kind: "security",
-    code: "rate_limit_warning",
-    detail: {
-      code: "resource_access_denied",
-      mode,
-      uri: String(uri).slice(0, 120),
-      warrant_id: typeof warrantId === "string" ? rid(warrantId) : undefined,
-    },
+  if (warrantAudienceRequired() && warrantRegistry.get(warrantId)?.audience === undefined) {
+    return denial("audience_required", "This MCP host rejects resource grants without an authenticated recipient audience.");
+  }
+  const decision = warrantRegistry.check({
+    warrant_id: warrantId,
+    tool: grant.capability,
+    args: grant.args,
+    bearer: typeof bearer === "string" ? bearer : undefined,
+    principal: currentWarrantPrincipal(),
+    now: Date.now(),
   });
-  return buildError("resource_access_denied", {
-    human_reason: "Reading security-event resources requires an active warrant or the organization admin key.",
-  });
+  if (!decision.allowed) return denial(decision.reason_code, decision.human_reason);
+  const reservation = warrantRegistry.tryReserve(warrantId, grant.capability);
+  if (!reservation.reserved) {
+    return denial("invocations_exhausted", "This resource grant's invocation budget is exhausted.");
+  }
+  if (params && typeof params === "object") {
+    localResourceReservations.set(params, { warrant_id: warrantId, capability: grant.capability });
+  }
+  recordWarrantDecision("allowed", "resource_reserved");
+  return null;
+}
+
+function isResourceGrant(value: unknown): value is { capability: string; args?: Readonly<Record<string, unknown>> } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const grant = value as { capability?: unknown; args?: unknown };
+  if (
+    typeof grant.capability !== "string"
+    || !grant.capability.trim()
+    || grant.capability.length > 256
+    || /[\r\n]/.test(grant.capability)
+  ) return false;
+  return grant.args === undefined || (typeof grant.args === "object" && grant.args !== null && !Array.isArray(grant.args));
+}
+
+function isWarrantReplayReason(reason: string): boolean {
+  return reason.startsWith("receipt_") || reason.endsWith("idempotency_key_reused");
 }
 
 function metaValue(params: unknown, key: string): unknown {
@@ -654,11 +1104,21 @@ function delegationPolicy(value: unknown): DelegationPolicy | undefined {
   const maxDepth = requiredNumber(policy, "max_depth");
   const maxChildTtl = numberOpt(policy["max_child_ttl_ms"]);
   const maxChildInvocations = numberOpt(policy["max_child_invocations"]);
+  const requireRecipientIdentity = policy["require_recipient_identity"];
+  if (requireRecipientIdentity !== undefined && typeof requireRecipientIdentity !== "boolean") {
+    throw new Error("Delegation 'require_recipient_identity' must be true or false.");
+  }
   return {
     max_depth: maxDepth,
     ...(maxChildTtl === undefined ? {} : { max_child_ttl_ms: maxChildTtl }),
     ...(maxChildInvocations === undefined ? {} : { max_child_invocations: maxChildInvocations }),
+    ...(requireRecipientIdentity === undefined ? {} : { require_recipient_identity: requireRecipientIdentity }),
   };
+}
+
+async function requestedAudience(value: unknown): Promise<WarrantPrincipal | undefined> {
+  if (value === undefined) return undefined;
+  return normalizeWarrantPrincipal(await verifyWarrantAudience(normalizeWarrantPrincipal(value)));
 }
 
 function invocationTopUps(value: unknown): Record<string, number> | undefined {
@@ -712,6 +1172,7 @@ const DELEGATION_POLICY_SCHEMA = {
     max_depth: { type: "integer", minimum: 1, description: "Maximum child hops below this warrant." },
     max_child_ttl_ms: { type: "number", minimum: 1, description: "Optional maximum TTL for each child." },
     max_child_invocations: { type: "integer", minimum: 1, description: "Optional maximum invocation budget required on each child grant." },
+    require_recipient_identity: { type: "boolean", description: "Require each child to carry a verified recipient audience." },
   },
   required: ["max_depth"],
   additionalProperties: false,
@@ -720,13 +1181,13 @@ const DELEGATION_POLICY_SCHEMA = {
 export const WARRANT_TOOLS = [
   {
     name: "synthi_warrant_issue",
-    description: "Issue a capability warrant: an expiring, invocation-capped lease letting one agent use specific tools under argument constraints.",
-    inputSchema: {"type":"object","properties":{"subject":{"type":"string","description":"Agent or user the warrant is for."},"grants":{"type":"array","items":{"type":"object","properties":{"tool":{"type":"string"},"arg_constraints":{"type":"object","additionalProperties":{"type":"string"}},"max_invocations":{"type":"number"}},"required":["tool"]}},"ttl_ms":{"type":"number"},"seal":{"type":"boolean","description":"Seal the warrant: every use must present the one-time bearer secret in _meta.warrant_bearer."},"delegation":DELEGATION_POLICY_SCHEMA},"required":["subject","grants","ttl_ms"]},
+    description: "Issue a capability warrant: an expiring, invocation-capped lease letting one agent use specific tools under argument constraints. An optional audience is an authenticated, provider-neutral recipient claim.",
+    inputSchema: {"type":"object","properties":{"subject":{"type":"string","description":"Agent or user the warrant is for."},"audience":{"type":"object","description":"Optional recipient principal. A trusted host context verifies and canonicalizes this claim; it is not bearer proof.","properties":{"issuer":{"type":"string"},"subject":{"type":"string"},"workspace":{"type":"string"},"project":{"type":"string"}},"required":["issuer","subject","workspace"],"additionalProperties":false},"grants":{"type":"array","items":{"type":"object","properties":{"tool":{"type":"string"},"arg_constraints":{"type":"object","additionalProperties":{"type":"string"}},"max_invocations":{"type":"number"}},"required":["tool"]}},"ttl_ms":{"type":"number"},"seal":{"type":"boolean","description":"Seal the warrant: every use must present the one-time bearer secret in _meta.warrant_bearer."},"delegation":DELEGATION_POLICY_SCHEMA},"required":["subject","grants","ttl_ms"]},
   },
   {
     name: "synthi_warrant_attenuate",
-    description: "Create a strictly narrower child warrant. An administrator may attenuate any active parent; a sealed holder may do so only when its parent explicitly carries a delegation policy and it presents bearer.",
-    inputSchema: {"type":"object","properties":{"parent_warrant_id":{"type":"string"},"subject":{"type":"string"},"grants":{"type":"array","items":{"type":"object","properties":{"tool":{"type":"string"},"arg_constraints":{"type":"object","additionalProperties":{"type":"string"}},"max_invocations":{"type":"number"}},"required":["tool"]}},"ttl_ms":{"type":"number"},"seal":{"type":"boolean","description":"Seal the warrant: every use must present the one-time bearer secret in _meta.warrant_bearer."},"bearer":{"type":"string","description":"Required for holder-driven delegation; proves possession of a sealed parent warrant that permits delegation."}},"required":["parent_warrant_id","subject","grants"]},
+    description: "Create a strictly narrower child warrant. The parent must explicitly carry a delegation policy; an administrator or its sealed holder may attenuate it, with the holder presenting its bearer. Audience is propagated unless the verified recipient changes.",
+    inputSchema: {"type":"object","properties":{"parent_warrant_id":{"type":"string"},"subject":{"type":"string"},"audience":{"type":"object","description":"Optional authenticated recipient principal; a trusted host context verifies it at issuance.","properties":{"issuer":{"type":"string"},"subject":{"type":"string"},"workspace":{"type":"string"},"project":{"type":"string"}},"required":["issuer","subject","workspace"],"additionalProperties":false},"grants":{"type":"array","items":{"type":"object","properties":{"tool":{"type":"string"},"arg_constraints":{"type":"object","additionalProperties":{"type":"string"}},"max_invocations":{"type":"number"}},"required":["tool"]}},"ttl_ms":{"type":"number"},"seal":{"type":"boolean","description":"Seal the warrant: every use must present the one-time bearer secret in _meta.warrant_bearer."},"bearer":{"type":"string","description":"Required for holder-driven delegation; proves possession of a sealed parent warrant that permits delegation."}},"required":["parent_warrant_id","subject","grants"]},
   },
   {
     name: "synthi_warrant_check",

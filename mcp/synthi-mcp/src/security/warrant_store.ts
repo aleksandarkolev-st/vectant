@@ -52,6 +52,10 @@ function fallbackKeyFile(file: string): string {
 function resolveKeyMaterial(options: WarrantStoreOptions): Buffer {
   if (options.key !== undefined && options.key.trim().length > 0) return keyFromEnvironment(options.key);
 
+  if (process.env["NODE_ENV"] === "production") {
+    throw new Error("warrant_store_key_required_in_production");
+  }
+
   // This is intentionally machine-local. Operators that need portability or
   // multi-host recovery set SYNTHI_WARRANT_STORE_KEY explicitly.
   const keyFile = fallbackKeyFile(options.file);

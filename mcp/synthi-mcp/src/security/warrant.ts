@@ -13,6 +13,14 @@
  */
 
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import {
+  cloneWarrantPrincipal,
+  normalizeWarrantPrincipal,
+  sameWarrantPrincipal,
+  type WarrantPrincipal,
+} from "./warrant_principal.js";
+
+export type { WarrantPrincipal } from "./warrant_principal.js";
 
 /** Delegation chains may never run deeper than this many warrants. */
 const MAX_CHAIN_DEPTH = 8;
@@ -40,11 +48,15 @@ export interface DelegationPolicy {
   max_child_ttl_ms?: number;
   /** Optional requirement that every child grant declares a bounded budget. */
   max_child_invocations?: number;
+  /** Require every delegated child to name a verified recipient audience. */
+  require_recipient_identity?: boolean;
 }
 
 export interface Warrant {
   warrant_id: string;
   subject: string;
+  /** Optional provider-neutral recipient claim, enforced against a trusted request principal. */
+  audience?: WarrantPrincipal;
   grants: readonly ToolGrant[];
   issued_at_ms: number;
   expires_at_ms: number;
@@ -192,6 +204,7 @@ function cloneWarrant(warrant: Warrant): Warrant {
   return {
     ...warrant,
     grants: cloneGrants(warrant.grants),
+    ...(warrant.audience === undefined ? {} : { audience: cloneWarrantPrincipal(warrant.audience) }),
     ...(warrant.delegation === undefined ? {} : { delegation: cloneDelegation(warrant.delegation) }),
   };
 }
@@ -213,6 +226,12 @@ function validateDelegationPolicy(
     && (!Number.isSafeInteger(policy.max_child_invocations) || policy.max_child_invocations < 1)
   ) {
     throw new Error("Delegation max_child_invocations must be a positive integer.");
+  }
+  if (
+    policy.require_recipient_identity !== undefined
+    && typeof policy.require_recipient_identity !== "boolean"
+  ) {
+    throw new Error("Delegation require_recipient_identity must be true or false.");
   }
   return cloneDelegation(policy);
 }
@@ -290,6 +309,7 @@ export class WarrantRegistry {
    */
   issue(input: {
     subject: string;
+    audience?: WarrantPrincipal;
     grants: readonly ToolGrant[];
     now: number;
     ttl_ms: number;
@@ -299,12 +319,14 @@ export class WarrantRegistry {
     validateSubjectAndGrants(input.subject, input.grants);
     validateTtl(input.ttl_ms);
     const delegation = validateDelegationPolicy(input.delegation, input.seal);
+    const audience = input.audience === undefined ? undefined : normalizeWarrantPrincipal(input.audience);
 
     const warrantId = `wr_${randomUUID()}`;
     const bearer = input.seal === true ? `wb_${randomUUID().replaceAll("-", "")}` : undefined;
     const warrant: Warrant = {
       warrant_id: warrantId,
       subject: input.subject,
+      ...(audience === undefined ? {} : { audience }),
       grants: cloneGrants(input.grants),
       issued_at_ms: input.now,
       expires_at_ms: input.now + input.ttl_ms,
@@ -328,7 +350,7 @@ export class WarrantRegistry {
    * budget. It is intentionally generic: no runtime or agent type appears in
    * the capability itself.
    */
-  canDelegate(input: { warrant_id: string; bearer?: string; now: number }): WarrantDecision {
+  canDelegate(input: { warrant_id: string; bearer?: string; principal?: WarrantPrincipal; now: number }): WarrantDecision {
     const record = this.records.get(input.warrant_id);
     if (record === undefined) return deny("no_such_warrant", "No warrant exists with this identifier.");
     if (record.warrant.delegation === undefined) {
@@ -341,6 +363,7 @@ export class WarrantRegistry {
       warrant_id: input.warrant_id,
       tool: "__warrant_delegation_probe__",
       bearer: input.bearer,
+      principal: input.principal,
       now: input.now,
     });
     if (!lifecycle.allowed && lifecycle.reason_code !== "tool_not_covered") return lifecycle;
@@ -364,12 +387,15 @@ export class WarrantRegistry {
   attenuate(input: {
     parent_warrant_id: string;
     subject: string;
+    audience?: WarrantPrincipal;
     grants: readonly ToolGrant[];
     now: number;
     ttl_ms?: number;
     seal?: boolean;
     /** Present only for holder-driven delegation; administrators use the existing management path. */
     bearer?: string;
+    /** Authenticated request principal for holder-driven delegation. */
+    principal?: WarrantPrincipal;
   }): IssuedWarrant {
     const parent = this.records.get(input.parent_warrant_id);
     if (parent === undefined) {
@@ -385,6 +411,7 @@ export class WarrantRegistry {
       const holder = this.canDelegate({
         warrant_id: input.parent_warrant_id,
         bearer: input.bearer,
+        principal: input.principal,
         now: input.now,
       });
       if (!holder.allowed) throw new Error(`Cannot attenuate: ${holder.human_reason}`);
@@ -400,6 +427,14 @@ export class WarrantRegistry {
     }
 
     const delegation = parent.warrant.delegation;
+    if (delegation?.require_recipient_identity === true && input.audience === undefined) {
+      throw new Error(
+        "Cannot attenuate: this delegation policy requires a verified recipient audience for every child.",
+      );
+    }
+    const audience = input.audience === undefined
+      ? (parent.warrant.audience === undefined ? undefined : cloneWarrantPrincipal(parent.warrant.audience))
+      : normalizeWarrantPrincipal(input.audience);
     const nextDelegationDepth = (parent.warrant.delegation_depth ?? 0) + 1;
     if (delegation !== undefined && nextDelegationDepth > delegation.max_depth) {
       throw new Error("Cannot attenuate: this warrant reached its delegation policy depth limit.");
@@ -457,6 +492,7 @@ export class WarrantRegistry {
     const warrant: Warrant = {
       warrant_id: `wr_${randomUUID()}`,
       subject: input.subject,
+      ...(audience === undefined ? {} : { audience }),
       grants: cloneGrants(input.grants),
       issued_at_ms: input.now,
       expires_at_ms: Math.min(parent.warrant.expires_at_ms, input.now + ttl),
@@ -484,6 +520,7 @@ export class WarrantRegistry {
     tool: string;
     args?: Readonly<Record<string, unknown>>;
     bearer?: string;
+    principal?: WarrantPrincipal;
     now: number;
   }): WarrantDecision {
     const record = this.records.get(input.warrant_id);
@@ -495,6 +532,17 @@ export class WarrantRegistry {
     }
     if (input.now >= record.warrant.expires_at_ms) {
       return deny("expired", "This warrant has expired.");
+    }
+    if (
+      record.warrant.audience !== undefined
+      && (input.principal === undefined || !sameWarrantPrincipal(record.warrant.audience, input.principal))
+    ) {
+      return deny(
+        input.principal === undefined ? "principal_required" : "principal_mismatch",
+        input.principal === undefined
+          ? "This warrant is bound to an authenticated principal, but this request has no trusted principal."
+          : "This warrant is bound to a different authenticated principal.",
+      );
     }
     if (record.bearer_hash !== undefined && !hashesMatch(input.bearer, record.bearer_hash)) {
       return deny(
@@ -674,6 +722,7 @@ export class WarrantRegistry {
   renewTo(input: {
     warrant_id: string;
     bearer?: string;
+    principal?: WarrantPrincipal;
     ttl_ms: number;
     now: number;
     max_ttl_ms: number;
@@ -689,6 +738,12 @@ export class WarrantRegistry {
     }
     if (input.now >= record.warrant.expires_at_ms) {
       throw new Error(`Cannot renew: warrant '${input.warrant_id}' has expired. Issue a fresh warrant instead.`);
+    }
+    if (
+      record.warrant.audience !== undefined
+      && (input.principal === undefined || !sameWarrantPrincipal(record.warrant.audience, input.principal))
+    ) {
+      throw new Error("Cannot renew: this warrant is bound to a different authenticated principal.");
     }
     if (record.bearer_hash !== undefined && !hashesMatch(input.bearer, record.bearer_hash)) {
       throw new Error(

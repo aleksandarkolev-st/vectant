@@ -11,6 +11,7 @@ export function createLiveCommandScenario({
   commandEnv,
   requiredEnv = [],
   expectedExitCode = 0,
+  validateEvidence,
 }) {
   if (!name || typeof name !== "string") throw new Error("chaos_live_scenario_name_required");
   if (!commandEnv || typeof commandEnv !== "string") throw new Error(`chaos_live_scenario_command_env_required:${name}`);
@@ -53,6 +54,14 @@ export function createLiveCommandScenario({
       if (result.status !== expectedExitCode) {
         throw new Error(`chaos_live_scenario_exit_${result.status}:${name}:expected_${expectedExitCode}`);
       }
+      const deploymentEvidence = validateEvidence
+        ? await validateEvidence({
+          stdout,
+          stderr,
+          scenario: name,
+          command_env: commandEnv,
+        })
+        : undefined;
 
       return {
         schema_version: "synthi.chaosLiveCommandScenarioEvidence.v1",
@@ -73,6 +82,7 @@ export function createLiveCommandScenario({
         stderr_sha256: sha256(stderr),
         stdout_bytes: Buffer.byteLength(stdout),
         stderr_bytes: Buffer.byteLength(stderr),
+        ...(deploymentEvidence === undefined ? {} : { deployment_evidence: deploymentEvidence }),
       };
     },
   };

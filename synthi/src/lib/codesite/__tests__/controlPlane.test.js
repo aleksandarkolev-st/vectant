@@ -185,6 +185,8 @@ import {
   getAgentInbox,
   getAgentInboxForAgent,
   getAgentManifest,
+  getAgentWarrantPrincipal,
+  getAgentWarrantRecipientPrincipal,
   getControlState,
   getEvents,
   getIncidentReplay,
@@ -2651,6 +2653,60 @@ describe('CodeSite control plane transaction validation', () => {
   });
 
   describe('environment-bound agent token authority', () => {
+    it('projects a configured, provider-neutral warrant principal from a verified csa session', async () => {
+      const session = agentAuthoritySession({
+        capabilitiesJson: JSON.stringify(['warrant.use-configured']),
+      });
+      mockBoundAgentAuthoritySession(session);
+      await withEnv({
+        SYNTHI_CODESITE_WARRANT_ISSUER: 'identity-authority-configured',
+        SYNTHI_CODESITE_WARRANT_USE_CAPABILITY: 'warrant.use-configured',
+      }, async () => {
+        await expect(getAgentWarrantPrincipal('acme', session.id, AGENT_AUTHORITY_TOKEN)).resolves.toEqual({
+          issuer: 'identity-authority-configured',
+          subject: session.id,
+          workspace: 'acme',
+          project: session.projectId,
+        });
+      });
+    });
+
+    it('rejects an unattached, cross-project, or capability-less recipient before issuing a warrant', async () => {
+      const issuer = agentAuthoritySession({
+        capabilitiesJson: JSON.stringify(['warrant.issue-configured']),
+      });
+      const recipient = agentAuthoritySession({
+        id: 'agent-recipient-2',
+        capabilitiesJson: JSON.stringify(['warrant.use-configured']),
+      });
+      prisma.codeSiteAgentSession.findFirst.mockImplementation(async ({ where } = {}) => {
+        if (where?.id === issuer.id && where?.agentAccessTokenHash === AGENT_AUTHORITY_TOKEN_HASH) return issuer;
+        if (where?.id === recipient.id
+          && where?.workspaceSlug === 'acme'
+          && where?.projectId === issuer.projectId
+          && where?.endedAt === null) return recipient;
+        return null;
+      });
+      await withEnv({
+        SYNTHI_CODESITE_WARRANT_ISSUER: 'identity-authority-configured',
+        SYNTHI_CODESITE_WARRANT_USE_CAPABILITY: 'warrant.use-configured',
+        SYNTHI_CODESITE_WARRANT_ISSUE_CAPABILITY: 'warrant.issue-configured',
+      }, async () => {
+        await expect(getAgentWarrantRecipientPrincipal(
+          'acme', issuer.id, AGENT_AUTHORITY_TOKEN, recipient.id,
+        )).resolves.toEqual({
+          issuer: 'identity-authority-configured',
+          subject: recipient.id,
+          workspace: 'acme',
+          project: issuer.projectId,
+        });
+        recipient.status = 'detached';
+        await expect(getAgentWarrantRecipientPrincipal(
+          'acme', issuer.id, AGENT_AUTHORITY_TOKEN, recipient.id,
+        )).rejects.toMatchObject({ status: 403, code: 'agent_warrant_recipient_not_attached' });
+      });
+    });
+
     it.each(['codex', 'claude', 'custom-provider', 'local-agent-runtime'])('authorizes provider-neutral %s sessions', async (agentProvider) => {
       const session = agentAuthoritySession({ agentProvider });
       mockBoundAgentAuthoritySession(session);
