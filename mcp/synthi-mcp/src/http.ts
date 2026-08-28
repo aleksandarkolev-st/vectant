@@ -43,6 +43,10 @@ import {
 } from "./security/warrant_request_context.js";
 import { normalizeWarrantPrincipal } from "./security/warrant_principal.js";
 import { recordWarrantIdentityFailure } from "./observability/metrics.js";
+import {
+  loadRuntimeWarrantRequestContextProvider,
+  type WarrantRequestContextProvider,
+} from "./security/warrant_context_provider_loader.js";
 
 type HttpMcpConfig = {
   host: string;
@@ -63,9 +67,7 @@ type HttpMcpConfig = {
  * URLs, credential headers, certificate locations, tenant names, or resource
  * capability labels.
  */
-export type WarrantHttpRequestContextProvider = (
-  request: IncomingMessage,
-) => Promise<WarrantRequestContext> | WarrantRequestContext;
+export type WarrantHttpRequestContextProvider = WarrantRequestContextProvider;
 
 export interface HttpMcpRuntimeOptions {
   warrantRequestContext?: WarrantHttpRequestContextProvider;
@@ -514,6 +516,11 @@ export async function serveHttp(options: HttpMcpRuntimeOptions = {}): Promise<vo
 
   const args = parseArgs(process.argv.slice(2));
   const config = resolveConfig(args);
+  const warrantRequestContext = options.warrantRequestContext
+    ?? await loadRuntimeWarrantRequestContextProvider();
+  if (productionWarrantEnforcementEnabled() && !warrantRequestContext) {
+    throw new Error("warrant_request_context_provider_required");
+  }
   const therapeuticPostgresPool = config.therapeuticProduction.enabled
     ? new Pool({ connectionString: config.therapeuticProduction.postgresUrl })
     : null;
@@ -587,7 +594,7 @@ export async function serveHttp(options: HttpMcpRuntimeOptions = {}): Promise<vo
           path: config.path,
           auth_required: Boolean(config.bearerToken),
           auth_header: config.bearerToken ? config.bearerHeader : null,
-          warrant_request_context_provider: options.warrantRequestContext ? "configured" : null,
+          warrant_request_context_provider: warrantRequestContext ? "configured" : null,
           therapeutic_production_endpoints_enabled: config.therapeuticProduction.enabled,
         });
         return;
@@ -739,10 +746,10 @@ export async function serveHttp(options: HttpMcpRuntimeOptions = {}): Promise<vo
           id: null,
         });
       };
-      if (options.warrantRequestContext) {
+      if (warrantRequestContext) {
         let context: WarrantRequestContext;
         try {
-          context = await options.warrantRequestContext(req);
+          context = await warrantRequestContext(req);
         } catch (error) {
           if (error instanceof WarrantRequestContextError) throw error;
           throw new WarrantRequestContextError("warrant_request_context_unavailable", 503);

@@ -440,6 +440,16 @@ identity URL, route template, credential-header name, certificate location,
 token syntax, agent/runtime identifier, or resource-capability name. A
 deployment integration owns all transport and trust establishment, then passes
 only canonical provider-neutral values into the MCP core.
+The standalone HTTP entrypoint can also load an operator-owned module named by
+`SYNTHI_WARRANT_CONTEXT_PROVIDER_MODULE`. Its required
+`createWarrantRequestContextProvider()` export creates that same injected
+provider from deployment-owned trust configuration. Enforce-mode production
+will not start without either this module or an explicitly embedded provider;
+there is no process-local identity fallback.
+The module can use the supported
+`@synthi-inc/mcp-server/warrant/codesite-session-adapter` entrypoint to turn
+its authenticated CodeSite verifier into the provider; it never needs to
+import MCP build internals.
 `createCodeSiteWarrantContextProvider` is the CodeSite adapter: it requires a
 deployment-owned service to authenticate the request and csa credential before
 returning a principal, authority, service-transport attestation, resource
