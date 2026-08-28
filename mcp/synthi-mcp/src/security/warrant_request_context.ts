@@ -12,6 +12,17 @@ export interface WarrantResourceGrant {
   args?: Readonly<Record<string, unknown>>;
 }
 
+/**
+ * Opaque evidence supplied by the embedding host after it has authenticated
+ * the MCP-to-authority channel. `transport` and `service` are deployment
+ * values (for example an mTLS identity or a workload identity), never values
+ * obtained from an agent request.
+ */
+export interface WarrantServiceAuthentication {
+  transport: string;
+  service: string;
+}
+
 /** A provider can use this stable error shape without coupling to HTTP or a particular identity system. */
 export class WarrantRequestContextError extends Error {
   readonly code: string;
@@ -33,6 +44,8 @@ export interface WarrantRequestContext {
   verifyAudience?: (requested: WarrantPrincipal) => Promise<WarrantPrincipal>;
   /** Shared transactional authority selected by an authenticated production host. */
   authority?: WarrantAuthority;
+  /** Trusted MCP-to-authority service-transport attestation from the host. */
+  serviceAuthentication?: WarrantServiceAuthentication;
   /**
    * Resolves an exact read into the host's ordinary capability vocabulary.
    * It receives the unmodified requested URI and must never use caller input
@@ -70,6 +83,23 @@ export async function verifyWarrantAudience(requested: WarrantPrincipal): Promis
 
 export function currentWarrantAuthority(): WarrantAuthority | undefined {
   return requestContext.getStore()?.authority;
+}
+
+/** Whether a host supplied a non-caller-controlled service-transport attestation. */
+export function hasWarrantServiceAuthentication(): boolean {
+  return isWarrantServiceAuthentication(requestContext.getStore()?.serviceAuthentication);
+}
+
+/** Validates the generic host-supplied service-transport attestation shape. */
+export function isWarrantServiceAuthentication(value: unknown): value is WarrantServiceAuthentication {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const authentication = value as Partial<WarrantServiceAuthentication>;
+  return Boolean(
+    typeof authentication.transport === "string"
+    && authentication.transport.trim()
+    && typeof authentication.service === "string"
+    && authentication.service.trim(),
+  );
 }
 
 export async function resolveWarrantResourceGrant(uri: string): Promise<WarrantResourceGrant | undefined> {

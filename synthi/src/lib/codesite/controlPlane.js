@@ -71,6 +71,7 @@ import { createProjectCoordinationBus, ProjectCoordinationBusError } from './pro
 import { canonicalKnowledgeEventType } from './knowledgeEvents';
 import { getCodeSiteRuntimeConfig } from './runtimeConfig';
 import { executeWarrantAuthority } from './warrantAuthority';
+import { createManagedWarrantAuditSigner } from './warrantAuditSigner';
 import {
   buildObservationCoordinationInput,
   normalizeProjectObservation,
@@ -2138,6 +2139,7 @@ export async function executeAgentWarrantAuthority(
     workspace: String(workspaceSlug || '').trim(),
     principal,
     policy: configuredWarrantAuthorityPolicy(),
+    auditSigner: configuredWarrantAuditSigner(),
   }, normalizedOperation, canonicalBody);
 }
 
@@ -2173,6 +2175,19 @@ function configuredWarrantAuthorityPolicy() {
     maxTtlMs: configuredWarrantPositiveInteger('SYNTHI_CODESITE_WARRANT_MAX_TTL_MS'),
     maxInvocations: configuredWarrantPositiveInteger('SYNTHI_CODESITE_WARRANT_MAX_INVOCATIONS'),
   };
+}
+
+function configuredWarrantAuditSigner() {
+  const config = getCodeSiteRuntimeConfig().warrantAuditSigning;
+  if (!Object.values(config).some((value) => Boolean(String(value || '').trim()))) return undefined;
+  return createManagedWarrantAuditSigner({
+    key_id: config.keyId,
+    key_uri: config.keyUri,
+    command: config.command,
+    command_args: config.commandArgs,
+    timeout_ms: config.timeoutMs,
+    trusted_keys: config.trustedKeys,
+  });
 }
 
 function configuredWarrantPositiveInteger(key) {

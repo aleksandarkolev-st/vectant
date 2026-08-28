@@ -618,6 +618,9 @@ model CodeSiteWarrantAuditOutbox {
   eventJson    String
   previousHash String
   eventHash    String
+  signatureKeyId String?
+  signatureKeyUri String?
+  signature   String?
   status       String   @default("pending")
   attempts     Int      @default(0)
   deliveredAt  DateTime?

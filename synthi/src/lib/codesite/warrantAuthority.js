@@ -351,8 +351,26 @@ async function appendAudit(db, scope, eventType, payload) {
   const sequence = (current?.sequence ?? 0) + 1;
   const event = { sequence, eventType, occurredAt: new Date().toISOString(), payload };
   const eventHash = hash(`${previousHash}\n${stableJson(event)}`);
+  const signingPayload = auditSigningPayload(scope, sequence, previousHash, eventHash);
+  const signature = scope.auditSigner ? await scope.auditSigner.sign(signingPayload) : undefined;
+  if (scope.auditSigningRequired && !signature) {
+    throw new WarrantAuthorityError('warrant_audit_signer_required', 503);
+  }
   await db.codeSiteWarrantAuditOutbox.create({
-    data: { projectId: scope.projectId, workspaceSlug: scope.workspace, sequence, eventType, eventJson: stringifyJson(event), previousHash, eventHash },
+    data: {
+      projectId: scope.projectId,
+      workspaceSlug: scope.workspace,
+      sequence,
+      eventType,
+      eventJson: stringifyJson(event),
+      previousHash,
+      eventHash,
+      ...(signature === undefined ? {} : {
+        signatureKeyId: signature.key_id,
+        signatureKeyUri: signature.key_uri,
+        signature: signature.signature,
+      }),
+    },
   });
   await db.codeSiteWarrantAuditHead.upsert({
     where: { projectId: scope.projectId },
@@ -375,6 +393,17 @@ async function verifyAuditChain(db, scope, head) {
     const parsed = parseJson(event.eventJson, null);
     if (!parsed || hash(`${previousHash}\n${stableJson(parsed)}`) !== event.eventHash) {
       throw new WarrantAuthorityError('warrant_audit_chain_corrupt', 503);
+    }
+    const signature = auditSignatureOf(event);
+    if (scope.auditSigner) {
+      if (!signature || !(await scope.auditSigner.verify(
+        auditSigningPayload(scope, event.sequence, event.previousHash, event.eventHash),
+        signature,
+      ))) {
+        throw new WarrantAuthorityError('warrant_audit_chain_corrupt', 503);
+      }
+    } else if (signature || scope.auditSigningRequired) {
+      throw new WarrantAuthorityError('warrant_audit_signer_required', 503);
     }
     previousHash = event.eventHash;
   }
@@ -411,7 +440,14 @@ function ensureActive(warrant, now) {
 }
 function requiredScope(value) {
   const scope = object(value);
-  return { projectId: requiredString(scope.projectId, 'warrant_project_required'), workspace: requiredString(scope.workspace, 'warrant_workspace_required'), principal: principal(scope.principal) };
+  const auditSigningRequired = process.env.NODE_ENV?.trim().toLowerCase() === 'production';
+  return {
+    projectId: requiredString(scope.projectId, 'warrant_project_required'),
+    workspace: requiredString(scope.workspace, 'warrant_workspace_required'),
+    principal: principal(scope.principal),
+    auditSigningRequired,
+    auditSigner: auditSigner(scope.auditSigner, auditSigningRequired),
+  };
 }
 function requiredPolicy(value) {
   const policy = object(value);
@@ -427,6 +463,34 @@ function principal(value) {
   const issuer = requiredString(raw.issuer, 'warrant_principal_invalid'); const subject = requiredString(raw.subject, 'warrant_principal_invalid'); const workspace = requiredString(raw.workspace, 'warrant_principal_invalid');
   const project = raw.project === undefined ? undefined : requiredString(raw.project, 'warrant_principal_invalid');
   return { issuer, subject, workspace, ...(project === undefined ? {} : { project }) };
+}
+function auditSigner(value, required) {
+  if (value === undefined || value === null) {
+    if (required) throw new WarrantAuthorityError('warrant_audit_signer_required', 503);
+    return undefined;
+  }
+  if (value.key_custody !== 'managed' || typeof value.sign !== 'function' || typeof value.verify !== 'function') {
+    throw new WarrantAuthorityError('warrant_audit_signer_invalid', 503);
+  }
+  return value;
+}
+function auditSigningPayload(scope, sequence, previousHash, eventHash) {
+  return stableJson({
+    schema_version: 'synthi.warrant.auditSignature.v1',
+    project_id: scope.projectId,
+    workspace: scope.workspace,
+    sequence,
+    previous_hash: previousHash,
+    event_hash: eventHash,
+  });
+}
+function auditSignatureOf(event) {
+  const values = [event.signatureKeyId, event.signatureKeyUri, event.signature];
+  if (values.every((value) => value === undefined || value === null)) return undefined;
+  if (values.some((value) => typeof value !== 'string' || !value.trim())) {
+    throw new WarrantAuthorityError('warrant_audit_chain_corrupt', 503);
+  }
+  return { key_id: event.signatureKeyId, key_uri: event.signatureKeyUri, signature: event.signature };
 }
 function audienceOf(record) { return principal(parseJson(record.audienceJson, null)); }
 function samePrincipal(left, right) { return left.issuer === right.issuer && left.subject === right.subject && left.workspace === right.workspace && left.project === right.project; }

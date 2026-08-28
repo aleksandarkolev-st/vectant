@@ -37,6 +37,7 @@ import { PostgresTherapeuticProductionRuntimeStateStore } from "./dojo/tomograph
 import type { TherapeuticDurableRuntimeState, TherapeuticTenantScope } from "./dojo/tomography/index.js";
 import {
   runWithWarrantRequestContext,
+  isWarrantServiceAuthentication,
   type WarrantRequestContext,
   WarrantRequestContextError,
 } from "./security/warrant_request_context.js";
@@ -83,6 +84,7 @@ function requireProductionWarrantContext(context: WarrantRequestContext | undefi
     || typeof context.verifyAudience !== "function"
     || !context.authority
     || !context.resolveResourceGrant
+    || !isWarrantServiceAuthentication(context.serviceAuthentication)
   ) {
     throw new WarrantRequestContextError("warrant_request_context_required", 503);
   }

@@ -49,6 +49,7 @@ import {
   currentWarrantAuthority,
   hasWarrantAudienceVerifier,
   hasWarrantResourceGrantResolver,
+  hasWarrantServiceAuthentication,
   resolveWarrantResourceGrant,
   verifyWarrantAudience,
   warrantAudienceRequired,
@@ -484,6 +485,7 @@ function productionAuthorityRequired(): boolean {
       || !warrantAudienceRequired()
       || !hasWarrantAudienceVerifier()
       || !hasWarrantResourceGrantResolver()
+      || !hasWarrantServiceAuthentication()
     );
 }
 

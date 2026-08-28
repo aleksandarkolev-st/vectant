@@ -6,8 +6,10 @@ import {
 } from "./warrant_principal.js";
 import {
   WarrantRequestContextError,
+  isWarrantServiceAuthentication,
   type WarrantRequestContext,
   type WarrantResourceGrant,
+  type WarrantServiceAuthentication,
 } from "./warrant_request_context.js";
 import type { WarrantAuthority } from "./warrant_authority.js";
 
@@ -29,6 +31,12 @@ export interface CodeSiteAuthenticatedWarrantSession {
   principal: unknown;
   /** Shared, transactional authority already scoped to that authenticated session. */
   authority: WarrantAuthority;
+  /**
+   * Trusted evidence that the verifier reached CodeSite over the deployment's
+   * authenticated service channel. Its values are opaque to warrant core and
+   * must not be taken from MCP request fields.
+   */
+  serviceAuthentication: unknown;
   /** Maps the literal requested resource to the host's ordinary grant language. */
   resolveResourceGrant(uri: string): Promise<WarrantResourceGrant> | WarrantResourceGrant;
   /**
@@ -68,6 +76,10 @@ export function createCodeSiteWarrantContextProvider(
     if (typeof authenticated.canonicalizeRecipient !== "function") {
       throw new WarrantRequestContextError("codesite_warrant_recipient_verifier_required", 503);
     }
+    const serviceAuthentication = normalizeServiceAuthentication(authenticated.serviceAuthentication);
+    if (!serviceAuthentication) {
+      throw new WarrantRequestContextError("codesite_warrant_service_authentication_required", 503);
+    }
 
     let principal: WarrantPrincipal;
     try {
@@ -83,6 +95,7 @@ export function createCodeSiteWarrantContextProvider(
       principal,
       audienceRequired: true,
       authority: authenticated.authority,
+      serviceAuthentication,
       resolveResourceGrant: authenticated.resolveResourceGrant,
       verifyAudience: async (requested) => {
         let canonical: WarrantPrincipal;
@@ -107,4 +120,9 @@ export function createCodeSiteWarrantContextProvider(
       },
     };
   };
+}
+
+function normalizeServiceAuthentication(value: unknown): WarrantServiceAuthentication | undefined {
+  if (!isWarrantServiceAuthentication(value)) return undefined;
+  return { transport: value.transport.trim(), service: value.service.trim() };
 }

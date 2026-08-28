@@ -106,6 +106,10 @@ await serveHttp({
     authenticate: async () => ({
       principal,
       authority,
+      serviceAuthentication: {
+        transport: `${proofId}:transport`,
+        service: `${proofId}:service`,
+      },
       resolveResourceGrant: (uri) => ({ capability: resourceCapability, args: { target: uri } }),
       canonicalizeRecipient: async (_issuer, requested) => {
         const canonical = recipientDirectory.get(requested.subject);

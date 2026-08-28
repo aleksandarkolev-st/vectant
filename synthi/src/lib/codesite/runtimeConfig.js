@@ -70,6 +70,14 @@ export function getCodeSiteRuntimeConfig(env = process.env) {
     snapshotMaxScanEntries: positiveInt(env.SYNTHI_CODESITE_SNAPSHOT_MAX_SCAN_ENTRIES, DEFAULTS.snapshotMaxScanEntries),
     artifactPathHistoryMaxBytes: positiveInt(env.SYNTHI_CODESITE_ARTIFACT_PATH_HISTORY_MAX_BYTES, DEFAULTS.artifactPathHistoryMaxBytes),
     maxActiveChannels: positiveInt(env.SYNTHI_CODESITE_MAX_ACTIVE_CHANNELS, DEFAULTS.maxActiveChannels),
+    warrantAuditSigning: Object.freeze({
+      keyId: firstValue(env, ['SYNTHI_CODESITE_WARRANT_AUDIT_KEY_ID']),
+      keyUri: firstValue(env, ['SYNTHI_CODESITE_WARRANT_AUDIT_KEY_URI']),
+      command: firstValue(env, ['SYNTHI_CODESITE_WARRANT_AUDIT_SIGNER_COMMAND']),
+      commandArgs: firstValue(env, ['SYNTHI_CODESITE_WARRANT_AUDIT_SIGNER_ARGS_JSON']),
+      timeoutMs: firstValue(env, ['SYNTHI_CODESITE_WARRANT_AUDIT_SIGNER_TIMEOUT_MS']),
+      trustedKeys: firstValue(env, ['SYNTHI_CODESITE_WARRANT_AUDIT_TRUSTED_KEYS_JSON']),
+    }),
   });
 }
 
