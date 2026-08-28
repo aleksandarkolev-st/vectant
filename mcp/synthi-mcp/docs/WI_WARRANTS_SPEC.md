@@ -489,12 +489,12 @@ every mutation through a Serializable transaction boundary, locks its tenant
 scope, conditionally decrements every ancestor budget, then creates the receipt
 and audit-outbox record before returning admission. A structured tool failure
 settles `failed` and refunds; a thrown/ambiguous call settles `unknown` and
-deliberately retains the debit. Before each new audit write, the authority
+deliberately retains the debit. Before every authority operation, the authority
 verifies the complete tenant/project hash chain and fails closed if it is
 missing or corrupted.
 
-M9 OPERATIONS: production mode rejects the historical JSONL store, and that
-store itself rejects an implicit temporary key when `NODE_ENV=production`.
+M9 OPERATIONS: production mode rejects the historical JSONL store entirely;
+it cannot be re-enabled with an explicit process-local key.
 `NODE_ENV=production` with `SYNTHI_WARRANT_MODE=enforce` rejects MCP requests
 unless the host injects a trusted principal, recipient canonicalizer, audience
 enforcement, shared authority, and resource resolver; embedded and stdio hosts

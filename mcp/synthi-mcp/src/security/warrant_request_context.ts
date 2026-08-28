@@ -58,6 +58,11 @@ export function warrantAudienceRequired(): boolean {
   return requestContext.getStore()?.audienceRequired === true;
 }
 
+/** Whether the active host can verify a requested recipient instead of trusting caller input. */
+export function hasWarrantAudienceVerifier(): boolean {
+  return typeof requestContext.getStore()?.verifyAudience === "function";
+}
+
 export async function verifyWarrantAudience(requested: WarrantPrincipal): Promise<WarrantPrincipal> {
   const verifier = requestContext.getStore()?.verifyAudience;
   return verifier ? verifier(requested) : requested;
@@ -70,4 +75,9 @@ export function currentWarrantAuthority(): WarrantAuthority | undefined {
 export async function resolveWarrantResourceGrant(uri: string): Promise<WarrantResourceGrant | undefined> {
   const resolver = requestContext.getStore()?.resolveResourceGrant;
   return resolver ? resolver(uri) : undefined;
+}
+
+/** Whether the active host can turn a literal resource URI into a trusted grant. */
+export function hasWarrantResourceGrantResolver(): boolean {
+  return typeof requestContext.getStore()?.resolveResourceGrant === "function";
 }

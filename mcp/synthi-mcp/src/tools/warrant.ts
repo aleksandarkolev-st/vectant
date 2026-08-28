@@ -47,6 +47,8 @@ import { WarrantStore } from "../security/warrant_store.js";
 import {
   currentWarrantPrincipal,
   currentWarrantAuthority,
+  hasWarrantAudienceVerifier,
+  hasWarrantResourceGrantResolver,
   resolveWarrantResourceGrant,
   verifyWarrantAudience,
   warrantAudienceRequired,
@@ -124,6 +126,9 @@ type DurableWarrantJournalEvent =
 const journalPath = process.env["SYNTHI_WARRANT_STORE"];
 let warrantStore: WarrantStore | undefined;
 if (journalPath !== undefined && journalPath.trim().length > 0) {
+  if (process.env["NODE_ENV"]?.trim().toLowerCase() === "production") {
+    throw new Error("warrant_store_forbidden_in_production");
+  }
   warrantStore = new WarrantStore({ file: journalPath.trim(), key: process.env["SYNTHI_WARRANT_STORE_KEY"] });
   // Replay first: restore must not re-emit (restore paths never emit).
   const journal = warrantStore.replay<DurableWarrantJournalEvent>();
@@ -473,7 +478,13 @@ export function resolveWarrantMode(): WarrantMode {
 function productionAuthorityRequired(): boolean {
   return process.env["NODE_ENV"]?.trim().toLowerCase() === "production"
     && resolveWarrantMode() === "enforce"
-    && (currentWarrantAuthority() === undefined || currentWarrantPrincipal() === undefined);
+    && (
+      currentWarrantAuthority() === undefined
+      || currentWarrantPrincipal() === undefined
+      || !warrantAudienceRequired()
+      || !hasWarrantAudienceVerifier()
+      || !hasWarrantResourceGrantResolver()
+    );
 }
 
 function adminKeyMatches(presented: unknown, expected: string): boolean {

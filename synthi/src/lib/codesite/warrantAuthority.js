@@ -19,7 +19,7 @@ export class WarrantAuthorityError extends Error {
 export async function executeWarrantAuthority(db, context, operation, body = {}) {
   const scope = requiredScope(context);
   const policy = requiredPolicy(context.policy);
-  return withinProjectTransaction(db, scope.projectId, async (tx) => {
+  return withinProjectTransaction(db, scope, async (tx) => {
     switch (operation) {
       case 'issue': return issue(tx, scope, policy, body);
       case 'attenuate': return attenuate(tx, scope, policy, body);
@@ -34,14 +34,16 @@ export async function executeWarrantAuthority(db, context, operation, body = {})
   });
 }
 
-async function withinProjectTransaction(db, projectId, operation) {
+async function withinProjectTransaction(db, scope, operation) {
   if (typeof db?.$transaction !== 'function') {
     throw new WarrantAuthorityError('warrant_authority_transaction_required', 503);
   }
   return db.$transaction(async (tx) => {
     // This ORM update serializes warrant mutations per project as well as the
     // Serializable transaction isolation level. It is not a hand-written lock.
-    await tx.codeSiteProject.update({ where: { id: projectId }, data: { updatedAt: new Date() } });
+    await tx.codeSiteProject.update({ where: { id: scope.projectId }, data: { updatedAt: new Date() } });
+    const auditHead = await tx.codeSiteWarrantAuditHead.findUnique({ where: { projectId: scope.projectId } });
+    await verifyAuditChain(tx, scope, auditHead);
     return operation(tx);
   }, { isolationLevel: 'Serializable' });
 }
