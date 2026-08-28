@@ -121,6 +121,7 @@ export const CODE_SITE_EVENT_TYPES = [
   'lead_dismissed',
   'shared_skill_published',
   'shared_skill_updated',
+  'workspace_learning_adopted',
   'impact_notice_created',
   'impact_notice_responded',
   'handoff_ready',
@@ -136,6 +137,15 @@ export const CODE_SITE_EVENT_TYPES = [
   'channel_rejected',
   'channel_closed',
   'channel_violation',
+  'fleet_notam_published',
+  // Retained for audit-log compatibility with the first advisory prototype.
+  'fleet_notam_acknowledge',
+  'fleet_notam_adopt',
+  'fleet_notam_mute',
+  'fleet_notam_dismiss',
+  'fleet_notam_reactivate',
+  'fleet_notam_withdrawn',
+  'fleet_notam_superseded',
 ];
 
 const CODE_SITE_EVENT_TYPE_SET = new Set(CODE_SITE_EVENT_TYPES);

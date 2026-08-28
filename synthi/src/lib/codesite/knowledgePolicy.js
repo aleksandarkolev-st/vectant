@@ -113,8 +113,14 @@ const STATUS_TRANSITIONS = Object.freeze({
   }),
 });
 
-const VISIBILITIES = new Set(['project', 'restricted', 'owner_private']);
-const REDACTION_CLASSES = new Set(['project_fact', 'project_notice', 'owner_private']);
+const VISIBILITIES = new Set(['project', 'restricted', 'owner_private', 'workspace', 'learning_network']);
+const REDACTION_CLASSES = new Set([
+  'project_fact',
+  'project_notice',
+  'owner_private',
+  'workspace_fact',
+  'learning_network_fact',
+]);
 const SOURCE_ACTOR_TYPES = new Set(['human', 'agent', 'runtime', 'adapter', 'system']);
 const LEAD_PRIORITIES = new Set(['low', 'medium', 'high', 'critical']);
 const DISCOVERY_VERIFICATIONS = new Set(['unverified', 'verified', 'rejected']);
@@ -491,6 +497,12 @@ function normalizeCommon(input, kind) {
   if (visibility === 'owner_private' && redactionClass !== 'owner_private') {
     throw policyError('knowledge_private_visibility_redaction_mismatch');
   }
+  if (visibility === 'workspace' && redactionClass !== 'workspace_fact') {
+    throw policyError('knowledge_workspace_visibility_redaction_mismatch');
+  }
+  if (visibility === 'learning_network' && redactionClass !== 'learning_network_fact') {
+    throw policyError('knowledge_learning_network_visibility_redaction_mismatch');
+  }
   const references = normalizeKnowledgeReferences(input);
   if (referenceCount(references) === 0) throw policyError('knowledge_references_required');
   return {
@@ -541,8 +553,16 @@ function normalizeSharedSkill(input, common) {
   if (common.evidenceRefs.length === 0) throw policyError('knowledge_skill_evidence_required');
   const skillKey = normalizeId(input.skillKey || input.skill_key || input.name, 'skill_key');
   const recipe = validateSharedSkillRecipe(input.recipe, { approvals: input.approvals || {} });
-  if (common.status === 'published' && common.visibility !== 'project' && common.visibility !== 'restricted') {
+  if (common.status === 'published' && !['project', 'restricted', 'workspace', 'learning_network'].includes(common.visibility)) {
     throw policyError('knowledge_skill_published_visibility_invalid');
+  }
+  if (['workspace', 'learning_network'].includes(common.visibility)) {
+    if (common.status !== 'published' || common.confidence == null || common.confidence < 0.8) {
+      throw policyError('knowledge_learning_skill_verification_required');
+    }
+    if (recipe.actionClass !== 'read_only' || recipe.workingDirectory || recipe.requiredEnvironmentKeys.length) {
+      throw policyError('knowledge_learning_skill_recipe_not_portable');
+    }
   }
   return { ...common, skillKey, recipe };
 }

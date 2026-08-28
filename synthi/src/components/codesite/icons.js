@@ -1,5 +1,6 @@
 import {
   ArchiveRestore,
+  BookOpen,
   Bot,
   Cable,
   CircleGauge,
@@ -52,5 +53,7 @@ export const CodeSiteIcons = Object.freeze({
   lineage: SearchCheck,
   scopes: MapPinned,
   signals: Cable,
+  fleetNotams: Cable,
+  learning: BookOpen,
   json: FileJson,
 });

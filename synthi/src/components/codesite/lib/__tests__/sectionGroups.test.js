@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { SECTION_GROUPS, groupForSection, groupSummary } from '../sectionGroups';
 
 const ALL_SECTIONS = [
-  'overview', 'radar', 'tower', 'channels', 'expertise', 'governance', 'runway',
+'overview', 'radar', 'tower', 'channels', 'expertise', 'governance', 'notams', 'learning', 'runway',
   'quarantine', 'evidence', 'inspections', 'replay', 'simulator',
 ];
 

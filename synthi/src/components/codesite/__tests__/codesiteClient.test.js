@@ -2,11 +2,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as codeSiteClient from '../codesiteClient';
 import {
   CODE_SITE_LIVE_EVENT_TYPES,
+  adoptCodeSiteLearningCatalogEntry,
+  decideCodeSiteFleetNotam,
+  fetchCodeSiteFleetNotams,
+  fetchCodeSiteLearningCatalog,
   answerCodeSiteProjectQuestion,
   fetchCodeSiteProjectExperts,
   fetchCodeSiteProjectKnowledge,
   submitCodeSiteProjectQuestionFeedback,
   subscribeCodeSiteProjectEvents,
+  supersedeCodeSiteFleetNotam,
+  updateCodeSiteProjectControlPlan,
+  withdrawCodeSiteFleetNotam,
 } from '../codesiteClient';
 
 describe('CodeSite live event subscription', () => {
@@ -59,6 +66,7 @@ describe('CodeSite live event subscription', () => {
       'lead_dismissed',
       'shared_skill_published',
       'shared_skill_updated',
+      'workspace_learning_adopted',
       'impact_notice_created',
       'impact_notice_responded',
       'handoff_ready',
@@ -79,6 +87,86 @@ describe('CodeSite live event subscription', () => {
     expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ eventType: 'impact_notice_created' }));
     unsubscribe();
     for (const eventType of eventTypes) expect(listeners.has(eventType)).toBe(false);
+  });
+});
+
+describe('CodeSite learning catalogue client', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('lists, adopts, and configures learning through project-scoped routes', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({
+      learning: [{ id: 'lesson/1', scope: 'workspace' }],
+      networkEnabled: true,
+      project: { id: 'project/1' },
+      event: { eventType: 'workspace_learning_adopted' },
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetch);
+
+    await expect(fetchCodeSiteLearningCatalog('team/a', 'project/1')).resolves.toEqual({
+      learning: [{ id: 'lesson/1', scope: 'workspace' }],
+      networkEnabled: true,
+    });
+    await adoptCodeSiteLearningCatalogEntry('team/a', 'project/1', 'lesson/1');
+    await updateCodeSiteProjectControlPlan('team/a', 'project/1', {
+      learningNetwork: { workspace: true, network: true },
+    });
+
+    expect(fetch.mock.calls.map(([path]) => path)).toEqual([
+      '/api/workspace/team%2Fa/codesite/projects/project%2F1/learning-catalog',
+      '/api/workspace/team%2Fa/codesite/projects/project%2F1/learning-catalog/lesson%2F1/adopt',
+      '/api/workspace/team%2Fa/codesite/projects/project%2F1/control-plan',
+    ]);
+    expect(fetch.mock.calls[1][1]).toMatchObject({ method: 'POST', body: '{}' });
+    expect(fetch.mock.calls[2][1]).toMatchObject({
+      method: 'POST',
+      body: JSON.stringify({ learningNetwork: { workspace: true, network: true } }),
+    });
+  });
+});
+
+describe('CodeSite fleet NOTAM client', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('requests the lifecycle board with explicit, safe visibility filters', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({
+      advisories: [{ notamId: 'notam-1' }], suppressed: 2,
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetch);
+
+    await expect(fetchCodeSiteFleetNotams('team/a', 'project/1', {
+      includeOwn: true,
+      includeMuted: true,
+      includeInactive: true,
+      route: ' packages/api/** ',
+      ignored: 'never-forwarded',
+    })).resolves.toEqual({ advisories: [{ notamId: 'notam-1' }], suppressed: 2 });
+
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/workspace/team%2Fa/codesite/projects/project%2F1/fleet-notams?include_own=true&include_muted=true&include_inactive=true&route=packages%2Fapi%2F**',
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+  });
+
+  it('sends local decisions and origin lifecycle actions to explicit routes', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ fleetNotam: { notamId: 'notam/1' } }), { status: 200 }));
+    vi.stubGlobal('fetch', fetch);
+
+    await decideCodeSiteFleetNotam('team', 'project', 'notam/1', { state: 'adopt', reason: 'reproduced locally' });
+    await withdrawCodeSiteFleetNotam('team', 'project', 'notam/1', { reason: 'replaced' });
+    await supersedeCodeSiteFleetNotam('team', 'project', 'notam/1', { policyDeltaId: 'delta-2' });
+
+    expect(fetch.mock.calls.map(([path]) => path)).toEqual([
+      '/api/workspace/team/codesite/projects/project/fleet-notams/notam%2F1/decision',
+      '/api/workspace/team/codesite/projects/project/fleet-notams/notam%2F1/withdraw',
+      '/api/workspace/team/codesite/projects/project/fleet-notams/notam%2F1/supersede',
+    ]);
+    expect(fetch.mock.calls[0][1]).toMatchObject({ method: 'POST', body: JSON.stringify({ state: 'adopt', reason: 'reproduced locally' }) });
+    expect(fetch.mock.calls[1][1]).toMatchObject({ method: 'POST', body: JSON.stringify({ reason: 'replaced' }) });
+    expect(fetch.mock.calls[2][1]).toMatchObject({ method: 'POST', body: JSON.stringify({ policyDeltaId: 'delta-2' }) });
   });
 });
 

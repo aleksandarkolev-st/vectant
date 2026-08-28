@@ -44,6 +44,12 @@ import {
   predictCollisions,
   validateCodeSiteEventType,
 } from './policy';
+import {
+  fleetNotamClearanceGate,
+  listFleetNotamsForProject,
+  mergeFleetNotamForecast,
+  mergeFleetNotamGate,
+} from './fleetNotams';
 import { discoverRepoPolicySignals, REPO_POLICY_COMPILER_VERSION } from './repoPolicyCompiler';
 import {
   buildReadSnapshotEvidence,
@@ -74,6 +80,18 @@ import {
   getCachedExpertiseRoutingState,
   invalidateExpertiseRoutingState,
 } from './expertiseIndexCache';
+import {
+  buildExpertiseIndex,
+  normalizeExpertiseQuery,
+  rankExperts,
+  suggestExpertsForReferences,
+  EXPERTISE_CONTEXT_VERSION,
+} from './agentExpertise';
+import {
+  LEARNING_SCOPE,
+  learningPreferences,
+  portableLearningCatalog,
+} from './learningNetwork';
 import {
   deliveryAllowedOrigins,
   endpointDeliveryAllowed,
@@ -436,7 +454,7 @@ async function actorCanAccessProject(project, actor = null, mode = 'read') {
   return projectPermissionAllows(member, mode);
 }
 
-async function requireProjectAccess(project, actor = null, mode = 'read') {
+export async function requireProjectAccess(project, actor = null, mode = 'read') {
   if (await actorCanAccessProject(project, actor, mode)) return project;
   throw forbidden(mode === 'write' ? 'codesite_project_write_forbidden' : 'codesite_project_not_found', {
     projectId: project?.id || null,
@@ -561,6 +579,12 @@ function buildInitialControlPlan({ title, request, body, zonePolicy }) {
     missions,
     routeIntersections: [],
     requiredRadar: ['clearance', 'type', 'test', 'handover'],
+    // Source lessons opt in individually. Network consumption remains off
+    // until a project owner enables it in the control plan.
+    learningNetwork: {
+      workspace: true,
+      network: false,
+    },
     zoneDigest: digest(zonePolicy),
     createdAt: new Date().toISOString(),
   };
@@ -1978,6 +2002,7 @@ function trimAgentContextToLimit(context) {
     () => context.sharedKnowledge?.leads,
     () => context.sharedKnowledge?.discoveries,
     () => context.sharedKnowledge?.skills,
+    () => context.learningCatalog,
     () => context.inspections,
     () => context.transactions,
     () => context.leases,
@@ -2103,7 +2128,8 @@ export async function getRelevantAgentContext(workspaceSlug, sessionId, agentAcc
     { requiredCapability: 'codesite.context.read' },
   );
 
-  const [workstreams, leases, transactions, inbox, inspections, knowledgeRows, peerSessions] = await Promise.all([
+  const learning = learningPreferences(session.project.controlPlanJson);
+  const [workstreams, leases, transactions, inbox, inspections, knowledgeRows, peerSessions, learningRows] = await Promise.all([
     prisma.codeSiteExecutionPlan.findMany({
       where: { projectId: session.projectId, status: { in: ['filed', 'active', 'holding', 'blocked'] } },
       orderBy: { filedAt: 'desc' },
@@ -2165,6 +2191,17 @@ export async function getRelevantAgentContext(workspaceSlug, sessionId, agentAcc
       },
       orderBy: { attachedAt: 'desc' },
       take: 24,
+    }),
+    prisma.codeSiteKnowledgeItem.findMany({
+      where: {
+        kind: 'shared_skill',
+        status: 'published',
+        learningScope: { in: learning.network ? [LEARNING_SCOPE.workspace, LEARNING_SCOPE.network] : [LEARNING_SCOPE.workspace] },
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+      },
+      include: { project: { select: { workspaceSlug: true } } },
+      orderBy: { updatedAt: 'desc' },
+      take: 160,
     }),
   ]);
 
@@ -2263,6 +2300,10 @@ export async function getRelevantAgentContext(workspaceSlug, sessionId, agentAcc
       impactNotices: relevantKnowledge.filter((item) => item.kind === 'impact_notice').slice(0, 24),
       phaseAvailable: true,
     },
+    learningCatalog: portableLearningCatalog(learningRows, {
+      workspaceSlug,
+      preferences: learning,
+    }).slice(0, 12),
     peerAgents: peerSessions.map((peer) => boundedAgentContextValue({
       id: peer.id,
       callsign: peer.displayCallsign,
@@ -2276,6 +2317,84 @@ export async function getRelevantAgentContext(workspaceSlug, sessionId, agentAcc
     })),
   };
   return trimAgentContextToLimit(context);
+}
+
+async function loadPortableLearningCatalog(project, { limit = 100 } = {}) {
+  const preferences = learningPreferences(project.controlPlanJson);
+  const scopes = preferences.network
+    ? [LEARNING_SCOPE.workspace, LEARNING_SCOPE.network]
+    : [LEARNING_SCOPE.workspace];
+  const rows = await prisma.codeSiteKnowledgeItem.findMany({
+    where: {
+      kind: 'shared_skill',
+      status: 'published',
+      learningScope: { in: scopes },
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+    },
+    include: { project: { select: { workspaceSlug: true } } },
+    orderBy: { updatedAt: 'desc' },
+    take: Math.min(Math.max(Number(limit) || 100, 1), 200),
+  });
+  return portableLearningCatalog(rows, {
+    workspaceSlug: project.workspaceSlug,
+    preferences,
+  });
+}
+
+export async function listProjectLearningCatalog(workspaceSlug, projectId, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'read');
+  return {
+    learning: await loadPortableLearningCatalog(project),
+    networkEnabled: learningPreferences(project.controlPlanJson).network,
+  };
+}
+
+export async function listAgentLearningCatalog(workspaceSlug, sessionId, agentAccessToken) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.context.read',
+  });
+  return {
+    learning: await loadPortableLearningCatalog(authority.project),
+    networkEnabled: learningPreferences(authority.project.controlPlanJson).network,
+  };
+}
+
+async function adoptLearningCatalogEntry(project, learningId, actor = {}) {
+  const catalog = await loadPortableLearningCatalog(project, { limit: 200 });
+  const learning = catalog.find((item) => item.id === learningId);
+  if (!learning) throw notFound('learning_catalog_entry_not_found');
+  const event = await recordEvent(project.id, {
+    eventType: 'workspace_learning_adopted',
+    actorType: actor.type || 'human',
+    actorId: actor.id || null,
+    displayCallsign: actor.callsign || null,
+    details: {
+      learningId: learning.id,
+      skillKey: learning.skillKey,
+      scope: learning.scope,
+    },
+    evidenceRefs: [],
+  });
+  return { learning, event };
+}
+
+export async function adoptProjectLearningCatalogEntry(workspaceSlug, projectId, learningId, actor = null) {
+  const project = await requireProject(workspaceSlug, projectId, actor, 'write');
+  return adoptLearningCatalogEntry(project, learningId, {
+    type: 'human',
+    id: actorUserId(actor),
+  });
+}
+
+export async function adoptAgentLearningCatalogEntry(workspaceSlug, sessionId, agentAccessToken, learningId) {
+  const authority = await requireAgentTokenAuthority(workspaceSlug, sessionId, agentAccessToken, {
+    requiredCapability: 'codesite.knowledge.write',
+  });
+  return adoptLearningCatalogEntry(authority.project, learningId, {
+    type: 'agent',
+    id: authority.session.id,
+    callsign: authority.session.displayCallsign,
+  });
 }
 
 const KNOWLEDGE_CREATE_KINDS = new Set(['discovery', 'lead', 'shared_skill', 'handoff']);
@@ -2721,6 +2840,33 @@ async function persistKnowledgeAndImpacts(authority, record, deliveryPlan) {
     });
     const impacts = [];
     for (const target of deliveryPlan) {
+      if (record.normalized.kind === 'agent_question') {
+        const inboxItem = await db.codeSiteAgentInboxItem.create({
+          data: {
+            projectId,
+            agentSessionId: target.agentSessionId,
+            recipientUserId: target.recipientUserId,
+            eventId: persistedSource.event.id,
+            knowledgeItemId: sourceKnowledgeId,
+            kind: 'agent_question',
+            requiresResponse: true,
+            status: 'pending',
+            redactedPayloadJson: stringifyJson({
+              knowledgeItemId: sourceKnowledgeId,
+              title: record.normalized.title,
+              summary: record.normalized.summary,
+              references: record.normalized.references,
+              urgency: record.normalized.questionUrgency,
+              reasons: target.reasons,
+            }),
+          },
+        });
+        impacts.push({
+          knowledge: projectKnowledgeRecord(persistedSource.row),
+          inboxItem: inboxProjection(inboxItem),
+        });
+        continue;
+      }
       const impactId = nextKnowledgeId('imp');
       const impactInput = {
         kind: 'impact_notice',
@@ -4338,6 +4484,12 @@ async function requestMutationLeaseForPlan(workspaceSlug, plan, body = {}, actor
     zonePolicy,
     collisionAvoidance,
   });
+  const fleetNotams = await fleetNotamClearanceGate({
+    workspaceSlug,
+    projectId: plan.projectId,
+    route: executionPlan.route,
+    zonePolicy,
+  });
   const pilotLicenseHealth = await pilotLicenseHealthForLeaseRequest({
     workspaceSlug,
     plan,
@@ -4353,7 +4505,7 @@ async function requestMutationLeaseForPlan(workspaceSlug, plan, body = {}, actor
     zonePolicy,
     body,
   });
-  const clearancePolicy = applyGovernancePolicyGate(
+  const advisoryPolicy = mergeFleetNotamGate(
     applyCounterfactualPolicyGate(
       applyPilotLicenseHealthGate(
         applyTowerCollisionGate(applyDojoClearanceGate(policy, dojoProof), collisionAvoidance),
@@ -4361,13 +4513,15 @@ async function requestMutationLeaseForPlan(workspaceSlug, plan, body = {}, actor
       ),
       counterfactualPolicy,
     ),
-    governancePolicy,
+    fleetNotams,
   );
+  const clearancePolicy = applyGovernancePolicyGate(advisoryPolicy, governancePolicy);
   const finalRequestedLease = {
     ...requestedLease,
     requiredRadar: unique([
       ...asArray(requestedLease.requiredRadar),
       ...asArray(counterfactualPolicy.requiredRadar),
+      ...asArray(fleetNotams.requiredRadar),
       ...asArray(governancePolicy.requiredRadar),
     ]),
   };
@@ -4388,6 +4542,7 @@ async function requestMutationLeaseForPlan(workspaceSlug, plan, body = {}, actor
         pilotLicenseRequirement: clearancePolicy.pilotLicenseRequirement || null,
         collisionAvoidance: clearancePolicy.collisionAvoidance || null,
         counterfactualPolicy: counterfactualPolicy.appliedPolicyDeltas.length ? counterfactualPolicy : null,
+        fleetNotamGate: fleetNotams.appliedNotams.length ? fleetNotams : null,
         governancePolicy: governancePolicy.required ? governancePolicy : null,
       }),
       dojoProofRef: dojoProof.proofRef,
@@ -4419,7 +4574,8 @@ async function requestMutationLeaseForPlan(workspaceSlug, plan, body = {}, actor
       pilotLicenseHealth: clearancePolicy.pilotLicenseHealth || pilotLicenseHealth || null,
       pilotLicenseRequirement: clearancePolicy.pilotLicenseRequirement || null,
       collisionAvoidance: clearancePolicy.collisionAvoidance || null,
-      counterfactualPolicy: counterfactualPolicy.appliedPolicyDeltas.length ? counterfactualPolicy : null,
+        counterfactualPolicy: counterfactualPolicy.appliedPolicyDeltas.length ? counterfactualPolicy : null,
+        fleetNotamGate: fleetNotams.appliedNotams.length ? fleetNotams : null,
       governancePolicy: governancePolicy.required ? governancePolicy : null,
     },
   });
@@ -4439,6 +4595,7 @@ async function requestMutationLeaseForPlan(workspaceSlug, plan, body = {}, actor
       pilotLicenseRequirement: clearancePolicy.pilotLicenseRequirement || null,
       collisionAvoidance: clearancePolicy.collisionAvoidance || null,
       counterfactualPolicy: counterfactualPolicy.appliedPolicyDeltas.length ? counterfactualPolicy : null,
+      fleetNotams: fleetNotams.appliedNotams,
       governancePolicy: governancePolicy.required ? governancePolicy : null,
     },
   });
@@ -11513,6 +11670,20 @@ export async function collisionPredict(workspaceSlug, projectId, actor = null) {
     leases: mutationLeases,
     zonePolicy,
   });
+  const fleetNotamVisibility = await listFleetNotamsForProject(workspaceSlug, projectId, {
+    route: executionPlans.flatMap((executionPlan) => asArray(executionPlan.route)),
+  }, actor);
+  const fleetNotams = {
+    appliedNotams: fleetNotamVisibility.advisories.map((advisory) => advisory.notamId),
+    matchedRoutes: unique(executionPlans.flatMap((executionPlan) => asArray(executionPlan.route)))
+      .filter((routePath) => fleetNotamVisibility.advisories.some((advisory) =>
+        asArray(advisory.affectedRoutes).some((affectedRoute) => towerPathsOverlap(affectedRoute, routePath)))),
+    visibleCount: fleetNotamVisibility.advisories.length,
+    adoptedCount: fleetNotamVisibility.advisories.filter((advisory) => advisory.effect === 'adopted').length,
+  };
+  if (fleetNotams.appliedNotams.length) {
+    Object.assign(forecast, mergeFleetNotamForecast(forecast, fleetNotams));
+  }
   const learnedPolicyDeltas = await promotedPolicyDeltasForWorkspace(workspaceSlug);
   if (!learnedPolicyDeltas.length) return forecast;
   const signals = buildTowerSimulationSignals({
@@ -13049,13 +13220,16 @@ function incidentReplayTimeline(incident, events) {
   ];
 }
 
-async function recordEvent(projectId, input) {
+export async function recordEvent(projectId, input) {
   return recordEventWithClient(prisma, projectId, input);
 }
 
 async function recordEventWithClient(db, projectId, input, options = {}) {
   const eventType = validateCodeSiteEventType(input.eventType);
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  // Publishing a federation advisory may race with normal project activity.
+  // A bounded retry keeps the event's per-project logical clock authoritative
+  // without treating a harmless unique-clock collision as an orphaned write.
+  for (let attempt = 0; attempt < 8; attempt += 1) {
     const logicalTime = await db.codeSiteEvent.count({ where: { projectId } });
     try {
       const event = await db.codeSiteEvent.create({
@@ -13143,7 +13317,7 @@ async function createPolicyDecision(projectId, input) {
   });
 }
 
-async function requireProject(workspaceSlug, projectId, actor = null, mode = 'read') {
+export async function requireProject(workspaceSlug, projectId, actor = null, mode = 'read') {
   const project = await prisma.codeSiteProject.findFirst({
     where: { id: projectId, workspaceSlug },
     include: {
@@ -13252,14 +13426,14 @@ function requireLeaseActorAccess(lease, actor = null) {
   }
 }
 
-function notFound(code) {
+export function notFound(code) {
   const error = new Error(code);
   error.status = 404;
   error.code = code;
   return error;
 }
 
-function badRequest(code, detail) {
+export function badRequest(code, detail) {
   const error = new Error(code);
   error.status = 400;
   error.code = code;

@@ -10,3 +10,5 @@ export { default as EvidenceView } from "./EvidenceView";
 export { default as InspectionsView } from "./InspectionsView";
 export { default as ReplayView } from "./ReplayView";
 export { default as SimulatorView } from "./SimulatorView";
+export { default as FleetNotamsView } from "./FleetNotamsView";
+export { default as LearningCatalogView } from "./LearningCatalogView";

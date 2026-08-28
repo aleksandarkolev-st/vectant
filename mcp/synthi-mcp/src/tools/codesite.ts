@@ -67,6 +67,13 @@ export const CODESITE_TOOL_NAMES = [
   "synthi_codesite_get_incident_replay",
   "synthi_codesite_resume_mayday",
   "synthi_codesite_file_policy_delta",
+  "synthi_codesite_list_learning_catalog",
+  "synthi_codesite_adopt_learning_catalog_entry",
+  "synthi_codesite_list_fleet_notams",
+  "synthi_codesite_publish_fleet_notam",
+  "synthi_codesite_decide_fleet_notam",
+  "synthi_codesite_withdraw_fleet_notam",
+  "synthi_codesite_supersede_fleet_notam",
   "synthi_codesite_promote_policy_delta",
   "synthi_codesite_reject_policy_delta",
   "synthi_codesite_request_landing",
@@ -123,14 +130,19 @@ const CONTROL_ARG_KEYS = new Set([
   "file_path",
   "incident_id",
   "include",
+  "include_inactive",
+  "include_muted",
   "inspection_run_id",
   "line_anchor",
   "line_number",
+  "learning_id",
   "max_content_bytes",
   "member_id",
   "mutation_lease_id",
   "path",
   "policy_delta_id",
+  "route",
+  "notam_id",
   "project_id",
   "quarantine_id",
   "route_revision_id",
@@ -365,11 +377,18 @@ export const CODESITE_TOOLS = [
     restrictedAirspace: { type: "array", items: {} },
     noFlyZones: { type: "array", items: {} },
   }, []),
-  codeSiteTool("synthi_codesite_update_control_plan", "Update a CodeSite project control plan.", {
+  codeSiteTool("synthi_codesite_update_control_plan", "Update a CodeSite project control plan, including explicit multi-workspace learning intake preferences.", {
     project_id: { type: "string" },
     controlPlan: { type: "object" },
     towerMode: { type: "string" },
     releaseGates: { type: "array", items: {} },
+    learningNetwork: {
+      type: "object",
+      properties: {
+        workspace: { type: "boolean" },
+        network: { type: "boolean" },
+      },
+    },
   }, []),
   codeSiteTool("synthi_codesite_register_agent_session", "Register a real agent session/callsign with the CodeSite tower.", {
     project_id: { type: "string" },
@@ -636,6 +655,47 @@ export const CODESITE_TOOLS = [
     confidence: { type: "number" },
     replayRefs: { type: "array", items: { type: "string" } },
   }, []),
+  codeSiteTool("synthi_codesite_list_learning_catalog", "List portable, redacted lessons available to this project. Workspace lessons are automatic; multi-workspace lessons require this project's learning-network opt-in.", {
+    project_id: { type: "string" },
+  }, []),
+  codeSiteTool("synthi_codesite_adopt_learning_catalog_entry", "Record that this project adopted a portable learning-catalog entry. Raw source-project context is never exposed.", {
+    project_id: { type: "string" },
+    learning_id: { type: "string" },
+  }, ["learning_id"]),
+  codeSiteTool("synthi_codesite_list_fleet_notams", "List cross-project fleet NOTAM advisories visible to a project. Visibility never affects clearance; only locally adopted advisories do.", {
+    project_id: { type: "string" },
+    include_own: { type: "boolean" },
+    include_muted: { type: "boolean" },
+    include_inactive: { type: "boolean" },
+    route: { type: "string" },
+  }, []),
+  codeSiteTool("synthi_codesite_publish_fleet_notam", "Publish a promoted, evidence-backed policy delta as a cross-project advisory.", {
+    project_id: { type: "string" },
+    policy_delta_id: { type: "string" },
+    title: { type: "string" },
+    summary: { type: "string" },
+    expires_at: { type: "string" },
+  }, ["policy_delta_id"]),
+  codeSiteTool("synthi_codesite_decide_fleet_notam", "Locally adopt, mute, dismiss, or reactivate a fleet NOTAM for this project. Only adopted advisories affect clearance decisions; visibility never does.", {
+    project_id: { type: "string" },
+    notam_id: { type: "string" },
+    state: { type: "string", enum: ["adopt", "mute", "dismiss", "reactivate"] },
+    reason: { type: "string" },
+  }, ["notam_id", "state"]),
+  codeSiteTool("synthi_codesite_withdraw_fleet_notam", "Withdraw an active fleet NOTAM published by this project. Withdrawal immediately removes it from visibility and clearance, while preserving lifecycle evidence.", {
+    project_id: { type: "string" },
+    notam_id: { type: "string" },
+    reason: { type: "string" },
+  }, ["notam_id"]),
+  codeSiteTool("synthi_codesite_supersede_fleet_notam", "Replace this project's active fleet NOTAM with a new promoted policy delta. The old advisory records its replacement and no longer affects clearance.", {
+    project_id: { type: "string" },
+    notam_id: { type: "string" },
+    policy_delta_id: { type: "string" },
+    title: { type: "string" },
+    summary: { type: "string" },
+    expires_at: { type: "string" },
+    reason: { type: "string" },
+  }, ["notam_id", "policy_delta_id"]),
   codeSiteTool("synthi_codesite_promote_policy_delta", "Promote a proposed CodeSite policy delta after validation/replay evidence.", {
     project_id: { type: "string" },
     policy_delta_id: { type: "string" },
@@ -842,6 +902,27 @@ async function dispatchAgentBoundKnowledgeTool(
       verdict: args["verdict"],
       correction: args["correction"],
       evidence_refs: args["evidence_refs"],
+    });
+  } else if (toolName === "synthi_codesite_find_experts") {
+    method = "GET";
+    path = `${basePath}/experts`;
+    url = new URL(`${apiBase}${path}`);
+    for (const key of ["paths", "symbols", "contracts"] as const) {
+      const values = boundedStringListArg(args[key], "codesite_agent_knowledge_arguments_invalid", 32);
+      if (values.length > 0) url.searchParams.set(key, values.join(","));
+    }
+    if (args["limit"] !== undefined) url.searchParams.set("limit", String(args["limit"]));
+  } else if (toolName === "synthi_codesite_ask_expert_question") {
+    method = "POST";
+    path = `${basePath}/questions`;
+    url = new URL(`${apiBase}${path}`);
+    body = withoutUndefined({
+      title: args["title"],
+      summary: args["summary"],
+      references: args["references"],
+      urgency: args["urgency"],
+      suggested_expert_agent_session_ids: args["suggested_expert_agent_session_ids"],
+      allow_unrouted: args["allow_unrouted"],
     });
   } else {
     body = { ...args, kind: knowledgeKindForTool(toolName) };
@@ -1163,6 +1244,58 @@ function buildCodeSiteRequest(toolName: RoutedCodeSiteToolName, args: JsonObject
         path: `/projects/${encodeURIComponent(requiredProjectId(args))}/counterfactual-runs`,
         body: bodyFromArgs(args),
       };
+    case "synthi_codesite_list_fleet_notams": {
+      const query: Record<string, string> = {};
+      if (args["include_own"] !== undefined) query.includeOwn = args["include_own"] === true ? "true" : "false";
+      if (args["include_muted"] !== undefined) query.include_muted = args["include_muted"] === true ? "true" : "false";
+      if (args["include_inactive"] !== undefined) query.include_inactive = args["include_inactive"] === true ? "true" : "false";
+      if (optionalString(args["route"])) query.route = String(args["route"]);
+      return {
+        method: "GET",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/fleet-notams`,
+        ...(Object.keys(query).length ? { query } : {}),
+      };
+    }
+    case "synthi_codesite_publish_fleet_notam":
+      return {
+        method: "POST",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/fleet-notams/publish`,
+        body: {
+          policy_delta_id: requiredString(args, "policy_delta_id"),
+          ...(optionalString(args["title"]) ? { title: optionalString(args["title"]) } : {}),
+          ...(optionalString(args["summary"]) ? { summary: optionalString(args["summary"]) } : {}),
+          ...(optionalString(args["expires_at"]) ? { expiresAt: optionalString(args["expires_at"]) } : {}),
+        },
+      };
+    case "synthi_codesite_decide_fleet_notam":
+      return {
+        method: "POST",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/fleet-notams/${encodeURIComponent(requiredString(args, "notam_id"))}/decision`,
+        body: {
+          state: requiredString(args, "state"),
+          ...(optionalString(args["reason"]) ? { reason: optionalString(args["reason"]) } : {}),
+        },
+      };
+    case "synthi_codesite_withdraw_fleet_notam":
+      return {
+        method: "POST",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/fleet-notams/${encodeURIComponent(requiredString(args, "notam_id"))}/withdraw`,
+        body: {
+          ...(optionalString(args["reason"]) ? { reason: optionalString(args["reason"]) } : {}),
+        },
+      };
+    case "synthi_codesite_supersede_fleet_notam":
+      return {
+        method: "POST",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/fleet-notams/${encodeURIComponent(requiredString(args, "notam_id"))}/supersede`,
+        body: {
+          policy_delta_id: requiredString(args, "policy_delta_id"),
+          ...(optionalString(args["title"]) ? { title: optionalString(args["title"]) } : {}),
+          ...(optionalString(args["summary"]) ? { summary: optionalString(args["summary"]) } : {}),
+          ...(optionalString(args["expires_at"]) ? { expiresAt: optionalString(args["expires_at"]) } : {}),
+          ...(optionalString(args["reason"]) ? { reason: optionalString(args["reason"]) } : {}),
+        },
+      };
     case "synthi_codesite_file_rfi":
       return {
         method: "POST",
@@ -1237,6 +1370,17 @@ function buildCodeSiteRequest(toolName: RoutedCodeSiteToolName, args: JsonObject
         method: "POST",
         path: `/projects/${encodeURIComponent(requiredProjectId(args))}/policy-deltas`,
         body: bodyFromArgs(args),
+      };
+    case "synthi_codesite_list_learning_catalog":
+      return {
+        method: "GET",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/learning-catalog`,
+      };
+    case "synthi_codesite_adopt_learning_catalog_entry":
+      return {
+        method: "POST",
+        path: `/projects/${encodeURIComponent(requiredProjectId(args))}/learning-catalog/${encodeURIComponent(requiredString(args, "learning_id"))}/adopt`,
+        body: {},
       };
     case "synthi_codesite_promote_policy_delta":
       return {

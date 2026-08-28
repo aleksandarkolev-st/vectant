@@ -13,8 +13,8 @@ import {
 } from "./lib/sectionGroups";
 import { causalReplayHandovers } from "./views/replay/handovers";
 import {
-  ActivityView, ChannelsView, EvidenceView, GovernanceView, GraphView, InspectionsView,
-  ExpertiseView, LocksView, OverviewView, QuarantineView, ReplayView, SimulatorView,
+ActivityView, ChannelsView, EvidenceView, FleetNotamsView, GovernanceView, GraphView, InspectionsView,
+LearningCatalogView, ExpertiseView, LocksView, OverviewView, QuarantineView, ReplayView, SimulatorView,
 } from "./views";
 import { IconButton, LoadingSkeleton, Pill } from "./ui";
 import {
@@ -117,6 +117,8 @@ const VIEWS = {
   channels: ChannelsView,
   expertise: ExpertiseView,
   governance: GovernanceView,
+  notams: FleetNotamsView,
+  learning: LearningCatalogView,
   runway: LocksView,
   quarantine: QuarantineView,
   evidence: EvidenceView,
@@ -1063,6 +1065,8 @@ export default function CodeSitePanel({ workspaceSlug }) {
       { key: "channels", label: "Channels", icon: CodeSiteIcons.workspaceGraph },
       { key: "expertise", label: "Expertise", icon: CodeSiteIcons.agents },
       { key: "governance", label: "Governance", icon: CodeSiteIcons.governance },
+      { key: "notams", label: "Fleet advisories", icon: CodeSiteIcons.fleetNotams },
+      { key: "learning", label: "Learning", icon: CodeSiteIcons.learning },
       { key: "runway", label: "Locks", icon: CodeSiteIcons.pathLocks },
       { key: "quarantine", label: "Quarantine", icon: CodeSiteIcons.quarantine },
       { key: "evidence", label: "Evidence", icon: CodeSiteIcons.evidence },

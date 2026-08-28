@@ -87,6 +87,9 @@ const { prisma } = vi.hoisted(() => ({
       findFirst: vi.fn(),
       findMany: vi.fn(),
     },
+    codeSiteFleetNotam: {
+      findMany: vi.fn(),
+    },
     codeSitePolicyDecision: {
       create: vi.fn(),
     },
@@ -9052,6 +9055,7 @@ describe('CodeSite control plane transaction validation', () => {
       createdAt: new Date('2026-06-29T23:12:00.000Z'),
       promotedAt: new Date('2026-06-29T23:13:00.000Z'),
     }]);
+    prisma.codeSiteFleetNotam.findMany.mockResolvedValueOnce([]);
 
     const forecast = await collisionPredict('acme', 'project-1');
 

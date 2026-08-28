@@ -41,29 +41,61 @@ function timestampMs(value) {
 export function normalizeExpertiseQuery(query = {}, policy = EXPERTISE_POLICY) {
   const config = resolveExpertisePolicy(policy);
   const maxReferencesPerType = config.limits.maxReferencesPerType;
-  const rawPaths = asArray(query.paths ?? query.path);
-  const rawSymbols = asArray(query.symbols ?? query.symbol);
-  const rawContracts = asArray(query.contracts ?? query.contract);
-  if (rawPaths.length > maxReferencesPerType
+
+  const splitQueryValues = (value) => asArray(value).flatMap((entry) => (
+    typeof entry === 'string' ? entry.split(',') : [entry]
+  ));
+
+  const rawPaths = splitQueryValues(query.paths ?? query.path);
+  const rawSymbols = splitQueryValues(query.symbols ?? query.symbol);
+  const rawContracts = splitQueryValues(query.contracts ?? query.contract);
+
+  if (
+    rawPaths.length > maxReferencesPerType
     || rawSymbols.length > maxReferencesPerType
-    || rawContracts.length > maxReferencesPerType) {
-    throw Object.assign(new Error('expertise_query_limit_exceeded'), { code: 'expertise_query_limit_exceeded', status: 422 });
+    || rawContracts.length > maxReferencesPerType
+  ) {
+    throw Object.assign(
+      new Error('expertise_query_limit_exceeded'),
+      { code: 'expertise_query_limit_exceeded', status: 422 },
+    );
   }
-  const paths = unique(rawPaths.map((value) => String(value || '').replace(/\\/g, '/').replace(/^\/+/, '').trim()).filter(Boolean));
-  const symbols = unique(rawSymbols.map((value) => String(value || '').trim()).filter(Boolean));
-  const contracts = unique(rawContracts.map((value) => String(value || '').trim()).filter(Boolean));
-  if (paths.length > maxReferencesPerType
+
+  const paths = unique(
+    rawPaths
+      .map((value) => String(value || '').replace(/\\/g, '/').replace(/^\/+/, '').trim())
+      .filter(Boolean),
+  );
+  const symbols = unique(
+    rawSymbols.map((value) => String(value || '').trim()).filter(Boolean),
+  );
+  const contracts = unique(
+    rawContracts.map((value) => String(value || '').trim()).filter(Boolean),
+  );
+
+  if (
+    paths.length > maxReferencesPerType
     || symbols.length > maxReferencesPerType
-    || contracts.length > maxReferencesPerType) {
-    throw Object.assign(new Error('expertise_query_limit_exceeded'), { code: 'expertise_query_limit_exceeded', status: 422 });
+    || contracts.length > maxReferencesPerType
+  ) {
+    throw Object.assign(
+      new Error('expertise_query_limit_exceeded'),
+      { code: 'expertise_query_limit_exceeded', status: 422 },
+    );
   }
+
   const limitValue = Number(query.limit ?? config.limits.defaultLimit);
   const limit = Number.isFinite(limitValue)
     ? Math.min(Math.max(Math.floor(limitValue), 1), config.limits.maxLimit)
     : config.limits.defaultLimit;
+
   if (!paths.length && !symbols.length && !contracts.length) {
-    throw Object.assign(new Error('expertise_query_refs_required'), { code: 'expertise_query_refs_required', status: 422 });
+    throw Object.assign(
+      new Error('expertise_query_refs_required'),
+      { code: 'expertise_query_refs_required', status: 422 },
+    );
   }
+
   return { paths, symbols, contracts, limit };
 }
 
