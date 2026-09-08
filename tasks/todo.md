@@ -1873,3 +1873,79 @@ with no Redis errors. The readinessProbe fix itself committed and pushed separat
 
 Still not done: the two-account manual guest-access pass from the section above. Everything
 else about this deploy is now live and confirmed healthy.
+
+---
+
+# Task: Workspace instruction projection — symlink resilience (2026-09-08)
+
+Plan: `docs/superpowers/plans/2026-09-08-workspace-instruction-projection-symlink-resilience.md`.
+Branch: `fix/workspace-instruction-projection-symlink-resilience` off `origin/main`.
+
+## Context
+A cloned repo that ships `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` as symlinks (all
+three pointing at one canonical file — the layout `pascalorg/editor` uses) made
+`_assertSafeTarget` throw `workspace_instruction_projection_target_symlink_refused`,
+which aborted `reconcileWorkspace` mid-loop and cascaded into a full workspace
+outage on beta.vectant.dev: 503 on every git file op (`files`/`files-meta`/`sync`/
+`write-*`), 500 on `/api/spawner/ensure`, terminal filesystem-prep failure — file
+tree wouldn't load, saves failed, the runtime/VS Code server never came up.
+`de4a20377` (2026-08-21) had set `DEFAULT_ROLLOUT_MODE = 'full'`, so the projector
+runs for every workspace. (The AI `/api/completion` + `/api/next-edit` 502s are a
+separate pre-existing ai-backend issue, not addressed here.)
+
+## Plan
+- [x] Task 0 — worktree off `origin/main` (`b5cd5cc1b`); baseline recorded.
+- [x] Task 1 — L1: `_assertSafeTarget` returns an `EXTERNAL_SYMLINK` sentinel for a
+      symlinked *target* under `allowExternalSymlink`; `_reconcileProjection` and
+      `removeWorkspaceProjection` skip it (`{skipped:true, reason:'external-symlink'}`)
+      and the loop — including Git isolation install — completes. `375f05329` + `592b619e2`.
+- [x] Task 2 — write-path guard: skip carried in projection metadata;
+      `classifyInstructionProjectionForIde` treats an `external` registered path as a
+      plain file (not hidden / stripped / merged into). `42e18ac26`.
+- [x] Task 3 — L2: new `reconcileInstructionProjectionForIdeAction` helper +
+      `reconcileRuntimeInstructionProjection` try/catch — any reconcile failure
+      degrades to `{skipped:true}` / plain checkout instead of 503/500. `c06b09c03`.
+- [x] Task 4 — CI: added the 4 dependency-free `workspaceInstruction*` suites to the
+      `codesite-tests.yml` collab-server job. `ab4297ef7`.
+- [x] Task 5 — verification (below).
+- [ ] Task 6 — merge to `main`, push (checkpoint before `git push origin main`).
+
+## Review — Task 5 verification
+- Baseline pre-existing failures on `origin/main` (recorded before any change):
+  - CI collab-server batch: **118/124** — 6 Windows-only procfs/symlink fails in
+    `codesiteFs.test.js` / `terminalServiceAgentLifecycle.test.js` (matches project
+    memory; pass on the Linux CI runner).
+  - `runtimeFilesystem.test.js`: **7/8** — `inactive runtime filesystem keeps legacy
+    hydration behavior` failed because the unguarded projection reconcile threw
+    `workspace_instruction_projection_active_root_unavailable` on the test's fake
+    repo path (i.e. this same bug class).
+  - `workspaceInstructionProjectionConfig.test.js`: **6/7** — `takes canonical
+    instructions from durable workspace metadata…` asserts stale default-content
+    text (`/Vectant environment configuration/`); unrelated, not touched.
+  - Full collab-server sweep: 426 pass / 16 fail across 4 files (all four confirmed
+    pre-existing by re-running them on pristine `origin/main`).
+- Post-change:
+  - Instruction + runtime suites (76 tests): **75 pass**, the 1 fail is the
+    pre-existing config-text assertion. **+9 new tests**, and the pre-existing
+    `runtimeFilesystem` test 5 now **passes** (L2 catches the throw) → that suite is
+    **9/9**.
+  - CI collab-server batch with the 4 additions (162 tests): **156 pass**, the same
+    6 Windows-only fails, **0 new failures**.
+  - `node --check` clean on all 5 changed source files.
+  - Manual real-symlink trace: this Windows box forbids `fs.symlink` (EPERM), so the
+    `pascalorg/editor`-layout test creates genuine `CLAUDE.md`/`GEMINI.md → AGENTS.md`
+    symlinks when the platform allows (Linux CI) and asserts they are left untouched,
+    falling back to the injected-`lstat` shim otherwise. No live GKE check from here —
+    the user runs that post-deploy.
+- Behavioural outcome: with the fix, a symlinked-agent-file repo reconciles cleanly
+  (`AGENTS.md` gets the managed block, symlinks untouched, Git filter installs so the
+  block stays out of `git diff` — self-healing for already-affected workspaces), and
+  no projection failure can 503/500 a file op or the runtime.
+
+## Notes / deviations
+- `service.writeFromIde` still throws on a symlinked target — it is dead code (no
+  caller outside tests; the live IDE-write path is the collab adapter's
+  `mergeInstructionProjectionWriteFromIde`), so left untouched.
+- `runtimeFilesystem.test.js` not added to CI — it pulls `simple-git` via
+  `gitService` and that job installs nothing. Follow-up: add an install step or a
+  dep-free split.
