@@ -8,7 +8,10 @@ pub mod closed_execution_process;
 pub mod closed_execution_provider;
 #[cfg(feature = "gpu-hmr")]
 pub mod gpu_runtime_boundary;
-#[cfg(feature = "gpu-hmr")]
+// The GPU runtime *proof* contract (canonical hashing / strict verification) is
+// part of the always-on compile + runner proof path (compiler/handler.rs,
+// compiler/stages/runner.rs use it unconditionally). Only the device-compile
+// stage itself stays behind `gpu-hmr`.
 pub mod gpu_runtime_proof;
 #[cfg(feature = "gpu-hmr")]
 pub mod gpu_runtime_watchdog;
