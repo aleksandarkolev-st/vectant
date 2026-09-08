@@ -903,27 +903,6 @@ async function dispatchAgentBoundKnowledgeTool(
       correction: args["correction"],
       evidence_refs: args["evidence_refs"],
     });
-  } else if (toolName === "synthi_codesite_find_experts") {
-    method = "GET";
-    path = `${basePath}/experts`;
-    url = new URL(`${apiBase}${path}`);
-    for (const key of ["paths", "symbols", "contracts"] as const) {
-      const values = boundedStringListArg(args[key], "codesite_agent_knowledge_arguments_invalid", 32);
-      if (values.length > 0) url.searchParams.set(key, values.join(","));
-    }
-    if (args["limit"] !== undefined) url.searchParams.set("limit", String(args["limit"]));
-  } else if (toolName === "synthi_codesite_ask_expert_question") {
-    method = "POST";
-    path = `${basePath}/questions`;
-    url = new URL(`${apiBase}${path}`);
-    body = withoutUndefined({
-      title: args["title"],
-      summary: args["summary"],
-      references: args["references"],
-      urgency: args["urgency"],
-      suggested_expert_agent_session_ids: args["suggested_expert_agent_session_ids"],
-      allow_unrouted: args["allow_unrouted"],
-    });
   } else {
     body = { ...args, kind: knowledgeKindForTool(toolName) };
   }
