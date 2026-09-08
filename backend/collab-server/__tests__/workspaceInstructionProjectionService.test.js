@@ -179,21 +179,30 @@ test('skips a symlinked projection target without following or changing its dest
 test('projects the real AGENTS.md and skips symlinked CLAUDE.md / GEMINI.md (pascalorg/editor layout)', async (t) => {
   const root = await temporaryWorkspace(t);
   await fs.promises.writeFile(path.join(root, 'AGENTS.md'), '# Agent Instructions\n', 'utf8');
-  const symlinked = new Set(
-    [path.join(root, 'CLAUDE.md'), path.join(root, 'GEMINI.md')].map((p) => path.resolve(p)),
-  );
-  const fsApi = {
-    ...fs.promises,
-    async lstat(filePath) {
-      if (symlinked.has(path.resolve(filePath))) {
-        return { isSymbolicLink: () => true, isFile: () => false, isDirectory: () => false };
-      }
-      return fs.promises.lstat(filePath);
-    },
-  };
+  const symlinkPaths = [path.join(root, 'CLAUDE.md'), path.join(root, 'GEMINI.md')];
+
+  // Prefer a genuine symlink (Linux CI); fall back to an injected lstat on a box
+  // that forbids symlink creation (Windows dev).
+  let fsApi;
+  try {
+    for (const p of symlinkPaths) await fs.promises.symlink('AGENTS.md', p, 'file');
+  } catch (error) {
+    if (!['EPERM', 'EACCES', 'UNKNOWN'].includes(error.code)) throw error;
+    const faked = new Set(symlinkPaths.map((p) => path.resolve(p)));
+    fsApi = {
+      ...fs.promises,
+      async lstat(filePath) {
+        if (faked.has(path.resolve(filePath))) {
+          return { isSymbolicLink: () => true, isFile: () => false, isDirectory: () => false };
+        }
+        return fs.promises.lstat(filePath);
+      },
+    };
+  }
+
   const gitCalls = [];
   const service = createService({
-    fsApi,
+    ...(fsApi ? { fsApi } : {}),
     gitAdapter: { async reconcileWorkspace(ctx) { gitCalls.push(ctx.projections.map((p) => p.path)); } },
   });
 
@@ -202,6 +211,7 @@ test('projects the real AGENTS.md and skips symlinked CLAUDE.md / GEMINI.md (pas
   const byPath = Object.fromEntries(result.projections.map((p) => [p.path, p]));
   assert.equal(byPath['AGENTS.md'].skipped, undefined);
   assert.equal(byPath['CLAUDE.md'].skipped, true);
+  assert.equal(byPath['CLAUDE.md'].reason, 'external-symlink');
   assert.equal(byPath['GEMINI.md'].skipped, true);
   assert.match(
     await fs.promises.readFile(path.join(root, 'AGENTS.md'), 'utf8'),
@@ -209,6 +219,13 @@ test('projects the real AGENTS.md and skips symlinked CLAUDE.md / GEMINI.md (pas
   );
   // Git isolation only ever sees the real, managed projection.
   assert.deepEqual(gitCalls, [['AGENTS.md']]);
+  if (!fsApi) {
+    // Genuine symlinks: untouched, still pointing at AGENTS.md.
+    for (const p of symlinkPaths) {
+      assert.equal((await fs.promises.lstat(p)).isSymbolicLink(), true);
+      assert.equal(await fs.promises.readlink(p), 'AGENTS.md');
+    }
+  }
 });
 
 test('removeWorkspaceProjection skips a symlinked target instead of throwing', async (t) => {
