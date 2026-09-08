@@ -55,6 +55,16 @@ test('the IDE tree hides only known synthetic-only passive instruction projectio
   }).hideFromExplorer, false);
 });
 
+test('classifyInstructionProjectionForIde treats an external (skipped) projection as a plain file', () => {
+  const c = classifyInstructionProjectionForIde({
+    path: 'CLAUDE.md',
+    projectionMetadata: { projections: { 'CLAUDE.md': { external: true } } },
+  });
+  assert.equal(c.isInstructionProjection, false);
+  assert.equal(c.hideFromExplorer, false);
+  assert.equal(c.externalProjection, true);
+});
+
 test('a supplied classifier can identify synthetic ownership but cannot hide an unregistered user file', () => {
   const classifier = ({ path }) => path === 'GEMINI.md'
     ? { ownership: PROJECTION_OWNERSHIP.SYNTHETIC_ONLY }
@@ -126,6 +136,7 @@ test('IDE writes preserve CRLF user content and ordinary files pass through with
     ownership: null,
     syntheticOnly: false,
     hideFromExplorer: false,
+    externalProjection: false,
     content: 'export default 1;\n',
     mergedManagedBlock: false,
   });
