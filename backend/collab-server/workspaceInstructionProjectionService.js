@@ -34,6 +34,14 @@ const WORKSPACE_INSTRUCTION_PROJECTION_STATE_PATH = '.synthi/workspace-instructi
 const WORKSPACE_INSTRUCTION_PROJECTION_STATE_VERSION = 1;
 const DEFAULT_MAX_WRITE_RETRIES = 3;
 
+// Returned by _assertSafeTarget when a projection *target* is a symlink and the
+// caller opted into tolerating it. The projector never follows or rewrites a
+// symlink; a repo that ships AGENTS.md / CLAUDE.md / GEMINI.md as a symlink
+// (commonly pointing them all at one canonical file) is left untouched and the
+// projection for that path is reported as skipped rather than aborting the
+// whole workspace reconcile.
+const EXTERNAL_SYMLINK = Object.freeze({ external: true });
+
 function projectionError(code, cause) {
   const error = new Error(code);
   error.code = code;
@@ -205,7 +213,7 @@ class WorkspaceInstructionProjectionService {
     }
   }
 
-  async _assertSafeTarget(activeWorkspaceRoot, targetPath, { createParent = false } = {}) {
+  async _assertSafeTarget(activeWorkspaceRoot, targetPath, { createParent = false, allowExternalSymlink = false } = {}) {
     if (!pathIsInside(activeWorkspaceRoot, targetPath)) {
       throw projectionError('workspace_instruction_projection_path_escape');
     }
@@ -234,6 +242,7 @@ class WorkspaceInstructionProjectionService {
         return null;
       }
       if (stat.isSymbolicLink()) {
+        if (isTarget && allowExternalSymlink) return EXTERNAL_SYMLINK;
         throw projectionError(
           isTarget
             ? 'workspace_instruction_projection_target_symlink_refused'
@@ -251,8 +260,11 @@ class WorkspaceInstructionProjectionService {
     return null;
   }
 
-  async _readSnapshot(activeWorkspaceRoot, targetPath) {
-    const stat = await this._assertSafeTarget(activeWorkspaceRoot, targetPath);
+  async _readSnapshot(activeWorkspaceRoot, targetPath, { allowExternalSymlink = false } = {}) {
+    const stat = await this._assertSafeTarget(activeWorkspaceRoot, targetPath, { allowExternalSymlink });
+    if (stat === EXTERNAL_SYMLINK) {
+      return { exists: false, external: true, content: '', hash: null, mode: null };
+    }
     if (!stat) {
       return { exists: false, content: '', hash: null, mode: null };
     }
@@ -312,18 +324,21 @@ class WorkspaceInstructionProjectionService {
     return written;
   }
 
-  async _writeWithOptimisticRetry(activeWorkspaceRoot, targetPath, transform, { rebaseOnConflict }) {
+  async _writeWithOptimisticRetry(activeWorkspaceRoot, targetPath, transform, { rebaseOnConflict, allowExternalSymlink = false }) {
     let lastConflict = null;
     for (let attempt = 0; attempt < this.maxWriteRetries; attempt += 1) {
       let snapshot;
       try {
-        snapshot = await this._readSnapshot(activeWorkspaceRoot, targetPath);
+        snapshot = await this._readSnapshot(activeWorkspaceRoot, targetPath, { allowExternalSymlink });
       } catch (error) {
         if (error.code === 'workspace_instruction_projection_source_changed' && rebaseOnConflict) {
           lastConflict = error;
           continue;
         }
         throw error;
+      }
+      if (snapshot.external) {
+        return { before: snapshot, after: snapshot, changed: false, external: true };
       }
       const nextContent = await transform(snapshot, attempt);
       if (nextContent === snapshot.content) return { before: snapshot, after: snapshot, changed: false };
@@ -454,8 +469,19 @@ class WorkspaceInstructionProjectionService {
       activeWorkspaceRoot,
       target,
       (snapshot) => mergeVectantBlock(snapshot.content, canonical.block),
-      { rebaseOnConflict: true },
+      { rebaseOnConflict: true, allowExternalSymlink: true },
     );
+    if (write.external) {
+      // The path is a symlink the projector must not follow or rewrite. Leave it
+      // as the user shipped it and record the projection as skipped so the rest
+      // of the reconcile (and its Git isolation) still completes.
+      this._emit('workspace_instruction_projection_skipped_external', {
+        workspaceId: canonical.workspaceId,
+        path: normalizedRelativePath,
+        reason: 'external-symlink',
+      });
+      return { path: normalizedRelativePath, target, skipped: true, reason: 'external-symlink', changed: false };
+    }
     // Ownership is decided from what existed before reconciliation.  A newly
     // created block-only document is synthetic; a terminal edit observed
     // before reconciliation promotes an existing synthetic file to user-owned.
@@ -496,7 +522,11 @@ class WorkspaceInstructionProjectionService {
         activeWorkspaceRoot,
         instructions: canonical.instructions,
         block: canonical.block,
-        projections: results.map(({ path: projectionPath, ownership }) => ({ path: projectionPath, ownership })),
+        // Skipped (symlinked) paths are not managed projections — the Git
+        // isolation layer only accepts existing-user-file / synthetic-only.
+        projections: results
+          .filter((entry) => !entry.skipped)
+          .map(({ path: projectionPath, ownership }) => ({ path: projectionPath, ownership })),
       });
     }
     return { skipped: false, activeWorkspaceRoot, workspaceId: canonical.workspaceId, projections: results };
@@ -586,7 +616,12 @@ class WorkspaceInstructionProjectionService {
     const results = [];
     for (const projection of this.projections) {
       const { normalizedRelativePath, target } = resolveProjectionTarget(activeWorkspaceRoot, projection.path);
-      const snapshot = await this._readSnapshot(activeWorkspaceRoot, target);
+      const snapshot = await this._readSnapshot(activeWorkspaceRoot, target, { allowExternalSymlink: true });
+      if (snapshot.external) {
+        // Never projected into (it is a symlink); nothing to strip or remove.
+        results.push({ path: normalizedRelativePath, removed: false, external: true });
+        continue;
+      }
       if (!snapshot.exists) {
         results.push({ path: normalizedRelativePath, removed: false, missing: true });
         continue;
@@ -613,7 +648,7 @@ class WorkspaceInstructionProjectionService {
       await this.gitAdapter.removeWorkspace({
         workspaceId: state.workspaceId,
         activeWorkspaceRoot,
-        projections: results,
+        projections: results.filter((entry) => !entry.external),
       });
     }
     await this._removeStateFile(activeWorkspaceRoot);
