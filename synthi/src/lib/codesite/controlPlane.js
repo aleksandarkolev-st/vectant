@@ -69,12 +69,6 @@ import {
 import { buildKnowledgeDeliveryPlan } from './knowledgeRouting';
 import { validateKnowledgeResponse } from './knowledgeResponses';
 import { validateKnowledgeFeedback } from './knowledgeFeedback';
-import {
-  buildExpertiseIndex,
-  normalizeExpertiseQuery,
-  rankExperts,
-  suggestExpertsForReferences,
-} from './agentExpertise';
 import { loadExpertisePolicy } from './expertisePolicyRuntime';
 import {
   getCachedExpertiseRoutingState,

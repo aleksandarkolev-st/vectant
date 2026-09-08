@@ -142,6 +142,10 @@ export async function GET(request, { params }) {
       return okJson({
         principal: await getAgentWarrantRecipientPrincipal(slug, route[1], bearerToken(request), route[3]),
       });
+    } catch (error) {
+      return handleCodesiteError(error);
+    }
+  }
   if (route[0] === 'agent-sessions' && route[2] === 'experts' && route.length === 3) {
     try {
       return okJson(await findAgentExperts(slug, route[1], bearerToken(request), requestQuery(request)));
@@ -650,6 +654,7 @@ export async function POST(request, { params }) {
       && route[4] === 'adopt'
       && route.length === 5) {
       return okJson(await adoptProjectLearningCatalogEntry(slug, route[1], route[3], access.actor));
+    }
     if (route[0] === 'projects' && route[2] === 'questions' && route[4] === 'answer' && route.length === 5) {
       return okJson(await answerProjectQuestion(slug, route[1], route[3], body, access.actor));
     }
