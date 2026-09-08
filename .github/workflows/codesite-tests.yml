@@ -65,7 +65,7 @@ jobs:
         with:
           node-version: '22'
 
-      # No install needed: the collab-server suites are dependency-free ESM/CJS
+      # No install needed: these collab-server suites are dependency-free ESM/CJS
       # and this is where POSIX symlink/permission cases genuinely execute.
       - name: Boundary suites (POSIX enforcement path)
         working-directory: backend/collab-server
@@ -76,7 +76,11 @@ jobs:
                __tests__/terminalServiceAgentLifecycle.test.js \
                __tests__/runtimeObservationPublisher.test.js \
                __tests__/programRuntimeManager.test.js \
-               __tests__/sessionWorkspaceAccess.test.js
+               __tests__/sessionWorkspaceAccess.test.js \
+               __tests__/workspaceInstructionProjectionService.test.js \
+               __tests__/workspaceInstructionProjectionRuntime.test.js \
+               __tests__/workspaceInstructionProjectionCollabAdapter.test.js \
+               __tests__/workspaceInstructionIdePresentation.test.js
 
   mcp-tools:
     name: synthi-mcp codesite tools
