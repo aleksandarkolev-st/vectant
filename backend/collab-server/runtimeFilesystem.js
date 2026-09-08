@@ -99,7 +99,22 @@ async function reconcileRuntimeInstructionProjection(result, activeWorkspacePath
     repositoryRoot: result.path,
   };
   if (activeWorkspacePath) projectionInput.activeWorkspacePath = activeWorkspacePath;
-  const projection = await workspaceInstructionProjectionRuntime.reconcile(projectionInput);
+  let projection;
+  try {
+    projection = await workspaceInstructionProjectionRuntime.reconcile(projectionInput);
+  } catch (error) {
+    // Passive instruction projection is an enhancement — it must never fail a
+    // runtime/terminal hydration. Log and continue with the plain checkout.
+    console.warn(
+      `[RuntimeFS] Instruction projection reconcile failed for ${result.slug}`
+      + `${activeWorkspacePath ? ` (${activeWorkspacePath})` : ''}: ${error?.code || error?.message || error}`,
+    );
+    return {
+      ...result,
+      activeWorkspacePath: activeWorkspacePath || '',
+      instructionProjection: { skipped: true, reason: 'reconcile_failed' },
+    };
+  }
   // Runtime callers may surface this result in diagnostics.  Preserve only
   // operational metadata: terminal instruction content remains in the
   // physical document and must never be copied into a status payload.

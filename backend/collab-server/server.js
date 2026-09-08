@@ -60,7 +60,7 @@ const {
   prepareFileContentForIdeWrite,
   presentFileContentForIde,
   presentFileTreeForIde,
-  shouldReconcileInstructionProjection,
+  reconcileInstructionProjectionForIdeAction,
 } = require('./workspaceInstructionProjectionCollabAdapter');
 const codeSiteActivityRegistry = require('./codesiteActivityRegistry');
 const {
@@ -5674,26 +5674,17 @@ const server = http.createServer(async (req, res) => {
             }
 
             let result;
-            let instructionProjection = null;
-            if (shouldReconcileInstructionProjection(action)) {
-              try {
-                instructionProjection = await workspaceInstructionProjectionRuntime.reconcile({
-                  workspaceId: slug,
-                  repositoryRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
-                  activeWorkspacePath: data.activeWorkspacePath || '',
-                });
-              } catch (projectionError) {
-                logger.warn('workspace_instruction_projection_reconcile_failed', {
-                  slug, action, message: projectionError?.message || String(projectionError),
-                });
-                res.writeHead(503, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({
-                  error: 'workspace_instruction_projection_unavailable',
-                  message: 'Workspace instruction projection is temporarily unavailable. Please retry.',
-                }));
-                return;
-              }
-            }
+            // Passive instruction projection is best-effort: a reconcile failure
+            // (symlinked target, missing checkout, fs race) degrades to
+            // feature-off for this request rather than 503-ing the file op.
+            const instructionProjection = await reconcileInstructionProjectionForIdeAction({
+              runtime: workspaceInstructionProjectionRuntime,
+              action,
+              workspaceId: slug,
+              repositoryRoot: gitService.getEffectiveRepoPath(slug, effectiveUserId),
+              activeWorkspacePath: data.activeWorkspacePath || '',
+              logger,
+            });
 
             // Validate file paths before processing any action that accepts one.
             // This prevents path-traversal attacks (e.g. "../../etc/passwd").

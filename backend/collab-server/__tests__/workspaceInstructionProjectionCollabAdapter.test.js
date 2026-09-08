@@ -7,6 +7,7 @@ const {
   prepareFileContentForIdeWrite,
   presentFileContentForIde,
   presentFileTreeForIde,
+  reconcileInstructionProjectionForIdeAction,
   shouldReconcileInstructionProjection,
 } = require('../workspaceInstructionProjectionCollabAdapter');
 
@@ -60,6 +61,40 @@ test('merges user text with the current block only for registered projection pat
   assert.equal(extractVectantBlock(physical).version, '3');
   assert.equal(prepareFileContentForIdeWrite({ path: 'README.md', userContent: 'No mutation.', projectionResult: projection }), 'No mutation.');
   assert.equal(prepareFileContentForIdeWrite({ path: 'AGENTS.md', userContent: 'No feature.', projectionResult: { skipped: true } }), 'No feature.');
+});
+
+test('reconcileInstructionProjectionForIdeAction returns null for non-IDE actions', async () => {
+  const r = await reconcileInstructionProjectionForIdeAction({
+    runtime: { reconcile: async () => { throw new Error('should not run'); } },
+    action: 'commit', workspaceId: 'w', repositoryRoot: '/tmp/w',
+  });
+  assert.equal(r, null);
+});
+
+test('reconcileInstructionProjectionForIdeAction degrades to skipped when reconcile throws', async () => {
+  const warnings = [];
+  const r = await reconcileInstructionProjectionForIdeAction({
+    runtime: {
+      reconcile: async () => {
+        const e = new Error('boom');
+        e.code = 'workspace_instruction_projection_target_symlink_refused';
+        throw e;
+      },
+    },
+    action: 'files-meta', workspaceId: 'w', repositoryRoot: '/tmp/w',
+    logger: { warn: (evt, d) => warnings.push([evt, d]) },
+  });
+  assert.deepEqual(r, { skipped: true, reason: 'reconcile_failed' });
+  assert.equal(warnings[0][0], 'workspace_instruction_projection_reconcile_failed');
+  assert.equal(warnings[0][1].code, 'workspace_instruction_projection_target_symlink_refused');
+});
+
+test('reconcileInstructionProjectionForIdeAction passes a successful reconcile result through', async () => {
+  const ok = { skipped: false, projections: [{ path: 'AGENTS.md', ownership: 'existing-user-file' }] };
+  const r = await reconcileInstructionProjectionForIdeAction({
+    runtime: { reconcile: async () => ok }, action: 'sync', workspaceId: 'w', repositoryRoot: '/tmp/w',
+  });
+  assert.equal(r, ok);
 });
 
 test('prepareFileContentForIdeWrite leaves a skipped (symlinked) projection path unmerged', () => {

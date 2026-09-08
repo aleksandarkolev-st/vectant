@@ -424,3 +424,39 @@ test('last terminal release cleans passive instruction projections after all ses
     restore();
   }
 });
+
+test('runtime hydration tolerates an instruction projection reconcile failure', async () => {
+  activityRegistry.resetRegistry();
+  const restoreProjectionRuntime = setWorkspaceInstructionProjectionRuntimeForTests({
+    reconcile: async () => {
+      const e = new Error('boom');
+      e.code = 'workspace_instruction_projection_target_symlink_refused';
+      throw e;
+    },
+    cleanup: async () => ({ skipped: true }),
+  });
+  const restore = patchGitService({
+    initRepo: async () => ({ success: true }),
+    ensureUserRepo: async () => ({ path: '/tmp/runtime-proj-fail/user-1', created: true }),
+    getEffectiveRepoPath: () => '/tmp/runtime-proj-fail/user-1',
+  });
+  try {
+    await withControlPlaneActiveList('runtime-proj-fail', [], async () => {
+      const result = await ensureRuntimeFilesystem({
+        workspaceSlug: 'runtime-proj-fail',
+        filesystemUserId: 'user-1',
+        runtimeScope: 'proj-fail-term',
+        pin: true,
+        reason: 'interactive_terminal',
+      });
+      assert.equal(result.path, '/tmp/runtime-proj-fail/user-1');
+      assert.equal(result.instructionProjection.skipped, true);
+      assert.equal(result.instructionProjection.reason, 'reconcile_failed');
+    });
+  } finally {
+    await releaseRuntimeFilesystem('proj-fail-term');
+    restoreProjectionRuntime();
+    activityRegistry.resetRegistry();
+    restore();
+  }
+});

@@ -26,6 +26,34 @@ function shouldReconcileInstructionProjection(action) {
   return IDE_PROJECTION_ACTIONS.has(String(action || ''));
 }
 
+/**
+ * Reconcile passive instruction projections for an IDE file action, tolerating
+ * failure. Passive instruction projection is an enhancement layered on top of
+ * the file operation — a reconcile failure (a symlinked target, a missing
+ * checkout, a transient fs race) must never turn a `files` / `sync` / `write`
+ * into a 503. On failure the caller gets `{ skipped: true }`, which every
+ * downstream presenter already treats as "feature off for this request".
+ * Returns `null` for actions that do not project.
+ */
+async function reconcileInstructionProjectionForIdeAction({
+  runtime, action, workspaceId, repositoryRoot, activeWorkspacePath = '', logger = null,
+}) {
+  if (!shouldReconcileInstructionProjection(action)) return null;
+  try {
+    return await runtime.reconcile({ workspaceId, repositoryRoot, activeWorkspacePath: activeWorkspacePath || '' });
+  } catch (error) {
+    if (logger && typeof logger.warn === 'function') {
+      logger.warn('workspace_instruction_projection_reconcile_failed', {
+        workspaceId,
+        action,
+        code: error?.code || null,
+        message: error?.message || String(error),
+      });
+    }
+    return { skipped: true, reason: 'reconcile_failed' };
+  }
+}
+
 function metadataFromProjectionResult(result) {
   if (!result || result.skipped || !Array.isArray(result.projections)) return null;
   return {
@@ -73,5 +101,6 @@ module.exports = {
   prepareFileContentForIdeWrite,
   presentFileContentForIde,
   presentFileTreeForIde,
+  reconcileInstructionProjectionForIdeAction,
   shouldReconcileInstructionProjection,
 };
