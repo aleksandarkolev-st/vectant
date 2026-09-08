@@ -79,21 +79,27 @@ function classifyInstructionProjectionForIde({
   const state = isInstructionProjection
     ? projectionStateForPath(projectionMetadata, normalizedPath)
     : null;
+  // A registered path the projection service skipped (a symlink it must not
+  // follow) is treated as a plain user file: not hidden, not stripped, not
+  // merged into on write.
+  const externalProjection = Boolean(state && state.external === true);
+  const managedProjection = isInstructionProjection && !externalProjection;
   const classified = classifierResult(classifyProjection, {
     path: normalizedPath || String(path || ''),
     projectionMetadata,
     registry: enabledRegistry,
   }, state);
-  const ownership = isInstructionProjection ? validOwnership(classified?.ownership) : null;
-  const syntheticOnly = isInstructionProjection
+  const ownership = managedProjection ? validOwnership(classified?.ownership) : null;
+  const syntheticOnly = managedProjection
     && ownership === PROJECTION_OWNERSHIP.SYNTHETIC_ONLY;
 
   return Object.freeze({
     path: normalizedPath || String(path || ''),
-    isInstructionProjection,
+    isInstructionProjection: managedProjection,
     ownership,
     syntheticOnly,
     hideFromExplorer: syntheticOnly,
+    externalProjection,
   });
 }
 

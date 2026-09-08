@@ -61,3 +61,24 @@ test('merges user text with the current block only for registered projection pat
   assert.equal(prepareFileContentForIdeWrite({ path: 'README.md', userContent: 'No mutation.', projectionResult: projection }), 'No mutation.');
   assert.equal(prepareFileContentForIdeWrite({ path: 'AGENTS.md', userContent: 'No feature.', projectionResult: { skipped: true } }), 'No feature.');
 });
+
+test('prepareFileContentForIdeWrite leaves a skipped (symlinked) projection path unmerged', () => {
+  const projection = {
+    skipped: false,
+    canonicalBlock: buildVectantBlock({ workspaceId: 'w', version: 2, content: 'x' }),
+    projections: [
+      { path: 'AGENTS.md', ownership: 'existing-user-file' },
+      { path: 'CLAUDE.md', skipped: true, reason: 'external-symlink' },
+    ],
+  };
+  // A symlinked CLAUDE.md must never receive the managed block written through it.
+  assert.equal(
+    prepareFileContentForIdeWrite({ path: 'CLAUDE.md', userContent: 'hi\n', projectionResult: projection }),
+    'hi\n',
+  );
+  // The real projection still merges.
+  assert.match(
+    prepareFileContentForIdeWrite({ path: 'AGENTS.md', userContent: 'hi\n', projectionResult: projection }),
+    /Vectant_MANAGED_INSTRUCTIONS_BEGIN/,
+  );
+});

@@ -31,6 +31,10 @@ function metadataFromProjectionResult(result) {
   return {
     projections: Object.fromEntries(result.projections.map((projection) => [projection.path, {
       ownership: projection.ownership,
+      // A projection the service skipped (e.g. a symlinked target) is not a
+      // managed document: it must not be hidden from the tree, stripped, or
+      // have the managed block merged into an IDE write.
+      external: Boolean(projection.skipped || projection.external),
     }])),
   };
 }
