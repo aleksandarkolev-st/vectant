@@ -2228,6 +2228,19 @@ const server = http.createServer(async (req, res) => {
   // Origin check — blocks naive cross-site POSTs for all mutating routes.
   if (!enforceOrigin(req, res)) return;
 
+  // Kubernetes liveness/readiness probe. Deliberately unauthenticated and
+  // fully self-contained: it makes no external round-trip (so it can't deadlock
+  // against this pod's own Service endpoints on a Recreate / cold start — see
+  // the readinessProbe comment in k8s/collab-server.yaml) and returns no
+  // workspace data (so it needs neither the Origin allowlist nor the
+  // internal-token gate that /debug/status carries). Reports "ok" as soon as
+  // the HTTP server is accepting connections.
+  if ((req.url === '/healthz' || req.url === '/livez') && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok', service: 'collab-server' }));
+    return;
+  }
+
   // ========================================================================
   // TURN CREDENTIALS — /turn-credentials
   // Internal endpoint for workers (Option B) to fetch short-lived

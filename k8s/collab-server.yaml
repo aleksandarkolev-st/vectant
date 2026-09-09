@@ -425,18 +425,20 @@ spec:
             # starts with zero existing ready replicas (Recreate strategy,
             # or a fresh cluster) -- the Service has no endpoints to route
             # that internal call to until this probe passes, and this probe
-            # can't pass until the Service has endpoints. Use the
-            # self-contained status endpoint instead; /codesite/readiness
-            # remains available as a deep cross-service diagnostic, just not
-            # as the Kubernetes readiness gate.
+            # can't pass until the Service has endpoints.
+            # NOT /debug/status either: it is gated behind the internal
+            # control-plane token (an unauthenticated GET gets 403), which
+            # crashloops the container. /healthz is the dedicated
+            # unauthenticated, self-contained probe. /codesite/readiness
+            # remains available as a deep cross-service diagnostic.
             httpGet:
-              path: /debug/status
+              path: /healthz
               port: 1235
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /debug/status
+              path: /healthz
               port: 1235
             initialDelaySeconds: 10
             periodSeconds: 20
