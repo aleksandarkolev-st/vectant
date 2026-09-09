@@ -1908,7 +1908,8 @@ separate pre-existing ai-backend issue, not addressed here.)
 - [x] Task 4 — CI: added the 4 dependency-free `workspaceInstruction*` suites to the
       `codesite-tests.yml` collab-server job. `ab4297ef7`.
 - [x] Task 5 — verification (below).
-- [ ] Task 6 — merge to `main`, push (checkpoint before `git push origin main`).
+- [x] Task 6 — merged to `main` (`5e2a9dc09`), pushed.
+- [x] Task 7 — deployed to beta.vectant.dev (see "Deploy outcome" below).
 
 ## Review — Task 5 verification
 - Baseline pre-existing failures on `origin/main` (recorded before any change):
@@ -1949,3 +1950,29 @@ separate pre-existing ai-backend issue, not addressed here.)
 - `runtimeFilesystem.test.js` not added to CI — it pulls `simple-git` via
   `gitService` and that job installs nothing. Follow-up: add an install step or a
   dep-free split.
+
+## Deploy outcome (2026-09-09) — beta.vectant.dev, image `1c125f2f-654d-4a53-af4f-d6fc77f28a52`
+
+`main` had been **un-buildable since 2026-08-28** (a batch of unbuild-tested bad merges,
+PRs #694/#695/#698/#699). Getting a green deploy of the symlink fix took **7 `gcloud
+builds submit` cycles**, one fix per failing build step — none of them from the symlink
+work:
+1. `631d767f0` root `package.json` missing comma → `npm ci` `EJSONPARSE` (blocked `build-frontend`).
+2. `fd45ad703` `mcp/synthi-mcp/src/tools/codesite.ts` duplicated `synthi_codesite_find_experts` / `ask_expert_question` `else if` blocks → `tsc` TS2367 (blocked `build-dojo-mcp-host`).
+3. `3db4b44cb` `synthi/.../codesite/[[...path]]/route.js` GET (dropped `} catch {} }`) + POST (dropped `}`) + `synthi/src/lib/codesite/controlPlane.js` duplicate `agentExpertise` import → `next build` parse fail (blocked `build-frontend`). Found via an espree sweep of all 1056 `synthi/src` files.
+4. `50f6c34c3` `backend/synthi-webrtc-compiler/worker/src/runtime/mod.rs` — `gpu_runtime_proof` left `#[cfg(feature="gpu-hmr")]`-gated though `compiler/handler.rs`+`stages/runner.rs` `use` it unconditionally → `E0432` (blocked `build-worker`).
+
+Build #6 then reached the GKE rollout and hit **two prod-wiring gaps** (see
+[[prod-env-wiring-gaps]]), causing a ~19h collab-server outage:
+- Frontend `CreateContainerConfigError` — `SYNTHI_CODESITE_PROOF_AUTHORITY_SECRET` (manifest `secretKeyRef` from `6db2c6cc2`, GCP secret `synthi-codesite-proof-authority-secret` never created). Fixed by creating the GCP secret + force-syncing the ExternalSecret.
+- collab-server CrashLoopBackOff — k8s probes point at `/debug/status` (from `a9956d05c`) which `5e9e229e9` later gated behind the internal token → unauth kubelet GET = 403. Fixed in `97c00ad59`: dedicated unauthenticated `GET /healthz` + `/livez` in `backend/collab-server/server.js`, both `collab`-container probes repointed.
+
+Build #7 (`1c125f2f…`, on `main` `97c00ad59`) deployed clean: all 16 steps SUCCESS,
+`frontend` + `collab-server` + ai-engine/ai-gateway/signaling/dojo-mcp-host rolled out,
+all pods `Running`/Ready, 0 restarts. Verified: `/healthz` → `200 {status:ok}`,
+`/debug/status` → `403` (still gated), the symlink-resilience code is present in the
+running collab-server image, `https://beta.vectant.dev/` → `200`.
+
+**Still to verify:** re-clone `pascalorg/editor` (or any repo with symlinked
+`CLAUDE.md`/`GEMINI.md`) through the beta UI and confirm the file tree loads, saves
+work, and the runtime comes up — the end-to-end proof of the original fix.
